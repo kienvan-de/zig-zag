@@ -2,15 +2,6 @@ const std = @import("std");
 const Anthropic = @import("types.zig");
 const config_mod = @import("../config.zig");
 
-pub const ApiError = error{
-    InvalidStatusCode,
-    InvalidResponse,
-    NetworkError,
-    AuthenticationError,
-    RateLimitError,
-    ServerError,
-};
-
 pub const AnthropicClient = struct {
     allocator: std.mem.Allocator,
     api_key: []const u8,
