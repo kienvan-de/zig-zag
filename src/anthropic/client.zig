@@ -1,5 +1,5 @@
 const std = @import("std");
-const Anthropic = @import("../providers/anthropic.zig");
+const Anthropic = @import("types.zig");
 
 pub const ApiError = error{
     InvalidStatusCode,

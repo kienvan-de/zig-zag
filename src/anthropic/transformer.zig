@@ -1,7 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
-const OpenAI = @import("../providers/openai.zig");
-const Anthropic = @import("../providers/anthropic.zig");
+const OpenAI = @import("../openai/types.zig");
+const Anthropic = @import("types.zig");
 
 // Type alias for OpenAI message content union
 const MessageContent = @TypeOf(@as(OpenAI.Message, undefined).content);
@@ -289,6 +289,28 @@ pub fn extractTextFromBlocks(blocks: []const Anthropic.ContentBlock, allocator: 
 }
 
 /// Transform Anthropic response to OpenAI response (non-streaming)
+/// Cleanup function for Anthropic.Request
+pub fn cleanupRequest(request: Anthropic.Request, allocator: std.mem.Allocator) void {
+    if (request.system) |s| allocator.free(s);
+    for (request.messages) |msg| {
+        switch (msg.content) {
+            .text => {},
+            .blocks => |blocks| allocator.free(blocks),
+        }
+    }
+    allocator.free(request.messages);
+}
+
+/// Cleanup function for OpenAI.Response
+pub fn cleanupResponse(response: OpenAI.Response, allocator: std.mem.Allocator) void {
+    if (response.choices.len > 0) {
+        if (response.choices[0].message.content) |content| {
+            allocator.free(content);
+        }
+    }
+    allocator.free(response.choices);
+}
+
 pub fn transformResponse(
     anthropic_response: Anthropic.Response,
     allocator: std.mem.Allocator,

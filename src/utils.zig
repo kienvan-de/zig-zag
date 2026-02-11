@@ -1,5 +1,5 @@
 const std = @import("std");
-const provider = @import("providers/provider.zig");
+const provider = @import("provider.zig");
 
 /// Parsed model information
 pub const ModelInfo = struct {

@@ -1,12 +1,54 @@
+//! Chat Completions Handler
+//!
+//! This module handles POST /v1/chat/completions requests and routes them to
+//! appropriate LLM providers using comptime generics.
+//!
+//! ## Adding a New Provider
+//!
+//! 1. Create provider folder: `src/newprovider/`
+//!    - `types.zig` - Provider-specific request/response schemas
+//!    - `client.zig` - HTTP client with `init()`, `deinit()`, `sendRequest()`
+//!    - `transformer.zig` - OpenAI ↔ Provider transformations
+//!
+//! 2. Implement required interfaces:
+//!    - Client: `init(allocator, api_key)`, `deinit()`, `sendRequest(request)`
+//!    - Transformer: `transform()`, `transformResponse()`, `cleanupRequest()`, `cleanupResponse()`
+//!    - Types: `Request` and `Response` structs
+//!
+//! 3. Add provider import:
+//!    ```zig
+//!    const newprovider = struct {
+//!        const types = @import("../newprovider/types.zig");
+//!        const client = @import("../newprovider/client.zig");
+//!        const transformer = @import("../newprovider/transformer.zig");
+//!    };
+//!    ```
+//!
+//! 4. Add case to switch statement:
+//!    ```zig
+//!    .newprovider => try handleProvider(
+//!        newprovider.client.ClientType,
+//!        newprovider.transformer,
+//!        newprovider.types,
+//!        allocator, connection, openai_request.value, model_info.model, api_key
+//!    ),
+//!    ```
+//!
+//! The comptime system will verify all interfaces at compile time!
+
 const std = @import("std");
-const OpenAI = @import("../providers/openai.zig");
-const Anthropic = @import("../providers/anthropic.zig");
-const AnthropicClient = @import("../clients/anthropic.zig").AnthropicClient;
-const anthropic_transformer = @import("../transformers/anthropic.zig");
+const OpenAI = @import("../openai/types.zig");
 const errors = @import("../errors.zig");
 const http = @import("../http.zig");
 const utils = @import("../utils.zig");
-const provider = @import("../providers/provider.zig");
+const provider = @import("../provider.zig");
+
+// Provider modules
+const anthropic = struct {
+    const types = @import("../anthropic/types.zig");
+    const client = @import("../anthropic/client.zig");
+    const transformer = @import("../anthropic/transformer.zig");
+};
 
 /// Handle POST /v1/chat/completions requests
 pub fn handle(
@@ -76,10 +118,19 @@ pub fn handle(
         return;
     }
 
-    // Route to appropriate provider
+    // Route to appropriate provider using comptime
     switch (model_info.provider) {
         .anthropic => {
-            try handleAnthropic(allocator, connection, openai_request.value, model_info.model, api_key);
+            try handleProvider(
+                anthropic.client.AnthropicClient,
+                anthropic.transformer,
+                anthropic.types,
+                allocator,
+                connection,
+                openai_request.value,
+                model_info.model,
+                api_key,
+            );
         },
         .openai => {
             const error_json = try errors.createErrorResponse(
@@ -95,16 +146,61 @@ pub fn handle(
     }
 }
 
-/// Handle Anthropic provider requests
-fn handleAnthropic(
+/// Generic provider handler using comptime duck typing
+///
+/// **How Interface Checking Works:**
+/// - No explicit interface definition needed (unlike Java/Go)
+/// - Compiler checks methods when they're called
+/// - If method missing or wrong signature = COMPILE ERROR
+/// - Zero runtime overhead - all checks at compile time
+///
+/// **Required Interface (enforced by compiler when used):**
+///
+/// Client type must have:
+///   - `init(allocator: Allocator, api_key: []const u8) Client`
+///   - `deinit(self: *Client) void`
+///   - `sendRequest(self: *Client, request: anytype) ![]const u8`
+///
+/// Transformer module must have:
+///   - `transform(request: OpenAI.Request, model: []const u8, allocator: Allocator) !ProviderRequest`
+///   - `transformResponse(response: ProviderResponse, allocator: Allocator) !OpenAI.Response`
+///   - `cleanupRequest(request: ProviderRequest, allocator: Allocator) void`
+///   - `cleanupResponse(response: OpenAI.Response, allocator: Allocator) void`
+///
+/// Types module must have:
+///   - `Request: type`
+///   - `Response: type`
+///
+/// **Example of what happens if interface violated:**
+/// ```zig
+/// // Missing transform() function
+/// const BadTransformer = struct {};
+/// handleProvider(Client, BadTransformer, Types, ...) 
+/// // ❌ Compile Error: container 'BadTransformer' has no member named 'transform'
+///
+/// // Wrong signature
+/// const BadTransformer2 = struct {
+///     pub fn transform(x: i32) void {}  // Wrong params!
+/// };
+/// handleProvider(Client, BadTransformer2, Types, ...)
+/// // ❌ Compile Error: expected 3 arguments, found 1
+/// ```
+///
+/// **Key Point:** The compiler discovers the interface requirements by analyzing
+/// the function body. When it sees `Transformer.transform(...)`, it checks if
+/// that function exists with the correct signature. No pre-declaration needed!
+fn handleProvider(
+    comptime Client: type,
+    comptime Transformer: type,
+    comptime Types: type,
     allocator: std.mem.Allocator,
     connection: std.net.Server.Connection,
     openai_request: OpenAI.Request,
     model: []const u8,
     api_key: []const u8,
 ) !void {
-    // Transform to Anthropic request
-    const anthropic_request = anthropic_transformer.transform(
+    // Transform OpenAI request to provider format
+    const provider_request = Transformer.transform(
         openai_request,
         model,
         allocator,
@@ -120,23 +216,14 @@ fn handleAnthropic(
         try http.sendJsonResponse(connection, .bad_request, error_json);
         return;
     };
-    defer {
-        if (anthropic_request.system) |s| allocator.free(s);
-        for (anthropic_request.messages) |msg| {
-            switch (msg.content) {
-                .text => {},
-                .blocks => |blocks| allocator.free(blocks),
-            }
-        }
-        allocator.free(anthropic_request.messages);
-    }
+    defer Transformer.cleanupRequest(provider_request, allocator);
 
-    // Send to Anthropic
-    var client = AnthropicClient.init(allocator, api_key);
+    // Initialize client and send request
+    var client = Client.init(allocator, api_key);
     defer client.deinit();
 
-    const anthropic_response_json = client.sendRequest(anthropic_request) catch |err| {
-        std.debug.print("Anthropic API error: {}\n", .{err});
+    const provider_response_json = client.sendRequest(provider_request) catch |err| {
+        std.debug.print("Provider API error: {}\n", .{err});
         const error_json = try errors.createErrorFromStatus(
             allocator,
             .bad_gateway,
@@ -146,16 +233,16 @@ fn handleAnthropic(
         try http.sendJsonResponse(connection, .bad_gateway, error_json);
         return;
     };
-    defer allocator.free(anthropic_response_json);
+    defer allocator.free(provider_response_json);
 
-    // Parse Anthropic response
-    const anthropic_response = std.json.parseFromSlice(
-        Anthropic.Response,
+    // Parse provider response
+    const provider_response = std.json.parseFromSlice(
+        Types.Response,
         allocator,
-        anthropic_response_json,
+        provider_response_json,
         .{},
     ) catch |err| {
-        std.debug.print("Anthropic response parse error: {}\n", .{err});
+        std.debug.print("Provider response parse error: {}\n", .{err});
         const error_json = try errors.createErrorResponse(
             allocator,
             "Invalid response from upstream API",
@@ -166,19 +253,14 @@ fn handleAnthropic(
         try http.sendJsonResponse(connection, .internal_server_error, error_json);
         return;
     };
-    defer anthropic_response.deinit();
+    defer provider_response.deinit();
 
-    // Transform back to OpenAI format
-    const openai_response = try anthropic_transformer.transformResponse(
-        anthropic_response.value,
+    // Transform provider response back to OpenAI format
+    const openai_response = try Transformer.transformResponse(
+        provider_response.value,
         allocator,
     );
-    defer {
-        if (openai_response.choices[0].message.content) |content| {
-            allocator.free(content);
-        }
-        allocator.free(openai_response.choices);
-    }
+    defer Transformer.cleanupResponse(openai_response, allocator);
 
     // Serialize OpenAI response
     var response_buffer = std.ArrayList(u8){};
