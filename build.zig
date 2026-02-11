@@ -79,6 +79,33 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    const anthropic_client_test_module = b.createModule(.{
+        .root_source_file = b.path("src/clients/anthropic.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    anthropic_client_test_module.addImport("../providers/anthropic.zig", anthropic_module);
+
+    const anthropic_client_tests = b.addTest(.{
+        .root_module = anthropic_client_test_module,
+    });
+
+    const errors_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/errors.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    const router_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/router.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
     const request_test_module = b.createModule(.{
         .root_source_file = b.path("src/transformers/anthropic.zig"),
         .target = target,
@@ -97,6 +124,9 @@ pub fn build(b: *std.Build) void {
     const run_anthropic_tests = b.addRunArtifact(anthropic_tests);
     const run_provider_tests = b.addRunArtifact(provider_tests);
     const run_request_tests = b.addRunArtifact(request_tests);
+    const run_anthropic_client_tests = b.addRunArtifact(anthropic_client_tests);
+    const run_errors_tests = b.addRunArtifact(errors_tests);
+    const run_router_tests = b.addRunArtifact(router_tests);
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_config_tests.step);
@@ -105,4 +135,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_anthropic_tests.step);
     test_step.dependOn(&run_provider_tests.step);
     test_step.dependOn(&run_request_tests.step);
+    test_step.dependOn(&run_anthropic_client_tests.step);
+    test_step.dependOn(&run_errors_tests.step);
+    test_step.dependOn(&run_router_tests.step);
 }
