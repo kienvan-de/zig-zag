@@ -42,10 +42,30 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
+    const openai_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/providers/openai.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    const anthropic_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/providers/anthropic.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
     const run_config_tests = b.addRunArtifact(config_tests);
     const run_server_tests = b.addRunArtifact(server_tests);
+    const run_openai_tests = b.addRunArtifact(openai_tests);
+    const run_anthropic_tests = b.addRunArtifact(anthropic_tests);
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_config_tests.step);
     test_step.dependOn(&run_server_tests.step);
+    test_step.dependOn(&run_openai_tests.step);
+    test_step.dependOn(&run_anthropic_tests.step);
 }
