@@ -1,5 +1,6 @@
 const std = @import("std");
 const chat_handler = @import("handlers/chat.zig");
+const config_mod = @import("config.zig");
 
 /// Route definition
 pub const Route = struct {
@@ -9,7 +10,7 @@ pub const Route = struct {
         allocator: std.mem.Allocator,
         connection: std.net.Server.Connection,
         body: []const u8,
-        api_key: []const u8,
+        config: *const config_mod.Config,
     ) anyerror!void,
 };
 

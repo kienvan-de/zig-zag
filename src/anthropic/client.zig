@@ -1,5 +1,6 @@
 const std = @import("std");
 const Anthropic = @import("types.zig");
+const config_mod = @import("../config.zig");
 
 pub const ApiError = error{
     InvalidStatusCode,
@@ -13,15 +14,22 @@ pub const ApiError = error{
 pub const AnthropicClient = struct {
     allocator: std.mem.Allocator,
     api_key: []const u8,
+    config: *const config_mod.ProviderConfig,
     client: std.http.Client,
 
     const ANTHROPIC_API_URL = "https://api.anthropic.com";
     const ANTHROPIC_VERSION = "2023-06-01";
 
-    pub fn init(allocator: std.mem.Allocator, api_key: []const u8) AnthropicClient {
+    pub fn init(allocator: std.mem.Allocator, provider_config: *const config_mod.ProviderConfig) !AnthropicClient {
+        const api_key = provider_config.getString("api_key") orelse {
+            std.debug.print("ERROR: Anthropic provider config missing 'api_key' field\n", .{});
+            return error.MissingApiKey;
+        };
+
         return .{
             .allocator = allocator,
             .api_key = api_key,
+            .config = provider_config,
             .client = std.http.Client{ .allocator = allocator },
         };
     }
@@ -107,11 +115,20 @@ test "AnthropicClient.init creates client with correct fields" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const api_key = "sk-ant-test-key-123";
-    var client = AnthropicClient.init(allocator, api_key);
+    const json_str = 
+        \\{"api_key": "sk-ant-test-key-123"}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_str, .{});
+    var provider_config = config_mod.ProviderConfig{
+        .allocator = allocator,
+        .raw = parsed,
+    };
+    defer provider_config.deinit();
+
+    var client = try AnthropicClient.init(allocator, &provider_config);
     defer client.deinit();
 
-    try testing.expectEqualStrings(api_key, client.api_key);
+    try testing.expectEqualStrings("sk-ant-test-key-123", client.api_key);
 }
 
 test "AnthropicClient constants are correct" {
@@ -127,7 +144,17 @@ test "AnthropicClient.handleErrorResponse maps status codes correctly" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var client = AnthropicClient.init(allocator, "test-key");
+    const json_str = 
+        \\{"api_key": "test-key"}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_str, .{});
+    var provider_config = config_mod.ProviderConfig{
+        .allocator = allocator,
+        .raw = parsed,
+    };
+    defer provider_config.deinit();
+
+    var client = try AnthropicClient.init(allocator, &provider_config);
     defer client.deinit();
 
     // Test authentication error
@@ -177,7 +204,17 @@ test "AnthropicClient stores allocator correctly" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var client = AnthropicClient.init(allocator, "test-key");
+    const json_str = 
+        \\{"api_key": "test-key"}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_str, .{});
+    var provider_config = config_mod.ProviderConfig{
+        .allocator = allocator,
+        .raw = parsed,
+    };
+    defer provider_config.deinit();
+
+    var client = try AnthropicClient.init(allocator, &provider_config);
     defer client.deinit();
 
     // Verify allocator is stored
@@ -192,24 +229,52 @@ test "AnthropicClient can be initialized with different API keys" {
 
     // Test with short key
     {
-        var client = AnthropicClient.init(allocator, "short");
+        const json_str = 
+            \\{"api_key": "short"}
+        ;
+        const parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_str, .{});
+        var provider_config = config_mod.ProviderConfig{
+            .allocator = allocator,
+            .raw = parsed,
+        };
+        defer provider_config.deinit();
+
+        var client = try AnthropicClient.init(allocator, &provider_config);
         defer client.deinit();
         try testing.expectEqualStrings("short", client.api_key);
     }
 
     // Test with long key
     {
-        const long_key = "sk-ant-api03-very-long-key-with-many-characters-123456789";
-        var client = AnthropicClient.init(allocator, long_key);
+        const json_str = 
+            \\{"api_key": "sk-ant-api03-very-long-key-with-many-characters-0123456789"}
+        ;
+        const parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_str, .{});
+        var provider_config = config_mod.ProviderConfig{
+            .allocator = allocator,
+            .raw = parsed,
+        };
+        defer provider_config.deinit();
+
+        var client = try AnthropicClient.init(allocator, &provider_config);
         defer client.deinit();
-        try testing.expectEqualStrings(long_key, client.api_key);
+        try testing.expectEqualStrings("sk-ant-api03-very-long-key-with-many-characters-0123456789", client.api_key);
     }
 
-    // Test with special characters
+    // Test with key containing special characters
     {
-        const special_key = "sk-ant_test.key-123";
-        var client = AnthropicClient.init(allocator, special_key);
+        const json_str = 
+            \\{"api_key": "sk-ant_test.key-with$pecial#chars"}
+        ;
+        const parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_str, .{});
+        var provider_config = config_mod.ProviderConfig{
+            .allocator = allocator,
+            .raw = parsed,
+        };
+        defer provider_config.deinit();
+
+        var client = try AnthropicClient.init(allocator, &provider_config);
         defer client.deinit();
-        try testing.expectEqualStrings(special_key, client.api_key);
+        try testing.expectEqualStrings("sk-ant_test.key-with$pecial#chars", client.api_key);
     }
 }

@@ -7,10 +7,10 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    // Load configuration
-    const cfg = try config.loadConfig(allocator);
+    // Load configuration from ~/.config/zig-zag/config.json
+    var cfg = try config.Config.load(allocator);
     defer cfg.deinit();
 
     // Start the HTTP server
-    try server.start(allocator, cfg);
+    try server.start(allocator, &cfg);
 }
