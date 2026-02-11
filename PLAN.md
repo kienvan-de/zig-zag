@@ -49,22 +49,40 @@ Build a high-performance, memory-safe HTTP proxy in **Zig** that accepts **OpenA
 
 ---
 
-## **Phase 2: Data Modeling (The Schemas)**
+## **Phase 2: Data Modeling (The Schemas)** ✅ **COMPLETED**
 **Goal:** Define strict Zig structs that mirror the exact JSON expected by both providers.
 
-* **Task 2.1: Define OpenAI Structs**
+* **Task 2.1: Define OpenAI Structs** ✅
     * **File:** `src/providers/openai.zig`
     * **Structs Needed:**
         * `Message`: `{ role: []const u8, content: []const u8 }`
         * `Request`: `{ model: []const u8, messages: []Message, stream: ?bool, temperature: ?f32, max_tokens: ?u32 }`
         * `StreamChunk`: The response format for SSE (id, object, created, choices).
+    * **Status:** Complete - Enhanced with type-safe Role enum (system, user, assistant, function, tool)
+    * **Enhancements:**
+        * Type-safe `Role` enum instead of strings
+        * Full response structures (Response, ResponseChoice, ResponseMessage, Usage)
+        * Complete streaming support (StreamChunk, StreamChoice, Delta)
+        * Additional optional fields (top_p, n, presence_penalty, frequency_penalty)
+    * **Tests:** 26 comprehensive tests
 
-* **Task 2.2: Define Anthropic Structs**
+* **Task 2.2: Define Anthropic Structs** ✅
     * **File:** `src/providers/anthropic.zig`
     * **Structs Needed:**
         * `Message`: `{ role: []const u8, content: []const u8 }` (Note: No system role here).
         * `Request`: `{ model: []const u8, messages: []Message, system: ?[]const u8, max_tokens: u32, stream: bool }`
         * `StreamEvent`: Structs for `message_start`, `content_block_delta`, etc.
+    * **Status:** Complete - Type-safe Role enum with only user/assistant
+    * **Implementations:**
+        * Type-safe `Role` enum (user, assistant only)
+        * Complete request/response structures
+        * Full streaming event support (7 event types)
+        * ContentBlock array structure
+        * Proper usage tracking
+    * **Tests:** 23 comprehensive tests
+
+**Commits:**
+- `ce5a1b3` - Add comprehensive unit tests for config.zig and server.zig
 
 ---
 
