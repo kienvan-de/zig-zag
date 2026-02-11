@@ -54,10 +54,17 @@ pub const ProviderConfig = struct {
     }
 };
 
+/// Server configuration
+pub const ServerConfig = struct {
+    port: u16 = 8080,
+    host: []const u8 = "0.0.0.0",
+};
+
 /// Main application configuration
 pub const Config = struct {
     allocator: std.mem.Allocator,
     providers: std.StringHashMap(ProviderConfig),
+    server: ServerConfig,
 
     /// Load configuration from ~/.config/zig-zag/config.json
     pub fn load(allocator: std.mem.Allocator) !Config {
@@ -102,6 +109,42 @@ pub const Config = struct {
             return error.InvalidConfigFormat;
         }
 
+        const root_obj = parsed.value.object;
+
+        // Parse server config (optional, with defaults)
+        var server_config = ServerConfig{};
+        if (root_obj.get("server")) |server_value| {
+            if (server_value != .object) {
+                parsed.deinit();
+                std.debug.print("Server config must be an object\n", .{});
+                return error.InvalidConfigFormat;
+            }
+            const server_obj = server_value.object;
+            if (server_obj.get("port")) |port_value| {
+                if (port_value == .integer) {
+                    server_config.port = @intCast(port_value.integer);
+                }
+            }
+            if (server_obj.get("host")) |host_value| {
+                if (host_value == .string) {
+                    server_config.host = host_value.string;
+                }
+            }
+        }
+
+        // Get providers object
+        const providers_value = root_obj.get("providers") orelse {
+            parsed.deinit();
+            std.debug.print("Config must contain 'providers' object\n", .{});
+            return error.InvalidConfigFormat;
+        };
+
+        if (providers_value != .object) {
+            parsed.deinit();
+            std.debug.print("'providers' must be a JSON object\n", .{});
+            return error.InvalidConfigFormat;
+        }
+
         // Create provider map
         var providers = std.StringHashMap(ProviderConfig).init(allocator);
         errdefer {
@@ -118,7 +161,7 @@ pub const Config = struct {
         const providers_allocator = providers_arena.allocator();
         
         // Iterate over providers
-        var iter = parsed.value.object.iterator();
+        var iter = providers_value.object.iterator();
         while (iter.next()) |entry| {
             const provider_name = entry.key_ptr.*;
             const provider_value_ptr = entry.value_ptr;
@@ -160,6 +203,7 @@ pub const Config = struct {
         return Config{
             .allocator = allocator,
             .providers = providers,
+            .server = server_config,
         };
     }
 
@@ -330,6 +374,7 @@ test "Config.getProviderConfig returns correct provider" {
     var config = Config{
         .allocator = allocator,
         .providers = providers,
+        .server = .{},
     };
     defer {
         var iter = config.providers.valueIterator();
@@ -353,6 +398,7 @@ test "Config.hasProvider checks provider existence" {
     const config = Config{
         .allocator = allocator,
         .providers = providers,
+        .server = .{},
     };
 
     try testing.expect(!config.hasProvider(.anthropic));
