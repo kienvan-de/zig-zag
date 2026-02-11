@@ -37,7 +37,7 @@
 //! The comptime system will verify all interfaces at compile time!
 
 const std = @import("std");
-const OpenAI = @import("../openai/types.zig");
+const OpenAI = @import("../providers/openai/types.zig");
 const errors = @import("../errors.zig");
 const http = @import("../http.zig");
 const utils = @import("../utils.zig");
@@ -45,15 +45,15 @@ const provider = @import("../provider.zig");
 
 // Provider modules
 const anthropic = struct {
-    const types = @import("../anthropic/types.zig");
-    const client = @import("../anthropic/client.zig");
-    const transformer = @import("../anthropic/transformer.zig");
+    const types = @import("../providers/anthropic/types.zig");
+    const client = @import("../providers/anthropic/client.zig");
+    const transformer = @import("../providers/anthropic/transformer.zig");
 };
 
 const openai = struct {
-    const types = @import("../openai/types.zig");
-    const client = @import("../openai/client.zig");
-    const transformer = @import("../openai/transformer.zig");
+    const types = @import("../providers/openai/types.zig");
+    const client = @import("../providers/openai/client.zig");
+    const transformer = @import("../providers/openai/transformer.zig");
 };
 
 /// Handle POST /v1/chat/completions requests
