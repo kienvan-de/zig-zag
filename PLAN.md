@@ -86,25 +86,58 @@ Build a high-performance, memory-safe HTTP proxy in **Zig** that accepts **OpenA
 
 ---
 
-## **Phase 3: Request Transformation Logic (The Core)**
-**Goal:** Implement the logic to convert `OpenAI.Request` -> `Anthropic.Request`.
+## **Phase 3: Request Transformation Logic (The Core)** ✅ **COMPLETED**
+**Goal:** Implement bidirectional transformation logic (OpenAI ↔ Anthropic).
 
-* **Task 3.1: System Prompt Extraction**
-    * **File:** `src/transformers/request.zig`
+* **Task 3.1: System Prompt Extraction** ✅
+    * **File:** `src/transformers/anthropic.zig`
     * **Logic:** Iterate through OpenAI `messages`.
         * If `role == "system"`, extract content to a `system_prompt` variable.
         * If `role != "system"`, append to a new list of `Anthropic.Message`.
     * **Constraint:** Anthropic `system` is a top-level string, not a message in the array.
+    * **Status:** Complete - `extractSystemPrompt()` function with concatenation support
+    * **Tests:** 5 comprehensive tests
 
-* **Task 3.2: Message Normalization**
+* **Task 3.2: Message Normalization** ✅
     * **Logic:** Anthropic requires alternating `user` / `assistant` messages.
         * *Edge Case:* If two `user` messages are consecutive, merge their content with a newline separator.
     * **Refinement:** Ensure the first message is always `user` (if the first was system and removed, check next).
+    * **Status:** Complete - `normalizeMessages()` with automatic merging and synthetic user insertion
+    * **Tests:** 6 comprehensive tests
 
-* **Task 3.3: Field Mapping & Defaults**
+* **Task 3.3: Field Mapping & Defaults** ✅
     * **Logic:**
-        * Map `gpt-4` (etc) -> `claude-3-5-sonnet-latest` (or pass through if already claude).
+        * Dynamic provider routing with `provider/model-name` format (e.g., `anthropic/claude-3-5-sonnet-latest`)
         * **Crucial:** If OpenAI `max_tokens` is null, set Anthropic `max_tokens` to `4096` (it is a required field for Anthropic).
+    * **Status:** Complete - `transform()` main function with all field mappings
+    * **Enhancements:**
+        * Provider detection system (`src/providers/provider.zig`)
+        * Dynamic model routing (no hardcoded mappings)
+        * Bidirectional transformation (request + response)
+    * **Tests:** 5 comprehensive tests
+
+* **Bonus: Response Transformation** ✅
+    * **File:** `src/transformers/anthropic.zig`
+    * **Logic:** Transform `Anthropic.Response` -> `OpenAI.Response`
+        * Map stop reasons (end_turn→stop, max_tokens→length)
+        * Extract text from ContentBlock arrays
+        * Map usage tokens (input_tokens→prompt_tokens, etc.)
+    * **Status:** Complete - `transformResponse()`, `transformStopReason()`, `extractTextFromBlocks()`
+    * **Tests:** 14 comprehensive tests
+
+* **Bonus: Provider Detection** ✅
+    * **File:** `src/providers/provider.zig`
+    * **Logic:** Parse model strings in format `provider/model-name`
+    * **Status:** Complete - `parseModelString()`, provider enum, validation
+    * **Tests:** 22 comprehensive tests
+
+**Architecture:**
+- Single file per provider with bidirectional transformation
+- `src/transformers/anthropic.zig` handles both request and response
+- Future providers: `google.zig`, `cohere.zig`, etc.
+
+**Commits:**
+- `517a343` - feat: Phase 3 - Bidirectional transformation and provider routing
 
 ---
 
