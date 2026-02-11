@@ -1,11 +1,26 @@
 {
-  "anthropic": {
-    "api_key": "sk-ant-api03-your-key-here",
-    "max_tokens": 4096,
-    "temperature": 0.7
+  "providers": {
+    "anthropic": {
+      "api_key": "sk-ant-api03-your-key-here",
+      "api_url": "https://api.anthropic.com",
+      "api_version": "2023-06-01",
+      "timeout_ms": 30000,
+      "max_response_size_mb": 10,
+      "retry_count": 0,
+      "retry_delay_ms": 1000
+    },
+    "openai": {
+      "api_key": "sk-your-openai-key-here",
+      "organization": "org-your-org-id",
+      "api_url": "https://api.openai.com",
+      "timeout_ms": 30000,
+      "max_response_size_mb": 10,
+      "retry_count": 0,
+      "retry_delay_ms": 1000
+    }
   },
-  "openai": {
-    "api_key": "sk-your-openai-key-here",
-    "organization": "org-your-org-id"
+  "server": {
+    "port": 8080,
+    "host": "0.0.0.0"
   }
 }

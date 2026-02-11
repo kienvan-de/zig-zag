@@ -15,11 +15,14 @@ const NOT_FOUND_RESPONSE =
 ;
 
 pub fn start(allocator: std.mem.Allocator, cfg: *const config.Config) !void {
-    std.debug.print("Starting zig-zag proxy server on port 8080...\n", .{});
+    const host = cfg.server.host;
+    const port = cfg.server.port;
+
+    std.debug.print("Starting zig-zag proxy server on {s}:{d}...\n", .{ host, port });
     std.debug.print("Loaded providers: {d}\n", .{cfg.providers.count()});
 
     // Create server address
-    const address = try std.net.Address.parseIp("127.0.0.1", 8080);
+    const address = try std.net.Address.parseIp(host, port);
 
     // Create TCP listener
     var listener = try address.listen(.{
@@ -27,7 +30,7 @@ pub fn start(allocator: std.mem.Allocator, cfg: *const config.Config) !void {
     });
     defer listener.deinit();
 
-    std.debug.print("Listening on http://127.0.0.1:8080\n", .{});
+    std.debug.print("Listening on http://{s}:{d}\n", .{ host, port });
     std.debug.print("Endpoints:\n", .{});
     std.debug.print("  POST /v1/chat/completions\n", .{});
 
