@@ -44,7 +44,7 @@ pub fn build(b: *std.Build) void {
 
     const openai_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/openai/types.zig"),
+            .root_source_file = b.path("src/providers/openai/types.zig"),
             .target = target,
             .optimize = optimize,
         }),
@@ -52,7 +52,7 @@ pub fn build(b: *std.Build) void {
 
     const anthropic_types_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/anthropic/types.zig"),
+            .root_source_file = b.path("src/providers/anthropic/types.zig"),
             .target = target,
             .optimize = optimize,
         }),
@@ -68,13 +68,13 @@ pub fn build(b: *std.Build) void {
 
     // Create modules for dependencies
     const openai_module = b.createModule(.{
-        .root_source_file = b.path("src/openai/types.zig"),
+        .root_source_file = b.path("src/providers/openai/types.zig"),
         .target = target,
         .optimize = optimize,
     });
 
     const anthropic_types_module = b.createModule(.{
-        .root_source_file = b.path("src/anthropic/types.zig"),
+        .root_source_file = b.path("src/providers/anthropic/types.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -86,12 +86,12 @@ pub fn build(b: *std.Build) void {
     });
 
     const anthropic_client_test_module = b.createModule(.{
-        .root_source_file = b.path("src/anthropic/client.zig"),
+        .root_source_file = b.path("src/providers/anthropic/client.zig"),
         .target = target,
         .optimize = optimize,
     });
     anthropic_client_test_module.addImport("types.zig", anthropic_types_module);
-    anthropic_client_test_module.addImport("../config.zig", config_module);
+    anthropic_client_test_module.addImport("../../config.zig", config_module);
 
     const anthropic_client_tests = b.addTest(.{
         .root_module = anthropic_client_test_module,
@@ -114,7 +114,7 @@ pub fn build(b: *std.Build) void {
     });
 
     const transformer_test_module = b.createModule(.{
-        .root_source_file = b.path("src/anthropic/transformer.zig"),
+        .root_source_file = b.path("src/providers/anthropic/transformer.zig"),
         .target = target,
         .optimize = optimize,
     });
