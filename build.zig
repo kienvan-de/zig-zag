@@ -58,14 +58,51 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
+    const provider_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/providers/provider.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    // Create modules for dependencies
+    const openai_module = b.createModule(.{
+        .root_source_file = b.path("src/providers/openai.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const anthropic_module = b.createModule(.{
+        .root_source_file = b.path("src/providers/anthropic.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const request_test_module = b.createModule(.{
+        .root_source_file = b.path("src/transformers/anthropic.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    request_test_module.addImport("../providers/openai.zig", openai_module);
+    request_test_module.addImport("../providers/anthropic.zig", anthropic_module);
+
+    const request_tests = b.addTest(.{
+        .root_module = request_test_module,
+    });
+
     const run_config_tests = b.addRunArtifact(config_tests);
     const run_server_tests = b.addRunArtifact(server_tests);
     const run_openai_tests = b.addRunArtifact(openai_tests);
     const run_anthropic_tests = b.addRunArtifact(anthropic_tests);
+    const run_provider_tests = b.addRunArtifact(provider_tests);
+    const run_request_tests = b.addRunArtifact(request_tests);
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_config_tests.step);
     test_step.dependOn(&run_server_tests.step);
     test_step.dependOn(&run_openai_tests.step);
     test_step.dependOn(&run_anthropic_tests.step);
+    test_step.dependOn(&run_provider_tests.step);
+    test_step.dependOn(&run_request_tests.step);
 }
