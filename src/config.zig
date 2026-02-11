@@ -166,13 +166,6 @@ pub const Config = struct {
             const provider_name = entry.key_ptr.*;
             const provider_value_ptr = entry.value_ptr;
 
-            // Validate provider name against enum
-            _ = provider_mod.Provider.fromString(provider_name) catch {
-                std.debug.print("Invalid provider in config: {s}\n", .{provider_name});
-                std.debug.print("Valid providers: anthropic, openai\n", .{});
-                return error.InvalidProvider;
-            };
-
             // Validate provider config is an object
             if (provider_value_ptr.* != .object) {
                 std.debug.print("Provider config must be an object: {s}\n", .{provider_name});

@@ -17,6 +17,24 @@
       "max_response_size_mb": 10,
       "retry_count": 0,
       "retry_delay_ms": 1000
+    },
+    "groq": {
+      "api_key": "gsk-your-groq-key-here",
+      "api_url": "https://api.groq.com",
+      "compatible": "openai",
+      "timeout_ms": 30000,
+      "max_response_size_mb": 10,
+      "retry_count": 2,
+      "retry_delay_ms": 1000
+    },
+    "azure": {
+      "api_key": "your-azure-api-key",
+      "api_url": "https://your-resource.openai.azure.com",
+      "compatible": "openai",
+      "timeout_ms": 60000,
+      "max_response_size_mb": 10,
+      "retry_count": 0,
+      "retry_delay_ms": 1000
     }
   },
   "server": {
