@@ -44,15 +44,15 @@ pub fn build(b: *std.Build) void {
 
     const openai_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/providers/openai.zig"),
+            .root_source_file = b.path("src/openai/types.zig"),
             .target = target,
             .optimize = optimize,
         }),
     });
 
-    const anthropic_tests = b.addTest(.{
+    const anthropic_types_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/providers/anthropic.zig"),
+            .root_source_file = b.path("src/anthropic/types.zig"),
             .target = target,
             .optimize = optimize,
         }),
@@ -60,7 +60,7 @@ pub fn build(b: *std.Build) void {
 
     const provider_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/providers/provider.zig"),
+            .root_source_file = b.path("src/provider.zig"),
             .target = target,
             .optimize = optimize,
         }),
@@ -68,23 +68,23 @@ pub fn build(b: *std.Build) void {
 
     // Create modules for dependencies
     const openai_module = b.createModule(.{
-        .root_source_file = b.path("src/providers/openai.zig"),
+        .root_source_file = b.path("src/openai/types.zig"),
         .target = target,
         .optimize = optimize,
     });
 
-    const anthropic_module = b.createModule(.{
-        .root_source_file = b.path("src/providers/anthropic.zig"),
+    const anthropic_types_module = b.createModule(.{
+        .root_source_file = b.path("src/anthropic/types.zig"),
         .target = target,
         .optimize = optimize,
     });
 
     const anthropic_client_test_module = b.createModule(.{
-        .root_source_file = b.path("src/clients/anthropic.zig"),
+        .root_source_file = b.path("src/anthropic/client.zig"),
         .target = target,
         .optimize = optimize,
     });
-    anthropic_client_test_module.addImport("../providers/anthropic.zig", anthropic_module);
+    anthropic_client_test_module.addImport("types.zig", anthropic_types_module);
 
     const anthropic_client_tests = b.addTest(.{
         .root_module = anthropic_client_test_module,
@@ -106,36 +106,46 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
-    const request_test_module = b.createModule(.{
-        .root_source_file = b.path("src/transformers/anthropic.zig"),
+    const transformer_test_module = b.createModule(.{
+        .root_source_file = b.path("src/anthropic/transformer.zig"),
         .target = target,
         .optimize = optimize,
     });
-    request_test_module.addImport("../providers/openai.zig", openai_module);
-    request_test_module.addImport("../providers/anthropic.zig", anthropic_module);
+    transformer_test_module.addImport("../openai/types.zig", openai_module);
+    transformer_test_module.addImport("types.zig", anthropic_types_module);
 
-    const request_tests = b.addTest(.{
-        .root_module = request_test_module,
+    const transformer_tests = b.addTest(.{
+        .root_module = transformer_test_module,
+    });
+
+    const utils_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/utils.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
 
     const run_config_tests = b.addRunArtifact(config_tests);
     const run_server_tests = b.addRunArtifact(server_tests);
     const run_openai_tests = b.addRunArtifact(openai_tests);
-    const run_anthropic_tests = b.addRunArtifact(anthropic_tests);
+    const run_anthropic_types_tests = b.addRunArtifact(anthropic_types_tests);
     const run_provider_tests = b.addRunArtifact(provider_tests);
-    const run_request_tests = b.addRunArtifact(request_tests);
+    const run_transformer_tests = b.addRunArtifact(transformer_tests);
     const run_anthropic_client_tests = b.addRunArtifact(anthropic_client_tests);
     const run_errors_tests = b.addRunArtifact(errors_tests);
     const run_router_tests = b.addRunArtifact(router_tests);
+    const run_utils_tests = b.addRunArtifact(utils_tests);
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_config_tests.step);
     test_step.dependOn(&run_server_tests.step);
     test_step.dependOn(&run_openai_tests.step);
-    test_step.dependOn(&run_anthropic_tests.step);
+    test_step.dependOn(&run_anthropic_types_tests.step);
     test_step.dependOn(&run_provider_tests.step);
-    test_step.dependOn(&run_request_tests.step);
+    test_step.dependOn(&run_transformer_tests.step);
     test_step.dependOn(&run_anthropic_client_tests.step);
     test_step.dependOn(&run_errors_tests.step);
     test_step.dependOn(&run_router_tests.step);
+    test_step.dependOn(&run_utils_tests.step);
 }
