@@ -141,21 +141,38 @@ Build a high-performance, memory-safe HTTP proxy in **Zig** that accepts **OpenA
 
 ---
 
-## **Phase 4: Upstream Communication (The Client)**
+## **Phase 4: Upstream Communication (The Client)** ✅ **COMPLETED**
 **Goal:** Send the transformed payload to Anthropic.
 
-* **Task 4.1: HTTP Client Implementation**
-    * **File:** `src/upstream/anthropic_client.zig`
+* **Task 4.1: HTTP Client Implementation** ✅
+    * **File:** `src/clients/anthropic.zig`
     * **Action:** Use `std.http.Client` to POST to `https://api.anthropic.com/v1/messages`.
     * **Headers:**
         * `x-api-key`: [From Config]
         * `anthropic-version`: `2023-06-01`
         * `content-type`: `application/json`
+    * **Status:** Complete - AnthropicClient with proper error handling
+    * **Tests:** 5 comprehensive tests
 
-* **Task 4.2: Non-Streaming Response Handler**
+* **Task 4.2: Non-Streaming Response Handler** ✅
     * **Logic:** If `stream: false`, read the full body from Anthropic.
     * **Transformation:** Map `Anthropic.Response` -> `OpenAI.Response`.
     * **Action:** Send JSON back to original client.
+    * **Status:** Complete - Full request/response pipeline
+    * **Enhancements:**
+        * OpenAI-compatible error responses (`src/protocol/errors.zig`)
+        * HTTP status code to error type mapping
+        * Request body extraction and parsing
+        * Arena allocator for per-request memory management
+    * **Tests:** 13 comprehensive tests (errors.zig + server.zig updates)
+
+**Architecture:**
+- `src/clients/anthropic.zig` - HTTP client for Anthropic API
+- `src/errors.zig` - OpenAI-compatible error handling
+- `src/server.zig` - Integrated request pipeline (parse → transform → send → transform back)
+
+**Commits:**
+- Phase 4 implementation with HTTP client, error handling, and server integration
 
 ---
 

@@ -1,16 +1,10 @@
 const std = @import("std");
 const config = @import("config.zig");
+const router = @import("router.zig");
+const errors = @import("errors.zig");
+const http = @import("http.zig");
 
 // HTTP response constants
-const SUCCESS_RESPONSE =
-    \\HTTP/1.1 200 OK
-    \\Content-Type: application/json
-    \\Content-Length: 19
-    \\Connection: close
-    \\
-    \\{"status": "alive"}
-;
-
 const NOT_FOUND_RESPONSE =
     \\HTTP/1.1 404 Not Found
     \\Content-Type: application/json
@@ -19,16 +13,6 @@ const NOT_FOUND_RESPONSE =
     \\
     \\{"error": "Not Found"}
 ;
-
-/// Checks if the HTTP request is a valid POST to /v1/chat/completions
-pub fn isValidChatCompletionRequest(request_data: []const u8) bool {
-    if (request_data.len == 0) return false;
-    
-    const is_post = std.mem.startsWith(u8, request_data, "POST ");
-    const has_endpoint = std.mem.indexOf(u8, request_data, "/v1/chat/completions") != null;
-    
-    return is_post and has_endpoint;
-}
 
 pub fn start(allocator: std.mem.Allocator, cfg: config.Config) !void {
     std.debug.print("Starting zig-zag proxy server on port 8080...\n", .{});
@@ -44,234 +28,126 @@ pub fn start(allocator: std.mem.Allocator, cfg: config.Config) !void {
     defer listener.deinit();
 
     std.debug.print("Listening on http://127.0.0.1:8080\n", .{});
-    std.debug.print("Test endpoint: POST http://127.0.0.1:8080/v1/chat/completions\n", .{});
+    std.debug.print("Endpoints:\n", .{});
+    std.debug.print("  POST /v1/chat/completions\n", .{});
 
     // Accept connections in a loop
     while (true) {
         const connection = try listener.accept();
-        
+
         // Handle each connection (for now, single-threaded)
-        handleConnection(allocator, connection) catch |err| {
+        handleConnection(allocator, connection, cfg) catch |err| {
             std.debug.print("Error handling connection: {}\n", .{err});
         };
     }
 }
 
-fn handleConnection(allocator: std.mem.Allocator, connection: std.net.Server.Connection) !void {
+fn handleConnection(allocator: std.mem.Allocator, connection: std.net.Server.Connection, cfg: config.Config) !void {
     defer connection.stream.close();
 
-    var read_buffer: [4096]u8 = undefined;
-    
+    // Use arena for per-request allocations
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const request_allocator = arena.allocator();
+
+    var read_buffer: [16384]u8 = undefined;
+
     // Read HTTP request
     const bytes_read = try connection.stream.read(&read_buffer);
     if (bytes_read == 0) return;
-    
+
     const request_data = read_buffer[0..bytes_read];
-    
-    // Route request based on endpoint
-    if (isValidChatCompletionRequest(request_data)) {
-        _ = try connection.stream.writeAll(SUCCESS_RESPONSE);
+
+    // Try to match route
+    if (router.match(request_data)) |route| {
+        // Extract request body
+        const body = extractRequestBody(request_data) orelse {
+            const error_json = try errors.createErrorResponse(
+                request_allocator,
+                "No request body found",
+                .invalid_request_error,
+                null,
+            );
+            defer request_allocator.free(error_json);
+            try http.sendJsonResponse(connection, .bad_request, error_json);
+            return;
+        };
+
+        // Dispatch to handler
+        try route.handler(request_allocator, connection, body, cfg.anthropic_api_key);
     } else {
+        // No route matched - return 404
         _ = try connection.stream.writeAll(NOT_FOUND_RESPONSE);
     }
-    
-    _ = allocator;
+}
+
+fn extractRequestBody(request_data: []const u8) ?[]const u8 {
+    // Find double CRLF or double LF (end of headers)
+    if (std.mem.indexOf(u8, request_data, "\r\n\r\n")) |pos| {
+        return request_data[pos + 4 ..];
+    }
+    if (std.mem.indexOf(u8, request_data, "\n\n")) |pos| {
+        return request_data[pos + 2 ..];
+    }
+    return null;
 }
 
 // ============================================================================
 // Unit Tests
 // ============================================================================
 
-test "isValidChatCompletionRequest with valid POST request" {
+test "extractRequestBody finds body after CRLF" {
     const testing = std.testing;
-    
+
     const request =
         \\POST /v1/chat/completions HTTP/1.1
         \\Host: localhost:8080
         \\Content-Type: application/json
         \\
+        \\{"model":"gpt-4","messages":[]}
     ;
-    
-    try testing.expect(isValidChatCompletionRequest(request));
+
+    const body = extractRequestBody(request);
+    try testing.expect(body != null);
+    try testing.expectEqualStrings("{\"model\":\"gpt-4\",\"messages\":[]}", body.?);
 }
 
-test "isValidChatCompletionRequest with POST and query params" {
+test "extractRequestBody finds body after double LF" {
     const testing = std.testing;
-    
-    const request =
-        \\POST /v1/chat/completions?stream=true HTTP/1.1
-        \\Host: localhost:8080
-        \\
-    ;
-    
-    try testing.expect(isValidChatCompletionRequest(request));
+
+    const request = "POST /test HTTP/1.1\n\n{\"data\":\"test\"}";
+
+    const body = extractRequestBody(request);
+    try testing.expect(body != null);
+    try testing.expectEqualStrings("{\"data\":\"test\"}", body.?);
 }
 
-test "isValidChatCompletionRequest with minimal valid request" {
+test "extractRequestBody returns null when no body" {
     const testing = std.testing;
-    
-    const request = "POST /v1/chat/completions HTTP/1.1";
-    
-    try testing.expect(isValidChatCompletionRequest(request));
-}
 
-test "isValidChatCompletionRequest rejects GET request" {
-    const testing = std.testing;
-    
-    const request =
-        \\GET /v1/chat/completions HTTP/1.1
-        \\Host: localhost:8080
-        \\
-    ;
-    
-    try testing.expect(!isValidChatCompletionRequest(request));
-}
+    const request = "POST /test HTTP/1.1\nHost: localhost";
 
-test "isValidChatCompletionRequest rejects PUT request" {
-    const testing = std.testing;
-    
-    const request =
-        \\PUT /v1/chat/completions HTTP/1.1
-        \\Host: localhost:8080
-        \\
-    ;
-    
-    try testing.expect(!isValidChatCompletionRequest(request));
-}
-
-test "isValidChatCompletionRequest rejects POST to wrong endpoint" {
-    const testing = std.testing;
-    
-    const request =
-        \\POST /v1/models HTTP/1.1
-        \\Host: localhost:8080
-        \\
-    ;
-    
-    try testing.expect(!isValidChatCompletionRequest(request));
-}
-
-test "isValidChatCompletionRequest rejects POST to root" {
-    const testing = std.testing;
-    
-    const request =
-        \\POST / HTTP/1.1
-        \\Host: localhost:8080
-        \\
-    ;
-    
-    try testing.expect(!isValidChatCompletionRequest(request));
-}
-
-test "isValidChatCompletionRequest handles empty request" {
-    const testing = std.testing;
-    
-    const request = "";
-    
-    try testing.expect(!isValidChatCompletionRequest(request));
-}
-
-test "isValidChatCompletionRequest handles malformed request" {
-    const testing = std.testing;
-    
-    const request = "INVALID REQUEST DATA";
-    
-    try testing.expect(!isValidChatCompletionRequest(request));
-}
-
-test "isValidChatCompletionRequest with POST lowercase rejected" {
-    const testing = std.testing;
-    
-    // HTTP methods are case-sensitive and must be uppercase
-    const request = "post /v1/chat/completions HTTP/1.1";
-    
-    try testing.expect(!isValidChatCompletionRequest(request));
-}
-
-test "isValidChatCompletionRequest with complex headers" {
-    const testing = std.testing;
-    
-    const request =
-        \\POST /v1/chat/completions HTTP/1.1
-        \\Host: localhost:8080
-        \\User-Agent: curl/7.68.0
-        \\Accept: */*
-        \\Content-Type: application/json
-        \\Content-Length: 100
-        \\Authorization: Bearer sk-test-key
-        \\
-        \\{"model":"claude-3","messages":[]}
-    ;
-    
-    try testing.expect(isValidChatCompletionRequest(request));
-}
-
-test "isValidChatCompletionRequest rejects similar endpoint" {
-    const testing = std.testing;
-    
-    const request =
-        \\POST /v1/chat/completion HTTP/1.1
-        \\Host: localhost:8080
-        \\
-    ;
-    
-    try testing.expect(!isValidChatCompletionRequest(request));
-}
-
-test "isValidChatCompletionRequest with endpoint in body passes" {
-    const testing = std.testing;
-    
-    // The function looks for the endpoint anywhere in the request
-    // This includes the body, which is the current behavior
-    const request =
-        \\POST /v1/models HTTP/1.1
-        \\Host: localhost:8080
-        \\
-        \\{"endpoint": "/v1/chat/completions"}
-    ;
-    
-    // Current implementation will match because indexOf searches entire request
-    try testing.expect(isValidChatCompletionRequest(request));
-}
-
-test "SUCCESS_RESPONSE is valid HTTP format" {
-    const testing = std.testing;
-    
-    // Verify response starts with status line
-    try testing.expect(std.mem.startsWith(u8, SUCCESS_RESPONSE, "HTTP/1.1 200 OK"));
-    
-    // Verify response contains required headers
-    try testing.expect(std.mem.indexOf(u8, SUCCESS_RESPONSE, "Content-Type: application/json") != null);
-    try testing.expect(std.mem.indexOf(u8, SUCCESS_RESPONSE, "Content-Length: 19") != null);
-    
-    // Verify response contains JSON body
-    try testing.expect(std.mem.indexOf(u8, SUCCESS_RESPONSE, "{\"status\": \"alive\"}") != null);
+    const body = extractRequestBody(request);
+    try testing.expect(body == null);
 }
 
 test "NOT_FOUND_RESPONSE is valid HTTP format" {
     const testing = std.testing;
-    
+
     // Verify response starts with status line
     try testing.expect(std.mem.startsWith(u8, NOT_FOUND_RESPONSE, "HTTP/1.1 404 Not Found"));
-    
+
     // Verify response contains required headers
     try testing.expect(std.mem.indexOf(u8, NOT_FOUND_RESPONSE, "Content-Type: application/json") != null);
     try testing.expect(std.mem.indexOf(u8, NOT_FOUND_RESPONSE, "Content-Length: 22") != null);
-    
+
     // Verify response contains JSON body
     try testing.expect(std.mem.indexOf(u8, NOT_FOUND_RESPONSE, "{\"error\": \"Not Found\"}") != null);
 }
 
-test "SUCCESS_RESPONSE Content-Length matches body" {
-    const testing = std.testing;
-    
-    const body = "{\"status\": \"alive\"}";
-    try testing.expectEqual(19, body.len);
-}
-
 test "NOT_FOUND_RESPONSE Content-Length matches body" {
     const testing = std.testing;
-    
+
     const body = "{\"error\": \"Not Found\"}";
     try testing.expectEqual(22, body.len);
 }
