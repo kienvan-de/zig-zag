@@ -79,12 +79,19 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    const config_module = b.createModule(.{
+        .root_source_file = b.path("src/config.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const anthropic_client_test_module = b.createModule(.{
         .root_source_file = b.path("src/anthropic/client.zig"),
         .target = target,
         .optimize = optimize,
     });
     anthropic_client_test_module.addImport("types.zig", anthropic_types_module);
+    anthropic_client_test_module.addImport("../config.zig", config_module);
 
     const anthropic_client_tests = b.addTest(.{
         .root_module = anthropic_client_test_module,

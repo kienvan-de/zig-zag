@@ -55,7 +55,7 @@ pub fn handle(
     allocator: std.mem.Allocator,
     connection: std.net.Server.Connection,
     body: []const u8,
-    api_key: []const u8,
+    config: *const @import("../config.zig").Config,
 ) !void {
     // Parse OpenAI request
     const openai_request = std.json.parseFromSlice(
@@ -121,6 +121,18 @@ pub fn handle(
     // Route to appropriate provider using comptime
     switch (model_info.provider) {
         .anthropic => {
+            const provider_config = config.getProviderConfig(model_info.provider) orelse {
+                const error_json = try errors.createErrorResponse(
+                    allocator,
+                    "Provider not configured",
+                    .invalid_request_error,
+                    null,
+                );
+                defer allocator.free(error_json);
+                try http.sendJsonResponse(connection, .bad_request, error_json);
+                return;
+            };
+
             try handleProvider(
                 anthropic.client.AnthropicClient,
                 anthropic.transformer,
@@ -129,7 +141,7 @@ pub fn handle(
                 connection,
                 openai_request.value,
                 model_info.model,
-                api_key,
+                provider_config,
             );
         },
         .openai => {
@@ -197,7 +209,7 @@ fn handleProvider(
     connection: std.net.Server.Connection,
     openai_request: OpenAI.Request,
     model: []const u8,
-    api_key: []const u8,
+    provider_config: *const @import("../config.zig").ProviderConfig,
 ) !void {
     // Transform OpenAI request to provider format
     const provider_request = Transformer.transform(
@@ -219,7 +231,18 @@ fn handleProvider(
     defer Transformer.cleanupRequest(provider_request, allocator);
 
     // Initialize client and send request
-    var client = Client.init(allocator, api_key);
+    var client = Client.init(allocator, provider_config) catch |err| {
+        std.debug.print("Client initialization error: {}\n", .{err});
+        const error_json = try errors.createErrorResponse(
+            allocator,
+            "Failed to initialize provider client",
+            .invalid_request_error,
+            null,
+        );
+        defer allocator.free(error_json);
+        try http.sendJsonResponse(connection, .bad_request, error_json);
+        return;
+    };
     defer client.deinit();
 
     const provider_response_json = client.sendRequest(provider_request) catch |err| {

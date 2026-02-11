@@ -14,9 +14,9 @@ const NOT_FOUND_RESPONSE =
     \\{"error": "Not Found"}
 ;
 
-pub fn start(allocator: std.mem.Allocator, cfg: config.Config) !void {
+pub fn start(allocator: std.mem.Allocator, cfg: *const config.Config) !void {
     std.debug.print("Starting zig-zag proxy server on port 8080...\n", .{});
-    std.debug.print("Anthropic API Key loaded: {s}\n", .{if (cfg.anthropic_api_key.len > 0) "Yes" else "No"});
+    std.debug.print("Loaded providers: {d}\n", .{cfg.providers.count()});
 
     // Create server address
     const address = try std.net.Address.parseIp("127.0.0.1", 8080);
@@ -42,7 +42,7 @@ pub fn start(allocator: std.mem.Allocator, cfg: config.Config) !void {
     }
 }
 
-fn handleConnection(allocator: std.mem.Allocator, connection: std.net.Server.Connection, cfg: config.Config) !void {
+fn handleConnection(allocator: std.mem.Allocator, connection: std.net.Server.Connection, cfg: *const config.Config) !void {
     defer connection.stream.close();
 
     // Use arena for per-request allocations
@@ -74,7 +74,7 @@ fn handleConnection(allocator: std.mem.Allocator, connection: std.net.Server.Con
         };
 
         // Dispatch to handler
-        try route.handler(request_allocator, connection, body, cfg.anthropic_api_key);
+        try route.handler(request_allocator, connection, body, cfg);
     } else {
         // No route matched - return 404
         _ = try connection.stream.writeAll(NOT_FOUND_RESPONSE);
