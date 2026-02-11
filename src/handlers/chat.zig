@@ -50,6 +50,12 @@ const anthropic = struct {
     const transformer = @import("../anthropic/transformer.zig");
 };
 
+const openai = struct {
+    const types = @import("../openai/types.zig");
+    const client = @import("../openai/client.zig");
+    const transformer = @import("../openai/transformer.zig");
+};
+
 /// Handle POST /v1/chat/completions requests
 pub fn handle(
     allocator: std.mem.Allocator,
@@ -145,15 +151,28 @@ pub fn handle(
             );
         },
         .openai => {
-            const error_json = try errors.createErrorResponse(
+            const provider_config = config.getProviderConfig(model_info.provider) orelse {
+                const error_json = try errors.createErrorResponse(
+                    allocator,
+                    "Provider not configured",
+                    .invalid_request_error,
+                    null,
+                );
+                defer allocator.free(error_json);
+                try http.sendJsonResponse(connection, .bad_request, error_json);
+                return;
+            };
+
+            try handleProvider(
+                openai.client.OpenAIClient,
+                openai.transformer,
+                openai.types,
                 allocator,
-                "OpenAI provider not yet implemented",
-                .invalid_request_error,
-                null,
+                connection,
+                openai_request.value,
+                model_info.model,
+                provider_config,
             );
-            defer allocator.free(error_json);
-            try http.sendJsonResponse(connection, .bad_request, error_json);
-            return;
         },
     }
 }
