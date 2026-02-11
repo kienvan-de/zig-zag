@@ -111,58 +111,65 @@ pub fn handle(
     };
     defer allocator.free(model_info.model);
 
-    // Check if provider is supported
-    if (!provider.isSupported(model_info.provider)) {
+    // Try to get provider config by name (allows any provider name, not just enum values)
+    const provider_name = openai_request.value.model[0..std.mem.indexOf(u8, openai_request.value.model, "/").?];
+    const provider_config = config.providers.getPtr(provider_name) orelse {
         const error_json = try errors.createErrorResponse(
             allocator,
-            "Provider not yet supported",
+            "Provider not configured",
             .invalid_request_error,
             null,
         );
         defer allocator.free(error_json);
         try http.sendJsonResponse(connection, .bad_request, error_json);
         return;
-    }
+    };
 
-    // Route to appropriate provider using comptime
-    switch (model_info.provider) {
-        .anthropic => {
-            const provider_config = config.getProviderConfig(model_info.provider) orelse {
-                const error_json = try errors.createErrorResponse(
+    // Check if this is a native provider or a compatible one
+    if (provider.isSupported(model_info.provider)) {
+        // Native provider - use its own client/transformer
+        switch (model_info.provider) {
+            .anthropic => {
+                try handleProvider(
+                    anthropic.client.AnthropicClient,
+                    anthropic.transformer,
+                    anthropic.types,
                     allocator,
-                    "Provider not configured",
-                    .invalid_request_error,
-                    null,
+                    connection,
+                    openai_request.value,
+                    model_info.model,
+                    provider_config,
                 );
-                defer allocator.free(error_json);
-                try http.sendJsonResponse(connection, .bad_request, error_json);
-                return;
-            };
-
-            try handleProvider(
-                anthropic.client.AnthropicClient,
-                anthropic.transformer,
-                anthropic.types,
+            },
+            .openai => {
+                try handleProvider(
+                    openai.client.OpenAIClient,
+                    openai.transformer,
+                    openai.types,
+                    allocator,
+                    connection,
+                    openai_request.value,
+                    model_info.model,
+                    provider_config,
+                );
+            },
+        }
+    } else {
+        // Not a native provider - check for "compatible" field
+        const compatible = provider_config.getString("compatible") orelse {
+            const error_json = try errors.createErrorResponse(
                 allocator,
-                connection,
-                openai_request.value,
-                model_info.model,
-                provider_config,
+                "Provider not supported and no 'compatible' field specified",
+                .invalid_request_error,
+                null,
             );
-        },
-        .openai => {
-            const provider_config = config.getProviderConfig(model_info.provider) orelse {
-                const error_json = try errors.createErrorResponse(
-                    allocator,
-                    "Provider not configured",
-                    .invalid_request_error,
-                    null,
-                );
-                defer allocator.free(error_json);
-                try http.sendJsonResponse(connection, .bad_request, error_json);
-                return;
-            };
+            defer allocator.free(error_json);
+            try http.sendJsonResponse(connection, .bad_request, error_json);
+            return;
+        };
 
+        // Route based on compatibility
+        if (std.mem.eql(u8, compatible, "openai")) {
             try handleProvider(
                 openai.client.OpenAIClient,
                 openai.transformer,
@@ -173,7 +180,28 @@ pub fn handle(
                 model_info.model,
                 provider_config,
             );
-        },
+        } else if (std.mem.eql(u8, compatible, "anthropic")) {
+            try handleProvider(
+                anthropic.client.AnthropicClient,
+                anthropic.transformer,
+                anthropic.types,
+                allocator,
+                connection,
+                openai_request.value,
+                model_info.model,
+                provider_config,
+            );
+        } else {
+            const error_json = try errors.createErrorResponse(
+                allocator,
+                "Unknown compatible provider type. Must be 'openai' or 'anthropic'",
+                .invalid_request_error,
+                null,
+            );
+            defer allocator.free(error_json);
+            try http.sendJsonResponse(connection, .bad_request, error_json);
+            return;
+        }
     }
 }
 

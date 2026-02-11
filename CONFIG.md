@@ -53,6 +53,7 @@ Each provider section configures a specific LLM API provider.
 | `api_key` | string | **Yes** | - | API key for authentication |
 | `api_url` | string | No | Provider-specific | Base URL for API endpoints |
 | `api_version` | string | No | Provider-specific | API version header |
+| `compatible` | string | No | - | Compatibility mode: `"openai"` or `"anthropic"` for compatible providers |
 | `timeout_ms` | number | No | `30000` | ⚠️ **Reserved for future implementation** - Request timeout in milliseconds |
 | `max_response_size_mb` | number | No | `10` | Maximum response body size in megabytes |
 | `retry_count` | number | No | `0` | Number of retry attempts on retryable errors |
@@ -98,7 +99,61 @@ Each provider section configures a specific LLM API provider.
 }
 ```
 
-**Note:** OpenAI provider is not yet fully implemented.
+### Compatible Providers
+
+You can add providers that are compatible with OpenAI or Anthropic APIs without writing new code. Just specify the `compatible` field:
+
+#### Groq (OpenAI-compatible)
+
+```json
+{
+  "providers": {
+    "groq": {
+      "api_key": "gsk-your-groq-key-here",
+      "api_url": "https://api.groq.com",
+      "compatible": "openai",
+      "timeout_ms": 30000,
+      "max_response_size_mb": 10,
+      "retry_count": 2,
+      "retry_delay_ms": 1000
+    }
+  }
+}
+```
+
+**Usage:**
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -d '{"model":"groq/llama-3-70b","messages":[...]}'
+```
+
+#### Azure OpenAI (OpenAI-compatible)
+
+```json
+{
+  "providers": {
+    "azure": {
+      "api_key": "your-azure-api-key",
+      "api_url": "https://your-resource.openai.azure.com",
+      "compatible": "openai",
+      "timeout_ms": 60000,
+      "max_response_size_mb": 10,
+      "retry_count": 0,
+      "retry_delay_ms": 1000
+    }
+  }
+}
+```
+
+**How it works:**
+- The provider name can be anything (not limited to `anthropic` or `openai`)
+- The `compatible` field tells zig-zag which client/transformer to use
+- All provider-specific settings (api_key, api_url) are used with the compatible client
+- Supported values: `"openai"` or `"anthropic"`
+
+**Supported Compatible Providers:**
+- **OpenAI-compatible:** Groq, Azure OpenAI, Together AI, Anyscale, Fireworks AI, Perplexity, etc.
+- **Anthropic-compatible:** Any provider that implements the Anthropic Messages API
 
 ## Retry Logic
 
@@ -165,6 +220,18 @@ Timeout functionality will be implemented in a future release when Zig's async/a
       "max_response_size_mb": 10,
       "retry_count": 0,
       "retry_delay_ms": 1000
+    },
+    "groq": {
+      "api_key": "gsk-your-groq-key",
+      "api_url": "https://api.groq.com",
+      "compatible": "openai",
+      "retry_count": 2,
+      "retry_delay_ms": 1000
+    },
+    "azure": {
+      "api_key": "your-azure-key",
+      "api_url": "https://your-resource.openai.azure.com",
+      "compatible": "openai"
     }
   },
   "server": {
@@ -238,5 +305,7 @@ This is useful for:
 
 - All config values are optional except `api_key`
 - Missing values will use documented defaults
-- Invalid provider names in config will cause startup errors
+- Provider names can be anything - use `compatible` field for non-native providers
+- Native providers: `anthropic`, `openai`
+- Compatible providers: Any name with `"compatible": "openai"` or `"compatible": "anthropic"`
 - JSON comments are not supported (use this documentation for notes)
