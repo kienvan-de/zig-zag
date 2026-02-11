@@ -27,9 +27,140 @@ pub const Role = enum {
 };
 
 /// Message in conversation
+/// Image source for content blocks
+pub const ImageSource = union(enum) {
+    base64: struct {
+        type: []const u8 = "base64",
+        media_type: []const u8, // "image/jpeg", "image/png", "image/gif", "image/webp"
+        data: []const u8,
+    },
+    url: struct {
+        type: []const u8 = "url",
+        url: []const u8,
+    },
+};
+
+/// Document source for content blocks
+pub const DocumentSource = union(enum) {
+    base64_pdf: struct {
+        type: []const u8 = "base64",
+        media_type: []const u8 = "application/pdf",
+        data: []const u8,
+    },
+    plain_text: struct {
+        type: []const u8 = "text",
+        media_type: []const u8 = "text/plain",
+        data: []const u8,
+    },
+    url_pdf: struct {
+        type: []const u8 = "url",
+        url: []const u8,
+    },
+};
+
+/// Content block param for messages (request)
+pub const ContentBlockParam = union(enum) {
+    text: struct {
+        type: []const u8 = "text",
+        text: []const u8,
+    },
+    image: struct {
+        type: []const u8 = "image",
+        source: ImageSource,
+    },
+    document: struct {
+        type: []const u8 = "document",
+        source: DocumentSource,
+        title: ?[]const u8 = null,
+        context: ?[]const u8 = null,
+    },
+    tool_use: struct {
+        type: []const u8 = "tool_use",
+        id: []const u8,
+        name: []const u8,
+        input: std.json.Value,
+    },
+    tool_result: struct {
+        type: []const u8 = "tool_result",
+        tool_use_id: []const u8,
+        content: ?[]const u8 = null, // Can be string or array of content blocks
+        is_error: ?bool = null,
+    },
+    thinking: struct {
+        type: []const u8 = "thinking",
+        thinking: []const u8,
+        signature: []const u8,
+    },
+    redacted_thinking: struct {
+        type: []const u8 = "redacted_thinking",
+        data: []const u8,
+    },
+};
+
 pub const Message = struct {
     role: Role,
-    content: []const u8,
+    content: union(enum) {
+        text: []const u8,
+        blocks: []const ContentBlockParam,
+    },
+
+    pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
+        const json_value = try std.json.innerParse(std.json.Value, allocator, source, options);
+        
+        if (json_value != .object) return error.UnexpectedToken;
+        const obj = json_value.object;
+        
+        const role_value = obj.get("role") orelse return error.MissingField;
+        const role = try std.json.innerParseFromValue(Role, allocator, role_value, options);
+        
+        const content_value = obj.get("content") orelse return error.MissingField;
+        
+        const ContentUnion = @TypeOf(@as(@This(), undefined).content);
+        const content: ContentUnion = switch (content_value) {
+            .string => |s| .{ .text = s },
+            .array => |arr| blk: {
+                var blocks = try allocator.alloc(ContentBlockParam, arr.items.len);
+                for (arr.items, 0..) |item, i| {
+                    blocks[i] = try std.json.innerParseFromValue(ContentBlockParam, allocator, item, options);
+                }
+                break :blk .{ .blocks = blocks };
+            },
+            else => return error.UnexpectedToken,
+        };
+        
+        return .{
+            .role = role,
+            .content = content,
+        };
+    }
+
+    pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, options: std.json.ParseOptions) !@This() {
+        if (source != .object) return error.UnexpectedToken;
+        const obj = source.object;
+        
+        const role_value = obj.get("role") orelse return error.MissingField;
+        const role = try std.json.innerParseFromValue(Role, allocator, role_value, options);
+        
+        const content_value = obj.get("content") orelse return error.MissingField;
+        
+        const ContentUnion = @TypeOf(@as(@This(), undefined).content);
+        const content: ContentUnion = switch (content_value) {
+            .string => |s| .{ .text = s },
+            .array => |arr| blk: {
+                var blocks = try allocator.alloc(ContentBlockParam, arr.items.len);
+                for (arr.items, 0..) |item, i| {
+                    blocks[i] = try std.json.innerParseFromValue(ContentBlockParam, allocator, item, options);
+                }
+                break :blk .{ .blocks = blocks };
+            },
+            else => return error.UnexpectedToken,
+        };
+        
+        return .{
+            .role = role,
+            .content = content,
+        };
+    }
 };
 
 /// Request to Anthropic messages API
@@ -194,18 +325,18 @@ test "Message struct creation" {
     
     const msg = Message{
         .role = .user,
-        .content = "Hello!",
+        .content = .{ .text = "Hello!" },
     };
     
     try testing.expect(msg.role == Role.user);
-    try testing.expectEqualStrings("Hello!", msg.content);
+    try testing.expectEqualStrings("Hello!", msg.content.text);
 }
 
 test "Request with minimal required fields" {
     const testing = std.testing;
     
     var messages = [_]Message{
-        .{ .role = .user, .content = "Hello!" },
+        .{ .role = .user, .content = .{ .text = "Hello!" } },
     };
     
     const req = Request{
@@ -224,7 +355,7 @@ test "Request with system prompt" {
     const testing = std.testing;
     
     var messages = [_]Message{
-        .{ .role = .user, .content = "Hello!" },
+        .{ .role = .user, .content = .{ .text = "Hello!" } },
     };
     
     const req = Request{
@@ -241,9 +372,9 @@ test "Request with all optional fields" {
     const testing = std.testing;
     
     var messages = [_]Message{
-        .{ .role = .user, .content = "Hello!" },
-        .{ .role = .assistant, .content = "Hi there!" },
-        .{ .role = .user, .content = "How are you?" },
+        .{ .role = .user, .content = .{ .text = "Hello!" } },
+        .{ .role = .assistant, .content = .{ .text = "Hi there!" } },
+        .{ .role = .user, .content = .{ .text = "How are you?" } },
     };
     
     const req = Request{
@@ -284,7 +415,7 @@ test "Request JSON parsing minimal" {
     try testing.expectEqualStrings("claude-3-5-sonnet-20241022", parsed.value.model);
     try testing.expectEqual(1, parsed.value.messages.len);
     try testing.expect(parsed.value.messages[0].role == Role.user);
-    try testing.expectEqualStrings("Hello!", parsed.value.messages[0].content);
+    try testing.expectEqualStrings("Hello!", parsed.value.messages[0].content.text);
     try testing.expectEqual(@as(u32, 1024), parsed.value.max_tokens);
 }
 
@@ -526,7 +657,7 @@ test "Request max_tokens is required" {
     
     // This test verifies that max_tokens is not optional
     var messages = [_]Message{
-        .{ .role = .user, .content = "Hello!" },
+        .{ .role = .user, .content = .{ .text = "Hello!" } },
     };
     
     // This should compile because max_tokens is provided
@@ -543,12 +674,123 @@ test "Anthropic only supports user and assistant roles" {
     const testing = std.testing;
     
     // Verify we can create user and assistant messages
-    const user_msg = Message{ .role = .user, .content = "Hello" };
-    const assistant_msg = Message{ .role = .assistant, .content = "Hi" };
+    const user_msg = Message{ .role = .user, .content = .{ .text = "Hello" } };
+    const assistant_msg = Message{ .role = .assistant, .content = .{ .text = "Hi" } };
     
     try testing.expect(user_msg.role == Role.user);
     try testing.expect(assistant_msg.role == Role.assistant);
     
     // Verify system is not a valid role (compile-time check via enum)
     // If we tried: Message{ .role = .system, ... } it would fail to compile
+}
+
+test "Message with tool_use content block" {
+    const testing = std.testing;
+    
+    var blocks = [_]ContentBlockParam{
+        .{ .tool_use = .{
+            .id = "toolu_01A09q90qw90lq917835lq9",
+            .name = "get_weather",
+            .input = .{ .object = std.json.ObjectMap.init(testing.allocator) },
+        } },
+    };
+    
+    const msg = Message{
+        .role = .assistant,
+        .content = .{ .blocks = &blocks },
+    };
+    
+    try testing.expect(msg.role == Role.assistant);
+    try testing.expectEqualStrings("tool_use", msg.content.blocks[0].tool_use.type);
+    try testing.expectEqualStrings("get_weather", msg.content.blocks[0].tool_use.name);
+}
+
+test "Message with tool_result content block" {
+    const testing = std.testing;
+    
+    var blocks = [_]ContentBlockParam{
+        .{ .tool_result = .{
+            .tool_use_id = "toolu_01A09q90qw90lq917835lq9",
+            .content = "The weather is sunny",
+            .is_error = false,
+        } },
+    };
+    
+    const msg = Message{
+        .role = .user,
+        .content = .{ .blocks = &blocks },
+    };
+    
+    try testing.expect(msg.role == Role.user);
+    try testing.expectEqualStrings("tool_result", msg.content.blocks[0].tool_result.type);
+    try testing.expectEqualStrings("toolu_01A09q90qw90lq917835lq9", msg.content.blocks[0].tool_result.tool_use_id);
+}
+
+test "Message with image content block" {
+    const testing = std.testing;
+    
+    var blocks = [_]ContentBlockParam{
+        .{ .image = .{
+            .source = .{ .base64 = .{
+                .media_type = "image/png",
+                .data = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+            } },
+        } },
+    };
+    
+    const msg = Message{
+        .role = .user,
+        .content = .{ .blocks = &blocks },
+    };
+    
+    try testing.expect(msg.role == Role.user);
+    try testing.expectEqualStrings("image", msg.content.blocks[0].image.type);
+}
+
+test "Message with document content block" {
+    const testing = std.testing;
+    
+    var blocks = [_]ContentBlockParam{
+        .{ .document = .{
+            .source = .{ .plain_text = .{
+                .data = "This is a document",
+            } },
+            .title = "Sample Document",
+            .context = "Context information",
+        } },
+    };
+    
+    const msg = Message{
+        .role = .user,
+        .content = .{ .blocks = &blocks },
+    };
+    
+    try testing.expect(msg.role == Role.user);
+    try testing.expectEqualStrings("document", msg.content.blocks[0].document.type);
+    try testing.expectEqualStrings("Sample Document", msg.content.blocks[0].document.title.?);
+}
+
+test "Message with mixed content blocks" {
+    const testing = std.testing;
+    
+    var blocks = [_]ContentBlockParam{
+        .{ .text = .{
+            .text = "Here's an image:",
+        } },
+        .{ .image = .{
+            .source = .{ .url = .{
+                .url = "https://example.com/image.png",
+            } },
+        } },
+    };
+    
+    const msg = Message{
+        .role = .user,
+        .content = .{ .blocks = &blocks },
+    };
+    
+    try testing.expect(msg.role == Role.user);
+    try testing.expectEqual(@as(usize, 2), msg.content.blocks.len);
+    try testing.expectEqualStrings("text", msg.content.blocks[0].text.type);
+    try testing.expectEqualStrings("image", msg.content.blocks[1].image.type);
 }

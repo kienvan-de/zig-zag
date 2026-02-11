@@ -29,10 +29,185 @@ pub const Role = enum {
     }
 };
 
+/// Content part for message content array
+pub const ContentPart = union(enum) {
+    text: struct {
+        type: []const u8 = "text",
+        text: []const u8,
+    },
+    image_url: struct {
+        type: []const u8 = "image_url",
+        image_url: struct {
+            url: []const u8,
+            detail: ?[]const u8 = null, // "auto", "low", "high"
+        },
+    },
+};
+
+/// Function call structure (legacy)
+pub const FunctionCall = struct {
+    name: []const u8,
+    arguments: []const u8, // JSON string
+};
+
+/// Tool call function
+pub const ToolCallFunction = struct {
+    name: []const u8,
+    arguments: []const u8, // JSON string
+};
+
+/// Tool call in assistant message
+pub const ToolCall = struct {
+    id: []const u8,
+    type: []const u8, // "function"
+    function: ToolCallFunction,
+};
+
+/// Tool definition
+pub const Tool = struct {
+    type: []const u8, // "function"
+    function: struct {
+        name: []const u8,
+        description: ?[]const u8 = null,
+        parameters: ?std.json.Value = null, // JSON schema
+    },
+};
+
+/// Function definition (legacy)
+pub const Function = struct {
+    name: []const u8,
+    description: ?[]const u8 = null,
+    parameters: ?std.json.Value = null, // JSON schema
+};
+
+/// Response format
+pub const ResponseFormat = struct {
+    type: []const u8, // "text" or "json_object"
+};
+
 /// Represents a message in the conversation
 pub const Message = struct {
     role: Role,
-    content: []const u8,
+    content: union(enum) {
+        text: []const u8,
+        parts: []const ContentPart,
+    },
+    name: ?[]const u8 = null,
+    tool_calls: ?[]const ToolCall = null,
+    tool_call_id: ?[]const u8 = null,
+    function_call: ?FunctionCall = null,
+
+    pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
+        const json_value = try std.json.innerParse(std.json.Value, allocator, source, options);
+        
+        if (json_value != .object) return error.UnexpectedToken;
+        const obj = json_value.object;
+        
+        const role_value = obj.get("role") orelse return error.MissingField;
+        const role = try std.json.innerParseFromValue(Role, allocator, role_value, options);
+        
+        const content_value = obj.get("content") orelse return error.MissingField;
+        
+        const ContentUnion = @TypeOf(@as(@This(), undefined).content);
+        const content: ContentUnion = switch (content_value) {
+            .string => |s| .{ .text = s },
+            .array => |arr| blk: {
+                var parts = try allocator.alloc(ContentPart, arr.items.len);
+                for (arr.items, 0..) |item, i| {
+                    parts[i] = try std.json.innerParseFromValue(ContentPart, allocator, item, options);
+                }
+                break :blk .{ .parts = parts };
+            },
+            .null => .{ .text = "" },
+            else => return error.UnexpectedToken,
+        };
+
+        const name = if (obj.get("name")) |n| 
+            if (n == .string) n.string else null
+        else null;
+
+        const tool_calls = if (obj.get("tool_calls")) |tc|
+            if (tc == .array) blk: {
+                var calls = try allocator.alloc(ToolCall, tc.array.items.len);
+                for (tc.array.items, 0..) |item, i| {
+                    calls[i] = try std.json.innerParseFromValue(ToolCall, allocator, item, options);
+                }
+                break :blk calls;
+            } else null
+        else null;
+
+        const tool_call_id = if (obj.get("tool_call_id")) |tid|
+            if (tid == .string) tid.string else null
+        else null;
+
+        const function_call = if (obj.get("function_call")) |fc|
+            if (fc == .object) try std.json.innerParseFromValue(FunctionCall, allocator, fc, options) else null
+        else null;
+        
+        return .{
+            .role = role,
+            .content = content,
+            .name = name,
+            .tool_calls = tool_calls,
+            .tool_call_id = tool_call_id,
+            .function_call = function_call,
+        };
+    }
+
+    pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, options: std.json.ParseOptions) !@This() {
+        if (source != .object) return error.UnexpectedToken;
+        const obj = source.object;
+        
+        const role_value = obj.get("role") orelse return error.MissingField;
+        const role = try std.json.innerParseFromValue(Role, allocator, role_value, options);
+        
+        const content_value = obj.get("content") orelse return error.MissingField;
+        
+        const ContentUnion = @TypeOf(@as(@This(), undefined).content);
+        const content: ContentUnion = switch (content_value) {
+            .string => |s| .{ .text = s },
+            .array => |arr| blk: {
+                var parts = try allocator.alloc(ContentPart, arr.items.len);
+                for (arr.items, 0..) |item, i| {
+                    parts[i] = try std.json.innerParseFromValue(ContentPart, allocator, item, options);
+                }
+                break :blk .{ .parts = parts };
+            },
+            .null => .{ .text = "" },
+            else => return error.UnexpectedToken,
+        };
+
+        const name = if (obj.get("name")) |n| 
+            if (n == .string) n.string else null
+        else null;
+
+        const tool_calls = if (obj.get("tool_calls")) |tc|
+            if (tc == .array) blk: {
+                var calls = try allocator.alloc(ToolCall, tc.array.items.len);
+                for (tc.array.items, 0..) |item, i| {
+                    calls[i] = try std.json.innerParseFromValue(ToolCall, allocator, item, options);
+                }
+                break :blk calls;
+            } else null
+        else null;
+
+        const tool_call_id = if (obj.get("tool_call_id")) |tid|
+            if (tid == .string) tid.string else null
+        else null;
+
+        const function_call = if (obj.get("function_call")) |fc|
+            if (fc == .object) try std.json.innerParseFromValue(FunctionCall, allocator, fc, options) else null
+        else null;
+        
+        return .{
+            .role = role,
+            .content = content,
+            .name = name,
+            .tool_calls = tool_calls,
+            .tool_call_id = tool_call_id,
+            .function_call = function_call,
+        };
+    }
 };
 
 /// Request to OpenAI chat completions endpoint
@@ -46,12 +221,23 @@ pub const Request = struct {
     n: ?u32 = null,
     presence_penalty: ?f32 = null,
     frequency_penalty: ?f32 = null,
+    tools: ?[]const Tool = null,
+    tool_choice: ?[]const u8 = null, // "none", "auto", or JSON
+    functions: ?[]const Function = null,
+    function_call: ?[]const u8 = null, // "none", "auto", or JSON
+    response_format: ?ResponseFormat = null,
+    stop: ?[]const []const u8 = null,
+    logit_bias: ?std.json.Value = null,
+    user: ?[]const u8 = null,
+    seed: ?i64 = null,
 };
 
 /// Delta content in streaming response
 pub const Delta = struct {
     role: ?Role = null,
     content: ?[]const u8 = null,
+    tool_calls: ?[]const ToolCall = null,
+    function_call: ?FunctionCall = null,
 };
 
 /// Choice in streaming chunk
@@ -73,7 +259,9 @@ pub const StreamChunk = struct {
 /// Message in non-streaming response
 pub const ResponseMessage = struct {
     role: Role,
-    content: []const u8,
+    content: ?[]const u8,
+    tool_calls: ?[]const ToolCall = null,
+    function_call: ?FunctionCall = null,
 };
 
 /// Choice in non-streaming response
@@ -98,6 +286,8 @@ pub const Response = struct {
     model: []const u8,
     choices: []const ResponseChoice,
     usage: Usage,
+    system_fingerprint: ?[]const u8 = null,
+    service_tier: ?[]const u8 = null,
 };
 
 // ============================================================================
@@ -153,18 +343,18 @@ test "Message struct creation" {
     
     const msg = Message{
         .role = .user,
-        .content = "Hello, world!",
+        .content = .{ .text = "Hello, GPT!" },
     };
     
     try testing.expect(msg.role == Role.user);
-    try testing.expectEqualStrings("Hello, world!", msg.content);
+    try testing.expectEqualStrings("Hello, GPT!", msg.content.text);
 }
 
 test "Request struct with minimal fields" {
     const testing = std.testing;
     
     var messages = [_]Message{
-        .{ .role = .user, .content = "Hello!" },
+        .{ .role = .user, .content = .{ .text = "Hello!" } },
     };
     
     const req = Request{
@@ -183,8 +373,8 @@ test "Request struct with all optional fields" {
     const testing = std.testing;
     
     var messages = [_]Message{
-        .{ .role = .system, .content = "You are helpful." },
-        .{ .role = .user, .content = "Hello!" },
+        .{ .role = .system, .content = .{ .text = "You are helpful." } },
+        .{ .role = .user, .content = .{ .text = "Hello!" } },
     };
     
     const req = Request{
@@ -230,7 +420,7 @@ test "Request JSON parsing from minimal sample" {
     try testing.expectEqualStrings("gpt-4", parsed.value.model);
     try testing.expectEqual(1, parsed.value.messages.len);
     try testing.expect(parsed.value.messages[0].role == Role.user);
-    try testing.expectEqualStrings("Hello!", parsed.value.messages[0].content);
+    try testing.expectEqualStrings("Hello!", parsed.value.messages[0].content.text);
 }
 
 test "Request JSON parsing with optional fields" {
@@ -311,7 +501,7 @@ test "Response struct creation" {
     
     try testing.expectEqualStrings("chatcmpl-123", resp.id);
     try testing.expectEqual(1, resp.choices.len);
-    try testing.expectEqualStrings("Hello!", resp.choices[0].message.content);
+    try testing.expectEqualStrings("Hello!", resp.choices[0].message.content.?);
     try testing.expectEqual(@as(u32, 71), resp.usage.total_tokens);
 }
 
@@ -467,7 +657,7 @@ test "Request with stream field variations" {
     const testing = std.testing;
     
     var messages = [_]Message{
-        .{ .role = .user, .content = "Hello!" },
+        .{ .role = .user, .content = .{ .text = "Hello!" } },
     };
     
     // Test with stream = true
@@ -548,11 +738,11 @@ test "Role JSON parsing rejects invalid role" {
 test "Message with all role types" {
     const testing = std.testing;
     
-    const system_msg = Message{ .role = .system, .content = "System prompt" };
-    const user_msg = Message{ .role = .user, .content = "User message" };
-    const assistant_msg = Message{ .role = .assistant, .content = "Assistant response" };
-    const function_msg = Message{ .role = .function, .content = "Function result" };
-    const tool_msg = Message{ .role = .tool, .content = "Tool output" };
+    const system_msg = Message{ .role = .system, .content = .{ .text = "System prompt" } };
+    const user_msg = Message{ .role = .user, .content = .{ .text = "User message" } };
+    const assistant_msg = Message{ .role = .assistant, .content = .{ .text = "Assistant response" } };
+    const function_msg = Message{ .role = .function, .content = .{ .text = "Function result" } };
+    const tool_msg = Message{ .role = .tool, .content = .{ .text = "Tool output" } };
     
     try testing.expect(system_msg.role == Role.system);
     try testing.expect(user_msg.role == Role.user);
@@ -605,8 +795,8 @@ test "Full request with Role enum from real sample" {
     try testing.expect(parsed.value.messages[0].role == Role.system);
     try testing.expect(parsed.value.messages[1].role == Role.user);
     try testing.expect(parsed.value.messages[2].role == Role.assistant);
-    try testing.expectEqualStrings("You are a helpful assistant.", parsed.value.messages[0].content);
-    try testing.expectEqualStrings("Hello, how are you?", parsed.value.messages[1].content);
+    try testing.expectEqualStrings("You are a helpful assistant.", parsed.value.messages[0].content.text);
+    try testing.expectEqualStrings("Hello, how are you?", parsed.value.messages[1].content.text);
 }
 
 test "StreamChunk Delta role transitions" {
@@ -631,9 +821,9 @@ test "Request with function calling roles" {
     const testing = std.testing;
     
     var messages = [_]Message{
-        .{ .role = .user, .content = "What's the weather?" },
-        .{ .role = .function, .content = "{\"temp\": 72, \"condition\": \"sunny\"}" },
-        .{ .role = .assistant, .content = "It's 72°F and sunny!" },
+        .{ .role = .user, .content = .{ .text = "What's the weather?" } },
+        .{ .role = .function, .content = .{ .text = "{\"temp\": 72, \"condition\": \"sunny\"}" } },
+        .{ .role = .assistant, .content = .{ .text = "It's 72°F and sunny!" } },
     };
     
     const req = Request{
@@ -651,9 +841,9 @@ test "Request with tool calling roles" {
     const testing = std.testing;
     
     var messages = [_]Message{
-        .{ .role = .user, .content = "Search for Zig documentation" },
-        .{ .role = .tool, .content = "Found 5 results..." },
-        .{ .role = .assistant, .content = "Here are the results" },
+        .{ .role = .user, .content = .{ .text = "Search for Zig documentation" } },
+        .{ .role = .tool, .content = .{ .text = "Found 5 results..." } },
+        .{ .role = .assistant, .content = .{ .text = "Here are the results" } },
     };
     
     const req = Request{
@@ -665,4 +855,218 @@ test "Request with tool calling roles" {
     try testing.expect(req.messages[0].role == Role.user);
     try testing.expect(req.messages[1].role == Role.tool);
     try testing.expect(req.messages[2].role == Role.assistant);
+}
+
+test "Message with image_url content" {
+    const testing = std.testing;
+    
+    var parts = [_]ContentPart{
+        .{ .text = .{
+            .text = "What's in this image?",
+        } },
+        .{ .image_url = .{
+            .image_url = .{
+                .url = "https://example.com/image.png",
+                .detail = "high",
+            },
+        } },
+    };
+    
+    const msg = Message{
+        .role = .user,
+        .content = .{ .parts = &parts },
+    };
+    
+    try testing.expect(msg.role == Role.user);
+    try testing.expectEqual(@as(usize, 2), msg.content.parts.len);
+    try testing.expectEqualStrings("text", msg.content.parts[0].text.type);
+    try testing.expectEqualStrings("image_url", msg.content.parts[1].image_url.type);
+}
+
+test "Message with tool_calls" {
+    const testing = std.testing;
+    
+    var tool_calls = [_]ToolCall{
+        .{
+            .id = "call_abc123",
+            .type = "function",
+            .function = .{
+                .name = "get_weather",
+                .arguments = "{\"location\": \"San Francisco\"}",
+            },
+        },
+    };
+    
+    const msg = Message{
+        .role = .assistant,
+        .content = .{ .text = "" },
+        .tool_calls = &tool_calls,
+    };
+    
+    try testing.expect(msg.role == Role.assistant);
+    try testing.expectEqual(@as(usize, 1), msg.tool_calls.?.len);
+    try testing.expectEqualStrings("call_abc123", msg.tool_calls.?[0].id);
+    try testing.expectEqualStrings("get_weather", msg.tool_calls.?[0].function.name);
+}
+
+test "Message with tool_call_id" {
+    const testing = std.testing;
+    
+    const msg = Message{
+        .role = .tool,
+        .content = .{ .text = "{\"temp\": 72, \"condition\": \"sunny\"}" },
+        .tool_call_id = "call_abc123",
+    };
+    
+    try testing.expect(msg.role == Role.tool);
+    try testing.expectEqualStrings("call_abc123", msg.tool_call_id.?);
+}
+
+test "Request with tools" {
+    const testing = std.testing;
+    
+    var messages = [_]Message{
+        .{ .role = .user, .content = .{ .text = "What's the weather?" } },
+    };
+    
+    var tools = [_]Tool{
+        .{
+            .type = "function",
+            .function = .{
+                .name = "get_weather",
+                .description = "Get the current weather",
+                .parameters = null,
+            },
+        },
+    };
+    
+    const req = Request{
+        .model = "gpt-4",
+        .messages = &messages,
+        .tools = &tools,
+        .tool_choice = "auto",
+    };
+    
+    try testing.expectEqual(@as(usize, 1), req.tools.?.len);
+    try testing.expectEqualStrings("get_weather", req.tools.?[0].function.name);
+    try testing.expectEqualStrings("auto", req.tool_choice.?);
+}
+
+test "Request with response_format" {
+    const testing = std.testing;
+    
+    var messages = [_]Message{
+        .{ .role = .user, .content = .{ .text = "Return JSON" } },
+    };
+    
+    const req = Request{
+        .model = "gpt-4",
+        .messages = &messages,
+        .response_format = .{ .type = "json_object" },
+    };
+    
+    try testing.expectEqualStrings("json_object", req.response_format.?.type);
+}
+
+test "Request with stop sequences" {
+    const testing = std.testing;
+    
+    var messages = [_]Message{
+        .{ .role = .user, .content = .{ .text = "Hello" } },
+    };
+    
+    var stop_seqs = [_][]const u8{ "\n", "END" };
+    
+    const req = Request{
+        .model = "gpt-4",
+        .messages = &messages,
+        .stop = &stop_seqs,
+    };
+    
+    try testing.expectEqual(@as(usize, 2), req.stop.?.len);
+    try testing.expectEqualStrings("\n", req.stop.?[0]);
+    try testing.expectEqualStrings("END", req.stop.?[1]);
+}
+
+test "Delta with tool_calls" {
+    const testing = std.testing;
+    
+    var tool_calls = [_]ToolCall{
+        .{
+            .id = "call_abc123",
+            .type = "function",
+            .function = .{
+                .name = "get_weather",
+                .arguments = "{}",
+            },
+        },
+    };
+    
+    const delta = Delta{
+        .tool_calls = &tool_calls,
+    };
+    
+    try testing.expect(delta.role == null);
+    try testing.expect(delta.content == null);
+    try testing.expectEqual(@as(usize, 1), delta.tool_calls.?.len);
+}
+
+test "Response with system_fingerprint" {
+    const testing = std.testing;
+    
+    const response_msg = ResponseMessage{
+        .role = .assistant,
+        .content = "Hello!",
+    };
+    
+    var choices = [_]ResponseChoice{
+        .{
+            .index = 0,
+            .message = response_msg,
+            .finish_reason = "stop",
+        },
+    };
+    
+    const resp = Response{
+        .id = "chatcmpl-123",
+        .object = "chat.completion",
+        .created = 1677652288,
+        .model = "gpt-4-0613",
+        .choices = &choices,
+        .usage = Usage{
+            .prompt_tokens = 10,
+            .completion_tokens = 5,
+            .total_tokens = 15,
+        },
+        .system_fingerprint = "fp_44709d6fcb",
+        .service_tier = "default",
+    };
+    
+    try testing.expectEqualStrings("fp_44709d6fcb", resp.system_fingerprint.?);
+    try testing.expectEqualStrings("default", resp.service_tier.?);
+}
+
+test "ResponseMessage with tool_calls" {
+    const testing = std.testing;
+    
+    var tool_calls = [_]ToolCall{
+        .{
+            .id = "call_abc123",
+            .type = "function",
+            .function = .{
+                .name = "get_weather",
+                .arguments = "{\"location\": \"SF\"}",
+            },
+        },
+    };
+    
+    const msg = ResponseMessage{
+        .role = .assistant,
+        .content = null,
+        .tool_calls = &tool_calls,
+    };
+    
+    try testing.expect(msg.content == null);
+    try testing.expectEqual(@as(usize, 1), msg.tool_calls.?.len);
+    try testing.expectEqualStrings("call_abc123", msg.tool_calls.?[0].id);
 }
