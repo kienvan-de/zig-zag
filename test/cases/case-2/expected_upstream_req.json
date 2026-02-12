@@ -1,13 +1,87 @@
 {
   "model": "gpt-4",
   "messages": [
-    {"role": "system", "content": "You are a helpful assistant."},
-    {"role": "user", "content": "Hello, who are you?"},
-    {"role": "assistant", "content": "I am an AI assistant. How can I help you today?"},
-    {"role": "user", "content": "What is 2+2?"},
-    {"role": "assistant", "content": "2+2 equals 4."},
-    {"role": "user", "content": "Thanks! Now tell me a joke."}
+    {
+      "role": "system",
+      "content": "You are a helpful assistant with access to tools."
+    },
+    {
+      "role": "user",
+      "content": "What's the weather in San Francisco?"
+    },
+    {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [
+        {
+          "id": "call_abc123",
+          "type": "function",
+          "function": {
+            "name": "get_weather",
+            "arguments": "{\"location\":\"San Francisco, CA\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "call_abc123",
+      "content": "{\"temperature\": 65, \"condition\": \"sunny\"}"
+    },
+    {
+      "role": "assistant",
+      "content": "The weather in San Francisco is 65°F and sunny."
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "What do you see in this image?"
+        },
+        {
+          "type": "image_url",
+          "image_url": {
+            "url": "https://example.com/image.jpg",
+            "detail": "high"
+          }
+        }
+      ]
+    }
   ],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "get_weather",
+        "description": "Get current weather for a location",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "location": {
+              "type": "string",
+              "description": "City and state"
+            }
+          },
+          "required": ["location"]
+        }
+      }
+    }
+  ],
+  "tool_choice": "auto",
+  "parallel_tool_calls": true,
   "temperature": 1,
-  "max_tokens": 150
+  "top_p": 1,
+  "n": 1,
+  "max_tokens": 150,
+  "max_completion_tokens": 150,
+  "presence_penalty": 0,
+  "frequency_penalty": 0,
+  "logit_bias": {"50256": -100},
+  "logprobs": true,
+  "top_logprobs": 5,
+  "response_format": {"type": "text"},
+  "stop": ["\n\n", "END"],
+  "seed": 12345,
+  "user": "test-user-123"
 }

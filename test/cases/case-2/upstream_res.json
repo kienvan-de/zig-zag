@@ -8,14 +8,31 @@
       "index": 0,
       "message": {
         "role": "assistant",
-        "content": "Why don't scientists trust atoms? Because they make up everything!"
+        "content": "I can see an image at the provided URL. It appears to be a sample image for testing purposes."
+      },
+      "logprobs": {
+        "content": [
+          {
+            "token": "I",
+            "logprob": -0.5,
+            "bytes": [73],
+            "top_logprobs": [
+              {"token": "I", "logprob": -0.5, "bytes": [73]},
+              {"token": "The", "logprob": -1.2, "bytes": [84, 104, 101]},
+              {"token": "This", "logprob": -1.5, "bytes": [84, 104, 105, 115]},
+              {"token": "It", "logprob": -2.0, "bytes": [73, 116]},
+              {"token": "Based", "logprob": -2.3, "bytes": [66, 97, 115, 101, 100]}
+            ]
+          }
+        ]
       },
       "finish_reason": "stop"
     }
   ],
   "usage": {
-    "prompt_tokens": 85,
-    "completion_tokens": 15,
-    "total_tokens": 100
-  }
+    "prompt_tokens": 250,
+    "completion_tokens": 25,
+    "total_tokens": 275
+  },
+  "system_fingerprint": "fp_abc123def456"
 }
