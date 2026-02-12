@@ -1,9 +1,8 @@
 const std = @import("std");
-const provider = @import("provider.zig");
 
 /// Parsed model information
 pub const ModelInfo = struct {
-    provider: provider.Provider,
+    provider: []const u8,
     model: []const u8,
 };
 
@@ -13,7 +12,7 @@ pub const ModelParseError = error{
     EmptyProvider,
     EmptyModel,
     OutOfMemory,
-} || provider.ProviderError;
+};
 
 /// Parse model string in format "provider/model-name"
 /// Examples:
@@ -38,14 +37,14 @@ pub fn parseModelString(model_str: []const u8, allocator: std.mem.Allocator) !Mo
     if (provider_str.len == 0) return error.EmptyProvider;
     if (model_part.len == 0) return error.EmptyModel;
 
-    // Parse provider
-    const parsed_provider = try provider.Provider.fromString(provider_str);
+    // Allocate and copy provider name
+    const provider_name = try allocator.dupe(u8, provider_str);
 
     // Allocate and copy model name
     const model_name = try allocator.dupe(u8, model_part);
 
     return ModelInfo{
-        .provider = parsed_provider,
+        .provider = provider_name,
         .model = model_name,
     };
 }
@@ -61,8 +60,9 @@ test "parseModelString: valid anthropic model" {
 
     const result = try parseModelString("anthropic/claude-3-5-sonnet-latest", allocator);
     defer allocator.free(result.model);
+    defer allocator.free(result.provider);
 
-    try testing.expectEqual(provider.Provider.anthropic, result.provider);
+    try testing.expectEqualStrings("anthropic", result.provider);
     try testing.expectEqualStrings("claude-3-5-sonnet-latest", result.model);
 }
 
@@ -71,8 +71,9 @@ test "parseModelString: valid anthropic opus model" {
 
     const result = try parseModelString("anthropic/claude-3-opus-20240229", allocator);
     defer allocator.free(result.model);
+    defer allocator.free(result.provider);
 
-    try testing.expectEqual(provider.Provider.anthropic, result.provider);
+    try testing.expectEqualStrings("anthropic", result.provider);
     try testing.expectEqualStrings("claude-3-opus-20240229", result.model);
 }
 
@@ -81,8 +82,9 @@ test "parseModelString: valid openai model" {
 
     const result = try parseModelString("openai/gpt-4", allocator);
     defer allocator.free(result.model);
+    defer allocator.free(result.provider);
 
-    try testing.expectEqual(provider.Provider.openai, result.provider);
+    try testing.expectEqualStrings("openai", result.provider);
     try testing.expectEqualStrings("gpt-4", result.model);
 }
 
@@ -91,32 +93,36 @@ test "parseModelString: multiple slashes in model name" {
 
     const result = try parseModelString("anthropic/models/claude-3-5-sonnet", allocator);
     defer allocator.free(result.model);
+    defer allocator.free(result.provider);
 
-    try testing.expectEqual(provider.Provider.anthropic, result.provider);
+    try testing.expectEqualStrings("anthropic", result.provider);
     try testing.expectEqualStrings("models/claude-3-5-sonnet", result.model);
 }
 
-test "parseModelString: case insensitive provider" {
+test "parseModelString: provider case is preserved" {
     const allocator = testing.allocator;
 
     {
         const result = try parseModelString("Anthropic/claude-3-5-sonnet", allocator);
         defer allocator.free(result.model);
-        try testing.expectEqual(provider.Provider.anthropic, result.provider);
+        defer allocator.free(result.provider);
+        try testing.expectEqualStrings("Anthropic", result.provider);
         try testing.expectEqualStrings("claude-3-5-sonnet", result.model);
     }
 
     {
         const result = try parseModelString("ANTHROPIC/claude-3-opus", allocator);
         defer allocator.free(result.model);
-        try testing.expectEqual(provider.Provider.anthropic, result.provider);
+        defer allocator.free(result.provider);
+        try testing.expectEqualStrings("ANTHROPIC", result.provider);
         try testing.expectEqualStrings("claude-3-opus", result.model);
     }
 
     {
         const result = try parseModelString("OpenAI/gpt-4", allocator);
         defer allocator.free(result.model);
-        try testing.expectEqual(provider.Provider.openai, result.provider);
+        defer allocator.free(result.provider);
+        try testing.expectEqualStrings("OpenAI", result.provider);
         try testing.expectEqualStrings("gpt-4", result.model);
     }
 }
@@ -126,8 +132,9 @@ test "parseModelString: model name case is preserved" {
 
     const result = try parseModelString("anthropic/CLAUDE-3-OPUS", allocator);
     defer allocator.free(result.model);
+    defer allocator.free(result.provider);
 
-    try testing.expectEqual(provider.Provider.anthropic, result.provider);
+    try testing.expectEqualStrings("anthropic", result.provider);
     try testing.expectEqualStrings("CLAUDE-3-OPUS", result.model);
 }
 
@@ -137,21 +144,24 @@ test "parseModelString: whitespace trimming" {
     {
         const result = try parseModelString("  anthropic/claude-3-5-sonnet  ", allocator);
         defer allocator.free(result.model);
-        try testing.expectEqual(provider.Provider.anthropic, result.provider);
+        defer allocator.free(result.provider);
+        try testing.expectEqualStrings("anthropic", result.provider);
         try testing.expectEqualStrings("claude-3-5-sonnet", result.model);
     }
 
     {
         const result = try parseModelString(" anthropic / claude-3-opus ", allocator);
         defer allocator.free(result.model);
-        try testing.expectEqual(provider.Provider.anthropic, result.provider);
+        defer allocator.free(result.provider);
+        try testing.expectEqualStrings("anthropic", result.provider);
         try testing.expectEqualStrings("claude-3-opus", result.model);
     }
 
     {
         const result = try parseModelString("\tanthropic\t/\tclaude\t", allocator);
         defer allocator.free(result.model);
-        try testing.expectEqual(provider.Provider.anthropic, result.provider);
+        defer allocator.free(result.provider);
+        try testing.expectEqualStrings("anthropic", result.provider);
         try testing.expectEqualStrings("claude", result.model);
     }
 }
@@ -212,23 +222,30 @@ test "parseModelString: whitespace only" {
     try testing.expectError(error.InvalidModelFormat, result);
 }
 
-test "parseModelString: unsupported provider google" {
+test "parseModelString: any provider is accepted" {
     const allocator = testing.allocator;
 
-    const result = parseModelString("google/gemini-pro", allocator);
-    try testing.expectError(error.UnsupportedProvider, result);
-}
+    {
+        const result = try parseModelString("google/gemini-pro", allocator);
+        defer allocator.free(result.model);
+        defer allocator.free(result.provider);
+        try testing.expectEqualStrings("google", result.provider);
+        try testing.expectEqualStrings("gemini-pro", result.model);
+    }
 
-test "parseModelString: unsupported provider mistral" {
-    const allocator = testing.allocator;
+    {
+        const result = try parseModelString("mistral/mistral-large", allocator);
+        defer allocator.free(result.model);
+        defer allocator.free(result.provider);
+        try testing.expectEqualStrings("mistral", result.provider);
+        try testing.expectEqualStrings("mistral-large", result.model);
+    }
 
-    const result = parseModelString("mistral/mistral-large", allocator);
-    try testing.expectError(error.UnsupportedProvider, result);
-}
-
-test "parseModelString: invalid provider name" {
-    const allocator = testing.allocator;
-
-    const result = parseModelString("invalid-provider/model", allocator);
-    try testing.expectError(error.UnsupportedProvider, result);
+    {
+        const result = try parseModelString("custom-provider/model", allocator);
+        defer allocator.free(result.model);
+        defer allocator.free(result.provider);
+        try testing.expectEqualStrings("custom-provider", result.provider);
+        try testing.expectEqualStrings("model", result.model);
+    }
 }
