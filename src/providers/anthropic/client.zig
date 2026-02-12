@@ -54,10 +54,11 @@ pub const AnthropicClient = struct {
 
     /// Send a request to Anthropic Messages API (non-streaming)
     /// Implements automatic retry logic based on retry_count and retry_delay_ms config
+    /// Returns parsed Anthropic.Response
     pub fn sendRequest(
         self: *AnthropicClient,
         request: Anthropic.Request,
-    ) ![]const u8 {
+    ) !std.json.Parsed(Anthropic.Response) {
         var attempts: u32 = 0;
         const max_attempts = self.retry_count + 1;
 
@@ -100,7 +101,7 @@ pub const AnthropicClient = struct {
     fn sendRequestOnce(
         self: *AnthropicClient,
         request: Anthropic.Request,
-    ) ![]const u8 {
+    ) !std.json.Parsed(Anthropic.Response) {
         // Serialize request to JSON
         var request_body = std.ArrayList(u8){};
         defer request_body.deinit(self.allocator);
@@ -143,17 +144,29 @@ pub const AnthropicClient = struct {
 
         // Check status code
         if (response.head.status != .ok) {
-            return try self.handleErrorResponse(response.head.status);
+            return self.handleErrorResponse(response.head.status);
         }
 
         // Read response body
         var transfer_buf: [4096]u8 = undefined;
         const reader = response.reader(&transfer_buf);
         
-        return try reader.allocRemaining(self.allocator, std.io.Limit.limited(self.max_response_size));
+        const response_body = try reader.allocRemaining(self.allocator, std.io.Limit.limited(self.max_response_size));
+        defer self.allocator.free(response_body);
+
+        // Parse response JSON into Anthropic.Response
+        return std.json.parseFromSlice(
+            Anthropic.Response,
+            self.allocator,
+            response_body,
+            .{},
+        ) catch |err| {
+            std.debug.print("Failed to parse Anthropic response: {}\n", .{err});
+            return error.InvalidResponse;
+        };
     }
 
-    fn handleErrorResponse(self: *AnthropicClient, status: std.http.Status) ![]const u8 {
+    fn handleErrorResponse(self: *AnthropicClient, status: std.http.Status) error{AuthenticationError, RateLimitError, ServerError, InvalidStatusCode} {
         _ = self;
         return switch (status) {
             .unauthorized => error.AuthenticationError,
