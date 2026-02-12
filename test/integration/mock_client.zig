@@ -101,7 +101,7 @@ pub const MockClient = struct {
         // Read response body
         var transfer_buf: [4096]u8 = undefined;
         const reader = response.reader(&transfer_buf);
-        const response_body = try reader.readAlloc(self.allocator, 1024 * 1024);
+        const response_body = try reader.allocRemaining(self.allocator, std.io.Limit.limited(1024 * 1024));
 
         std.debug.print("[MockClient] Response received: {d} bytes\n", .{response_body.len});
 
@@ -166,7 +166,7 @@ pub const MockClient = struct {
         // Read response body
         var transfer_buf: [4096]u8 = undefined;
         const reader = response.reader(&transfer_buf);
-        const response_body = try reader.readAlloc(self.allocator, 1024 * 1024);
+        const response_body = try reader.allocRemaining(self.allocator, std.io.Limit.limited(1024 * 1024));
 
         // Record the response
         try self.recorder.recordResponse(
