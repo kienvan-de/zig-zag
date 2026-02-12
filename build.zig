@@ -211,6 +211,20 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(integration_exe);
 
+    // Mock upstream executable
+    const mock_upstream_exe_module = b.createModule(.{
+        .root_source_file = b.path("test/integration/mock_upstream.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    mock_upstream_exe_module.addImport("recorder.zig", recorder_module);
+
+    const mock_upstream_exe = b.addExecutable(.{
+        .name = "mock-upstream",
+        .root_module = mock_upstream_exe_module,
+    });
+    b.installArtifact(mock_upstream_exe);
+
     const run_integration_exe = b.addRunArtifact(integration_exe);
     run_integration_exe.step.dependOn(b.getInstallStep());
 

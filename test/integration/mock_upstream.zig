@@ -267,3 +267,34 @@ test "MockUpstream initialization" {
     var upstream = try MockUpstream.init(allocator, 9001, "test", &rec);
     defer upstream.deinit();
 }
+
+/// Main entry point for standalone mock upstream server
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    // Parse command line arguments
+    const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
+
+    if (args.len < 3) {
+        std.debug.print("Usage: mock-upstream <port> <provider_name>\n", .{});
+        std.debug.print("  port: Port number to listen on\n", .{});
+        std.debug.print("  provider_name: anthropic, openai, or groq\n", .{});
+        return error.InvalidArguments;
+    }
+
+    const port = try std.fmt.parseInt(u16, args[1], 10);
+    const provider_name = args[2];
+
+    std.debug.print("[MockUpstream] Starting {s} server on port {d}\n", .{ provider_name, port });
+
+    var rec = try recorder.Recorder.init(allocator, "test/fixtures/recorded");
+
+    var upstream = try MockUpstream.init(allocator, port, provider_name, &rec);
+    defer upstream.deinit();
+
+    // Run server directly (not in a thread)
+    try upstream.runServer();
+}
