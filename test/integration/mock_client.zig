@@ -101,6 +101,31 @@ pub const MockClient = struct {
         return response_body;
     }
 
+    /// Send a case-based request using agent_req.json and write agent_res.json
+    pub fn sendCaseRequest(
+        self: *MockClient,
+        cases_root: []const u8,
+    ) ![]u8 {
+        const request_body = try recorder.readCaseFile(
+            self.allocator,
+            cases_root,
+            "agent_req.json",
+            1024 * 1024,
+        );
+        defer self.allocator.free(request_body);
+
+        const response_body = try self.sendRaw(.POST, "/v1/chat/completions", request_body);
+
+        try recorder.writeCaseFile(
+            self.allocator,
+            cases_root,
+            "agent_res.json",
+            response_body,
+        );
+
+        return response_body;
+    }
+
     /// Send a raw request with custom body
     pub fn sendRaw(
         self: *MockClient,
@@ -167,8 +192,26 @@ pub const MockClient = struct {
 
 test "MockClient initialization" {
     const allocator = std.testing.allocator;
-    var rec = try recorder.Recorder.init(allocator, "test/fixtures/recorded");
+    const case_dir = try recorder.resolveCaseDir(allocator, "test/cases");
+    defer allocator.free(case_dir);
+    var rec = try recorder.Recorder.init(allocator, case_dir);
+    defer rec.deinit();
 
     var client = MockClient.init(allocator, "http://localhost:8080", &rec);
     defer client.deinit();
+}
+
+test "MockClient loads case request" {
+    const allocator = std.testing.allocator;
+
+    const req_body = try recorder.readCaseFile(
+        allocator,
+        "test/cases",
+        "agent_req.json",
+        1024 * 1024,
+    );
+    defer allocator.free(req_body);
+
+    try std.testing.expect(std.mem.indexOf(u8, req_body, "\"model\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, req_body, "\"messages\"") != null);
 }

@@ -95,6 +95,13 @@ pub const MockUpstream = struct {
             parsed.body,
         );
 
+        try recorder.writeCaseFile(
+            self.allocator,
+            "test/cases",
+            "upstream_req.json",
+            parsed.body,
+        );
+
         // Generate mock response based on provider
         const response_body = try self.generateMockResponse(parsed.body);
         defer self.allocator.free(response_body);
@@ -122,18 +129,14 @@ pub const MockUpstream = struct {
     }
 
     fn generateMockResponse(self: *MockUpstream, request_body: []const u8) ![]u8 {
-        // Parse request to extract model if needed
         _ = request_body;
 
-        if (std.mem.eql(u8, self.provider_name, "anthropic")) {
-            return try self.generateAnthropicResponse();
-        } else if (std.mem.eql(u8, self.provider_name, "openai") or
-            std.mem.eql(u8, self.provider_name, "groq"))
-        {
-            return try self.generateOpenAIResponse();
-        }
-
-        return try self.allocator.dupe(u8, "{}");
+        return try recorder.readCaseFile(
+            self.allocator,
+            "test/cases",
+            "upstream_res.json",
+            1024 * 1024,
+        );
     }
 
     fn generateAnthropicResponse(self: *MockUpstream) ![]u8 {
@@ -242,10 +245,28 @@ fn parseHttpRequest(allocator: std.mem.Allocator, data: []const u8) !ParsedReque
 
 test "MockUpstream initialization" {
     const allocator = std.testing.allocator;
-    var rec = try recorder.Recorder.init(allocator, "test/fixtures/recorded");
+    const case_dir = try recorder.resolveCaseDir(allocator, "test/cases");
+    defer allocator.free(case_dir);
+    var rec = try recorder.Recorder.init(allocator, case_dir);
+    defer rec.deinit();
 
     var upstream = try MockUpstream.init(allocator, 9001, "test", &rec);
     defer upstream.deinit();
+}
+
+test "MockUpstream loads case response" {
+    const allocator = std.testing.allocator;
+
+    const res_body = try recorder.readCaseFile(
+        allocator,
+        "test/cases",
+        "upstream_res.json",
+        1024 * 1024,
+    );
+    defer allocator.free(res_body);
+
+    try std.testing.expect(std.mem.indexOf(u8, res_body, "\"choices\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res_body, "\"message\"") != null);
 }
 
 /// Main entry point for standalone mock upstream server
@@ -270,7 +291,10 @@ pub fn main() !void {
 
 
 
-    var rec = try recorder.Recorder.init(allocator, "test/fixtures/recorded");
+    const case_dir = try recorder.resolveCaseDir(allocator, "test/cases");
+    defer allocator.free(case_dir);
+    var rec = try recorder.Recorder.init(allocator, case_dir);
+    defer rec.deinit();
 
     var upstream = try MockUpstream.init(allocator, port, provider_name, &rec);
     defer upstream.deinit();
