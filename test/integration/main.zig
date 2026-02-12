@@ -1,7 +1,6 @@
 const std = @import("std");
 const recorder = @import("recorder.zig");
 const MockClient = @import("mock_client.zig").MockClient;
-const MockUpstream = @import("mock_upstream.zig").MockUpstream;
 
 /// Integration test configuration
 const TestConfig = struct {
@@ -19,9 +18,9 @@ pub const TestContext = struct {
     config: TestConfig,
     recorder: recorder.Recorder,
     client: MockClient,
-    anthropic_upstream: MockUpstream,
-    openai_upstream: MockUpstream,
-    groq_upstream: MockUpstream,
+    anthropic_upstream_process: ?std.process.Child,
+    openai_upstream_process: ?std.process.Child,
+    groq_upstream_process: ?std.process.Child,
     proxy_process: ?std.process.Child,
 
     pub fn init(allocator: std.mem.Allocator) !TestContext {
@@ -38,36 +37,15 @@ pub const TestContext = struct {
         const proxy_url_owned = try allocator.dupe(u8, proxy_url);
         
         const client = MockClient.init(allocator, proxy_url_owned, &rec);
-        
-        const anthropic_upstream = try MockUpstream.init(
-            allocator,
-            config.anthropic_port,
-            "anthropic",
-            &rec,
-        );
-        
-        const openai_upstream = try MockUpstream.init(
-            allocator,
-            config.openai_port,
-            "openai",
-            &rec,
-        );
-        
-        const groq_upstream = try MockUpstream.init(
-            allocator,
-            config.groq_port,
-            "groq",
-            &rec,
-        );
 
         return TestContext{
             .allocator = allocator,
             .config = config,
             .recorder = rec,
             .client = client,
-            .anthropic_upstream = anthropic_upstream,
-            .openai_upstream = openai_upstream,
-            .groq_upstream = groq_upstream,
+            .anthropic_upstream_process = null,
+            .openai_upstream_process = null,
+            .groq_upstream_process = null,
             .proxy_process = null,
         };
     }
@@ -76,28 +54,84 @@ pub const TestContext = struct {
         if (self.proxy_process) |*proc| {
             _ = proc.kill() catch {};
         }
-        self.groq_upstream.deinit();
-        self.openai_upstream.deinit();
-        self.anthropic_upstream.deinit();
+        if (self.groq_upstream_process) |*proc| {
+            _ = proc.kill() catch {};
+        }
+        if (self.openai_upstream_process) |*proc| {
+            _ = proc.kill() catch {};
+        }
+        if (self.anthropic_upstream_process) |*proc| {
+            _ = proc.kill() catch {};
+        }
         self.client.deinit();
         self.allocator.free(self.client.proxy_url);
     }
 
-    /// Start all mock upstream servers
+    /// Start all mock upstream servers as separate processes
     pub fn startUpstreams(self: *TestContext) !void {
-        try self.anthropic_upstream.start();
-        try self.openai_upstream.start();
-        try self.groq_upstream.start();
+        // Start Anthropic mock upstream
+        var anthropic_port_buf: [8]u8 = undefined;
+        const anthropic_port_str = try std.fmt.bufPrint(&anthropic_port_buf, "{d}", .{self.config.anthropic_port});
+        var anthropic_child = std.process.Child.init(
+            &[_][]const u8{
+                "zig-out/bin/mock-upstream",
+                anthropic_port_str,
+                "anthropic",
+            },
+            self.allocator,
+        );
+        try anthropic_child.spawn();
+        self.anthropic_upstream_process = anthropic_child;
+
+        // Start OpenAI mock upstream
+        var openai_port_buf: [8]u8 = undefined;
+        const openai_port_str = try std.fmt.bufPrint(&openai_port_buf, "{d}", .{self.config.openai_port});
+        var openai_child = std.process.Child.init(
+            &[_][]const u8{
+                "zig-out/bin/mock-upstream",
+                openai_port_str,
+                "openai",
+            },
+            self.allocator,
+        );
+        try openai_child.spawn();
+        self.openai_upstream_process = openai_child;
+
+        // Start Groq mock upstream
+        var groq_port_buf: [8]u8 = undefined;
+        const groq_port_str = try std.fmt.bufPrint(&groq_port_buf, "{d}", .{self.config.groq_port});
+        var groq_child = std.process.Child.init(
+            &[_][]const u8{
+                "zig-out/bin/mock-upstream",
+                groq_port_str,
+                "groq",
+            },
+            self.allocator,
+        );
+        try groq_child.spawn();
+        self.groq_upstream_process = groq_child;
         
-        // Give servers time to start
-        std.Thread.sleep(500 * std.time.ns_per_ms);
+        // Give servers time to start and bind to ports
+        std.Thread.sleep(1000 * std.time.ns_per_ms);
     }
 
     /// Stop all mock upstream servers
-    pub fn stopUpstreams(self: *TestContext) void {
-        self.anthropic_upstream.stop();
-        self.openai_upstream.stop();
-        self.groq_upstream.stop();
+    pub fn stopUpstreams(self: *TestContext) !void {
+        if (self.anthropic_upstream_process) |*proc| {
+            _ = try proc.kill();
+            _ = try proc.wait();
+            self.anthropic_upstream_process = null;
+        }
+        if (self.openai_upstream_process) |*proc| {
+            _ = try proc.kill();
+            _ = try proc.wait();
+            self.openai_upstream_process = null;
+        }
+        if (self.groq_upstream_process) |*proc| {
+            _ = try proc.kill();
+            _ = try proc.wait();
+            self.groq_upstream_process = null;
+        }
     }
 
     /// Start the proxy server with test configuration
@@ -177,7 +211,7 @@ test "OpenAI to Anthropic transformation" {
     
     try ctx.cleanRecordings();
     try ctx.startUpstreams();
-    defer ctx.stopUpstreams();
+    defer ctx.stopUpstreams() catch {};
     
     // Note: In real tests, proxy should be started here
     // For now, we test individual components
@@ -207,7 +241,7 @@ test "OpenAI passthrough" {
     
     try ctx.cleanRecordings();
     try ctx.startUpstreams();
-    defer ctx.stopUpstreams();
+    defer ctx.stopUpstreams() catch {};
     
     const messages =
         \\[
@@ -233,7 +267,7 @@ test "Compatible provider - Groq" {
     
     try ctx.cleanRecordings();
     try ctx.startUpstreams();
-    defer ctx.stopUpstreams();
+    defer ctx.stopUpstreams() catch {};
     
     const messages =
         \\[
@@ -289,7 +323,7 @@ pub fn main() !void {
     
     std.debug.print("Starting mock upstream servers...\n", .{});
     try ctx.startUpstreams();
-    defer ctx.stopUpstreams();
+    defer ctx.stopUpstreams() catch {};
     
     std.debug.print("Starting proxy server...\n", .{});
     try ctx.startProxy();
