@@ -309,11 +309,14 @@ pub fn cleanupResponse(response: OpenAI.Response, allocator: std.mem.Allocator) 
         }
     }
     allocator.free(response.choices);
+    // Free the model string allocated in transformResponse
+    allocator.free(response.model);
 }
 
 pub fn transformResponse(
     anthropic_response: Anthropic.Response,
     allocator: std.mem.Allocator,
+    original_model: []const u8,
 ) !OpenAI.Response {
     // Extract text content from content blocks
     const content_text = try extractTextFromBlocks(anthropic_response.content, allocator);
@@ -343,11 +346,15 @@ pub fn transformResponse(
         .total_tokens = anthropic_response.usage.input_tokens + anthropic_response.usage.output_tokens,
     };
     
+    // Build model string: "anthropic/{actual_model_from_response}"
+    const model_str = try std.fmt.allocPrint(allocator, "anthropic/{s}", .{anthropic_response.model});
+    _ = original_model; // Available if needed for future use
+    
     return OpenAI.Response{
         .id = anthropic_response.id,
         .object = "chat.completion",
         .created = std.time.timestamp(),
-        .model = anthropic_response.model,
+        .model = model_str,
         .choices = choices,
         .usage = usage,
         .system_fingerprint = null,
@@ -948,14 +955,14 @@ test "extractTextFromBlocks: mixed content types" {
     try testing.expectEqualStrings("Hello world", result);
 }
 
-test "transformResponse: basic response" {
+test "transformResponse: basic response with provider prefix" {
     const allocator = testing.allocator;
     
     const content_blocks = [_]Anthropic.ContentBlock{
         .{ .type = "text", .text = "Hello! How can I help you today?" },
     };
     
-    const anthropic_resp = Anthropic.Response{
+    const anthropic_response = Anthropic.Response{
         .id = "msg_123",
         .type = "message",
         .role = "assistant",
@@ -969,17 +976,18 @@ test "transformResponse: basic response" {
         },
     };
     
-    const result = try transformResponse(anthropic_resp, allocator);
+    const result = try transformResponse(anthropic_response, allocator, "anthropic/claude-3-5-sonnet-latest");
     defer {
         if (result.choices[0].message.content) |content| {
             allocator.free(content);
         }
         allocator.free(result.choices);
+        allocator.free(result.model);
     }
     
     try testing.expectEqualStrings("msg_123", result.id);
     try testing.expectEqualStrings("chat.completion", result.object);
-    try testing.expectEqualStrings("claude-3-5-sonnet-20241022", result.model);
+    try testing.expectEqualStrings("anthropic/claude-3-5-sonnet-20241022", result.model);
     try testing.expectEqual(@as(usize, 1), result.choices.len);
     try testing.expectEqual(OpenAI.Role.assistant, result.choices[0].message.role);
     try testing.expectEqualStrings("Hello! How can I help you today?", result.choices[0].message.content.?);
@@ -997,7 +1005,7 @@ test "transformResponse: multiple content blocks" {
         .{ .type = "text", .text = "Second part." },
     };
     
-    const anthropic_resp = Anthropic.Response{
+    const anthropic_response = Anthropic.Response{
         .id = "msg_456",
         .type = "message",
         .role = "assistant",
@@ -1006,17 +1014,18 @@ test "transformResponse: multiple content blocks" {
         .stop_reason = "end_turn",
         .stop_sequence = null,
         .usage = .{
-            .input_tokens = 5,
-            .output_tokens = 15,
+            .input_tokens = 15,
+            .output_tokens = 25,
         },
     };
     
-    const result = try transformResponse(anthropic_resp, allocator);
+    const result = try transformResponse(anthropic_response, allocator, "anthropic/claude-3-opus");
     defer {
         if (result.choices[0].message.content) |content| {
             allocator.free(content);
         }
         allocator.free(result.choices);
+        allocator.free(result.model);
     }
     
     try testing.expectEqualStrings("First part. Second part.", result.choices[0].message.content.?);
@@ -1029,7 +1038,7 @@ test "transformResponse: max_tokens stop reason" {
         .{ .type = "text", .text = "Response text" },
     };
     
-    const anthropic_resp = Anthropic.Response{
+    const anthropic_response = Anthropic.Response{
         .id = "msg_789",
         .type = "message",
         .role = "assistant",
@@ -1039,16 +1048,17 @@ test "transformResponse: max_tokens stop reason" {
         .stop_sequence = null,
         .usage = .{
             .input_tokens = 100,
-            .output_tokens = 4096,
+            .output_tokens = 500,
         },
     };
     
-    const result = try transformResponse(anthropic_resp, allocator);
+    const result = try transformResponse(anthropic_response, allocator, "anthropic/claude-3-5-sonnet-latest");
     defer {
         if (result.choices[0].message.content) |content| {
             allocator.free(content);
         }
         allocator.free(result.choices);
+        allocator.free(result.model);
     }
     
     try testing.expectEqualStrings("length", result.choices[0].finish_reason);
@@ -1059,7 +1069,7 @@ test "transformResponse: empty content" {
     
     const content_blocks = [_]Anthropic.ContentBlock{};
     
-    const anthropic_resp = Anthropic.Response{
+    const anthropic_response = Anthropic.Response{
         .id = "msg_empty",
         .type = "message",
         .role = "assistant",
@@ -1068,17 +1078,18 @@ test "transformResponse: empty content" {
         .stop_reason = "end_turn",
         .stop_sequence = null,
         .usage = .{
-            .input_tokens = 10,
+            .input_tokens = 5,
             .output_tokens = 0,
         },
     };
     
-    const result = try transformResponse(anthropic_resp, allocator);
+    const result = try transformResponse(anthropic_response, allocator, "anthropic/claude-3-5-sonnet-latest");
     defer {
         if (result.choices[0].message.content) |content| {
             allocator.free(content);
         }
         allocator.free(result.choices);
+        allocator.free(result.model);
     }
     
     try testing.expectEqualStrings("", result.choices[0].message.content.?);

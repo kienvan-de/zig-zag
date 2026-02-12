@@ -37,14 +37,26 @@ pub fn transform(
     };
 }
 
-/// Transform OpenAI response to OpenAI format (pass-through)
-/// Since the output is already in OpenAI format, we just return it as-is
+/// Transform OpenAI response to OpenAI format
+/// For compatible providers, we need to set the model back to the original format
 pub fn transformResponse(
     response: OpenAI.Response,
     allocator: std.mem.Allocator,
+    original_model: []const u8,
 ) !OpenAI.Response {
-    _ = allocator; // No allocation needed for pass-through
-    return response;
+    // Allocate model string to return original_model (e.g., "groq/llama-3.1-70b")
+    const model_str = try allocator.dupe(u8, original_model);
+    
+    return OpenAI.Response{
+        .id = response.id,
+        .object = response.object,
+        .created = response.created,
+        .model = model_str,
+        .choices = response.choices,
+        .usage = response.usage,
+        .system_fingerprint = response.system_fingerprint,
+        .service_tier = response.service_tier,
+    };
 }
 
 /// Cleanup transformed request (no-op for pass-through)
@@ -54,11 +66,10 @@ pub fn cleanupRequest(request: OpenAI.Request, allocator: std.mem.Allocator) voi
     // No cleanup needed - request is just a shallow copy of the original
 }
 
-/// Cleanup transformed response (no-op for pass-through)
+/// Cleanup transformed response
 pub fn cleanupResponse(response: OpenAI.Response, allocator: std.mem.Allocator) void {
-    _ = response;
-    _ = allocator;
-    // No cleanup needed - response is just a pass-through
+    // Free the model string allocated in transformResponse
+    allocator.free(response.model);
 }
 
 // ============================================================================
@@ -206,12 +217,13 @@ test "transformResponse is pass-through" {
         .service_tier = null,
     };
 
-    const transformed = try transformResponse(original_response, allocator);
+    const transformed = try transformResponse(original_response, allocator, "openai/gpt-4");
+    defer allocator.free(transformed.model);
 
     try testing.expectEqualStrings("chatcmpl-123", transformed.id);
     try testing.expectEqualStrings("chat.completion", transformed.object);
     try testing.expectEqual(1234567890, transformed.created);
-    try testing.expectEqualStrings("gpt-4", transformed.model);
+    try testing.expectEqualStrings("openai/gpt-4", transformed.model);
     try testing.expectEqual(10, transformed.usage.prompt_tokens);
     try testing.expectEqual(20, transformed.usage.completion_tokens);
     try testing.expectEqual(30, transformed.usage.total_tokens);
@@ -258,10 +270,8 @@ test "cleanupRequest is no-op" {
     cleanupRequest(request, allocator);
 }
 
-test "cleanupResponse is no-op" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
+test "cleanupResponse frees model string" {
+    const allocator = testing.allocator;
 
     const response_message = OpenAI.ResponseMessage{
         .role = .assistant,
@@ -284,18 +294,21 @@ test "cleanupResponse is no-op" {
         .total_tokens = 15,
     };
 
+    // Allocate model string like transformResponse does
+    const model_str = try allocator.dupe(u8, "openai/gpt-4");
+
     const response = OpenAI.Response{
         .id = "test-123",
         .object = "chat.completion",
         .created = 1234567890,
-        .model = "gpt-4",
+        .model = model_str,
         .choices = &choices,
         .usage = usage,
         .system_fingerprint = null,
         .service_tier = null,
     };
 
-    // Should not crash or cause issues
+    // Should free the model string without leaking
     cleanupResponse(response, allocator);
 }
 

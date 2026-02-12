@@ -309,6 +309,7 @@ fn handleProvider(
     const openai_response = try Transformer.transformResponse(
         provider_response.value,
         allocator,
+        openai_request.model,
     );
     defer Transformer.cleanupResponse(openai_response, allocator);
 
