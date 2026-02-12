@@ -67,8 +67,12 @@ pub const Config = struct {
     server: ServerConfig,
     _parsed: std.json.Parsed(std.json.Value), // Keep root parsed alive
 
-    /// Load configuration from ~/.config/zig-zag/config.json
+    /// Load configuration from ZIG_ZAG_CONFIG env var or ~/.config/zig-zag/config.json
     pub fn load(allocator: std.mem.Allocator) !Config {
+        if (std.posix.getenv("ZIG_ZAG_CONFIG")) |config_path| {
+            return loadFromFile(allocator, config_path);
+        }
+
         const home = std.posix.getenv("HOME") orelse return error.HomeNotFound;
 
         var path_buf: [std.fs.max_path_bytes]u8 = undefined;
