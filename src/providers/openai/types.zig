@@ -419,6 +419,170 @@ pub const Request = struct {
 
         try jw.endObject();
     }
+
+    pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
+        const val = try std.json.Value.jsonParse(allocator, source, options);
+        return try jsonParseFromValue(allocator, val, options);
+    }
+
+    pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, options: std.json.ParseOptions) !@This() {
+        _ = options;
+        if (source != .object) return error.UnexpectedToken;
+        const obj = source.object;
+
+        const model = if (obj.get("model")) |v| switch (v) {
+            .string => |s| s,
+            else => return error.UnexpectedToken,
+        } else return error.MissingField;
+
+        const messages_val = obj.get("messages") orelse return error.MissingField;
+        if (messages_val != .array) return error.UnexpectedToken;
+        const messages_arr = messages_val.array.items;
+        const messages = try allocator.alloc(Message, messages_arr.len);
+        for (messages_arr, 0..) |msg_val, i| {
+            messages[i] = try Message.jsonParseFromValue(allocator, msg_val, .{});
+        }
+
+        var result = Request{
+            .model = model,
+            .messages = messages,
+        };
+
+        if (obj.get("stream")) |v| {
+            result.stream = switch (v) {
+                .bool => |b| b,
+                else => null,
+            };
+        }
+        if (obj.get("temperature")) |v| {
+            result.temperature = switch (v) {
+                .integer => |i| @floatFromInt(i),
+                .float => |f| @floatCast(f),
+                else => null,
+            };
+        }
+        if (obj.get("max_tokens")) |v| {
+            result.max_tokens = switch (v) {
+                .integer => |i| @intCast(i),
+                else => null,
+            };
+        }
+        if (obj.get("max_completion_tokens")) |v| {
+            result.max_completion_tokens = switch (v) {
+                .integer => |i| @intCast(i),
+                else => null,
+            };
+        }
+        if (obj.get("top_p")) |v| {
+            result.top_p = switch (v) {
+                .integer => |i| @floatFromInt(i),
+                .float => |f| @floatCast(f),
+                else => null,
+            };
+        }
+        if (obj.get("n")) |v| {
+            result.n = switch (v) {
+                .integer => |i| @intCast(i),
+                else => null,
+            };
+        }
+        if (obj.get("presence_penalty")) |v| {
+            result.presence_penalty = switch (v) {
+                .integer => |i| @floatFromInt(i),
+                .float => |f| @floatCast(f),
+                else => null,
+            };
+        }
+        if (obj.get("frequency_penalty")) |v| {
+            result.frequency_penalty = switch (v) {
+                .integer => |i| @floatFromInt(i),
+                .float => |f| @floatCast(f),
+                else => null,
+            };
+        }
+        if (obj.get("tools")) |v| {
+            if (v == .array) {
+                const tools_arr = v.array.items;
+                const tools = try allocator.alloc(Tool, tools_arr.len);
+                for (tools_arr, 0..) |tool_val, i| {
+                    tools[i] = try std.json.parseFromValueLeaky(Tool, allocator, tool_val, .{});
+                }
+                result.tools = tools;
+            }
+        }
+        if (obj.get("tool_choice")) |v| {
+            result.tool_choice = v;
+        }
+        if (obj.get("parallel_tool_calls")) |v| {
+            result.parallel_tool_calls = switch (v) {
+                .bool => |b| b,
+                else => null,
+            };
+        }
+        if (obj.get("functions")) |v| {
+            if (v == .array) {
+                const funcs_arr = v.array.items;
+                const funcs = try allocator.alloc(Function, funcs_arr.len);
+                for (funcs_arr, 0..) |func_val, i| {
+                    funcs[i] = try std.json.parseFromValueLeaky(Function, allocator, func_val, .{});
+                }
+                result.functions = funcs;
+            }
+        }
+        if (obj.get("function_call")) |v| {
+            result.function_call = switch (v) {
+                .string => |s| s,
+                else => null,
+            };
+        }
+        if (obj.get("response_format")) |v| {
+            if (v == .object) {
+                result.response_format = try std.json.parseFromValueLeaky(ResponseFormat, allocator, v, .{});
+            }
+        }
+        if (obj.get("stop")) |v| {
+            if (v == .array) {
+                const stop_arr = v.array.items;
+                const stop = try allocator.alloc([]const u8, stop_arr.len);
+                for (stop_arr, 0..) |stop_val, i| {
+                    stop[i] = switch (stop_val) {
+                        .string => |s| s,
+                        else => return error.UnexpectedToken,
+                    };
+                }
+                result.stop = stop;
+            }
+        }
+        if (obj.get("logit_bias")) |v| {
+            result.logit_bias = v;
+        }
+        if (obj.get("logprobs")) |v| {
+            result.logprobs = switch (v) {
+                .bool => |b| b,
+                else => null,
+            };
+        }
+        if (obj.get("top_logprobs")) |v| {
+            result.top_logprobs = switch (v) {
+                .integer => |i| @intCast(i),
+                else => null,
+            };
+        }
+        if (obj.get("user")) |v| {
+            result.user = switch (v) {
+                .string => |s| s,
+                else => null,
+            };
+        }
+        if (obj.get("seed")) |v| {
+            result.seed = switch (v) {
+                .integer => |i| i,
+                else => null,
+            };
+        }
+
+        return result;
+    }
 };
 
 /// Delta content in streaming response
