@@ -125,6 +125,7 @@ pub const TestContext = struct {
     openai_upstream_process: ?std.process.Child,
     groq_upstream_process: ?std.process.Child,
     proxy_process: ?std.process.Child,
+    env_map: ?std.process.EnvMap,
 
     pub fn init(allocator: std.mem.Allocator) !*TestContext {
         const config = TestConfig{};
@@ -153,6 +154,7 @@ pub const TestContext = struct {
             .openai_upstream_process = null,
             .groq_upstream_process = null,
             .proxy_process = null,
+            .env_map = null,
         };
         
         // Now set the client with stable recorder pointer
@@ -174,6 +176,9 @@ pub const TestContext = struct {
         }
         if (self.anthropic_upstream_process) |*proc| {
             _ = proc.kill() catch {};
+        }
+        if (self.env_map) |*em| {
+            em.deinit();
         }
         self.client.deinit();
         self.recorder.deinit();
@@ -250,43 +255,26 @@ pub const TestContext = struct {
 
     /// Start the proxy server with test configuration
     pub fn startProxy(self: *TestContext) !void {
-        // Copy test config to default location
-        const home = std.posix.getenv("HOME") orelse return error.HomeNotFound;
-        var config_dir_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const config_dir = try std.fmt.bufPrint(
-            &config_dir_buf,
-            "{s}/.config/zig-zag",
-            .{home},
-        );
+        // Build case-specific config path
+        const case_dir = try recorder.resolveCaseDir(self.allocator, self.config.cases_dir);
+        defer self.allocator.free(case_dir);
         
-        // Create config directory
-        std.fs.cwd().makePath(config_dir) catch |err| {
-            if (err != error.PathAlreadyExists) return err;
-        };
+        const config_path = try std.fmt.allocPrint(self.allocator, "{s}/config.json", .{case_dir});
+        defer self.allocator.free(config_path);
         
-        var config_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const config_path = try std.fmt.bufPrint(
-            &config_path_buf,
-            "{s}/config.json",
-            .{config_dir},
-        );
+        // Get absolute path for the config
+        const cwd = try std.fs.cwd().realpathAlloc(self.allocator, ".");
+        defer self.allocator.free(cwd);
         
-        // Read test config
-        const test_config = try std.fs.cwd().readFileAlloc(
-            self.allocator,
-            "test/cases/test_config.json",
-            1024 * 1024,
-        );
-        defer self.allocator.free(test_config);
+        const abs_config_path = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ cwd, config_path });
+        defer self.allocator.free(abs_config_path);
         
-        // Write to default location with explicit sync
-        const config_file = try std.fs.cwd().createFile(config_path, .{});
-        defer config_file.close();
-        _ = try config_file.write(test_config);
-        try config_file.sync();
-        
-        // Give filesystem time to flush
-        std.Thread.sleep(100 * std.time.ns_per_ms);
+        self.env_map = std.process.EnvMap.init(self.allocator);
+        try self.env_map.?.put("ZIG_ZAG_CONFIG", abs_config_path);
+        // Inherit PATH for finding zig-out/bin
+        if (std.posix.getenv("PATH")) |path| {
+            try self.env_map.?.put("PATH", path);
+        }
         
         var child = std.process.Child.init(
             &[_][]const u8{
@@ -294,6 +282,7 @@ pub const TestContext = struct {
             },
             self.allocator,
         );
+        child.env_map = &self.env_map.?;
         
         try child.spawn();
         self.proxy_process = child;
