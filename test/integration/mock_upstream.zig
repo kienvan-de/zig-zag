@@ -87,14 +87,6 @@ pub const MockUpstream = struct {
         // Parse HTTP request
         const parsed = try parseHttpRequest(request_allocator, request_data);
 
-        // Record the incoming request
-        try self.recorder.recordRequest(
-            self.provider_name,
-            parsed.method,
-            parsed.path,
-            parsed.body,
-        );
-
         try recorder.writeCaseFile(
             self.allocator,
             "test/cases",
@@ -119,13 +111,6 @@ pub const MockUpstream = struct {
         try writer.writeAll(response_body);
 
         _ = try connection.stream.writeAll(response_buf.items);
-
-        // Record the response
-        try self.recorder.recordResponse(
-            self.provider_name,
-            200,
-            response_body,
-        );
     }
 
     fn generateMockResponse(self: *MockUpstream, request_body: []const u8) ![]u8 {
