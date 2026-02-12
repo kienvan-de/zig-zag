@@ -111,9 +111,10 @@ pub fn handle(
     };
     defer allocator.free(model_info.model);
 
+    defer allocator.free(model_info.provider);
+
     // Try to get provider config by name (allows any provider name, not just enum values)
-    const provider_name = openai_request.value.model[0..std.mem.indexOf(u8, openai_request.value.model, "/").?];
-    const provider_config = config.providers.getPtr(provider_name) orelse {
+    const provider_config = config.providers.getPtr(model_info.provider) orelse {
         const error_json = try errors.createErrorResponse(
             allocator,
             "Provider not configured",
@@ -125,10 +126,10 @@ pub fn handle(
         return;
     };
 
-    // Check if this is a native provider or a compatible one
-    if (provider.isSupported(model_info.provider)) {
-        // Native provider - use its own client/transformer
-        switch (model_info.provider) {
+    // Check if this is a native provider
+    if (provider.Provider.fromString(model_info.provider)) |native_provider| {
+        // Native provider - route based on enum
+        switch (native_provider) {
             .anthropic => {
                 try handleProvider(
                     anthropic.client.AnthropicClient,
@@ -154,7 +155,7 @@ pub fn handle(
                 );
             },
         }
-    } else {
+    } else |_| {
         // Not a native provider - check for "compatible" field
         const compatible = provider_config.getString("compatible") orelse {
             const error_json = try errors.createErrorResponse(
