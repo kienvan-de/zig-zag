@@ -5,11 +5,11 @@ const provider_mod = @import("provider.zig");
 /// Wraps a parsed JSON object and provides type-safe accessors
 pub const ProviderConfig = struct {
     allocator: std.mem.Allocator,
-    raw: std.json.Parsed(std.json.Value),
+    raw: std.json.Value,
 
     /// Get string value from config
     pub fn getString(self: *const ProviderConfig, key: []const u8) ?[]const u8 {
-        const obj = self.raw.value.object;
+        const obj = self.raw.object;
         const value = obj.get(key) orelse return null;
         return switch (value) {
             .string => |s| s,
@@ -19,7 +19,7 @@ pub const ProviderConfig = struct {
 
     /// Get integer value from config
     pub fn getInt(self: *const ProviderConfig, key: []const u8) ?i64 {
-        const obj = self.raw.value.object;
+        const obj = self.raw.object;
         const value = obj.get(key) orelse return null;
         return switch (value) {
             .integer => |i| i,
@@ -29,7 +29,7 @@ pub const ProviderConfig = struct {
 
     /// Get float value from config
     pub fn getFloat(self: *const ProviderConfig, key: []const u8) ?f64 {
-        const obj = self.raw.value.object;
+        const obj = self.raw.object;
         const value = obj.get(key) orelse return null;
         return switch (value) {
             .float => |f| f,
@@ -40,7 +40,7 @@ pub const ProviderConfig = struct {
 
     /// Get boolean value from config
     pub fn getBool(self: *const ProviderConfig, key: []const u8) ?bool {
-        const obj = self.raw.value.object;
+        const obj = self.raw.object;
         const value = obj.get(key) orelse return null;
         return switch (value) {
             .bool => |b| b,
@@ -48,9 +48,9 @@ pub const ProviderConfig = struct {
         };
     }
 
-    /// Cleanup provider config
+    /// Cleanup provider config (no-op now, kept for API compatibility)
     pub fn deinit(self: *ProviderConfig) void {
-        self.raw.deinit();
+        _ = self;
     }
 };
 
@@ -65,6 +65,7 @@ pub const Config = struct {
     allocator: std.mem.Allocator,
     providers: std.StringHashMap(ProviderConfig),
     server: ServerConfig,
+    _parsed: std.json.Parsed(std.json.Value), // Keep root parsed alive
 
     /// Load configuration from ~/.config/zig-zag/config.json
     pub fn load(allocator: std.mem.Allocator) !Config {
@@ -155,12 +156,7 @@ pub const Config = struct {
             providers.deinit();
         }
 
-        // Store the parsed root - we'll reference its values
-        // Each provider config will just reference the objects in the root
-        var providers_arena = std.heap.ArenaAllocator.init(allocator);
-        const providers_allocator = providers_arena.allocator();
-        
-        // Iterate over providers
+        // Iterate over providers and reference their values directly
         var iter = providers_value.object.iterator();
         while (iter.next()) |entry| {
             const provider_name = entry.key_ptr.*;
@@ -172,31 +168,21 @@ pub const Config = struct {
                 return error.InvalidProviderConfig;
             }
 
-            // Create a wrapper around this provider's JSON object
-            // We need to create a new Parsed that wraps just this value
-            const provider_json_str = try std.fmt.allocPrint(providers_allocator, "{}", .{provider_value_ptr.*});
-            const provider_parsed = try std.json.parseFromSlice(
-                std.json.Value,
-                providers_allocator,
-                provider_json_str,
-                .{},
-            );
-
+            // Create a wrapper that references the value in the root parsed object
             const provider_config = ProviderConfig{
-                .allocator = providers_allocator,
-                .raw = provider_parsed,
+                .allocator = allocator,
+                .raw = provider_value_ptr.*,
             };
 
             try providers.put(provider_name, provider_config);
         }
 
-        // Clean up the original parsed value since we've copied what we need
-        parsed.deinit();
-
+        // Keep the root parsed object alive - all provider configs reference it
         return Config{
             .allocator = allocator,
             .providers = providers,
             .server = server_config,
+            ._parsed = parsed,
         };
     }
 
@@ -214,11 +200,12 @@ pub const Config = struct {
 
     /// Cleanup configuration
     pub fn deinit(self: *Config) void {
-        var iter = self.providers.valueIterator();
-        while (iter.next()) |provider_config| {
-            provider_config.deinit();
+        var it = self.providers.valueIterator();
+        while (it.next()) |prov_config| {
+            prov_config.deinit();
         }
         self.providers.deinit();
+        self._parsed.deinit();
     }
 };
 
