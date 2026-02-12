@@ -20,10 +20,15 @@ test/
 │   ├── mock_client.zig    # Mock client implementation
 │   ├── mock_upstream.zig  # Mock upstream server implementation
 │   └── recorder.zig       # JSON recording utility
-└── fixtures/
+└── cases/
     ├── test_config.json   # Test configuration for proxy
-    ├── expected/          # Expected request/response fixtures
-    └── recorded/          # Runtime recorded files (gitignored)
+    └── case-1/
+        ├── agent_req.json
+        ├── upstream_res.json
+        ├── upstream_req.json
+        ├── agent_res.json
+        ├── expected_agent_res.json
+        └── expected_upstream_req.json
 ```
 
 ## Running Tests
@@ -50,7 +55,7 @@ This will:
 1. Start mock upstream servers on ports 8001 (Anthropic), 8002 (OpenAI), 8003 (Groq)
 2. Start the zig-zag proxy on port 8080
 3. Execute test scenarios
-4. Record all requests/responses to `test/fixtures/recorded/`
+4. Record all requests/responses to `test/cases/<case-name>/`
 
 ## Test Scenarios
 
@@ -85,18 +90,18 @@ This will:
 
 ## Inspecting Recorded Traffic
 
-After running tests, check `test/fixtures/recorded/` for JSON files:
+After running tests, check the case folder for JSON files:
 
 ```bash
-ls -la test/fixtures/recorded/
+ls -la test/cases/case-1/
 
 # Example files:
-# client_request_000.json
-# client_response_000.json
-# anthropic_request_000.json
-# anthropic_response_000.json
-# openai_request_001.json
-# openai_response_001.json
+# agent_req.json
+# upstream_req.json
+# upstream_res.json
+# agent_res.json
+# expected_agent_res.json
+# expected_upstream_req.json
 ```
 
 Each file contains:
@@ -106,7 +111,7 @@ Each file contains:
 
 ## Test Configuration
 
-The test uses `test/fixtures/test_config.json` which points all providers to localhost mock servers:
+The test uses `test/cases/test_config.json` which points all providers to localhost mock servers:
 
 ```json
 {
@@ -136,8 +141,8 @@ The test uses `test/fixtures/test_config.json` which points all providers to loc
 
 1. Add test function in `test/integration/main.zig`
 2. Use `ctx.client.sendChatCompletion()` to send requests
-3. Add expected fixtures to `test/fixtures/expected/`
-4. Validate recorded output against expected fixtures
+3. Add expected fixtures to the case folder (`expected_agent_res.json`, `expected_upstream_req.json`)
+4. Validate recorded output against expected fixtures in the same case folder
 
 Example:
 
