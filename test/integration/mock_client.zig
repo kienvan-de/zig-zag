@@ -74,14 +74,6 @@ pub const MockClient = struct {
         try body_writer.end();
         try req.connection.?.flush();
 
-        // Record the request
-        try self.recorder.recordRequest(
-            "client",
-            "POST",
-            "/v1/chat/completions",
-            request_body,
-        );
-
         // Wait for response
         const redirect_buffer: [0]u8 = undefined;
         var response = try req.receiveHead(&redirect_buffer);
@@ -90,13 +82,6 @@ pub const MockClient = struct {
         var transfer_buf: [4096]u8 = undefined;
         const reader = response.reader(&transfer_buf);
         const response_body = try reader.allocRemaining(self.allocator, std.io.Limit.limited(1024 * 1024));
-
-        // Record the response
-        try self.recorder.recordResponse(
-            "client",
-            @intFromEnum(response.head.status),
-            response_body,
-        );
 
         return response_body;
     }
@@ -162,14 +147,6 @@ pub const MockClient = struct {
         try body_writer.end();
         try req.connection.?.flush();
 
-        // Record the request
-        try self.recorder.recordRequest(
-            "client",
-            @tagName(method),
-            path,
-            body,
-        );
-
         // Wait for response
         const redirect_buffer: [0]u8 = undefined;
         var response = try req.receiveHead(&redirect_buffer);
@@ -178,13 +155,6 @@ pub const MockClient = struct {
         var transfer_buf: [4096]u8 = undefined;
         const reader = response.reader(&transfer_buf);
         const response_body = try reader.allocRemaining(self.allocator, std.io.Limit.limited(1024 * 1024));
-
-        // Record the response
-        try self.recorder.recordResponse(
-            "client",
-            @intFromEnum(response.head.status),
-            response_body,
-        );
 
         return response_body;
     }
