@@ -124,56 +124,7 @@ pub const MockUpstream = struct {
         );
     }
 
-    fn generateAnthropicResponse(self: *MockUpstream) ![]u8 {
-        const response =
-            \\{
-            \\  "id": "msg_test123",
-            \\  "type": "message",
-            \\  "role": "assistant",
-            \\  "content": [
-            \\    {
-            \\      "type": "text",
-            \\      "text": "This is a mock response from Anthropic API"
-            \\    }
-            \\  ],
-            \\  "model": "claude-3-opus-20240229",
-            \\  "stop_reason": "end_turn",
-            \\  "stop_sequence": null,
-            \\  "usage": {
-            \\    "input_tokens": 10,
-            \\    "output_tokens": 20
-            \\  }
-            \\}
-        ;
-        return try self.allocator.dupe(u8, response);
-    }
 
-    fn generateOpenAIResponse(self: *MockUpstream) ![]u8 {
-        const response =
-            \\{
-            \\  "id": "chatcmpl-test123",
-            \\  "object": "chat.completion",
-            \\  "created": 1234567890,
-            \\  "model": "gpt-4",
-            \\  "choices": [
-            \\    {
-            \\      "index": 0,
-            \\      "message": {
-            \\        "role": "assistant",
-            \\        "content": "This is a mock response from OpenAI API"
-            \\      },
-            \\      "finish_reason": "stop"
-            \\    }
-            \\  ],
-            \\  "usage": {
-            \\    "prompt_tokens": 10,
-            \\    "completion_tokens": 20,
-            \\    "total_tokens": 30
-            \\  }
-            \\}
-        ;
-        return try self.allocator.dupe(u8, response);
-    }
 };
 
 const ParsedRequest = struct {

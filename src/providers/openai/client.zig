@@ -105,7 +105,7 @@ pub const OpenAIClient = struct {
         var request_body = std.ArrayList(u8){};
         defer request_body.deinit(self.allocator);
 
-        try request_body.writer(self.allocator).print("{any}", .{std.json.fmt(request, .{})});
+        try request_body.writer(self.allocator).print("{f}", .{std.json.fmt(request, .{ .emit_null_optional_fields = false })});
 
         // Build URL from config
         var url_buffer: [512]u8 = undefined;

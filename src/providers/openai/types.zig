@@ -97,6 +97,47 @@ pub const Message = struct {
     tool_call_id: ?[]const u8 = null,
     function_call: ?FunctionCall = null,
 
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        
+        try jw.objectField("role");
+        try jw.write(@tagName(self.role));
+        
+        try jw.objectField("content");
+        switch (self.content) {
+            .text => |t| try jw.write(t),
+            .parts => |parts| {
+                try jw.beginArray();
+                for (parts) |part| {
+                    try jw.write(part);
+                }
+                try jw.endArray();
+            },
+        }
+        
+        if (self.name) |n| {
+            try jw.objectField("name");
+            try jw.write(n);
+        }
+        
+        if (self.tool_calls) |tc| {
+            try jw.objectField("tool_calls");
+            try jw.write(tc);
+        }
+        
+        if (self.tool_call_id) |tid| {
+            try jw.objectField("tool_call_id");
+            try jw.write(tid);
+        }
+        
+        if (self.function_call) |fc| {
+            try jw.objectField("function_call");
+            try jw.write(fc);
+        }
+        
+        try jw.endObject();
+    }
+
     pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
         const json_value = try std.json.innerParse(std.json.Value, allocator, source, options);
         
@@ -262,6 +303,30 @@ pub const ResponseMessage = struct {
     content: ?[]const u8,
     tool_calls: ?[]const ToolCall = null,
     function_call: ?FunctionCall = null,
+
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        
+        try jw.objectField("role");
+        try jw.write(@tagName(self.role));
+        
+        if (self.content) |c| {
+            try jw.objectField("content");
+            try jw.write(c);
+        }
+        
+        if (self.tool_calls) |tc| {
+            try jw.objectField("tool_calls");
+            try jw.write(tc);
+        }
+        
+        if (self.function_call) |fc| {
+            try jw.objectField("function_call");
+            try jw.write(fc);
+        }
+        
+        try jw.endObject();
+    }
 };
 
 /// Choice in non-streaming response
@@ -269,6 +334,21 @@ pub const ResponseChoice = struct {
     index: u32,
     message: ResponseMessage,
     finish_reason: []const u8,
+
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        
+        try jw.objectField("index");
+        try jw.write(self.index);
+        
+        try jw.objectField("message");
+        try self.message.jsonStringify(jw);
+        
+        try jw.objectField("finish_reason");
+        try jw.write(self.finish_reason);
+        
+        try jw.endObject();
+    }
 };
 
 /// Usage statistics
@@ -288,6 +368,44 @@ pub const Response = struct {
     usage: Usage,
     system_fingerprint: ?[]const u8 = null,
     service_tier: ?[]const u8 = null,
+
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        
+        try jw.objectField("id");
+        try jw.write(self.id);
+        
+        try jw.objectField("object");
+        try jw.write(self.object);
+        
+        try jw.objectField("created");
+        try jw.write(self.created);
+        
+        try jw.objectField("model");
+        try jw.write(self.model);
+        
+        try jw.objectField("choices");
+        try jw.beginArray();
+        for (self.choices) |choice| {
+            try choice.jsonStringify(jw);
+        }
+        try jw.endArray();
+        
+        try jw.objectField("usage");
+        try jw.write(self.usage);
+        
+        if (self.system_fingerprint) |sf| {
+            try jw.objectField("system_fingerprint");
+            try jw.write(sf);
+        }
+        
+        if (self.service_tier) |st| {
+            try jw.objectField("service_tier");
+            try jw.write(st);
+        }
+        
+        try jw.endObject();
+    }
 };
 
 // ============================================================================
