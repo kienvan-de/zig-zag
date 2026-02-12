@@ -28,12 +28,3 @@ pub fn sendJsonResponse(
 // ============================================================================
 // Unit Tests
 // ============================================================================
-
-test "sendJsonResponse formats response correctly" {
-    const testing = std.testing;
-
-    // We can't easily test the actual network write, but we can test
-    // that the function signature is correct and compiles
-    _ = sendJsonResponse;
-    _ = testing;
-}
