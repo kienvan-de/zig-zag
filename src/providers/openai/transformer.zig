@@ -47,11 +47,8 @@ pub fn transformResponse(
     // Allocate model string to return original_model (e.g., "groq/llama-3.1-70b")
     const model_str = try allocator.dupe(u8, original_model);
     
-    // Duplicate id string to avoid dangling pointer after response is freed
-    const id_str = try allocator.dupe(u8, response.id);
-    
     return OpenAI.Response{
-        .id = id_str,
+        .id = response.id,
         .object = response.object,
         .created = response.created,
         .model = model_str,
@@ -71,8 +68,7 @@ pub fn cleanupRequest(request: OpenAI.Request, allocator: std.mem.Allocator) voi
 
 /// Cleanup transformed response
 pub fn cleanupResponse(response: OpenAI.Response, allocator: std.mem.Allocator) void {
-    // Free the id and model strings allocated in transformResponse
-    allocator.free(response.id);
+    // Free the model string allocated in transformResponse
     allocator.free(response.model);
 }
 
@@ -184,7 +180,7 @@ test "transform preserves all request fields" {
     try testing.expectEqual(42, transformed.seed.?);
 }
 
-test "transformResponse is pass-through" {
+test "transformResponse is pass-through with model override" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -222,8 +218,6 @@ test "transformResponse is pass-through" {
     };
 
     const transformed = try transformResponse(original_response, allocator, "openai/gpt-4");
-    defer allocator.free(transformed.id);
-    defer allocator.free(transformed.model);
 
     try testing.expectEqualStrings("chatcmpl-123", transformed.id);
     try testing.expectEqualStrings("chat.completion", transformed.object);
@@ -299,12 +293,11 @@ test "cleanupResponse frees model string" {
         .total_tokens = 15,
     };
 
-    // Allocate id and model strings like transformResponse does
-    const id_str = try allocator.dupe(u8, "test-123");
+    // Allocate model string like transformResponse does
     const model_str = try allocator.dupe(u8, "openai/gpt-4");
 
     const response = OpenAI.Response{
-        .id = id_str,
+        .id = "test-123",
         .object = "chat.completion",
         .created = 1234567890,
         .model = model_str,

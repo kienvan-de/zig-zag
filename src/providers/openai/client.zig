@@ -165,11 +165,12 @@ pub const OpenAIClient = struct {
         defer self.allocator.free(response_body);
 
         // Parse response JSON into OpenAI.Response
+        // Use .alloc_always to ensure all strings are owned by the parsed result
         return std.json.parseFromSlice(
             OpenAI.Response,
             self.allocator,
             response_body,
-            .{},
+            .{ .allocate = .alloc_always },
         ) catch |err| {
             std.debug.print("Failed to parse OpenAI response: {}\n", .{err});
             return error.InvalidResponse;
