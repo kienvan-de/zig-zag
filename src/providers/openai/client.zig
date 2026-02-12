@@ -160,7 +160,7 @@ pub const OpenAIClient = struct {
         var transfer_buf: [4096]u8 = undefined;
         const reader = response.reader(&transfer_buf);
 
-        return try reader.readAlloc(self.allocator, self.max_response_size);
+        return try reader.allocRemaining(self.allocator, std.io.Limit.limited(self.max_response_size));
     }
 
     fn handleErrorResponse(self: *OpenAIClient, status: std.http.Status) ![]const u8 {
