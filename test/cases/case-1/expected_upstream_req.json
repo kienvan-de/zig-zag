@@ -1,0 +1,9 @@
+{
+  "model": "gpt5.2",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Hello from case-1"
+    }
+  ]
+}

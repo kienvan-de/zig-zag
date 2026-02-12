@@ -1,0 +1,21 @@
+{
+  "id": "chatcmpl-case-1",
+  "object": "chat.completion",
+  "created": 1710000000,
+  "model": "gpt5.2",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Hello from upstream case-1"
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 5,
+    "completion_tokens": 6,
+    "total_tokens": 11
+  }
+}
