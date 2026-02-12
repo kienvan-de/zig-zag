@@ -34,18 +34,14 @@ pub const Recorder = struct {
         self.counter += 1;
         self.mutex.unlock();
         
-        std.debug.print("[Recorder] Recording {s} request (id={d})\n", .{prefix, id});
-        
         var path_buf: [std.fs.max_path_bytes]u8 = undefined;
         const filepath = try std.fmt.bufPrint(
             &path_buf,
             "{s}/{s}_request_{d:0>3}.json",
             .{ self.output_dir, prefix, id },
         );
-        std.debug.print("[Recorder] Filepath: {s}\n", .{filepath});
 
         // Build JSON string
-        std.debug.print("[Recorder] Building JSON\n", .{});
         var json_buf = std.ArrayList(u8){};
         defer json_buf.deinit(self.allocator);
         
@@ -60,13 +56,10 @@ pub const Recorder = struct {
         try writer.writeAll("\n}\n");
 
         // Write to file
-        std.debug.print("[Recorder] Writing to file\n", .{});
         const file = try std.fs.cwd().createFile(filepath, .{});
         defer file.close();
         
-        std.debug.print("[Recorder] Writing {d} bytes\n", .{json_buf.items.len});
         _ = try file.write(json_buf.items);
-        std.debug.print("[Recorder] Request recorded successfully\n", .{});
     }
 
     /// Record a response to a JSON file

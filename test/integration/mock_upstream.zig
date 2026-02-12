@@ -35,7 +35,6 @@ pub const MockUpstream = struct {
 
     /// Start the mock server in a background thread
     pub fn start(self: *MockUpstream) !void {
-        std.debug.print("[MockUpstream] Starting {s} server on port {d}\n", .{self.provider_name, self.port});
         self.thread = try std.Thread.spawn(.{}, runServer, .{self});
         // Give server time to bind
         std.Thread.sleep(100 * std.time.ns_per_ms);
@@ -47,17 +46,13 @@ pub const MockUpstream = struct {
     }
 
     fn runServer(self: *MockUpstream) !void {
-        std.debug.print("[MockUpstream] {s} binding to 127.0.0.1:{d}\n", .{self.provider_name, self.port});
         const addr = try std.net.Address.parseIp("127.0.0.1", self.port);
         var listener = addr.listen(.{
             .reuse_address = true,
         }) catch |err| {
-            std.debug.print("[MockUpstream] {s} failed to bind: {}\n", .{self.provider_name, err});
             return err;
         };
         defer listener.deinit();
-
-        std.debug.print("[MockUpstream] {s} listening on port {d}\n", .{self.provider_name, self.port});
 
         while (!self.should_stop.load(.monotonic)) {
             // Accept with timeout to allow checking should_stop
@@ -66,11 +61,8 @@ pub const MockUpstream = struct {
                     std.Thread.sleep(100 * std.time.ns_per_ms);
                     continue;
                 }
-                std.debug.print("[MockUpstream] {s} accept error: {}\n", .{self.provider_name, err});
                 return err;
             };
-
-            std.debug.print("[MockUpstream] {s} accepted connection\n", .{self.provider_name});
 
             self.handleConnection(connection) catch |err| {
                 std.debug.print("[MockUpstream] {s} error handling connection: {}\n", .{self.provider_name, err});
@@ -81,28 +73,21 @@ pub const MockUpstream = struct {
     fn handleConnection(self: *MockUpstream, connection: std.net.Server.Connection) !void {
         defer connection.stream.close();
 
-        std.debug.print("[MockUpstream] {s} handling connection\n", .{self.provider_name});
-
         // Use arena for request handling
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
         const request_allocator = arena.allocator();
 
         var read_buffer: [16384]u8 = undefined;
-        std.debug.print("[MockUpstream] {s} reading request...\n", .{self.provider_name});
         const bytes_read = try connection.stream.read(&read_buffer);
-        std.debug.print("[MockUpstream] {s} read {d} bytes\n", .{self.provider_name, bytes_read});
         if (bytes_read == 0) return;
 
         const request_data = read_buffer[0..bytes_read];
 
-        std.debug.print("[MockUpstream] {s} parsing request\n", .{self.provider_name});
         // Parse HTTP request
         const parsed = try parseHttpRequest(request_allocator, request_data);
-        std.debug.print("[MockUpstream] {s} parsed: {s} {s}\n", .{self.provider_name, parsed.method, parsed.path});
 
         // Record the incoming request
-        std.debug.print("[MockUpstream] {s} recording request\n", .{self.provider_name});
         try self.recorder.recordRequest(
             self.provider_name,
             parsed.method,
@@ -111,10 +96,8 @@ pub const MockUpstream = struct {
         );
 
         // Generate mock response based on provider
-        std.debug.print("[MockUpstream] {s} generating mock response\n", .{self.provider_name});
         const response_body = try self.generateMockResponse(parsed.body);
         defer self.allocator.free(response_body);
-        std.debug.print("[MockUpstream] {s} response body: {d} bytes\n", .{self.provider_name, response_body.len});
 
         // Send HTTP response
         var response_buf = std.ArrayList(u8){};
@@ -128,9 +111,7 @@ pub const MockUpstream = struct {
         try writer.writeAll("\r\n");
         try writer.writeAll(response_body);
 
-        std.debug.print("[MockUpstream] {s} sending response: {d} bytes\n", .{self.provider_name, response_buf.items.len});
         _ = try connection.stream.writeAll(response_buf.items);
-        std.debug.print("[MockUpstream] {s} response sent successfully\n", .{self.provider_name});
 
         // Record the response
         try self.recorder.recordResponse(
@@ -138,7 +119,6 @@ pub const MockUpstream = struct {
             200,
             response_body,
         );
-        std.debug.print("[MockUpstream] {s} connection handled successfully\n", .{self.provider_name});
     }
 
     fn generateMockResponse(self: *MockUpstream, request_body: []const u8) ![]u8 {
@@ -288,7 +268,7 @@ pub fn main() !void {
     const port = try std.fmt.parseInt(u16, args[1], 10);
     const provider_name = args[2];
 
-    std.debug.print("[MockUpstream] Starting {s} server on port {d}\n", .{ provider_name, port });
+
 
     var rec = try recorder.Recorder.init(allocator, "test/fixtures/recorded");
 
