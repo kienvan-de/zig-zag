@@ -1,0 +1,31 @@
+{
+  "id": "msg_01XFDUDYJgAACzvnptvVoYEL",
+  "object": "chat.completion",
+  "created": 1710000000,
+  "model": "anthropic/claude-3-5-sonnet-20241022",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "I'll check the AAPL stock price for you. Looking at the chart you've shared, I can see it displays Apple Inc.'s stock performance over time.",
+        "tool_calls": [
+          {
+            "id": "toolu_01A09q90qw90lq917835lq9",
+            "type": "function",
+            "function": {
+              "name": "get_stock_price",
+              "arguments": "{\"ticker\":\"AAPL\"}"
+            }
+          }
+        ]
+      },
+      "finish_reason": "tool_calls"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 385,
+    "completion_tokens": 127,
+    "total_tokens": 512
+  }
+}

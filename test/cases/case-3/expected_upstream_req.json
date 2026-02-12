@@ -1,0 +1,103 @@
+{
+  "model": "claude-3-5-sonnet-latest",
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "What's the weather in Tokyo?"
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "call_weather_123",
+          "name": "get_weather",
+          "input": {
+            "location": "Tokyo, Japan"
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "call_weather_123",
+          "content": "{\"temperature\": 22, \"condition\": \"partly cloudy\", \"humidity\": 65}"
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "The weather in Tokyo is 22°C and partly cloudy with 65% humidity."
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "Now check the stock price for AAPL and tell me what you see in this chart:"
+        },
+        {
+          "type": "image",
+          "source": {
+            "type": "url",
+            "url": "https://example.com/aapl-chart.png"
+          }
+        }
+      ]
+    }
+  ],
+  "system": "You are a helpful assistant with access to tools for getting weather and stock information.",
+  "max_tokens": 1024,
+  "temperature": 0.7,
+  "top_p": 0.9,
+  "stop_sequences": ["END", "STOP"],
+  "metadata": {
+    "user_id": "test-user-456"
+  },
+  "tools": [
+    {
+      "name": "get_weather",
+      "description": "Get current weather for a location",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "location": {
+            "type": "string",
+            "description": "City and country"
+          }
+        },
+        "required": ["location"]
+      }
+    },
+    {
+      "name": "get_stock_price",
+      "description": "Get current stock price for a ticker symbol",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "ticker": {
+            "type": "string",
+            "description": "Stock ticker symbol (e.g., AAPL)"
+          }
+        },
+        "required": ["ticker"]
+      }
+    }
+  ],
+  "tool_choice": {
+    "type": "auto"
+  }
+}
