@@ -191,11 +191,10 @@ test "AnthropicClient.init creates client with correct fields" {
         \\{"api_key": "sk-ant-test-key-123"}
     ;
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_str, .{});
-    var provider_config = config_mod.ProviderConfig{
+    const provider_config = config_mod.ProviderConfig{
         .allocator = allocator,
-        .raw = parsed,
+        .raw = parsed.value,
     };
-    defer provider_config.deinit();
 
     var client = try AnthropicClient.init(allocator, &provider_config);
     defer client.deinit();
@@ -224,51 +223,50 @@ test "AnthropicClient.handleErrorResponse maps status codes correctly" {
         \\{"api_key": "test-key"}
     ;
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_str, .{});
-    var provider_config = config_mod.ProviderConfig{
+    const provider_config = config_mod.ProviderConfig{
         .allocator = allocator,
-        .raw = parsed,
+        .raw = parsed.value,
     };
-    defer provider_config.deinit();
 
     var client = try AnthropicClient.init(allocator, &provider_config);
     defer client.deinit();
 
     // Test authentication error
-    try testing.expectError(
+    try testing.expectEqual(
         error.AuthenticationError,
         client.handleErrorResponse(.unauthorized),
     );
 
     // Test rate limit error
-    try testing.expectError(
+    try testing.expectEqual(
         error.RateLimitError,
         client.handleErrorResponse(.too_many_requests),
     );
 
     // Test server errors
-    try testing.expectError(
+    try testing.expectEqual(
         error.ServerError,
         client.handleErrorResponse(.internal_server_error),
     );
-    try testing.expectError(
+    try testing.expectEqual(
         error.ServerError,
         client.handleErrorResponse(.bad_gateway),
     );
-    try testing.expectError(
+    try testing.expectEqual(
         error.ServerError,
         client.handleErrorResponse(.service_unavailable),
     );
-    try testing.expectError(
+    try testing.expectEqual(
         error.ServerError,
         client.handleErrorResponse(.gateway_timeout),
     );
 
     // Test other errors
-    try testing.expectError(
+    try testing.expectEqual(
         error.InvalidStatusCode,
         client.handleErrorResponse(.bad_request),
     );
-    try testing.expectError(
+    try testing.expectEqual(
         error.InvalidStatusCode,
         client.handleErrorResponse(.not_found),
     );
@@ -284,11 +282,10 @@ test "AnthropicClient stores allocator correctly" {
         \\{"api_key": "test-key"}
     ;
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_str, .{});
-    var provider_config = config_mod.ProviderConfig{
+    const provider_config = config_mod.ProviderConfig{
         .allocator = allocator,
-        .raw = parsed,
+        .raw = parsed.value,
     };
-    defer provider_config.deinit();
 
     var client = try AnthropicClient.init(allocator, &provider_config);
     defer client.deinit();
@@ -309,11 +306,10 @@ test "AnthropicClient can be initialized with different API keys" {
             \\{"api_key": "short"}
         ;
         const parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_str, .{});
-        var provider_config = config_mod.ProviderConfig{
+        const provider_config = config_mod.ProviderConfig{
             .allocator = allocator,
-            .raw = parsed,
+            .raw = parsed.value,
         };
-        defer provider_config.deinit();
 
         var client = try AnthropicClient.init(allocator, &provider_config);
         defer client.deinit();
@@ -326,11 +322,10 @@ test "AnthropicClient can be initialized with different API keys" {
             \\{"api_key": "sk-ant-api03-very-long-key-with-many-characters-0123456789"}
         ;
         const parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_str, .{});
-        var provider_config = config_mod.ProviderConfig{
+        const provider_config = config_mod.ProviderConfig{
             .allocator = allocator,
-            .raw = parsed,
+            .raw = parsed.value,
         };
-        defer provider_config.deinit();
 
         var client = try AnthropicClient.init(allocator, &provider_config);
         defer client.deinit();
@@ -343,11 +338,10 @@ test "AnthropicClient can be initialized with different API keys" {
             \\{"api_key": "sk-ant_test.key-with$pecial#chars"}
         ;
         const parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_str, .{});
-        var provider_config = config_mod.ProviderConfig{
+        const provider_config = config_mod.ProviderConfig{
             .allocator = allocator,
-            .raw = parsed,
+            .raw = parsed.value,
         };
-        defer provider_config.deinit();
 
         var client = try AnthropicClient.init(allocator, &provider_config);
         defer client.deinit();
@@ -365,11 +359,10 @@ test "AnthropicClient uses default values when not in config" {
         \\{"api_key": "test-key"}
     ;
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_str, .{});
-    var provider_config = config_mod.ProviderConfig{
+    const provider_config = config_mod.ProviderConfig{
         .allocator = allocator,
-        .raw = parsed,
+        .raw = parsed.value,
     };
-    defer provider_config.deinit();
 
     var client = try AnthropicClient.init(allocator, &provider_config);
     defer client.deinit();
@@ -400,11 +393,10 @@ test "AnthropicClient uses custom config values when provided" {
         \\}
     ;
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_str, .{});
-    var provider_config = config_mod.ProviderConfig{
+    const provider_config = config_mod.ProviderConfig{
         .allocator = allocator,
-        .raw = parsed,
+        .raw = parsed.value,
     };
-    defer provider_config.deinit();
 
     var client = try AnthropicClient.init(allocator, &provider_config);
     defer client.deinit();
@@ -433,11 +425,10 @@ test "AnthropicClient.sendRequest retries on retryable errors" {
         \\}
     ;
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_str, .{});
-    var provider_config = config_mod.ProviderConfig{
+    const provider_config = config_mod.ProviderConfig{
         .allocator = allocator,
-        .raw = parsed,
+        .raw = parsed.value,
     };
-    defer provider_config.deinit();
 
     var client = try AnthropicClient.init(allocator, &provider_config);
     defer client.deinit();

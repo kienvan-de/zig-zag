@@ -238,12 +238,12 @@ test "ProviderConfig.getString returns correct value" {
         json_str,
         .{},
     );
+    defer parsed.deinit();
 
     var config = ProviderConfig{
         .allocator = allocator,
-        .raw = parsed,
+        .raw = parsed.value,
     };
-    defer config.deinit();
 
     try testing.expectEqualStrings("test-key", config.getString("api_key").?);
     try testing.expect(config.getString("missing") == null);
@@ -263,12 +263,12 @@ test "ProviderConfig.getInt returns correct value" {
         json_str,
         .{},
     );
+    defer parsed.deinit();
 
     var config = ProviderConfig{
         .allocator = allocator,
-        .raw = parsed,
+        .raw = parsed.value,
     };
-    defer config.deinit();
 
     try testing.expectEqual(42, config.getInt("count").?);
     try testing.expect(config.getInt("text") == null);
@@ -289,12 +289,12 @@ test "ProviderConfig.getFloat returns correct value" {
         json_str,
         .{},
     );
+    defer parsed.deinit();
 
     var config = ProviderConfig{
         .allocator = allocator,
-        .raw = parsed,
+        .raw = parsed.value,
     };
-    defer config.deinit();
 
     try testing.expectEqual(0.7, config.getFloat("temperature").?);
     try testing.expectEqual(100.0, config.getFloat("max_tokens").?); // Int converts to float
@@ -314,12 +314,12 @@ test "ProviderConfig.getBool returns correct value" {
         json_str,
         .{},
     );
+    defer parsed.deinit();
 
     var config = ProviderConfig{
         .allocator = allocator,
-        .raw = parsed,
+        .raw = parsed.value,
     };
-    defer config.deinit();
 
     try testing.expectEqual(true, config.getBool("enabled").?);
     try testing.expectEqual(false, config.getBool("disabled").?);
@@ -331,22 +331,18 @@ test "Config.getProviderConfig returns correct provider" {
     const allocator = testing.allocator;
 
     var providers = std.StringHashMap(ProviderConfig).init(allocator);
-    defer providers.deinit();
-
-    const json_str =
-        \\{"api_key": "test-key"}
-    ;
 
     const parsed = try std.json.parseFromSlice(
         std.json.Value,
         allocator,
-        json_str,
+        \\{"api_key": "test-key"}
+        ,
         .{},
     );
 
     const provider_config = ProviderConfig{
         .allocator = allocator,
-        .raw = parsed,
+        .raw = parsed.value,
     };
 
     try providers.put("anthropic", provider_config);
@@ -355,13 +351,9 @@ test "Config.getProviderConfig returns correct provider" {
         .allocator = allocator,
         .providers = providers,
         .server = .{},
+        ._parsed = parsed,
     };
-    defer {
-        var iter = config.providers.valueIterator();
-        while (iter.next()) |prov| {
-            prov.deinit();
-        }
-    }
+    defer config.deinit();
 
     const result = config.getProviderConfig(.anthropic);
     try testing.expect(result != null);
@@ -372,14 +364,22 @@ test "Config.hasProvider checks provider existence" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    var providers = std.StringHashMap(ProviderConfig).init(allocator);
-    defer providers.deinit();
+    const providers = std.StringHashMap(ProviderConfig).init(allocator);
 
-    const config = Config{
+    const dummy_parsed = try std.json.parseFromSlice(
+        std.json.Value,
+        allocator,
+        "{}",
+        .{},
+    );
+
+    var config = Config{
         .allocator = allocator,
         .providers = providers,
         .server = .{},
+        ._parsed = dummy_parsed,
     };
+    defer config.deinit();
 
     try testing.expect(!config.hasProvider(.anthropic));
 }
