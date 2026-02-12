@@ -436,8 +436,6 @@ pub fn main() !void {
 
         try assertCaseFileEqual(allocator, "test/cases", "upstream_req.json", "expected_upstream_req.json");
         try assertCaseFileEqual(allocator, "test/cases", "agent_res.json", "expected_agent_res.json");
-        
-        std.debug.print("Response received: {s}\n", .{response});
     }
     
     std.debug.print("\nAll tests completed!\n", .{});

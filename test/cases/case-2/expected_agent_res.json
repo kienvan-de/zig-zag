@@ -20,7 +20,7 @@
               {"token": "I", "logprob": -0.5, "bytes": [73]},
               {"token": "The", "logprob": -1.2, "bytes": [84, 104, 101]},
               {"token": "This", "logprob": -1.5, "bytes": [84, 104, 105, 115]},
-              {"token": "It", "logprob": -2.0, "bytes": [73, 116]},
+              {"token": "It", "logprob": -2, "bytes": [73, 116]},
               {"token": "Based", "logprob": -2.3, "bytes": [66, 97, 115, 101, 100]}
             ]
           }
