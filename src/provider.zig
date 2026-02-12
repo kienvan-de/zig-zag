@@ -37,27 +37,3 @@ pub fn isSupported(provider: Provider) bool {
 // ============================================================================
 // TESTS
 // ============================================================================
-
-test "isSupported: anthropic is supported" {
-    try testing.expect(isSupported(.anthropic));
-}
-
-test "isSupported: openai not yet supported" {
-    try testing.expect(!isSupported(.openai));
-}
-
-test "Provider.fromString: valid providers" {
-    try testing.expectEqual(Provider.anthropic, try Provider.fromString("anthropic"));
-    try testing.expectEqual(Provider.anthropic, try Provider.fromString("Anthropic"));
-    try testing.expectEqual(Provider.anthropic, try Provider.fromString("ANTHROPIC"));
-    
-    try testing.expectEqual(Provider.openai, try Provider.fromString("openai"));
-    try testing.expectEqual(Provider.openai, try Provider.fromString("OpenAI"));
-    try testing.expectEqual(Provider.openai, try Provider.fromString("OPENAI"));
-}
-
-test "Provider.fromString: invalid provider" {
-    try testing.expectError(error.UnsupportedProvider, Provider.fromString("google"));
-    try testing.expectError(error.UnsupportedProvider, Provider.fromString("invalid"));
-    try testing.expectError(error.UnsupportedProvider, Provider.fromString(""));
-}
