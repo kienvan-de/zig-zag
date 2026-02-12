@@ -53,10 +53,11 @@ pub const OpenAIClient = struct {
 
     /// Send a request to OpenAI Chat Completions API (non-streaming)
     /// Implements automatic retry logic based on retry_count and retry_delay_ms config
+    /// Returns parsed OpenAI.Response
     pub fn sendRequest(
         self: *OpenAIClient,
         request: OpenAI.Request,
-    ) ![]const u8 {
+    ) !std.json.Parsed(OpenAI.Response) {
         var attempts: u32 = 0;
         const max_attempts = self.retry_count + 1;
 
@@ -99,7 +100,7 @@ pub const OpenAIClient = struct {
     fn sendRequestOnce(
         self: *OpenAIClient,
         request: OpenAI.Request,
-    ) ![]const u8 {
+    ) !std.json.Parsed(OpenAI.Response) {
         // Serialize request to JSON
         var request_body = std.ArrayList(u8){};
         defer request_body.deinit(self.allocator);
@@ -153,17 +154,29 @@ pub const OpenAIClient = struct {
 
         // Check status code
         if (response.head.status != .ok) {
-            return try self.handleErrorResponse(response.head.status);
+            return self.handleErrorResponse(response.head.status);
         }
 
         // Read response body
         var transfer_buf: [4096]u8 = undefined;
         const reader = response.reader(&transfer_buf);
 
-        return try reader.allocRemaining(self.allocator, std.io.Limit.limited(self.max_response_size));
+        const response_body = try reader.allocRemaining(self.allocator, std.io.Limit.limited(self.max_response_size));
+        defer self.allocator.free(response_body);
+
+        // Parse response JSON into OpenAI.Response
+        return std.json.parseFromSlice(
+            OpenAI.Response,
+            self.allocator,
+            response_body,
+            .{},
+        ) catch |err| {
+            std.debug.print("Failed to parse OpenAI response: {}\n", .{err});
+            return error.InvalidResponse;
+        };
     }
 
-    fn handleErrorResponse(self: *OpenAIClient, status: std.http.Status) ![]const u8 {
+    fn handleErrorResponse(self: *OpenAIClient, status: std.http.Status) error{AuthenticationError, RateLimitError, ServerError, InvalidStatusCode} {
         _ = self;
         return switch (status) {
             .unauthorized => error.AuthenticationError,

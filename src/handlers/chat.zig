@@ -218,7 +218,7 @@ pub fn handle(
 /// Client type must have:
 ///   - `init(allocator: Allocator, api_key: []const u8) Client`
 ///   - `deinit(self: *Client) void`
-///   - `sendRequest(self: *Client, request: anytype) ![]const u8`
+///   - `sendRequest(self: *Client, request: anytype) !std.json.Parsed(Types.Response)`
 ///
 /// Transformer module must have:
 ///   - `transform(request: OpenAI.Request, model: []const u8, allocator: Allocator) !ProviderRequest`
@@ -251,7 +251,7 @@ pub fn handle(
 fn handleProvider(
     comptime Client: type,
     comptime Transformer: type,
-    comptime Types: type,
+    comptime _: type,
     allocator: std.mem.Allocator,
     connection: std.net.Server.Connection,
     openai_request: OpenAI.Request,
@@ -292,7 +292,7 @@ fn handleProvider(
     };
     defer client.deinit();
 
-    const provider_response_json = client.sendRequest(provider_request) catch |err| {
+    const provider_response = client.sendRequest(provider_request) catch |err| {
         std.debug.print("Provider API error: {}\n", .{err});
         const error_json = try errors.createErrorFromStatus(
             allocator,
@@ -301,26 +301,6 @@ fn handleProvider(
         );
         defer allocator.free(error_json);
         try http.sendJsonResponse(connection, .bad_gateway, error_json);
-        return;
-    };
-    defer allocator.free(provider_response_json);
-
-    // Parse provider response
-    const provider_response = std.json.parseFromSlice(
-        Types.Response,
-        allocator,
-        provider_response_json,
-        .{},
-    ) catch |err| {
-        std.debug.print("Provider response parse error: {}\n", .{err});
-        const error_json = try errors.createErrorResponse(
-            allocator,
-            "Invalid response from upstream API",
-            .server_error,
-            null,
-        );
-        defer allocator.free(error_json);
-        try http.sendJsonResponse(connection, .internal_server_error, error_json);
         return;
     };
     defer provider_response.deinit();
