@@ -309,7 +309,8 @@ pub fn cleanupResponse(response: OpenAI.Response, allocator: std.mem.Allocator) 
         }
     }
     allocator.free(response.choices);
-    // Free the model string allocated in transformResponse
+    // Free the id and model strings allocated in transformResponse
+    allocator.free(response.id);
     allocator.free(response.model);
 }
 
@@ -350,8 +351,11 @@ pub fn transformResponse(
     const model_str = try std.fmt.allocPrint(allocator, "anthropic/{s}", .{anthropic_response.model});
     _ = original_model; // Available if needed for future use
     
+    // Duplicate id string to avoid dangling pointer after response is freed
+    const id_str = try allocator.dupe(u8, anthropic_response.id);
+    
     return OpenAI.Response{
-        .id = anthropic_response.id,
+        .id = id_str,
         .object = "chat.completion",
         .created = std.time.timestamp(),
         .model = model_str,
@@ -982,6 +986,7 @@ test "transformResponse: basic response with provider prefix" {
             allocator.free(content);
         }
         allocator.free(result.choices);
+        allocator.free(result.id);
         allocator.free(result.model);
     }
     
@@ -1025,6 +1030,7 @@ test "transformResponse: multiple content blocks" {
             allocator.free(content);
         }
         allocator.free(result.choices);
+        allocator.free(result.id);
         allocator.free(result.model);
     }
     
@@ -1058,6 +1064,7 @@ test "transformResponse: max_tokens stop reason" {
             allocator.free(content);
         }
         allocator.free(result.choices);
+        allocator.free(result.id);
         allocator.free(result.model);
     }
     
@@ -1089,6 +1096,7 @@ test "transformResponse: empty content" {
             allocator.free(content);
         }
         allocator.free(result.choices);
+        allocator.free(result.id);
         allocator.free(result.model);
     }
     

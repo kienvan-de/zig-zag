@@ -47,8 +47,11 @@ pub fn transformResponse(
     // Allocate model string to return original_model (e.g., "groq/llama-3.1-70b")
     const model_str = try allocator.dupe(u8, original_model);
     
+    // Duplicate id string to avoid dangling pointer after response is freed
+    const id_str = try allocator.dupe(u8, response.id);
+    
     return OpenAI.Response{
-        .id = response.id,
+        .id = id_str,
         .object = response.object,
         .created = response.created,
         .model = model_str,
@@ -68,7 +71,8 @@ pub fn cleanupRequest(request: OpenAI.Request, allocator: std.mem.Allocator) voi
 
 /// Cleanup transformed response
 pub fn cleanupResponse(response: OpenAI.Response, allocator: std.mem.Allocator) void {
-    // Free the model string allocated in transformResponse
+    // Free the id and model strings allocated in transformResponse
+    allocator.free(response.id);
     allocator.free(response.model);
 }
 
@@ -218,6 +222,7 @@ test "transformResponse is pass-through" {
     };
 
     const transformed = try transformResponse(original_response, allocator, "openai/gpt-4");
+    defer allocator.free(transformed.id);
     defer allocator.free(transformed.model);
 
     try testing.expectEqualStrings("chatcmpl-123", transformed.id);
@@ -294,11 +299,12 @@ test "cleanupResponse frees model string" {
         .total_tokens = 15,
     };
 
-    // Allocate model string like transformResponse does
+    // Allocate id and model strings like transformResponse does
+    const id_str = try allocator.dupe(u8, "test-123");
     const model_str = try allocator.dupe(u8, "openai/gpt-4");
 
     const response = OpenAI.Response{
-        .id = "test-123",
+        .id = id_str,
         .object = "chat.completion",
         .created = 1234567890,
         .model = model_str,

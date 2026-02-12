@@ -23,10 +23,10 @@ pub const TestContext = struct {
     groq_upstream_process: ?std.process.Child,
     proxy_process: ?std.process.Child,
 
-    pub fn init(allocator: std.mem.Allocator) !TestContext {
+    pub fn init(allocator: std.mem.Allocator) !*TestContext {
         const config = TestConfig{};
         
-        var rec = try recorder.Recorder.init(allocator, config.recorded_dir);
+        const rec = try recorder.Recorder.init(allocator, config.recorded_dir);
         
         var proxy_url_buffer: [64]u8 = undefined;
         const proxy_url = try std.fmt.bufPrint(
@@ -36,21 +36,27 @@ pub const TestContext = struct {
         );
         const proxy_url_owned = try allocator.dupe(u8, proxy_url);
         
-        const client = MockClient.init(allocator, proxy_url_owned, &rec);
-
-        return TestContext{
+        // Allocate on heap to avoid dangling pointer when returned
+        const ctx = try allocator.create(TestContext);
+        ctx.* = TestContext{
             .allocator = allocator,
             .config = config,
             .recorder = rec,
-            .client = client,
+            .client = undefined,
             .anthropic_upstream_process = null,
             .openai_upstream_process = null,
             .groq_upstream_process = null,
             .proxy_process = null,
         };
+        
+        // Now set the client with stable recorder pointer
+        ctx.client = MockClient.init(allocator, proxy_url_owned, &ctx.recorder);
+        
+        return ctx;
     }
 
     pub fn deinit(self: *TestContext) void {
+        const allocator = self.allocator;
         if (self.proxy_process) |*proc| {
             _ = proc.kill() catch {};
         }
@@ -64,7 +70,8 @@ pub const TestContext = struct {
             _ = proc.kill() catch {};
         }
         self.client.deinit();
-        self.allocator.free(self.client.proxy_url);
+        allocator.free(self.client.proxy_url);
+        allocator.destroy(self);
     }
 
     /// Start all mock upstream servers as separate processes
@@ -206,7 +213,7 @@ pub const TestContext = struct {
 test "OpenAI to Anthropic transformation" {
     const allocator = std.testing.allocator;
     
-    var ctx = try TestContext.init(allocator);
+    const ctx = try TestContext.init(allocator);
     defer ctx.deinit();
     
     try ctx.cleanRecordings();
@@ -236,7 +243,7 @@ test "OpenAI to Anthropic transformation" {
 test "OpenAI passthrough" {
     const allocator = std.testing.allocator;
     
-    var ctx = try TestContext.init(allocator);
+    const ctx = try TestContext.init(allocator);
     defer ctx.deinit();
     
     try ctx.cleanRecordings();
@@ -262,7 +269,7 @@ test "OpenAI passthrough" {
 test "Compatible provider - Groq" {
     const allocator = std.testing.allocator;
     
-    var ctx = try TestContext.init(allocator);
+    const ctx = try TestContext.init(allocator);
     defer ctx.deinit();
     
     try ctx.cleanRecordings();
@@ -288,7 +295,7 @@ test "Compatible provider - Groq" {
 test "Error handling - invalid model" {
     const allocator = std.testing.allocator;
     
-    var ctx = try TestContext.init(allocator);
+    const ctx = try TestContext.init(allocator);
     defer ctx.deinit();
     
     const messages =
@@ -316,7 +323,7 @@ pub fn main() !void {
     
     std.debug.print("Starting integration tests...\n", .{});
     
-    var ctx = try TestContext.init(allocator);
+    const ctx = try TestContext.init(allocator);
     defer ctx.deinit();
     
     try ctx.cleanRecordings();

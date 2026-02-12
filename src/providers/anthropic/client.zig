@@ -155,11 +155,12 @@ pub const AnthropicClient = struct {
         defer self.allocator.free(response_body);
 
         // Parse response JSON into Anthropic.Response
+        // Use .alloc_always to force copying all strings, so they survive after response_body is freed
         return std.json.parseFromSlice(
             Anthropic.Response,
             self.allocator,
             response_body,
-            .{},
+            .{ .allocate = .alloc_always },
         ) catch |err| {
             std.debug.print("Failed to parse Anthropic response: {}\n", .{err});
             return error.InvalidResponse;

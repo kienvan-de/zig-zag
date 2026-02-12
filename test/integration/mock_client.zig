@@ -31,8 +31,6 @@ pub const MockClient = struct {
         model: []const u8,
         messages: []const u8, // JSON string of messages array
     ) ![]u8 {
-        std.debug.print("[MockClient] Sending request to proxy for model: {s}\n", .{model});
-        
         // Build request body
         var body_buffer = std.ArrayList(u8){};
         defer body_buffer.deinit(self.allocator);
@@ -47,8 +45,6 @@ pub const MockClient = struct {
         const request_body = try body_buffer.toOwnedSlice(self.allocator);
         defer self.allocator.free(request_body);
 
-        std.debug.print("[MockClient] Request body: {s}\n", .{request_body});
-
         // Construct full URL
         var url_buffer: [256]u8 = undefined;
         const url = try std.fmt.bufPrint(
@@ -56,8 +52,6 @@ pub const MockClient = struct {
             "{s}/v1/chat/completions",
             .{self.proxy_url},
         );
-
-        std.debug.print("[MockClient] Connecting to: {s}\n", .{url});
 
         // Parse URI
         const uri = try std.Uri.parse(url);
@@ -71,8 +65,6 @@ pub const MockClient = struct {
             .headers = headers,
         });
         defer req.deinit();
-
-        std.debug.print("[MockClient] Request created, sending body...\n", .{});
 
         // Set content length and send
         req.transfer_encoding = .{ .content_length = request_body.len };
@@ -90,20 +82,14 @@ pub const MockClient = struct {
             request_body,
         );
 
-        std.debug.print("[MockClient] Body sent, waiting for response...\n", .{});
-
         // Wait for response
         const redirect_buffer: [0]u8 = undefined;
         var response = try req.receiveHead(&redirect_buffer);
-
-        std.debug.print("[MockClient] Response status: {}\n", .{response.head.status});
 
         // Read response body
         var transfer_buf: [4096]u8 = undefined;
         const reader = response.reader(&transfer_buf);
         const response_body = try reader.allocRemaining(self.allocator, std.io.Limit.limited(1024 * 1024));
-
-        std.debug.print("[MockClient] Response received: {d} bytes\n", .{response_body.len});
 
         // Record the response
         try self.recorder.recordResponse(

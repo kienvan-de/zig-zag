@@ -316,7 +316,7 @@ fn handleProvider(
     // Serialize OpenAI response
     var response_buffer = std.ArrayList(u8){};
     defer response_buffer.deinit(allocator);
-    try response_buffer.writer(allocator).print("{any}", .{std.json.fmt(openai_response, .{})});
+    try response_buffer.writer(allocator).print("{f}", .{std.json.fmt(openai_response, .{})});
 
     // Send response
     try http.sendJsonResponse(connection, .ok, response_buffer.items);
