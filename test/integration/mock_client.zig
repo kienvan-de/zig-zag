@@ -7,17 +7,20 @@ pub const MockClient = struct {
     proxy_url: []const u8,
     recorder: *recorder.Recorder,
     http_client: std.http.Client,
+    case_name: []const u8,
 
     pub fn init(
         allocator: std.mem.Allocator,
         proxy_url: []const u8,
         rec: *recorder.Recorder,
+        case_name: []const u8,
     ) MockClient {
         return MockClient{
             .allocator = allocator,
             .proxy_url = proxy_url,
             .recorder = rec,
             .http_client = std.http.Client{ .allocator = allocator },
+            .case_name = case_name,
         };
     }
 
@@ -94,6 +97,7 @@ pub const MockClient = struct {
         const request_body = try recorder.readCaseFile(
             self.allocator,
             cases_root,
+            self.case_name,
             "agent_req.json",
             1024 * 1024,
         );
@@ -104,6 +108,7 @@ pub const MockClient = struct {
         try recorder.writeCaseFile(
             self.allocator,
             cases_root,
+            self.case_name,
             "agent_res.json",
             response_body,
         );
@@ -162,12 +167,12 @@ pub const MockClient = struct {
 
 test "MockClient initialization" {
     const allocator = std.testing.allocator;
-    const case_dir = try recorder.resolveCaseDir(allocator, "test/cases");
+    const case_dir = try recorder.resolveCaseDirFor(allocator, "test/cases", "case-1");
     defer allocator.free(case_dir);
     var rec = try recorder.Recorder.init(allocator, case_dir);
     defer rec.deinit();
 
-    var client = MockClient.init(allocator, "http://localhost:8080", &rec);
+    var client = MockClient.init(allocator, "http://localhost:8080", &rec, "case-1");
     defer client.deinit();
 }
 
@@ -177,6 +182,7 @@ test "MockClient loads case request" {
     const req_body = try recorder.readCaseFile(
         allocator,
         "test/cases",
+        "case-1",
         "agent_req.json",
         1024 * 1024,
     );

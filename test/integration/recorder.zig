@@ -46,6 +46,35 @@ pub const Recorder = struct {
     }
 };
 
+/// List all case directories in the cases root
+pub fn listCaseDirs(allocator: std.mem.Allocator, cases_root: []const u8) ![][]const u8 {
+    var case_dirs = std.ArrayList([]const u8){};
+    errdefer {
+        for (case_dirs.items) |dir| {
+            allocator.free(dir);
+        }
+        case_dirs.deinit(allocator);
+    }
+
+    var dir = std.fs.cwd().openDir(cases_root, .{ .iterate = true }) catch |err| {
+        if (err == error.FileNotFound) {
+            return try case_dirs.toOwnedSlice(allocator);
+        }
+        return err;
+    };
+    defer dir.close();
+
+    var it = dir.iterate();
+    while (try it.next()) |entry| {
+        if (entry.kind == .directory and std.mem.startsWith(u8, entry.name, "case-")) {
+            const name_copy = try allocator.dupe(u8, entry.name);
+            try case_dirs.append(allocator, name_copy);
+        }
+    }
+
+    return try case_dirs.toOwnedSlice(allocator);
+}
+
 pub fn resolveCaseDirFor(
     allocator: std.mem.Allocator,
     cases_root: []const u8,
@@ -62,9 +91,10 @@ pub fn resolveCaseDir(allocator: std.mem.Allocator, cases_root: []const u8) ![]c
 pub fn buildCasePath(
     allocator: std.mem.Allocator,
     cases_root: []const u8,
+    case_name: []const u8,
     filename: []const u8,
 ) ![]const u8 {
-    const case_dir = try resolveCaseDir(allocator, cases_root);
+    const case_dir = try resolveCaseDirFor(allocator, cases_root, case_name);
     defer allocator.free(case_dir);
 
     return try std.fmt.allocPrint(allocator, "{s}/{s}", .{ case_dir, filename });
@@ -73,10 +103,11 @@ pub fn buildCasePath(
 pub fn readCaseFile(
     allocator: std.mem.Allocator,
     cases_root: []const u8,
+    case_name: []const u8,
     filename: []const u8,
     max_bytes: usize,
 ) ![]u8 {
-    const path = try buildCasePath(allocator, cases_root, filename);
+    const path = try buildCasePath(allocator, cases_root, case_name, filename);
     defer allocator.free(path);
 
     return try std.fs.cwd().readFileAlloc(allocator, path, max_bytes);
@@ -85,10 +116,11 @@ pub fn readCaseFile(
 pub fn writeCaseFile(
     allocator: std.mem.Allocator,
     cases_root: []const u8,
+    case_name: []const u8,
     filename: []const u8,
     contents: []const u8,
 ) !void {
-    const path = try buildCasePath(allocator, cases_root, filename);
+    const path = try buildCasePath(allocator, cases_root, case_name, filename);
     defer allocator.free(path);
 
     const file = try std.fs.cwd().createFile(path, .{ .truncate = true });
