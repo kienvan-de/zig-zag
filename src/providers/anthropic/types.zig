@@ -38,6 +38,13 @@ pub const ImageSource = union(enum) {
         type: []const u8 = "url",
         url: []const u8,
     },
+
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        switch (self) {
+            .base64 => |v| try jw.write(v),
+            .url => |v| try jw.write(v),
+        }
+    }
 };
 
 /// Document source for content blocks
@@ -56,6 +63,39 @@ pub const DocumentSource = union(enum) {
         type: []const u8 = "url",
         url: []const u8,
     },
+
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        switch (self) {
+            .base64_pdf => |v| try jw.write(v),
+            .plain_text => |v| try jw.write(v),
+            .url_pdf => |v| try jw.write(v),
+        }
+    }
+};
+
+/// Tool result block for content
+pub const ToolResultBlock = struct {
+    type: []const u8 = "tool_result",
+    tool_use_id: []const u8,
+    content: ?[]const u8 = null,
+    is_error: ?bool = null,
+
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type");
+        try jw.write(self.type);
+        try jw.objectField("tool_use_id");
+        try jw.write(self.tool_use_id);
+        if (self.content) |c| {
+            try jw.objectField("content");
+            try jw.write(c);
+        }
+        if (self.is_error) |e| {
+            try jw.objectField("is_error");
+            try jw.write(e);
+        }
+        try jw.endObject();
+    }
 };
 
 /// Content block param for messages (request)
@@ -80,12 +120,7 @@ pub const ContentBlockParam = union(enum) {
         name: []const u8,
         input: std.json.Value,
     },
-    tool_result: struct {
-        type: []const u8 = "tool_result",
-        tool_use_id: []const u8,
-        content: ?[]const u8 = null, // Can be string or array of content blocks
-        is_error: ?bool = null,
-    },
+    tool_result: ToolResultBlock,
     thinking: struct {
         type: []const u8 = "thinking",
         thinking: []const u8,
@@ -95,6 +130,18 @@ pub const ContentBlockParam = union(enum) {
         type: []const u8 = "redacted_thinking",
         data: []const u8,
     },
+
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        switch (self) {
+            .text => |v| try jw.write(v),
+            .image => |v| try jw.write(v),
+            .document => |v| try jw.write(v),
+            .tool_use => |v| try jw.write(v),
+            .tool_result => |v| try jw.write(v),
+            .thinking => |v| try jw.write(v),
+            .redacted_thinking => |v| try jw.write(v),
+        }
+    }
 };
 
 pub const Message = struct {
@@ -103,6 +150,24 @@ pub const Message = struct {
         text: []const u8,
         blocks: []const ContentBlockParam,
     },
+
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("role");
+        try jw.write(self.role);
+        try jw.objectField("content");
+        switch (self.content) {
+            .text => |t| try jw.write(t),
+            .blocks => |blocks| {
+                try jw.beginArray();
+                for (blocks) |block| {
+                    try jw.write(block);
+                }
+                try jw.endArray();
+            },
+        }
+        try jw.endObject();
+    }
 
     pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
         const json_value = try std.json.innerParse(std.json.Value, allocator, source, options);
@@ -163,6 +228,40 @@ pub const Message = struct {
     }
 };
 
+/// Tool definition for Anthropic API
+pub const Tool = struct {
+    name: []const u8,
+    description: ?[]const u8 = null,
+    input_schema: std.json.Value,
+};
+
+/// Tool choice for Anthropic API
+pub const ToolChoice = union(enum) {
+    auto: struct {
+        type: []const u8 = "auto",
+    },
+    any: struct {
+        type: []const u8 = "any",
+    },
+    tool: struct {
+        type: []const u8 = "tool",
+        name: []const u8,
+    },
+
+    pub fn jsonStringify(self: @This(), out: anytype) !void {
+        switch (self) {
+            .auto => |v| try out.write(v),
+            .any => |v| try out.write(v),
+            .tool => |v| try out.write(v),
+        }
+    }
+};
+
+/// Metadata for Anthropic API
+pub const Metadata = struct {
+    user_id: ?[]const u8 = null,
+};
+
 /// Request to Anthropic messages API
 pub const Request = struct {
     model: []const u8,
@@ -171,13 +270,143 @@ pub const Request = struct {
     system: ?[]const u8 = null,
     temperature: ?f32 = null,
     top_p: ?f32 = null,
+    top_k: ?u32 = null,
     stream: ?bool = null,
+    stop_sequences: ?[]const []const u8 = null,
+    tools: ?[]const Tool = null,
+    tool_choice: ?ToolChoice = null,
+    metadata: ?Metadata = null,
+
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+
+        try jw.objectField("model");
+        try jw.write(self.model);
+
+        try jw.objectField("messages");
+        try jw.beginArray();
+        for (self.messages) |msg| {
+            try jw.write(msg);
+        }
+        try jw.endArray();
+
+        try jw.objectField("max_tokens");
+        try jw.write(self.max_tokens);
+
+        if (self.system) |s| {
+            try jw.objectField("system");
+            try jw.write(s);
+        }
+
+        if (self.temperature) |t| {
+            try jw.objectField("temperature");
+            try jw.write(t);
+        }
+
+        if (self.top_p) |t| {
+            try jw.objectField("top_p");
+            try jw.write(t);
+        }
+
+        if (self.top_k) |t| {
+            try jw.objectField("top_k");
+            try jw.write(t);
+        }
+
+        if (self.stream) |s| {
+            try jw.objectField("stream");
+            try jw.write(s);
+        }
+
+        if (self.stop_sequences) |ss| {
+            try jw.objectField("stop_sequences");
+            try jw.beginArray();
+            for (ss) |seq| {
+                try jw.write(seq);
+            }
+            try jw.endArray();
+        }
+
+        if (self.tools) |tools| {
+            try jw.objectField("tools");
+            try jw.beginArray();
+            for (tools) |tool| {
+                try jw.write(tool);
+            }
+            try jw.endArray();
+        }
+
+        if (self.tool_choice) |tc| {
+            try jw.objectField("tool_choice");
+            try jw.write(tc);
+        }
+
+        if (self.metadata) |m| {
+            try jw.objectField("metadata");
+            try jw.write(m);
+        }
+
+        try jw.endObject();
+    }
 };
 
-/// Content block in response
-pub const ContentBlock = struct {
-    type: []const u8,
-    text: []const u8,
+/// Content block in response - can be text or tool_use
+pub const ContentBlock = union(enum) {
+    text: struct {
+        type: []const u8,
+        text: []const u8,
+    },
+    tool_use: struct {
+        type: []const u8,
+        id: []const u8,
+        name: []const u8,
+        input: std.json.Value,
+    },
+
+    pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
+        const json_value = try std.json.innerParse(std.json.Value, allocator, source, options);
+        return jsonParseFromValue(allocator, json_value, options);
+    }
+
+    pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, options: std.json.ParseOptions) !@This() {
+        _ = options;
+        if (source != .object) return error.UnexpectedToken;
+        const obj = source.object;
+
+        const type_value = obj.get("type") orelse return error.MissingField;
+        if (type_value != .string) return error.UnexpectedToken;
+        const type_str = type_value.string;
+
+        if (std.mem.eql(u8, type_str, "text")) {
+            const text_value = obj.get("text") orelse return error.MissingField;
+            if (text_value != .string) return error.UnexpectedToken;
+            return .{ .text = .{
+                .type = type_str,
+                .text = text_value.string,
+            } };
+        } else if (std.mem.eql(u8, type_str, "tool_use")) {
+            const id_value = obj.get("id") orelse return error.MissingField;
+            if (id_value != .string) return error.UnexpectedToken;
+            const name_value = obj.get("name") orelse return error.MissingField;
+            if (name_value != .string) return error.UnexpectedToken;
+            const input_value = obj.get("input") orelse std.json.Value{ .object = std.json.ObjectMap.init(allocator) };
+            return .{ .tool_use = .{
+                .type = type_str,
+                .id = id_value.string,
+                .name = name_value.string,
+                .input = input_value,
+            } };
+        } else {
+            return error.UnexpectedToken;
+        }
+    }
+
+    pub fn jsonStringify(self: @This(), out: anytype) !void {
+        switch (self) {
+            .text => |v| try out.write(v),
+            .tool_use => |v| try out.write(v),
+        }
+    }
 };
 
 /// Usage statistics
@@ -266,4 +495,3 @@ pub const PingData = struct {
 // ============================================================================
 // Unit Tests
 // ============================================================================
-

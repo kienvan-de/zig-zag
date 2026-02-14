@@ -6,6 +6,16 @@ const Anthropic = @import("types.zig");
 // Type alias for OpenAI message content union
 const MessageContent = OpenAI.MessageContent;
 
+/// Parsed tool_choice from OpenAI (can be string or object)
+pub const ToolChoiceOption = union(enum) {
+    mode: []const u8, // "none", "auto", "required"
+    specific: struct {
+        function: struct {
+            name: []const u8,
+        },
+    },
+};
+
 /// Transformation errors
 pub const TransformError = error{
     EmptyMessages,
@@ -13,6 +23,7 @@ pub const TransformError = error{
     UnsupportedContentType,
     AllMessagesAreSystem,
     OutOfMemory,
+    InvalidJson,
 };
 
 /// Extract system prompt from OpenAI messages
@@ -110,17 +121,118 @@ pub fn transformContent(
     return try blocks.toOwnedSlice(allocator);
 }
 
-/// Transform tool calls to Anthropic tool_use content blocks
-/// TODO: Implement proper JSON parsing for tool arguments
+/// Transform OpenAI tool calls to Anthropic tool_use content blocks
 pub fn transformToolCalls(
     tool_calls: []const OpenAI.ToolCall,
     allocator: std.mem.Allocator,
 ) ![]Anthropic.ContentBlockParam {
-    _ = tool_calls;
+    var blocks = std.ArrayList(Anthropic.ContentBlockParam){};
+    errdefer blocks.deinit(allocator);
+
+    for (tool_calls) |tc| {
+        // Parse the arguments JSON string into a std.json.Value
+        const parsed = std.json.parseFromSlice(std.json.Value, allocator, tc.function.arguments, .{}) catch {
+            // If parsing fails, use empty object
+            try blocks.append(allocator, .{ .tool_use = .{
+                .type = "tool_use",
+                .id = tc.id,
+                .name = tc.function.name,
+                .input = std.json.Value{ .object = std.json.ObjectMap.init(allocator) },
+            } });
+            continue;
+        };
+
+        try blocks.append(allocator, .{ .tool_use = .{
+            .type = "tool_use",
+            .id = tc.id,
+            .name = tc.function.name,
+            .input = parsed.value,
+        } });
+    }
+
+    return try blocks.toOwnedSlice(allocator);
+}
+
+/// Transform OpenAI tool/function message to Anthropic tool_result content block
+pub fn transformToolResult(
+    tool_call_id: []const u8,
+    content: ?MessageContent,
+    allocator: std.mem.Allocator,
+) !Anthropic.ContentBlockParam {
     _ = allocator;
-    // TODO: Parse tool_call.function.arguments (JSON string) into std.json.Value
-    // For now, return empty array to allow basic tests to pass
-    return &[_]Anthropic.ContentBlockParam{};
+    const content_str: ?[]const u8 = if (content) |c| switch (c) {
+        .text => |t| t,
+        .parts => |parts| blk: {
+            // Take first text part
+            for (parts) |part| {
+                if (part == .text) {
+                    break :blk part.text.text;
+                }
+            }
+            break :blk null;
+        },
+    } else null;
+
+    return .{ .tool_result = .{
+        .type = "tool_result",
+        .tool_use_id = tool_call_id,
+        .content = content_str,
+        .is_error = null,
+    } };
+}
+
+/// Transform OpenAI tools to Anthropic tools
+pub fn transformTools(
+    tools: []const OpenAI.Tool,
+    allocator: std.mem.Allocator,
+) ![]Anthropic.Tool {
+    var anthro_tools = try allocator.alloc(Anthropic.Tool, tools.len);
+    errdefer allocator.free(anthro_tools);
+
+    for (tools, 0..) |tool, i| {
+        anthro_tools[i] = .{
+            .name = tool.function.name,
+            .description = tool.function.description,
+            .input_schema = tool.function.parameters orelse std.json.Value{ .object = std.json.ObjectMap.init(allocator) },
+        };
+    }
+
+    return anthro_tools;
+}
+
+/// Transform OpenAI tool_choice (std.json.Value) to Anthropic tool_choice
+pub fn transformToolChoice(
+    tool_choice: std.json.Value,
+) ?Anthropic.ToolChoice {
+    switch (tool_choice) {
+        .string => |mode| {
+            if (std.mem.eql(u8, mode, "auto")) {
+                return .{ .auto = .{ .type = "auto" } };
+            } else if (std.mem.eql(u8, mode, "none")) {
+                return null; // No tool choice means don't use tools
+            } else if (std.mem.eql(u8, mode, "required")) {
+                return .{ .any = .{ .type = "any" } };
+            }
+            return .{ .auto = .{ .type = "auto" } };
+        },
+        .object => |obj| {
+            // Object format: {"type": "function", "function": {"name": "..."}}
+            if (obj.get("function")) |func_val| {
+                if (func_val == .object) {
+                    if (func_val.object.get("name")) |name_val| {
+                        if (name_val == .string) {
+                            return .{ .tool = .{
+                                .type = "tool",
+                                .name = name_val.string,
+                            } };
+                        }
+                    }
+                }
+            }
+            return .{ .auto = .{ .type = "auto" } };
+        },
+        else => return .{ .auto = .{ .type = "auto" } },
+    }
 }
 
 /// Normalize messages: remove system, merge consecutive same-role, ensure alternation
@@ -159,24 +271,29 @@ pub fn normalizeMessages(
         var content_blocks = std.ArrayList(Anthropic.ContentBlockParam){};
         defer content_blocks.deinit(allocator);
 
-        // Handle message content (may be null for assistant messages with tool_calls)
-        if (msg.content) |content| {
-            const transformed = try transformContent(content, allocator);
-            defer allocator.free(transformed);
-            try content_blocks.appendSlice(allocator, transformed);
-        }
-
-        // TODO: Handle tool calls (assistant messages)
-        // Requires JSON parsing for tool arguments
-        if (msg.tool_calls) |_| {
-            // Skip tool calls for now
-        }
-
-        // TODO: Handle tool response (tool/function messages)
-        // Requires proper content transformation
+        // Handle tool/function messages - these need tool_result blocks
         if (msg.role == .tool or msg.role == .function) {
-            // Skip tool/function messages for now
+            const tool_call_id = msg.tool_call_id orelse "";
+            const tool_result = try transformToolResult(tool_call_id, msg.content, allocator);
+            try content_blocks.append(allocator, tool_result);
+        } else {
+            // Handle message content (may be null for assistant messages with tool_calls)
+            if (msg.content) |content| {
+                const transformed = try transformContent(content, allocator);
+                defer allocator.free(transformed);
+                try content_blocks.appendSlice(allocator, transformed);
+            }
+
+            // Handle tool calls (assistant messages)
+            if (msg.tool_calls) |tool_calls| {
+                const tool_use_blocks = try transformToolCalls(tool_calls, allocator);
+                defer allocator.free(tool_use_blocks);
+                try content_blocks.appendSlice(allocator, tool_use_blocks);
+            }
         }
+
+        // Skip if no content
+        if (content_blocks.items.len == 0) continue;
 
         // Check if we need to merge with previous message
         if (last_role) |prev_role| {
@@ -243,14 +360,31 @@ pub fn transform(
     const system_prompt = try extractSystemPrompt(request.messages, allocator);
     const messages = try normalizeMessages(request.messages, allocator);
 
+    // Transform tools if present
+    const tools: ?[]Anthropic.Tool = if (request.tools) |t| try transformTools(t, allocator) else null;
+
+    // Transform tool_choice if present
+    const tool_choice: ?Anthropic.ToolChoice = if (request.tool_choice) |tc| transformToolChoice(tc) else null;
+
+    // Transform stop sequences
+    const stop_sequences: ?[]const []const u8 = request.stop;
+
+    // Transform metadata (user -> user_id)
+    const metadata: ?Anthropic.Metadata = if (request.user) |u| .{ .user_id = u } else null;
+
     return Anthropic.Request{
         .model = target_model,
         .messages = messages,
         .system = system_prompt,
-        .max_tokens = request.max_tokens orelse 4096,
+        .max_tokens = request.max_tokens orelse request.max_completion_tokens orelse 4096,
         .temperature = request.temperature,
         .top_p = request.top_p,
+        .top_k = null,
         .stream = request.stream,
+        .stop_sequences = stop_sequences,
+        .tools = tools,
+        .tool_choice = tool_choice,
+        .metadata = metadata,
     };
 }
 
@@ -261,13 +395,13 @@ pub fn transform(
 /// Transform Anthropic stop reason to OpenAI finish reason
 pub fn transformStopReason(stop_reason: ?[]const u8) []const u8 {
     if (stop_reason == null) return "stop";
-    
+
     const reason = stop_reason.?;
     if (std.mem.eql(u8, reason, "end_turn")) return "stop";
     if (std.mem.eql(u8, reason, "max_tokens")) return "length";
     if (std.mem.eql(u8, reason, "stop_sequence")) return "stop";
     if (std.mem.eql(u8, reason, "tool_use")) return "tool_calls";
-    
+
     return "stop"; // default
 }
 
@@ -275,19 +409,55 @@ pub fn transformStopReason(stop_reason: ?[]const u8) []const u8 {
 pub fn extractTextFromBlocks(blocks: []const Anthropic.ContentBlock, allocator: std.mem.Allocator) ![]const u8 {
     var text_parts = std.ArrayList([]const u8){};
     defer text_parts.deinit(allocator);
-    
+
     for (blocks) |block| {
-        // ContentBlock is a simple struct with type and text fields
-        if (std.mem.eql(u8, block.type, "text")) {
-            try text_parts.append(allocator, block.text);
+        switch (block) {
+            .text => |t| {
+                try text_parts.append(allocator, t.text);
+            },
+            .tool_use => {},
         }
     }
-    
+
     if (text_parts.items.len == 0) {
         return try allocator.dupe(u8, "");
     }
-    
+
     return try std.mem.join(allocator, "", text_parts.items);
+}
+
+/// Extract tool_use blocks from Anthropic ContentBlock array and convert to OpenAI ToolCall array
+pub fn extractToolCalls(blocks: []const Anthropic.ContentBlock, allocator: std.mem.Allocator) !?[]OpenAI.ToolCall {
+    var tool_calls = std.ArrayList(OpenAI.ToolCall){};
+    defer tool_calls.deinit(allocator);
+
+    for (blocks) |block| {
+        switch (block) {
+            .tool_use => |tu| {
+                // Stringify the input JSON
+                var args_list = std.ArrayList(u8){};
+                defer args_list.deinit(allocator);
+                try args_list.writer(allocator).print("{f}", .{std.json.fmt(tu.input, .{})});
+                const args_str = try args_list.toOwnedSlice(allocator);
+
+                try tool_calls.append(allocator, .{
+                    .id = tu.id,
+                    .type = "function",
+                    .function = .{
+                        .name = tu.name,
+                        .arguments = args_str,
+                    },
+                });
+            },
+            .text => {},
+        }
+    }
+
+    if (tool_calls.items.len == 0) {
+        return null;
+    }
+
+    return try tool_calls.toOwnedSlice(allocator);
 }
 
 /// Transform Anthropic response to OpenAI response (non-streaming)
@@ -301,6 +471,7 @@ pub fn cleanupRequest(request: Anthropic.Request, allocator: std.mem.Allocator) 
         }
     }
     allocator.free(request.messages);
+    if (request.tools) |tools| allocator.free(tools);
 }
 
 /// Cleanup function for OpenAI.Response
@@ -308,6 +479,12 @@ pub fn cleanupResponse(response: OpenAI.Response, allocator: std.mem.Allocator) 
     if (response.choices.len > 0) {
         if (response.choices[0].message.content) |content| {
             allocator.free(content);
+        }
+        if (response.choices[0].message.tool_calls) |tool_calls| {
+            for (tool_calls) |tc| {
+                allocator.free(tc.function.arguments);
+            }
+            allocator.free(tool_calls);
         }
     }
     allocator.free(response.choices);
@@ -323,39 +500,43 @@ pub fn transformResponse(
 ) !OpenAI.Response {
     // Extract text content from content blocks
     const content_text = try extractTextFromBlocks(anthropic_response.content, allocator);
-    
+
+    // Extract tool calls from content blocks
+    const tool_calls = try extractToolCalls(anthropic_response.content, allocator);
+
     // Create message
     const message = OpenAI.ResponseMessage{
         .role = .assistant,
-        .content = content_text,
-        .tool_calls = null,
+        .content = if (content_text.len > 0) content_text else null,
+        .tool_calls = tool_calls,
         .function_call = null,
     };
-    
+
     // Create choice
     const choice = OpenAI.ResponseChoice{
         .index = 0,
         .message = message,
         .finish_reason = transformStopReason(anthropic_response.stop_reason),
+        .logprobs = null,
     };
-    
+
     var choices = try allocator.alloc(OpenAI.ResponseChoice, 1);
     choices[0] = choice;
-    
+
     // Map usage
     const usage = OpenAI.Usage{
         .prompt_tokens = anthropic_response.usage.input_tokens,
         .completion_tokens = anthropic_response.usage.output_tokens,
         .total_tokens = anthropic_response.usage.input_tokens + anthropic_response.usage.output_tokens,
     };
-    
+
     // Build model string: "anthropic/{actual_model_from_response}"
     const model_str = try std.fmt.allocPrint(allocator, "anthropic/{s}", .{anthropic_response.model});
     _ = original_model; // Available if needed for future use
-    
+
     // Duplicate id string to avoid dangling pointer after response is freed
     const id_str = try allocator.dupe(u8, anthropic_response.id);
-    
+
     return OpenAI.Response{
         .id = id_str,
         .object = "chat.completion",
@@ -371,4 +552,3 @@ pub fn transformResponse(
 // ============================================================================
 // TESTS - REQUEST TRANSFORMATION
 // ============================================================================
-

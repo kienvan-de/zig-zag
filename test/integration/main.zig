@@ -77,10 +77,27 @@ fn valueEqual(a: std.json.Value, b: std.json.Value) bool {
         },
         .object => |av| {
             if (b != .object) return false;
-            if (av.count() != b.object.count()) return false;
+            // Count non-ignored fields
+            var a_count: usize = 0;
+            var b_count: usize = 0;
+            var a_it = av.iterator();
+            while (a_it.next()) |entry| {
+                if (!std.mem.eql(u8, entry.key_ptr.*, "created")) {
+                    a_count += 1;
+                }
+            }
+            var b_it = b.object.iterator();
+            while (b_it.next()) |entry| {
+                if (!std.mem.eql(u8, entry.key_ptr.*, "created")) {
+                    b_count += 1;
+                }
+            }
+            if (a_count != b_count) return false;
             var it = av.iterator();
             while (it.next()) |entry| {
                 const key = entry.key_ptr.*;
+                // Skip dynamic fields
+                if (std.mem.eql(u8, key, "created")) continue;
                 const other = b.object.get(key) orelse return false;
                 if (!valueEqual(entry.value_ptr.*, other)) return false;
             }
