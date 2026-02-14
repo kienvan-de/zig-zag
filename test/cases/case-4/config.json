@@ -1,0 +1,1 @@
+{"providers":{"groq":{"api_key":"test-groq-key","api_url":"http://localhost:8003","compatible":"openai"}},"server":{"host":"127.0.0.1","port":8080}}
