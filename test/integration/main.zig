@@ -36,8 +36,7 @@ const CaseFiles = struct {
     }
 };
 
-fn buildCaseFiles(allocator: std.mem.Allocator, cases_dir: []const u8) !CaseFiles {
-    const case_name = std.posix.getenv("CASE_FOLDER") orelse "case-1";
+fn buildCaseFiles(allocator: std.mem.Allocator, cases_dir: []const u8, case_name: []const u8) !CaseFiles {
     const case_dir = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ cases_dir, case_name });
     const agent_req_path = try std.fmt.allocPrint(allocator, "{s}/agent_req.json", .{case_dir});
     const upstream_req_path = try std.fmt.allocPrint(allocator, "{s}/upstream_req.json", .{case_dir});
@@ -118,12 +117,13 @@ fn jsonEqual(allocator: std.mem.Allocator, left: []const u8, right: []const u8) 
 fn assertCaseFileEqual(
     allocator: std.mem.Allocator,
     cases_root: []const u8,
+    case_name: []const u8,
     actual_filename: []const u8,
     expected_filename: []const u8,
 ) !void {
-    const actual = try recorder.readCaseFile(allocator, cases_root, actual_filename, 1024 * 1024);
+    const actual = try recorder.readCaseFile(allocator, cases_root, case_name, actual_filename, 1024 * 1024);
     defer allocator.free(actual);
-    const expected = try recorder.readCaseFile(allocator, cases_root, expected_filename, 1024 * 1024);
+    const expected = try recorder.readCaseFile(allocator, cases_root, case_name, expected_filename, 1024 * 1024);
     defer allocator.free(expected);
 
     const equal = try jsonEqual(allocator, actual, expected);
@@ -143,11 +143,12 @@ pub const TestContext = struct {
     groq_upstream_process: ?std.process.Child,
     proxy_process: ?std.process.Child,
     env_map: ?std.process.EnvMap,
+    case_name: []const u8,
 
-    pub fn init(allocator: std.mem.Allocator) !*TestContext {
+    pub fn init(allocator: std.mem.Allocator, case_name: []const u8) !*TestContext {
         const config = TestConfig{};
         
-        const case_dir = try recorder.resolveCaseDir(allocator, config.cases_dir);
+        const case_dir = try recorder.resolveCaseDirFor(allocator, config.cases_dir, case_name);
         defer allocator.free(case_dir);
         var rec = try recorder.Recorder.init(allocator, case_dir);
         errdefer rec.deinit();
@@ -172,10 +173,11 @@ pub const TestContext = struct {
             .groq_upstream_process = null,
             .proxy_process = null,
             .env_map = null,
+            .case_name = case_name,
         };
         
         // Now set the client with stable recorder pointer
-        ctx.client = MockClient.init(allocator, proxy_url_owned, &ctx.recorder);
+        ctx.client = MockClient.init(allocator, proxy_url_owned, &ctx.recorder, case_name);
         
         return ctx;
     }
@@ -213,6 +215,7 @@ pub const TestContext = struct {
                 "zig-out/bin/mock-upstream",
                 anthropic_port_str,
                 "anthropic",
+                self.case_name,
             },
             self.allocator,
         );
@@ -227,6 +230,7 @@ pub const TestContext = struct {
                 "zig-out/bin/mock-upstream",
                 openai_port_str,
                 "openai",
+                self.case_name,
             },
             self.allocator,
         );
@@ -241,6 +245,7 @@ pub const TestContext = struct {
                 "zig-out/bin/mock-upstream",
                 groq_port_str,
                 "groq",
+                self.case_name,
             },
             self.allocator,
         );
@@ -273,7 +278,7 @@ pub const TestContext = struct {
     /// Start the proxy server with test configuration
     pub fn startProxy(self: *TestContext) !void {
         // Build case-specific config path
-        const case_dir = try recorder.resolveCaseDir(self.allocator, self.config.cases_dir);
+        const case_dir = try recorder.resolveCaseDirFor(self.allocator, self.config.cases_dir, self.case_name);
         defer self.allocator.free(case_dir);
         
         const config_path = try std.fmt.allocPrint(self.allocator, "{s}/config.json", .{case_dir});
@@ -326,7 +331,7 @@ pub const TestContext = struct {
 test "Case files - case-1 paths" {
     const allocator = std.testing.allocator;
 
-    var files = try buildCaseFiles(allocator, "test/cases");
+    var files = try buildCaseFiles(allocator, "test/cases", "case-1");
     defer files.deinit();
 
     try std.testing.expect(std.mem.endsWith(u8, files.agent_req_path, "/case-1/agent_req.json"));
@@ -350,7 +355,7 @@ test "Normalize JSON comparison" {
 test "OpenAI passthrough" {
     const allocator = std.testing.allocator;
     
-    const ctx = try TestContext.init(allocator);
+    const ctx = try TestContext.init(allocator, "case-1");
     defer ctx.deinit();
     
     try ctx.cleanRecordings();
@@ -376,7 +381,7 @@ test "OpenAI passthrough" {
 test "Compatible provider - Groq" {
     const allocator = std.testing.allocator;
     
-    const ctx = try TestContext.init(allocator);
+    const ctx = try TestContext.init(allocator, "case-1");
     defer ctx.deinit();
     
     try ctx.cleanRecordings();
@@ -402,7 +407,7 @@ test "Compatible provider - Groq" {
 test "Error handling - invalid model" {
     const allocator = std.testing.allocator;
     
-    const ctx = try TestContext.init(allocator);
+    const ctx = try TestContext.init(allocator, "case-1");
     defer ctx.deinit();
     
     const messages =
@@ -422,39 +427,83 @@ test "Error handling - invalid model" {
     _ = messages;
 }
 
+/// Run a single test case
+fn runCase(allocator: std.mem.Allocator, cases_root: []const u8, case_name: []const u8) !void {
+    std.debug.print("\n[Test] {s}\n", .{case_name});
+
+    // Initialize context for this case
+    const ctx = try TestContext.init(allocator, case_name);
+    defer ctx.deinit();
+
+    try ctx.cleanRecordings();
+
+    // Start servers
+    try ctx.startUpstreams();
+    defer ctx.stopUpstreams() catch {};
+
+    try ctx.startProxy();
+    defer ctx.stopProxy() catch {};
+
+    // Run case
+    const response = try ctx.client.sendCaseRequest(cases_root);
+    defer allocator.free(response);
+
+    try assertCaseFileEqual(allocator, cases_root, case_name, "upstream_req.json", "expected_upstream_req.json");
+    try assertCaseFileEqual(allocator, cases_root, case_name, "agent_res.json", "expected_agent_res.json");
+
+    std.debug.print("  ✓ {s} passed\n", .{case_name});
+}
+
 /// Main entry point for integration tests
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
-    
-    std.debug.print("Starting integration tests...\n", .{});
-    
-    const ctx = try TestContext.init(allocator);
-    defer ctx.deinit();
-    
-    try ctx.cleanRecordings();
-    
-    std.debug.print("Starting mock upstream servers...\n", .{});
-    try ctx.startUpstreams();
-    defer ctx.stopUpstreams() catch {};
-    
-    std.debug.print("Starting proxy server...\n", .{});
-    try ctx.startProxy();
-    defer ctx.stopProxy() catch {};
-    
-    std.debug.print("Running tests...\n", .{});
-    
-    // Test: Case-based request
-    std.debug.print("\n[Test] Case-based request\n", .{});
-    {
-        const response = try ctx.client.sendCaseRequest("test/cases");
-        defer allocator.free(response);
 
-        try assertCaseFileEqual(allocator, "test/cases", "upstream_req.json", "expected_upstream_req.json");
-        try assertCaseFileEqual(allocator, "test/cases", "agent_res.json", "expected_agent_res.json");
+    std.debug.print("Starting integration tests...\n", .{});
+
+    const cases_root = "test/cases";
+
+    // Check if specific case is requested via env var
+    if (std.posix.getenv("CASE_FOLDER")) |case_name| {
+        try runCase(allocator, cases_root, case_name);
+        std.debug.print("\nTest completed!\n", .{});
+        return;
     }
-    
-    std.debug.print("\nAll tests completed!\n", .{});
-    std.debug.print("Check test/cases/<case>/ for request/response recordings\n", .{});
+
+    // Discover and run all cases
+    const case_dirs = try recorder.listCaseDirs(allocator, cases_root);
+    defer {
+        for (case_dirs) |dir| {
+            allocator.free(dir);
+        }
+        allocator.free(case_dirs);
+    }
+
+    if (case_dirs.len == 0) {
+        std.debug.print("No test cases found in {s}\n", .{cases_root});
+        return;
+    }
+
+    std.debug.print("Found {d} test case(s)\n", .{case_dirs.len});
+
+    var passed: usize = 0;
+    var failed: usize = 0;
+
+    for (case_dirs) |case_name| {
+        runCase(allocator, cases_root, case_name) catch |err| {
+            std.debug.print("  ✗ {s} failed: {}\n", .{ case_name, err });
+            failed += 1;
+            continue;
+        };
+        passed += 1;
+    }
+
+    std.debug.print("\n========================================\n", .{});
+    std.debug.print("Results: {d} passed, {d} failed\n", .{ passed, failed });
+    std.debug.print("========================================\n", .{});
+
+    if (failed > 0) {
+        return error.TestsFailed;
+    }
 }

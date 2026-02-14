@@ -6,6 +6,7 @@ pub const MockUpstream = struct {
     allocator: std.mem.Allocator,
     port: u16,
     provider_name: []const u8,
+    case_name: []const u8,
     recorder: *recorder.Recorder,
     should_stop: std.atomic.Value(bool),
     thread: ?std.Thread,
@@ -14,12 +15,14 @@ pub const MockUpstream = struct {
         allocator: std.mem.Allocator,
         port: u16,
         provider_name: []const u8,
+        case_name: []const u8,
         rec: *recorder.Recorder,
     ) !MockUpstream {
         return MockUpstream{
             .allocator = allocator,
             .port = port,
             .provider_name = provider_name,
+            .case_name = case_name,
             .recorder = rec,
             .should_stop = std.atomic.Value(bool).init(false),
             .thread = null,
@@ -90,6 +93,7 @@ pub const MockUpstream = struct {
         try recorder.writeCaseFile(
             self.allocator,
             "test/cases",
+            self.case_name,
             "upstream_req.json",
             parsed.body,
         );
@@ -119,6 +123,7 @@ pub const MockUpstream = struct {
         return try recorder.readCaseFile(
             self.allocator,
             "test/cases",
+            self.case_name,
             "upstream_res.json",
             1024 * 1024,
         );
@@ -181,12 +186,12 @@ fn parseHttpRequest(allocator: std.mem.Allocator, data: []const u8) !ParsedReque
 
 test "MockUpstream initialization" {
     const allocator = std.testing.allocator;
-    const case_dir = try recorder.resolveCaseDir(allocator, "test/cases");
+    const case_dir = try recorder.resolveCaseDirFor(allocator, "test/cases", "case-1");
     defer allocator.free(case_dir);
     var rec = try recorder.Recorder.init(allocator, case_dir);
     defer rec.deinit();
 
-    var upstream = try MockUpstream.init(allocator, 9001, "test", &rec);
+    var upstream = try MockUpstream.init(allocator, 9001, "test", "case-1", &rec);
     defer upstream.deinit();
 }
 
@@ -196,6 +201,7 @@ test "MockUpstream loads case response" {
     const res_body = try recorder.readCaseFile(
         allocator,
         "test/cases",
+        "case-1",
         "upstream_res.json",
         1024 * 1024,
     );
@@ -215,24 +221,24 @@ pub fn main() !void {
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
 
-    if (args.len < 3) {
-        std.debug.print("Usage: mock-upstream <port> <provider_name>\n", .{});
+    if (args.len < 4) {
+        std.debug.print("Usage: mock-upstream <port> <provider_name> <case_name>\n", .{});
         std.debug.print("  port: Port number to listen on\n", .{});
         std.debug.print("  provider_name: anthropic, openai, or groq\n", .{});
+        std.debug.print("  case_name: test case folder name (e.g., case-1)\n", .{});
         return error.InvalidArguments;
     }
 
     const port = try std.fmt.parseInt(u16, args[1], 10);
     const provider_name = args[2];
+    const case_name = args[3];
 
-
-
-    const case_dir = try recorder.resolveCaseDir(allocator, "test/cases");
+    const case_dir = try recorder.resolveCaseDirFor(allocator, "test/cases", case_name);
     defer allocator.free(case_dir);
     var rec = try recorder.Recorder.init(allocator, case_dir);
     defer rec.deinit();
 
-    var upstream = try MockUpstream.init(allocator, port, provider_name, &rec);
+    var upstream = try MockUpstream.init(allocator, port, provider_name, case_name, &rec);
     defer upstream.deinit();
 
     // Run server directly (not in a thread)
