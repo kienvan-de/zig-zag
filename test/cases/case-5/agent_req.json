@@ -1,0 +1,31 @@
+{
+  "model": "anthropic/claude-sonnet-4-20250514",
+  "messages": [
+    {
+      "role": "user",
+      "content": "What's the weather in San Francisco?"
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "get_weather",
+        "description": "Get the current weather in a given location",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "location": {
+              "type": "string",
+              "description": "The city and state, e.g. San Francisco, CA"
+            }
+          },
+          "required": ["location"]
+        }
+      }
+    }
+  ],
+  "tool_choice": "auto",
+  "max_tokens": 1024,
+  "stream": true
+}
