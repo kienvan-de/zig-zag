@@ -98,8 +98,29 @@ pub const MockUpstream = struct {
             parsed.body,
         );
 
+        // Check if this is a streaming request by looking for upstream_res.txt
+        const is_streaming = self.isStreamingCase();
+
+        if (is_streaming) {
+            try self.sendStreamingResponse(connection);
+        } else {
+            try self.sendJsonResponse(connection, request_allocator);
+        }
+    }
+
+    fn isStreamingCase(self: *MockUpstream) bool {
+        // Check if upstream_res.txt exists for this case
+        const txt_path = std.fmt.allocPrint(self.allocator, "test/cases/{s}/upstream_res.txt", .{self.case_name}) catch return false;
+        defer self.allocator.free(txt_path);
+
+        const file = std.fs.cwd().openFile(txt_path, .{}) catch return false;
+        file.close();
+        return true;
+    }
+
+    fn sendJsonResponse(self: *MockUpstream, connection: std.net.Server.Connection, request_allocator: std.mem.Allocator) !void {
         // Generate mock response based on provider
-        const response_body = try self.generateMockResponse(parsed.body);
+        const response_body = try self.generateMockResponse();
         defer self.allocator.free(response_body);
 
         // Send HTTP response
@@ -117,9 +138,41 @@ pub const MockUpstream = struct {
         _ = try connection.stream.writeAll(response_buf.items);
     }
 
-    fn generateMockResponse(self: *MockUpstream, request_body: []const u8) ![]u8 {
-        _ = request_body;
+    fn sendStreamingResponse(self: *MockUpstream, connection: std.net.Server.Connection) !void {
+        // Read SSE data from upstream_res.txt
+        const sse_data = try recorder.readCaseFile(
+            self.allocator,
+            "test/cases",
+            self.case_name,
+            "upstream_res.txt",
+            1024 * 1024,
+        );
+        defer self.allocator.free(sse_data);
 
+        // Send SSE headers
+        const headers =
+            "HTTP/1.1 200 OK\r\n" ++
+            "Content-Type: text/event-stream\r\n" ++
+            "Cache-Control: no-cache\r\n" ++
+            "Connection: keep-alive\r\n" ++
+            "\r\n";
+        _ = try connection.stream.writeAll(headers);
+
+        // Stream each line with a small delay to simulate real streaming
+        var lines = std.mem.splitScalar(u8, sse_data, '\n');
+        while (lines.next()) |line| {
+            const trimmed = std.mem.trimRight(u8, line, "\r");
+            if (trimmed.len == 0) continue;
+
+            _ = try connection.stream.writeAll(trimmed);
+            _ = try connection.stream.writeAll("\n\n");
+
+            // Small delay between chunks to simulate streaming
+            std.Thread.sleep(10 * std.time.ns_per_ms);
+        }
+    }
+
+    fn generateMockResponse(self: *MockUpstream) ![]u8 {
         return try recorder.readCaseFile(
             self.allocator,
             "test/cases",

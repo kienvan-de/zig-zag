@@ -2,6 +2,49 @@ const std = @import("std");
 const Anthropic = @import("types.zig");
 const config_mod = @import("../../config.zig");
 
+/// Iterator for Anthropic SSE streaming responses
+pub const StreamIterator = struct {
+    allocator: std.mem.Allocator,
+    body: []const u8,
+    lines: std.mem.SplitIterator(u8, .scalar),
+    done: bool = false,
+
+    /// Get the next SSE event as raw line (including "data: " prefix)
+    /// Returns null when stream is complete
+    pub fn next(self: *StreamIterator) ?[]const u8 {
+        if (self.done) return null;
+
+        while (self.lines.next()) |line| {
+            const trimmed = std.mem.trimRight(u8, line, "\r");
+            if (trimmed.len == 0) continue;
+
+            // Return lines with "data: " prefix (these contain the JSON events)
+            if (std.mem.startsWith(u8, trimmed, "data: ")) {
+                return trimmed;
+            }
+            // Skip "event: " lines - we get event type from the data JSON
+        }
+
+        self.done = true;
+        return null;
+    }
+
+    pub fn deinit(self: *StreamIterator) void {
+        self.allocator.free(self.body);
+    }
+};
+
+/// Result of starting a streaming request
+pub const StreamingResult = struct {
+    iterator: StreamIterator,
+    request: std.http.Client.Request,
+
+    pub fn deinit(self: *StreamingResult) void {
+        self.iterator.deinit();
+        self.request.deinit();
+    }
+};
+
 pub const AnthropicClient = struct {
     allocator: std.mem.Allocator,
     api_key: []const u8,
@@ -174,6 +217,72 @@ pub const AnthropicClient = struct {
             .too_many_requests => error.RateLimitError,
             .internal_server_error, .bad_gateway, .service_unavailable, .gateway_timeout => error.ServerError,
             else => error.InvalidStatusCode,
+        };
+    }
+
+    /// Send a streaming request to Anthropic Messages API
+    /// Returns a StreamingResult with an iterator for processing events
+    pub fn sendStreamingRequest(
+        self: *AnthropicClient,
+        request: Anthropic.Request,
+    ) !StreamingResult {
+        // Serialize request to JSON
+        var request_body = std.ArrayList(u8){};
+        defer request_body.deinit(self.allocator);
+
+        try request_body.writer(self.allocator).print("{f}", .{std.json.fmt(request, .{})});
+
+        // Build URL from config
+        var url_buffer: [512]u8 = undefined;
+        const url = try std.fmt.bufPrint(&url_buffer, "{s}/v1/messages", .{self.api_url});
+        const uri = try std.Uri.parse(url);
+
+        // Build extra headers
+        const extra_headers = [_]std.http.Header{
+            .{ .name = "x-api-key", .value = self.api_key },
+            .{ .name = "anthropic-version", .value = self.api_version },
+        };
+
+        // Standard headers
+        var headers = std.http.Client.Request.Headers{};
+        headers.content_type = .{ .override = "application/json" };
+
+        // Make request
+        var req = try self.client.request(.POST, uri, .{
+            .headers = headers,
+            .extra_headers = &extra_headers,
+        });
+        errdefer req.deinit();
+
+        // Set content length and send
+        req.transfer_encoding = .{ .content_length = request_body.items.len };
+        var buf: [4096]u8 = undefined;
+        var body_writer = try req.sendBodyUnflushed(&buf);
+        try body_writer.writer.writeAll(request_body.items);
+        try body_writer.end();
+        try req.connection.?.flush();
+
+        // Wait for response headers
+        const redirect_buffer: [0]u8 = undefined;
+        var response = try req.receiveHead(&redirect_buffer);
+
+        // Check status code
+        if (response.head.status != .ok) {
+            return self.handleErrorResponse(response.head.status);
+        }
+
+        // Read entire response body
+        var transfer_buf: [4096]u8 = undefined;
+        const reader = response.reader(&transfer_buf);
+        const body = try reader.allocRemaining(self.allocator, std.io.Limit.limited(self.max_response_size));
+
+        return StreamingResult{
+            .iterator = StreamIterator{
+                .allocator = self.allocator,
+                .body = body,
+                .lines = std.mem.splitScalar(u8, body, '\n'),
+            },
+            .request = req,
         };
     }
 };

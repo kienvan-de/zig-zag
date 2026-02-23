@@ -127,6 +127,53 @@ pub const ToolCall = struct {
     function: ToolCallFunction,
 };
 
+/// Streaming tool call function (partial, for delta chunks)
+pub const DeltaToolCallFunction = struct {
+    name: ?[]const u8 = null,
+    arguments: ?[]const u8 = null,
+
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        if (self.name) |n| {
+            try jw.objectField("name");
+            try jw.write(n);
+        }
+        if (self.arguments) |a| {
+            try jw.objectField("arguments");
+            try jw.write(a);
+        }
+        try jw.endObject();
+    }
+};
+
+/// Streaming tool call (partial, for delta chunks)
+/// In streaming, tool_calls come incrementally with index to identify which call
+pub const DeltaToolCall = struct {
+    index: u32,
+    id: ?[]const u8 = null,
+    type: ?[]const u8 = null,
+    function: ?DeltaToolCallFunction = null,
+
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("index");
+        try jw.write(self.index);
+        if (self.id) |i| {
+            try jw.objectField("id");
+            try jw.write(i);
+        }
+        if (self.type) |t| {
+            try jw.objectField("type");
+            try jw.write(t);
+        }
+        if (self.function) |f| {
+            try jw.objectField("function");
+            try f.jsonStringify(jw);
+        }
+        try jw.endObject();
+    }
+};
+
 /// Tool function definition
 pub const ToolFunction = struct {
     name: []const u8,
@@ -589,8 +636,33 @@ pub const Request = struct {
 pub const Delta = struct {
     role: ?Role = null,
     content: ?[]const u8 = null,
-    tool_calls: ?[]const ToolCall = null,
+    tool_calls: ?[]const DeltaToolCall = null,
     function_call: ?FunctionCall = null,
+
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        if (self.role) |r| {
+            try jw.objectField("role");
+            try jw.write(@tagName(r));
+        }
+        if (self.content) |c| {
+            try jw.objectField("content");
+            try jw.write(c);
+        }
+        if (self.tool_calls) |tc| {
+            try jw.objectField("tool_calls");
+            try jw.beginArray();
+            for (tc) |call| {
+                try call.jsonStringify(jw);
+            }
+            try jw.endArray();
+        }
+        if (self.function_call) |fc| {
+            try jw.objectField("function_call");
+            try jw.write(fc);
+        }
+        try jw.endObject();
+    }
 };
 
 /// Choice in streaming chunk
@@ -598,6 +670,17 @@ pub const StreamChoice = struct {
     index: u32,
     delta: Delta,
     finish_reason: ?[]const u8,
+
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("index");
+        try jw.write(self.index);
+        try jw.objectField("delta");
+        try self.delta.jsonStringify(jw);
+        try jw.objectField("finish_reason");
+        try jw.write(self.finish_reason);
+        try jw.endObject();
+    }
 };
 
 /// Streaming chunk response
@@ -607,6 +690,25 @@ pub const StreamChunk = struct {
     created: i64,
     model: []const u8,
     choices: []const StreamChoice,
+
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("id");
+        try jw.write(self.id);
+        try jw.objectField("object");
+        try jw.write(self.object);
+        try jw.objectField("created");
+        try jw.write(self.created);
+        try jw.objectField("model");
+        try jw.write(self.model);
+        try jw.objectField("choices");
+        try jw.beginArray();
+        for (self.choices) |choice| {
+            try choice.jsonStringify(jw);
+        }
+        try jw.endArray();
+        try jw.endObject();
+    }
 };
 
 /// Message in non-streaming response
