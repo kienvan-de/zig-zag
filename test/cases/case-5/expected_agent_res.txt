@@ -5,5 +5,5 @@ data: {"id":"msg_case5_001","object":"chat.completion.chunk","created":171000000
 data: {"id":"msg_case5_001","object":"chat.completion.chunk","created":1710000001,"model":"anthropic/claude-sonnet-4-20250514","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":" \"San"}}]},"finish_reason":null}]}
 data: {"id":"msg_case5_001","object":"chat.completion.chunk","created":1710000001,"model":"anthropic/claude-sonnet-4-20250514","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":" Francisco,"}}]},"finish_reason":null}]}
 data: {"id":"msg_case5_001","object":"chat.completion.chunk","created":1710000001,"model":"anthropic/claude-sonnet-4-20250514","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":" CA\"}"}}]},"finish_reason":null}]}
-data: {"id":"msg_case5_001","object":"chat.completion.chunk","created":1710000001,"model":"anthropic/claude-sonnet-4-20250514","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
+data: {"id":"msg_case5_001","object":"chat.completion.chunk","created":1710000001,"model":"anthropic/claude-sonnet-4-20250514","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":50,"completion_tokens":35,"total_tokens":85}}
 data: [DONE]

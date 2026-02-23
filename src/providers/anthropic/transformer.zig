@@ -19,6 +19,7 @@ pub const StreamState = struct {
     current_tool_call_id: ?[]const u8 = null,
     current_tool_call_name: ?[]const u8 = null,
     sent_role: bool = false,
+    input_tokens: ?u32 = null,
 
     pub fn init(allocator: std.mem.Allocator, original_model: []const u8) StreamState {
         return .{
@@ -86,10 +87,11 @@ fn handleMessageStart(json_part: []const u8, state: *StreamState, allocator: std
 
     state.message_id = parsed.value.message.id;
     state.model = parsed.value.message.model;
+    state.input_tokens = parsed.value.message.usage.input_tokens;
 
     // Emit initial chunk with role
     state.sent_role = true;
-    return buildOpenAIChunk(state, .{ .role = .assistant }, null, allocator);
+    return buildOpenAIChunk(state, .{ .role = .assistant }, null, null, allocator);
 }
 
 fn handleContentBlockStart(json_part: []const u8, state: *StreamState, allocator: std.mem.Allocator) ?[]const u8 {
@@ -120,7 +122,7 @@ fn handleContentBlockStart(json_part: []const u8, state: *StreamState, allocator
         };
 
         var tool_calls: [1]OpenAI.DeltaToolCall = .{tool_call};
-        return buildOpenAIChunk(state, .{ .tool_calls = &tool_calls }, null, allocator);
+        return buildOpenAIChunk(state, .{ .tool_calls = &tool_calls }, null, null, allocator);
     }
     // For text blocks, we wait for content_block_delta
     return null;
@@ -140,7 +142,7 @@ fn handleContentBlockDelta(json_part: []const u8, state: *StreamState, allocator
     if (std.mem.eql(u8, delta_type, "text_delta")) {
         // Text content
         if (parsed.value.delta.text) |text| {
-            return buildOpenAIChunk(state, .{ .content = text }, null, allocator);
+            return buildOpenAIChunk(state, .{ .content = text }, null, null, allocator);
         }
     } else if (std.mem.eql(u8, delta_type, "input_json_delta")) {
         // Tool call arguments
@@ -156,7 +158,7 @@ fn handleContentBlockDelta(json_part: []const u8, state: *StreamState, allocator
             };
 
             var tool_calls: [1]OpenAI.DeltaToolCall = .{tool_call};
-            return buildOpenAIChunk(state, .{ .tool_calls = &tool_calls }, null, allocator);
+            return buildOpenAIChunk(state, .{ .tool_calls = &tool_calls }, null, null, allocator);
         }
     }
     return null;
@@ -171,9 +173,18 @@ fn handleMessageDelta(json_part: []const u8, state: *StreamState, allocator: std
     ) catch return null;
     defer parsed.deinit();
 
-    // Emit final chunk with finish_reason
+    // Build usage from input_tokens (from message_start) and output_tokens (from message_delta)
+    const output_tokens = parsed.value.usage.output_tokens;
+    const input_tokens = state.input_tokens orelse 0;
+    const usage = OpenAI.Usage{
+        .prompt_tokens = input_tokens,
+        .completion_tokens = output_tokens,
+        .total_tokens = input_tokens + output_tokens,
+    };
+
+    // Emit final chunk with finish_reason and usage
     const finish_reason = transformStopReason(parsed.value.delta.stop_reason);
-    return buildOpenAIChunk(state, .{}, finish_reason, allocator);
+    return buildOpenAIChunk(state, .{}, finish_reason, usage, allocator);
 }
 
 /// Build an OpenAI streaming chunk from state and delta info
@@ -181,6 +192,7 @@ fn buildOpenAIChunk(
     state: *StreamState,
     delta: OpenAI.Delta,
     finish_reason: ?[]const u8,
+    usage: ?OpenAI.Usage,
     allocator: std.mem.Allocator,
 ) ?[]const u8 {
     const choice = OpenAI.StreamChoice{
@@ -197,6 +209,7 @@ fn buildOpenAIChunk(
         .created = state.created,
         .model = state.original_model,
         .choices = &choices,
+        .usage = usage,
     };
 
     var buffer = std.ArrayList(u8){};

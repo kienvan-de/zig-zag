@@ -1,5 +1,5 @@
 data: {"id":"chatcmpl-case-4","object":"chat.completion.chunk","created":1710000001,"model":"groq/llama-3-70b-8192","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}
 data: {"id":"chatcmpl-case-4","object":"chat.completion.chunk","created":1710000001,"model":"groq/llama-3-70b-8192","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_weather_001","type":"function","function":{"name":"get_weather","arguments":""}}]},"finish_reason":null}]}
 data: {"id":"chatcmpl-case-4","object":"chat.completion.chunk","created":1710000001,"model":"groq/llama-3-70b-8192","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"location\":\"San Francisco, CA\"}"}}]},"finish_reason":null}]}
-data: {"id":"chatcmpl-case-4","object":"chat.completion.chunk","created":1710000001,"model":"groq/llama-3-70b-8192","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
+data: {"id":"chatcmpl-case-4","object":"chat.completion.chunk","created":1710000001,"model":"groq/llama-3-70b-8192","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":45,"completion_tokens":20,"total_tokens":65}}
 data: [DONE]
