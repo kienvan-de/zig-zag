@@ -4,6 +4,20 @@ const std = @import("std");
 // OpenAI API Data Structures
 // ============================================================================
 
+/// Model object from /v1/models endpoint
+pub const Model = struct {
+    id: []const u8,
+    object: []const u8 = "model",
+    created: i64 = 0,
+    owned_by: []const u8 = "unknown",
+};
+
+/// Response for GET /v1/models
+pub const ModelsResponse = struct {
+    object: []const u8 = "list",
+    data: []const Model,
+};
+
 /// Role in a conversation
 pub const Role = enum {
     system,
