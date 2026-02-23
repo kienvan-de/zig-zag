@@ -12,20 +12,6 @@ const OpenAI = @import("../providers/openai/types.zig");
 // Provider clients
 const openai_client = @import("../providers/openai/client.zig");
 
-/// Model object in OpenAI format
-pub const Model = struct {
-    id: []const u8,
-    object: []const u8 = "model",
-    created: i64,
-    owned_by: []const u8,
-};
-
-/// Response for GET /v1/models
-pub const ModelsResponse = struct {
-    object: []const u8 = "list",
-    data: []const Model,
-};
-
 /// Handle GET /v1/models request
 pub fn handle(
     allocator: std.mem.Allocator,
@@ -35,7 +21,7 @@ pub fn handle(
 ) !void {
     _ = body; // GET request, no body needed
 
-    var all_models = std.ArrayList(Model){};
+    var all_models = std.ArrayList(OpenAI.Model){};
     defer all_models.deinit(allocator);
 
     // Iterate all configured providers
@@ -66,7 +52,7 @@ pub fn handle(
     }
 
     // Build response
-    const response = ModelsResponse{
+    const response = OpenAI.ModelsResponse{
         .data = all_models.items,
     };
 
@@ -85,7 +71,7 @@ fn fetchOpenAIModels(
     allocator: std.mem.Allocator,
     provider_name: []const u8,
     provider_config: *const config_mod.ProviderConfig,
-) ![]Model {
+) ![]OpenAI.Model {
     var client = try openai_client.OpenAIClient.init(allocator, provider_config);
     defer client.deinit();
 
@@ -153,14 +139,14 @@ fn fetchOpenAIModels(
     defer parsed.deinit();
 
     // Transform models with provider prefix
-    var models = try allocator.alloc(Model, parsed.value.data.len);
+    var models = try allocator.alloc(OpenAI.Model, parsed.value.data.len);
     errdefer allocator.free(models);
 
     for (parsed.value.data, 0..) |upstream_model, i| {
         // Create prefixed model ID: {provider_name}/{model_id}
         const prefixed_id = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ provider_name, upstream_model.id });
 
-        models[i] = Model{
+        models[i] = OpenAI.Model{
             .id = prefixed_id,
             .object = "model",
             .created = upstream_model.created,
