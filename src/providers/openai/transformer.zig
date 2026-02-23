@@ -112,7 +112,7 @@ pub fn transformStreamLine(
     
     // Handle [DONE] marker
     if (std.mem.eql(u8, json_part, "[DONE]")) {
-        return null; // Pass through unchanged
+        return allocator.dupe(u8, "data: [DONE]") catch null;
     }
 
     // Parse the JSON chunk

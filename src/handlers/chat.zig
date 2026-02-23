@@ -312,12 +312,6 @@ fn handleProviderStreaming(
 
     // Process each chunk from upstream
     while (stream_result.iterator.next()) |line| {
-        // Check for [DONE] marker (OpenAI format)
-        if (std.mem.endsWith(u8, line, "[DONE]")) {
-            _ = try connection.stream.writeAll("data: [DONE]\n\n");
-            break;
-        }
-
         // Transform the chunk
         if (Transformer.transformStreamLine(line, &state, allocator)) |transformed| {
             defer allocator.free(transformed);
@@ -325,11 +319,6 @@ fn handleProviderStreaming(
             _ = try connection.stream.writeAll("\n\n");
         }
         // Skip null returns (non-data lines, parse errors, or events with no output)
-    }
-
-    // Send final [DONE] marker (for providers like Anthropic that don't send it)
-    if (!stream_result.iterator.done) {
-        _ = try connection.stream.writeAll("data: [DONE]\n\n");
     }
 }
 
@@ -362,7 +351,7 @@ fn handleProviderStreaming(
 /// ```zig
 /// // Missing transform() function
 /// const BadTransformer = struct {};
-/// handleProvider(Client, BadTransformer, Types, ...) 
+/// handleProvider(Client, BadTransformer, Types, ...)
 /// // ❌ Compile Error: container 'BadTransformer' has no member named 'transform'
 ///
 /// // Wrong signature

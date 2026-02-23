@@ -54,7 +54,7 @@ pub fn transformStreamLine(
         struct { type: []const u8 },
         allocator,
         json_part,
-        .{ .allocate = .alloc_always },
+        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
     ) catch return null;
     defer type_info.deinit();
 
@@ -69,7 +69,7 @@ pub fn transformStreamLine(
     } else if (std.mem.eql(u8, event_type, "message_delta")) {
         return handleMessageDelta(json_part, state, allocator);
     } else if (std.mem.eql(u8, event_type, "message_stop")) {
-        return null; // We'll emit [DONE] separately
+        return allocator.dupe(u8, "data: [DONE]") catch null;
     }
     // Ignore: content_block_stop, ping, etc.
     return null;
@@ -115,7 +115,7 @@ fn handleContentBlockStart(json_part: []const u8, state: *StreamState, allocator
             .type = "function",
             .function = .{
                 .name = parsed.value.content_block.name,
-                .arguments = null,
+                .arguments = "",
             },
         };
 
