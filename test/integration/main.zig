@@ -9,6 +9,7 @@ const TestConfig = struct {
     anthropic_port: u16 = 8001,
     openai_port: u16 = 8002,
     groq_port: u16 = 8003,
+    sap_ai_core_port: u16 = 8001,
     recorded_dir: []const u8 = "test/cases",
     cases_dir: []const u8 = "test/cases",
 };
@@ -201,6 +202,7 @@ pub const TestContext = struct {
     anthropic_upstream_process: ?std.process.Child,
     openai_upstream_process: ?std.process.Child,
     groq_upstream_process: ?std.process.Child,
+    sap_ai_core_upstream_process: ?std.process.Child,
     proxy_process: ?std.process.Child,
     env_map: ?std.process.EnvMap,
     case_name: []const u8,
@@ -231,6 +233,7 @@ pub const TestContext = struct {
             .anthropic_upstream_process = null,
             .openai_upstream_process = null,
             .groq_upstream_process = null,
+            .sap_ai_core_upstream_process = null,
             .proxy_process = null,
             .env_map = null,
             .case_name = case_name,
@@ -311,6 +314,21 @@ pub const TestContext = struct {
         );
         try groq_child.spawn();
         self.groq_upstream_process = groq_child;
+
+        // Start SAP AI Core mock upstream
+        var sap_ai_core_port_buf: [8]u8 = undefined;
+        const sap_ai_core_port_str = try std.fmt.bufPrint(&sap_ai_core_port_buf, "{d}", .{self.config.sap_ai_core_port});
+        var sap_ai_core_child = std.process.Child.init(
+            &[_][]const u8{
+                "zig-out/bin/mock-upstream",
+                sap_ai_core_port_str,
+                "sap_ai_core",
+                self.case_name,
+            },
+            self.allocator,
+        );
+        try sap_ai_core_child.spawn();
+        self.sap_ai_core_upstream_process = sap_ai_core_child;
         
         // Give servers time to start and bind to ports
         std.Thread.sleep(1000 * std.time.ns_per_ms);
@@ -321,17 +339,18 @@ pub const TestContext = struct {
         if (self.anthropic_upstream_process) |*proc| {
             _ = try proc.kill();
             _ = try proc.wait();
-            self.anthropic_upstream_process = null;
         }
         if (self.openai_upstream_process) |*proc| {
             _ = try proc.kill();
             _ = try proc.wait();
-            self.openai_upstream_process = null;
         }
         if (self.groq_upstream_process) |*proc| {
             _ = try proc.kill();
             _ = try proc.wait();
-            self.groq_upstream_process = null;
+        }
+        if (self.sap_ai_core_upstream_process) |*proc| {
+            _ = try proc.kill();
+            _ = try proc.wait();
         }
     }
 

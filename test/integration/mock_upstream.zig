@@ -90,6 +90,12 @@ pub const MockUpstream = struct {
         // Parse HTTP request
         const parsed = try parseHttpRequest(request_allocator, request_data);
 
+        // Handle OAuth token endpoint for SAP AI Core
+        if (std.mem.eql(u8, parsed.path, "/oauth/token")) {
+            try self.sendOAuthTokenResponse(connection, request_allocator);
+            return;
+        }
+
         try recorder.writeCaseFile(
             self.allocator,
             "test/cases",
@@ -116,6 +122,26 @@ pub const MockUpstream = struct {
         const file = std.fs.cwd().openFile(txt_path, .{}) catch return false;
         file.close();
         return true;
+    }
+
+    fn sendOAuthTokenResponse(self: *MockUpstream, connection: std.net.Server.Connection, request_allocator: std.mem.Allocator) !void {
+        _ = self;
+        const token_response =
+            \\{"access_token":"mock-access-token-12345","token_type":"Bearer","expires_in":3600}
+        ;
+
+        var response_buf = std.ArrayList(u8){};
+        defer response_buf.deinit(request_allocator);
+
+        const writer = response_buf.writer(request_allocator);
+        try writer.writeAll("HTTP/1.1 200 OK\r\n");
+        try writer.writeAll("Content-Type: application/json\r\n");
+        try writer.print("Content-Length: {d}\r\n", .{token_response.len});
+        try writer.writeAll("Connection: close\r\n");
+        try writer.writeAll("\r\n");
+        try writer.writeAll(token_response);
+
+        _ = try connection.stream.writeAll(response_buf.items);
     }
 
     fn sendJsonResponse(self: *MockUpstream, connection: std.net.Server.Connection, request_allocator: std.mem.Allocator) !void {

@@ -26,7 +26,7 @@ pub const ModelConfig = struct {
 pub const PromptConfig = struct {
     template: []const OpenAI.Message,
     tools: ?[]const OpenAI.Tool = null,
-    tool_choice: ?OpenAI.ToolChoice = null,
+    tool_choice: ?std.json.Value = null,
     model: ModelConfig,
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {

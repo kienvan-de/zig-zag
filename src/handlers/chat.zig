@@ -56,6 +56,12 @@ const openai = struct {
     const transformer = @import("../providers/openai/transformer.zig");
 };
 
+const sap_ai_core = struct {
+    const types = @import("../providers/sap_ai_core/types.zig");
+    const client = @import("../providers/sap_ai_core/client.zig");
+    const transformer = @import("../providers/sap_ai_core/transformer.zig");
+};
+
 /// Handle POST /v1/chat/completions requests
 pub fn handle(
     allocator: std.mem.Allocator,
@@ -160,6 +166,30 @@ pub fn handle(
                         openai.client.OpenAIClient,
                         openai.transformer,
                         openai.types,
+                        allocator,
+                        connection,
+                        openai_request.value,
+                        model_info.model,
+                        provider_config,
+                    );
+                }
+            },
+            .sap_ai_core => {
+                if (is_streaming) {
+                    try handleProviderStreaming(
+                        sap_ai_core.client.SapAiCoreClient,
+                        sap_ai_core.transformer,
+                        allocator,
+                        connection,
+                        openai_request.value,
+                        model_info.model,
+                        provider_config,
+                    );
+                } else {
+                    try handleProvider(
+                        sap_ai_core.client.SapAiCoreClient,
+                        sap_ai_core.transformer,
+                        sap_ai_core.types,
                         allocator,
                         connection,
                         openai_request.value,

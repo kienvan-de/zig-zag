@@ -2,6 +2,25 @@ const std = @import("std");
 const OpenAI = @import("../openai/types.zig");
 const SapAiCore = @import("types.zig");
 
+/// Parsed OpenAI response from final_result JSON
+const ParsedFinalResult = struct {
+    id: []const u8,
+    object: []const u8,
+    created: i64,
+    model: []const u8,
+    choices: []const OpenAI.ResponseChoice,
+    usage: ?OpenAI.Usage = null,
+};
+
+/// Parsed OpenAI stream chunk from final_result JSON
+const ParsedStreamChunk = struct {
+    id: []const u8,
+    object: []const u8,
+    created: i64,
+    model: []const u8,
+    choices: []const OpenAI.StreamChoice,
+};
+
 // ============================================================================
 // Streaming State
 // ============================================================================
@@ -47,7 +66,7 @@ pub fn transform(
                 },
             },
             .stream = if (request.stream) |s|
-                .{ .enabled = s, .chunk_size = 100 }
+                .{ .enabled = s, .chunk_size = null }
             else
                 .{ .enabled = false, .chunk_size = null },
         },
@@ -71,18 +90,37 @@ pub fn transformResponse(
     allocator: std.mem.Allocator,
     original_model: []const u8,
 ) !OpenAI.Response {
-    const final_result = response.final_result orelse return error.MissingFinalResult;
+    // Stringify final_result json.Value and re-parse as typed struct
+    var buffer = std.ArrayList(u8){};
+    defer buffer.deinit(allocator);
+
+    try buffer.writer(allocator).print("{f}", .{std.json.fmt(response.final_result, .{})});
+
+    const parsed = std.json.parseFromSlice(
+        ParsedFinalResult,
+        allocator,
+        buffer.items,
+        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+    ) catch return error.InvalidFinalResult;
+    defer parsed.deinit();
 
     // Allocate model string with provider prefix
     const model_str = try allocator.dupe(u8, original_model);
 
+    // Deep copy choices since parsed will be freed
+    const choices = try allocator.dupe(OpenAI.ResponseChoice, parsed.value.choices);
+
     return OpenAI.Response{
-        .id = final_result.id,
-        .object = final_result.object,
-        .created = final_result.created,
+        .id = try allocator.dupe(u8, parsed.value.id),
+        .object = try allocator.dupe(u8, parsed.value.object),
+        .created = parsed.value.created,
         .model = model_str,
-        .choices = final_result.choices,
-        .usage = final_result.usage,
+        .choices = choices,
+        .usage = parsed.value.usage orelse OpenAI.Usage{
+            .prompt_tokens = 0,
+            .completion_tokens = 0,
+            .total_tokens = 0,
+        },
         .system_fingerprint = null,
         .service_tier = null,
     };
@@ -90,7 +128,10 @@ pub fn transformResponse(
 
 /// Cleanup transformed response
 pub fn cleanupResponse(response: OpenAI.Response, allocator: std.mem.Allocator) void {
+    allocator.free(response.id);
+    allocator.free(response.object);
     allocator.free(response.model);
+    allocator.free(response.choices);
 }
 
 // ============================================================================
@@ -130,21 +171,32 @@ pub fn transformStreamLine(
     };
     defer parsed.deinit();
 
-    const final_result = parsed.value.final_result orelse return null;
+    // Stringify final_result and re-parse as typed chunk
+    var inner_buffer = std.ArrayList(u8){};
+    defer inner_buffer.deinit(allocator);
+
+    inner_buffer.writer(allocator).print("{f}", .{std.json.fmt(parsed.value.final_result, .{})}) catch return null;
+
+    const chunk_parsed = std.json.parseFromSlice(
+        ParsedStreamChunk,
+        allocator,
+        inner_buffer.items,
+        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+    ) catch return null;
+    defer chunk_parsed.deinit();
 
     // Skip empty chunks (initial templating results)
-    if (final_result.id.len == 0) {
+    if (chunk_parsed.value.id.len == 0) {
         return null;
     }
 
     // Create OpenAI chunk with original model (including provider prefix)
     const openai_chunk = OpenAI.StreamChunk{
-        .id = final_result.id,
-        .object = final_result.object,
-        .created = final_result.created,
+        .id = chunk_parsed.value.id,
+        .object = chunk_parsed.value.object,
+        .created = chunk_parsed.value.created,
         .model = original_model,
-        .choices = final_result.choices,
-        .usage = final_result.usage,
+        .choices = chunk_parsed.value.choices,
     };
 
     // Serialize to JSON
