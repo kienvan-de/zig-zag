@@ -1,8 +1,12 @@
 {
   "providers": {
     "sap_ai_core": {
-      "api_key": "test-sap-ai-core-key",
-      "api_url": "http://localhost:8004"
+      "api_domain": "http://localhost:8001",
+      "deployment_id": "test-deployment-001",
+      "resource_group": "test-resource-group",
+      "oauth_domain": "http://localhost:8001",
+      "oauth_client_id": "test-client-id",
+      "oauth_client_secret": "test-client-secret"
     }
   },
   "server": { "host": "127.0.0.1", "port": 8080 }
