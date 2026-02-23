@@ -1,5 +1,6 @@
 const std = @import("std");
 const chat_handler = @import("handlers/chat.zig");
+const models_handler = @import("handlers/models.zig");
 const config_mod = @import("config.zig");
 
 /// Route definition
@@ -32,8 +33,15 @@ pub fn match(request_data: []const u8) ?Route {
         };
     }
 
+    if (std.mem.eql(u8, method, "GET") and std.mem.eql(u8, path, "/v1/models")) {
+        return Route{
+            .method = "GET",
+            .path = "/v1/models",
+            .handler = models_handler.handle,
+        };
+    }
+
     // Future routes:
-    // if (std.mem.eql(u8, method, "GET") and std.mem.eql(u8, path, "/v1/models")) { ... }
     // if (std.mem.eql(u8, method, "POST") and std.mem.eql(u8, path, "/v1/embeddings")) { ... }
 
     return null;

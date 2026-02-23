@@ -2,6 +2,19 @@ const std = @import("std");
 const OpenAI = @import("types.zig");
 const config_mod = @import("../../config.zig");
 
+/// Response from OpenAI /v1/models endpoint
+pub const Model = struct {
+    id: []const u8,
+    object: []const u8,
+    created: ?i64 = null,
+    owned_by: ?[]const u8 = null,
+};
+
+pub const ModelsResponse = struct {
+    object: []const u8,
+    data: []const Model,
+};
+
 /// Iterator for SSE streaming responses
 pub const StreamIterator = struct {
     allocator: std.mem.Allocator,
@@ -96,6 +109,69 @@ pub const OpenAIClient = struct {
 
     pub fn deinit(self: *OpenAIClient) void {
         self.client.deinit();
+    }
+
+    /// Fetch list of available models from OpenAI API
+    pub fn listModels(self: *OpenAIClient) !std.json.Parsed(ModelsResponse) {
+        // Build URL
+        var url_buffer: [512]u8 = undefined;
+        const url = try std.fmt.bufPrint(&url_buffer, "{s}/v1/models", .{self.api_url});
+        const uri = try std.Uri.parse(url);
+
+        // Build Authorization header
+        var auth_buffer: [512]u8 = undefined;
+        const auth_value = try std.fmt.bufPrint(&auth_buffer, "Bearer {s}", .{self.api_key});
+
+        // Build extra headers
+        var extra_headers_buf: [2]std.http.Header = undefined;
+        var extra_headers_count: usize = 1;
+        extra_headers_buf[0] = .{ .name = "Authorization", .value = auth_value };
+
+        if (self.organization) |org| {
+            extra_headers_buf[1] = .{ .name = "OpenAI-Organization", .value = org };
+            extra_headers_count = 2;
+        }
+
+        const extra_headers = extra_headers_buf[0..extra_headers_count];
+
+        // Make GET request
+        var req = try self.client.request(.GET, uri, .{
+            .extra_headers = extra_headers,
+        });
+        defer req.deinit();
+
+        // Send request (no body for GET)
+        var buf: [4096]u8 = undefined;
+        var body_writer = try req.sendBodyUnflushed(&buf);
+        try body_writer.end();
+        try req.connection.?.flush();
+
+        // Wait for response
+        const redirect_buffer: [0]u8 = undefined;
+        var response = try req.receiveHead(&redirect_buffer);
+
+        // Check status code
+        if (response.head.status != .ok) {
+            return self.handleErrorResponse(response.head.status);
+        }
+
+        // Read response body
+        var transfer_buf: [4096]u8 = undefined;
+        const reader = response.reader(&transfer_buf);
+
+        const response_body = try reader.allocRemaining(self.allocator, std.io.Limit.limited(self.max_response_size));
+        defer self.allocator.free(response_body);
+
+        // Parse response
+        return std.json.parseFromSlice(
+            ModelsResponse,
+            self.allocator,
+            response_body,
+            .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+        ) catch |err| {
+            std.debug.print("Failed to parse models response: {}\n", .{err});
+            return error.InvalidResponse;
+        };
     }
 
     /// Send a request to OpenAI Chat Completions API (non-streaming)

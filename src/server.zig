@@ -33,6 +33,7 @@ pub fn start(allocator: std.mem.Allocator, cfg: *const config.Config) !void {
     std.debug.print("Listening on http://{s}:{d}\n", .{ host, port });
     std.debug.print("Endpoints:\n", .{});
     std.debug.print("  POST /v1/chat/completions\n", .{});
+    std.debug.print("  GET  /v1/models\n", .{});
 
     // Accept connections in a loop
     while (true) {
