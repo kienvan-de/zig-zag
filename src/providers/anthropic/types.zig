@@ -493,5 +493,83 @@ pub const PingData = struct {
 };
 
 // ============================================================================
+// Streaming Event Types for SSE Parsing
+// ============================================================================
+
+/// Generic streaming event wrapper
+pub const StreamEvent = struct {
+    event_type: []const u8,
+    data: []const u8,
+};
+
+/// Message start event - contains initial message metadata
+pub const MessageStart = struct {
+    type: []const u8,
+    message: struct {
+        id: []const u8,
+        type: []const u8,
+        role: []const u8,
+        content: []const std.json.Value,
+        model: []const u8,
+        stop_reason: ?[]const u8,
+        stop_sequence: ?[]const u8,
+        usage: Usage,
+    },
+};
+
+/// Content block start event
+pub const ContentBlockStart = struct {
+    type: []const u8,
+    index: u32,
+    content_block: ContentBlockInfo,
+};
+
+/// Content block info in start event
+pub const ContentBlockInfo = struct {
+    type: []const u8,
+    text: ?[]const u8 = null,
+    id: ?[]const u8 = null,
+    name: ?[]const u8 = null,
+    input: ?std.json.Value = null,
+};
+
+/// Content block delta event
+pub const ContentBlockDelta = struct {
+    type: []const u8,
+    index: u32,
+    delta: DeltaContent,
+};
+
+/// Delta content - can be text_delta or input_json_delta
+pub const DeltaContent = struct {
+    type: []const u8,
+    text: ?[]const u8 = null,
+    partial_json: ?[]const u8 = null,
+};
+
+/// Content block stop event
+pub const ContentBlockStop = struct {
+    type: []const u8,
+    index: u32,
+};
+
+/// Message delta event - contains stop reason
+pub const MessageDelta = struct {
+    type: []const u8,
+    delta: struct {
+        stop_reason: ?[]const u8,
+        stop_sequence: ?[]const u8,
+    },
+    usage: struct {
+        output_tokens: u32,
+    },
+};
+
+/// Message stop event
+pub const MessageStop = struct {
+    type: []const u8,
+};
+
+// ============================================================================
 // Unit Tests
 // ============================================================================

@@ -89,7 +89,7 @@ pub const MockClient = struct {
         return response_body;
     }
 
-    /// Send a case-based request using agent_req.json and write agent_res.json
+    /// Send a case-based request using agent_req.json and write agent_res.json or agent_res.txt
     pub fn sendCaseRequest(
         self: *MockClient,
         cases_root: []const u8,
@@ -103,17 +103,30 @@ pub const MockClient = struct {
         );
         defer self.allocator.free(request_body);
 
+        // Check if this is a streaming request by parsing the JSON
+        const is_streaming = self.isStreamingRequest(request_body);
+
         const response_body = try self.sendRaw(.POST, "/v1/chat/completions", request_body);
 
+        // Write to .txt for streaming, .json for non-streaming
+        const res_filename = if (is_streaming) "agent_res.txt" else "agent_res.json";
         try recorder.writeCaseFile(
             self.allocator,
             cases_root,
             self.case_name,
-            "agent_res.json",
+            res_filename,
             response_body,
         );
 
         return response_body;
+    }
+
+    /// Check if request has stream: true
+    fn isStreamingRequest(self: *MockClient, request_body: []const u8) bool {
+        _ = self;
+        // Simple check for "stream":true or "stream": true in JSON
+        return std.mem.indexOf(u8, request_body, "\"stream\":true") != null or
+            std.mem.indexOf(u8, request_body, "\"stream\": true") != null;
     }
 
     /// Send a raw request with custom body

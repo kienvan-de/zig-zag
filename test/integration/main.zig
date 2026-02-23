@@ -114,6 +114,49 @@ fn jsonEqual(allocator: std.mem.Allocator, left: []const u8, right: []const u8) 
     return valueEqual(left_parsed.value, right_parsed.value);
 }
 
+/// Compare SSE streaming responses line by line
+/// Each "data: {...}" line is parsed as JSON and compared
+fn sseEqual(allocator: std.mem.Allocator, left: []const u8, right: []const u8) !bool {
+    var left_lines = std.mem.splitScalar(u8, left, '\n');
+    var right_lines = std.mem.splitScalar(u8, right, '\n');
+
+    while (true) {
+        const left_line = nextDataLine(&left_lines);
+        const right_line = nextDataLine(&right_lines);
+
+        // Both exhausted - equal
+        if (left_line == null and right_line == null) return true;
+        // One exhausted but not the other - not equal
+        if (left_line == null or right_line == null) return false;
+
+        const left_data = left_line.?;
+        const right_data = right_line.?;
+
+        // Handle [DONE] marker
+        if (std.mem.eql(u8, left_data, "[DONE]") and std.mem.eql(u8, right_data, "[DONE]")) {
+            continue;
+        }
+        if (std.mem.eql(u8, left_data, "[DONE]") or std.mem.eql(u8, right_data, "[DONE]")) {
+            return false;
+        }
+
+        // Compare JSON content
+        const equal = jsonEqual(allocator, left_data, right_data) catch return false;
+        if (!equal) return false;
+    }
+}
+
+fn nextDataLine(lines: *std.mem.SplitIterator(u8, .scalar)) ?[]const u8 {
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trimRight(u8, line, "\r");
+        if (trimmed.len == 0) continue;
+        if (std.mem.startsWith(u8, trimmed, "data: ")) {
+            return trimmed["data: ".len..];
+        }
+    }
+    return null;
+}
+
 fn assertCaseFileEqual(
     allocator: std.mem.Allocator,
     cases_root: []const u8,
@@ -126,10 +169,27 @@ fn assertCaseFileEqual(
     const expected = try recorder.readCaseFile(allocator, cases_root, case_name, expected_filename, 1024 * 1024);
     defer allocator.free(expected);
 
-    const equal = try jsonEqual(allocator, actual, expected);
+    // Determine if this is SSE streaming content (check for "data: " prefix)
+    const is_sse = std.mem.indexOf(u8, expected, "data: ") != null;
+
+    const equal = if (is_sse)
+        try sseEqual(allocator, actual, expected)
+    else
+        try jsonEqual(allocator, actual, expected);
+
     if (!equal) {
         return error.CaseAssertionFailed;
     }
+}
+
+/// Check if a case file exists
+fn caseFileExists(allocator: std.mem.Allocator, cases_root: []const u8, case_name: []const u8, filename: []const u8) bool {
+    const path = std.fmt.allocPrint(allocator, "{s}/{s}/{s}", .{ cases_root, case_name, filename }) catch return false;
+    defer allocator.free(path);
+
+    const file = std.fs.cwd().openFile(path, .{}) catch return false;
+    file.close();
+    return true;
 }
 
 /// Test context holding all test infrastructure
@@ -449,7 +509,13 @@ fn runCase(allocator: std.mem.Allocator, cases_root: []const u8, case_name: []co
     defer allocator.free(response);
 
     try assertCaseFileEqual(allocator, cases_root, case_name, "upstream_req.json", "expected_upstream_req.json");
-    try assertCaseFileEqual(allocator, cases_root, case_name, "agent_res.json", "expected_agent_res.json");
+
+    // Check if this is a streaming case (expected_agent_res.txt vs .json)
+    if (caseFileExists(allocator, cases_root, case_name, "expected_agent_res.txt")) {
+        try assertCaseFileEqual(allocator, cases_root, case_name, "agent_res.txt", "expected_agent_res.txt");
+    } else {
+        try assertCaseFileEqual(allocator, cases_root, case_name, "agent_res.json", "expected_agent_res.json");
+    }
 
     std.debug.print("  ✓ {s} passed\n", .{case_name});
 }

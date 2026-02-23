@@ -3,6 +3,210 @@ const testing = std.testing;
 const OpenAI = @import("../openai/types.zig");
 const Anthropic = @import("types.zig");
 
+// ============================================================================
+// Streaming State and Transformation
+// ============================================================================
+
+/// State for Anthropic→OpenAI streaming conversion
+/// Anthropic events are stateful, so we need to track context across events
+pub const StreamState = struct {
+    allocator: std.mem.Allocator,
+    message_id: ?[]const u8 = null,
+    model: ?[]const u8 = null,
+    original_model: []const u8,
+    created: i64,
+    current_tool_call_index: ?u32 = null,
+    current_tool_call_id: ?[]const u8 = null,
+    current_tool_call_name: ?[]const u8 = null,
+    sent_role: bool = false,
+
+    pub fn init(allocator: std.mem.Allocator, original_model: []const u8) StreamState {
+        return .{
+            .allocator = allocator,
+            .original_model = original_model,
+            .created = std.time.timestamp(),
+        };
+    }
+
+    pub fn deinit(self: *StreamState) void {
+        _ = self;
+        // No owned allocations to free - we use slices from parsed JSON
+    }
+};
+
+/// Transform a single Anthropic SSE line to OpenAI SSE format
+/// Returns null if no output should be emitted for this event
+/// Returns allocated string that caller must free
+pub fn transformStreamLine(
+    line: []const u8,
+    state: *StreamState,
+    allocator: std.mem.Allocator,
+) ?[]const u8 {
+    // Check if this is a data line
+    if (!std.mem.startsWith(u8, line, "data: ")) {
+        return null;
+    }
+
+    const json_part = line["data: ".len..];
+
+    // Try to determine event type by parsing
+    const type_info = std.json.parseFromSlice(
+        struct { type: []const u8 },
+        allocator,
+        json_part,
+        .{ .allocate = .alloc_always },
+    ) catch return null;
+    defer type_info.deinit();
+
+    const event_type = type_info.value.type;
+
+    if (std.mem.eql(u8, event_type, "message_start")) {
+        return handleMessageStart(json_part, state, allocator);
+    } else if (std.mem.eql(u8, event_type, "content_block_start")) {
+        return handleContentBlockStart(json_part, state, allocator);
+    } else if (std.mem.eql(u8, event_type, "content_block_delta")) {
+        return handleContentBlockDelta(json_part, state, allocator);
+    } else if (std.mem.eql(u8, event_type, "message_delta")) {
+        return handleMessageDelta(json_part, state, allocator);
+    } else if (std.mem.eql(u8, event_type, "message_stop")) {
+        return null; // We'll emit [DONE] separately
+    }
+    // Ignore: content_block_stop, ping, etc.
+    return null;
+}
+
+fn handleMessageStart(json_part: []const u8, state: *StreamState, allocator: std.mem.Allocator) ?[]const u8 {
+    const parsed = std.json.parseFromSlice(
+        Anthropic.MessageStart,
+        allocator,
+        json_part,
+        .{ .allocate = .alloc_always },
+    ) catch return null;
+    defer parsed.deinit();
+
+    state.message_id = parsed.value.message.id;
+    state.model = parsed.value.message.model;
+
+    // Emit initial chunk with role
+    state.sent_role = true;
+    return buildOpenAIChunk(state, .{ .role = .assistant }, null, allocator);
+}
+
+fn handleContentBlockStart(json_part: []const u8, state: *StreamState, allocator: std.mem.Allocator) ?[]const u8 {
+    const parsed = std.json.parseFromSlice(
+        Anthropic.ContentBlockStart,
+        allocator,
+        json_part,
+        .{ .allocate = .alloc_always },
+    ) catch return null;
+    defer parsed.deinit();
+
+    const block_type = parsed.value.content_block.type;
+
+    if (std.mem.eql(u8, block_type, "tool_use")) {
+        // Start of tool call - emit tool_calls delta with id, type, name
+        state.current_tool_call_index = parsed.value.index;
+        state.current_tool_call_id = parsed.value.content_block.id;
+        state.current_tool_call_name = parsed.value.content_block.name;
+
+        const tool_call = OpenAI.DeltaToolCall{
+            .index = parsed.value.index,
+            .id = parsed.value.content_block.id,
+            .type = "function",
+            .function = .{
+                .name = parsed.value.content_block.name,
+                .arguments = null,
+            },
+        };
+
+        var tool_calls: [1]OpenAI.DeltaToolCall = .{tool_call};
+        return buildOpenAIChunk(state, .{ .tool_calls = &tool_calls }, null, allocator);
+    }
+    // For text blocks, we wait for content_block_delta
+    return null;
+}
+
+fn handleContentBlockDelta(json_part: []const u8, state: *StreamState, allocator: std.mem.Allocator) ?[]const u8 {
+    const parsed = std.json.parseFromSlice(
+        Anthropic.ContentBlockDelta,
+        allocator,
+        json_part,
+        .{ .allocate = .alloc_always },
+    ) catch return null;
+    defer parsed.deinit();
+
+    const delta_type = parsed.value.delta.type;
+
+    if (std.mem.eql(u8, delta_type, "text_delta")) {
+        // Text content
+        if (parsed.value.delta.text) |text| {
+            return buildOpenAIChunk(state, .{ .content = text }, null, allocator);
+        }
+    } else if (std.mem.eql(u8, delta_type, "input_json_delta")) {
+        // Tool call arguments
+        if (parsed.value.delta.partial_json) |partial| {
+            const tool_call = OpenAI.DeltaToolCall{
+                .index = parsed.value.index,
+                .id = null,
+                .type = null,
+                .function = .{
+                    .name = null,
+                    .arguments = partial,
+                },
+            };
+
+            var tool_calls: [1]OpenAI.DeltaToolCall = .{tool_call};
+            return buildOpenAIChunk(state, .{ .tool_calls = &tool_calls }, null, allocator);
+        }
+    }
+    return null;
+}
+
+fn handleMessageDelta(json_part: []const u8, state: *StreamState, allocator: std.mem.Allocator) ?[]const u8 {
+    const parsed = std.json.parseFromSlice(
+        Anthropic.MessageDelta,
+        allocator,
+        json_part,
+        .{ .allocate = .alloc_always },
+    ) catch return null;
+    defer parsed.deinit();
+
+    // Emit final chunk with finish_reason
+    const finish_reason = transformStopReason(parsed.value.delta.stop_reason);
+    return buildOpenAIChunk(state, .{}, finish_reason, allocator);
+}
+
+/// Build an OpenAI streaming chunk from state and delta info
+fn buildOpenAIChunk(
+    state: *StreamState,
+    delta: OpenAI.Delta,
+    finish_reason: ?[]const u8,
+    allocator: std.mem.Allocator,
+) ?[]const u8 {
+    const choice = OpenAI.StreamChoice{
+        .index = 0,
+        .delta = delta,
+        .finish_reason = finish_reason,
+    };
+
+    var choices: [1]OpenAI.StreamChoice = .{choice};
+
+    const chunk = OpenAI.StreamChunk{
+        .id = state.message_id orelse "msg_unknown",
+        .object = "chat.completion.chunk",
+        .created = state.created,
+        .model = state.original_model,
+        .choices = &choices,
+    };
+
+    var buffer = std.ArrayList(u8){};
+    errdefer buffer.deinit(allocator);
+
+    buffer.writer(allocator).print("data: {f}", .{std.json.fmt(chunk, .{})}) catch return null;
+
+    return buffer.toOwnedSlice(allocator) catch null;
+}
+
 // Type alias for OpenAI message content union
 const MessageContent = OpenAI.MessageContent;
 

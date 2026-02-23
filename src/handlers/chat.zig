@@ -83,18 +83,8 @@ pub fn handle(
     };
     defer openai_request.deinit();
 
-    // Check if streaming (Phase 5)
-    if (openai_request.value.stream orelse false) {
-        const error_json = try errors.createErrorResponse(
-            allocator,
-            "Streaming not yet supported (Phase 5)",
-            .invalid_request_error,
-            null,
-        );
-        defer allocator.free(error_json);
-        try http.sendJsonResponse(connection, .bad_request, error_json);
-        return;
-    }
+    // Check if streaming
+    const is_streaming = openai_request.value.stream orelse false;
 
     // Parse model string to extract provider
     const model_info = utils.parseModelString(openai_request.value.model, allocator) catch |err| {
@@ -131,28 +121,52 @@ pub fn handle(
         // Native provider - route based on enum
         switch (native_provider) {
             .anthropic => {
-                try handleProvider(
-                    anthropic.client.AnthropicClient,
-                    anthropic.transformer,
-                    anthropic.types,
-                    allocator,
-                    connection,
-                    openai_request.value,
-                    model_info.model,
-                    provider_config,
-                );
+                if (is_streaming) {
+                    try handleProviderStreaming(
+                        anthropic.client.AnthropicClient,
+                        anthropic.transformer,
+                        allocator,
+                        connection,
+                        openai_request.value,
+                        model_info.model,
+                        provider_config,
+                    );
+                } else {
+                    try handleProvider(
+                        anthropic.client.AnthropicClient,
+                        anthropic.transformer,
+                        anthropic.types,
+                        allocator,
+                        connection,
+                        openai_request.value,
+                        model_info.model,
+                        provider_config,
+                    );
+                }
             },
             .openai => {
-                try handleProvider(
-                    openai.client.OpenAIClient,
-                    openai.transformer,
-                    openai.types,
-                    allocator,
-                    connection,
-                    openai_request.value,
-                    model_info.model,
-                    provider_config,
-                );
+                if (is_streaming) {
+                    try handleProviderStreaming(
+                        openai.client.OpenAIClient,
+                        openai.transformer,
+                        allocator,
+                        connection,
+                        openai_request.value,
+                        model_info.model,
+                        provider_config,
+                    );
+                } else {
+                    try handleProvider(
+                        openai.client.OpenAIClient,
+                        openai.transformer,
+                        openai.types,
+                        allocator,
+                        connection,
+                        openai_request.value,
+                        model_info.model,
+                        provider_config,
+                    );
+                }
             },
         }
     } else |_| {
@@ -171,27 +185,51 @@ pub fn handle(
 
         // Route based on compatibility
         if (std.mem.eql(u8, compatible, "openai")) {
-            try handleProvider(
-                openai.client.OpenAIClient,
-                openai.transformer,
-                openai.types,
-                allocator,
-                connection,
-                openai_request.value,
-                model_info.model,
-                provider_config,
-            );
+            if (is_streaming) {
+                try handleProviderStreaming(
+                    openai.client.OpenAIClient,
+                    openai.transformer,
+                    allocator,
+                    connection,
+                    openai_request.value,
+                    model_info.model,
+                    provider_config,
+                );
+            } else {
+                try handleProvider(
+                    openai.client.OpenAIClient,
+                    openai.transformer,
+                    openai.types,
+                    allocator,
+                    connection,
+                    openai_request.value,
+                    model_info.model,
+                    provider_config,
+                );
+            }
         } else if (std.mem.eql(u8, compatible, "anthropic")) {
-            try handleProvider(
-                anthropic.client.AnthropicClient,
-                anthropic.transformer,
-                anthropic.types,
-                allocator,
-                connection,
-                openai_request.value,
-                model_info.model,
-                provider_config,
-            );
+            if (is_streaming) {
+                try handleProviderStreaming(
+                    anthropic.client.AnthropicClient,
+                    anthropic.transformer,
+                    allocator,
+                    connection,
+                    openai_request.value,
+                    model_info.model,
+                    provider_config,
+                );
+            } else {
+                try handleProvider(
+                    anthropic.client.AnthropicClient,
+                    anthropic.transformer,
+                    anthropic.types,
+                    allocator,
+                    connection,
+                    openai_request.value,
+                    model_info.model,
+                    provider_config,
+                );
+            }
         } else {
             const error_json = try errors.createErrorResponse(
                 allocator,
@@ -203,6 +241,95 @@ pub fn handle(
             try http.sendJsonResponse(connection, .bad_request, error_json);
             return;
         }
+    }
+}
+
+/// Generic streaming provider handler
+fn handleProviderStreaming(
+    comptime Client: type,
+    comptime Transformer: type,
+    allocator: std.mem.Allocator,
+    connection: std.net.Server.Connection,
+    openai_request: OpenAI.Request,
+    model: []const u8,
+    provider_config: *const @import("../config.zig").ProviderConfig,
+) !void {
+    // Transform OpenAI request to provider format
+    const provider_request = Transformer.transform(
+        openai_request,
+        model,
+        allocator,
+    ) catch |err| {
+        std.debug.print("Transformation error: {}\n", .{err});
+        const error_json = try errors.createErrorResponse(
+            allocator,
+            "Failed to transform request",
+            .invalid_request_error,
+            null,
+        );
+        defer allocator.free(error_json);
+        try http.sendJsonResponse(connection, .bad_request, error_json);
+        return;
+    };
+    defer Transformer.cleanupRequest(provider_request, allocator);
+
+    // Initialize client
+    var client = Client.init(allocator, provider_config) catch |err| {
+        std.debug.print("Client initialization error: {}\n", .{err});
+        const error_json = try errors.createErrorResponse(
+            allocator,
+            "Failed to initialize provider client",
+            .invalid_request_error,
+            null,
+        );
+        defer allocator.free(error_json);
+        try http.sendJsonResponse(connection, .bad_request, error_json);
+        return;
+    };
+    defer client.deinit();
+
+    // Start streaming request and get iterator
+    var stream_result = client.sendStreamingRequest(provider_request) catch |err| {
+        std.debug.print("Provider streaming error: {}\n", .{err});
+        const error_json = try errors.createErrorResponse(
+            allocator,
+            "Failed to communicate with upstream API",
+            .server_error,
+            null,
+        );
+        defer allocator.free(error_json);
+        try http.sendJsonResponse(connection, .bad_gateway, error_json);
+        return;
+    };
+    defer stream_result.deinit();
+
+    // Send SSE headers to client
+    try http.sendSseHeaders(connection);
+
+    // Initialize streaming state
+    var state = Transformer.StreamState.init(allocator, openai_request.model);
+    defer state.deinit();
+
+    // Process each chunk from upstream
+    while (stream_result.iterator.next()) |line| {
+        // Check for [DONE] marker (OpenAI format)
+        if (std.mem.endsWith(u8, line, "[DONE]")) {
+            _ = try connection.stream.writeAll("data: [DONE]\n\n");
+            break;
+        }
+
+        // Transform the chunk
+        if (Transformer.transformStreamLine(line, &state, allocator)) |transformed| {
+            defer allocator.free(transformed);
+            _ = try connection.stream.writeAll(transformed);
+            _ = try connection.stream.writeAll("\n\n");
+        }
+        // Skip null returns (non-data lines, parse errors, or events with no output)
+    }
+
+    // Send final [DONE] marker (for providers like Anthropic that don't send it)
+    if (!stream_result.iterator.done) {
+        _ = try connection.stream.writeAll("data: [DONE]\n\n");
     }
 }
 

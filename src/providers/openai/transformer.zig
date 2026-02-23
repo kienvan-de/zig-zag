@@ -5,6 +5,24 @@ const OpenAI = @import("types.zig");
 /// OpenAI transformer is a pass-through since the proxy accepts OpenAI format
 /// and the OpenAI API also expects OpenAI format - no transformation needed!
 
+// ============================================================================
+// Streaming State (stateless for OpenAI - just holds original_model)
+// ============================================================================
+
+/// State for OpenAI streaming (minimal - just tracks original model name)
+pub const StreamState = struct {
+    original_model: []const u8,
+
+    pub fn init(allocator: std.mem.Allocator, original_model: []const u8) StreamState {
+        _ = allocator;
+        return .{ .original_model = original_model };
+    }
+
+    pub fn deinit(self: *StreamState) void {
+        _ = self;
+    }
+};
+
 /// Transform OpenAI request to OpenAI format (pass-through)
 /// Since the input is already in OpenAI format, we just return it as-is
 pub fn transform(
@@ -74,6 +92,56 @@ pub fn cleanupRequest(request: OpenAI.Request, allocator: std.mem.Allocator) voi
 pub fn cleanupResponse(response: OpenAI.Response, allocator: std.mem.Allocator) void {
     // Free the model string allocated in transformResponse
     allocator.free(response.model);
+}
+
+/// Transform a single SSE line for streaming responses
+/// Replaces the model field in the JSON chunk with the original model name
+/// Returns null if line should be passed through unchanged (e.g., "data: [DONE]")
+pub fn transformStreamLine(
+    line: []const u8,
+    state: *StreamState,
+    allocator: std.mem.Allocator,
+) ?[]const u8 {
+    const original_model = state.original_model;
+    // Check if this is a data line
+    if (!std.mem.startsWith(u8, line, "data: ")) {
+        return null; // Pass through non-data lines unchanged
+    }
+
+    const json_part = line["data: ".len..];
+    
+    // Handle [DONE] marker
+    if (std.mem.eql(u8, json_part, "[DONE]")) {
+        return null; // Pass through unchanged
+    }
+
+    // Parse the JSON chunk
+    const parsed = std.json.parseFromSlice(
+        OpenAI.StreamChunk,
+        allocator,
+        json_part,
+        .{ .allocate = .alloc_always },
+    ) catch {
+        return null; // Pass through unparseable lines unchanged
+    };
+    defer parsed.deinit();
+
+    // Create new chunk with original model
+    const new_chunk = OpenAI.StreamChunk{
+        .id = parsed.value.id,
+        .object = parsed.value.object,
+        .created = parsed.value.created,
+        .model = original_model,
+        .choices = parsed.value.choices,
+    };
+
+    // Serialize back to JSON
+    var buffer = std.ArrayList(u8){};
+    errdefer buffer.deinit(allocator);
+    
+    buffer.writer(allocator).print("data: {f}", .{std.json.fmt(new_chunk, .{})}) catch return null;
+    
+    return buffer.toOwnedSlice(allocator) catch null;
 }
 
 // ============================================================================
