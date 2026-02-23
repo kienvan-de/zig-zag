@@ -6,5 +6,5 @@ data: {"id":"chatcmpl-case7-001","object":"chat.completion.chunk","created":1710
 data: {"id":"chatcmpl-case7-001","object":"chat.completion.chunk","created":1710000001,"model":"sap_ai_core/gemini-2.5-pro","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"location\":"}}]},"finish_reason":null}]}
 data: {"id":"chatcmpl-case7-001","object":"chat.completion.chunk","created":1710000001,"model":"sap_ai_core/gemini-2.5-pro","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":" \"San Francisco,"}}]},"finish_reason":null}]}
 data: {"id":"chatcmpl-case7-001","object":"chat.completion.chunk","created":1710000001,"model":"sap_ai_core/gemini-2.5-pro","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":" CA\"}"}}]},"finish_reason":null}]}
-data: {"id":"chatcmpl-case7-001","object":"chat.completion.chunk","created":1710000001,"model":"sap_ai_core/gemini-2.5-pro","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
+data: {"id":"chatcmpl-case7-001","object":"chat.completion.chunk","created":1710000001,"model":"sap_ai_core/gemini-2.5-pro","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":50,"completion_tokens":35,"total_tokens":85}}
 data: [DONE]

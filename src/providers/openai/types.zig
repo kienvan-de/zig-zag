@@ -690,6 +690,7 @@ pub const StreamChunk = struct {
     created: i64,
     model: []const u8,
     choices: []const StreamChoice,
+    usage: ?Usage = null,
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         try jw.beginObject();
@@ -707,6 +708,17 @@ pub const StreamChunk = struct {
             try choice.jsonStringify(jw);
         }
         try jw.endArray();
+        if (self.usage) |u| {
+            try jw.objectField("usage");
+            try jw.beginObject();
+            try jw.objectField("prompt_tokens");
+            try jw.write(u.prompt_tokens);
+            try jw.objectField("completion_tokens");
+            try jw.write(u.completion_tokens);
+            try jw.objectField("total_tokens");
+            try jw.write(u.total_tokens);
+            try jw.endObject();
+        }
         try jw.endObject();
     }
 };
