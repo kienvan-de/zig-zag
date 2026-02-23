@@ -19,6 +19,7 @@ const ParsedStreamChunk = struct {
     created: i64,
     model: []const u8,
     choices: []const OpenAI.StreamChoice,
+    usage: ?OpenAI.Usage = null,
 };
 
 // ============================================================================
@@ -197,6 +198,7 @@ pub fn transformStreamLine(
         .created = chunk_parsed.value.created,
         .model = original_model,
         .choices = chunk_parsed.value.choices,
+        .usage = chunk_parsed.value.usage,
     };
 
     // Serialize to JSON
