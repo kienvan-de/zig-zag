@@ -6,10 +6,7 @@ const MockClient = @import("mock_client.zig").MockClient;
 const TestConfig = struct {
     proxy_host: []const u8 = "127.0.0.1",
     proxy_port: u16 = 8080,
-    anthropic_port: u16 = 8001,
-    openai_port: u16 = 8002,
-    groq_port: u16 = 8003,
-    sap_ai_core_port: u16 = 8001,
+    upstream_port: u16 = 8001,
     recorded_dir: []const u8 = "test/cases",
     cases_dir: []const u8 = "test/cases",
 };
@@ -199,10 +196,7 @@ pub const TestContext = struct {
     config: TestConfig,
     recorder: recorder.Recorder,
     client: MockClient,
-    anthropic_upstream_process: ?std.process.Child,
-    openai_upstream_process: ?std.process.Child,
-    groq_upstream_process: ?std.process.Child,
-    sap_ai_core_upstream_process: ?std.process.Child,
+    upstream_process: ?std.process.Child,
     proxy_process: ?std.process.Child,
     env_map: ?std.process.EnvMap,
     case_name: []const u8,
@@ -230,10 +224,7 @@ pub const TestContext = struct {
             .config = config,
             .recorder = rec,
             .client = undefined,
-            .anthropic_upstream_process = null,
-            .openai_upstream_process = null,
-            .groq_upstream_process = null,
-            .sap_ai_core_upstream_process = null,
+            .upstream_process = null,
             .proxy_process = null,
             .env_map = null,
             .case_name = case_name,
@@ -250,13 +241,7 @@ pub const TestContext = struct {
         if (self.proxy_process) |*proc| {
             _ = proc.kill() catch {};
         }
-        if (self.groq_upstream_process) |*proc| {
-            _ = proc.kill() catch {};
-        }
-        if (self.openai_upstream_process) |*proc| {
-            _ = proc.kill() catch {};
-        }
-        if (self.anthropic_upstream_process) |*proc| {
+        if (self.upstream_process) |*proc| {
             _ = proc.kill() catch {};
         }
         if (self.env_map) |*em| {
@@ -268,87 +253,29 @@ pub const TestContext = struct {
         allocator.destroy(self);
     }
 
-    /// Start all mock upstream servers as separate processes
+    /// Start mock upstream server
     pub fn startUpstreams(self: *TestContext) !void {
-        // Start Anthropic mock upstream
-        var anthropic_port_buf: [8]u8 = undefined;
-        const anthropic_port_str = try std.fmt.bufPrint(&anthropic_port_buf, "{d}", .{self.config.anthropic_port});
-        var anthropic_child = std.process.Child.init(
+        var port_buf: [8]u8 = undefined;
+        const port_str = try std.fmt.bufPrint(&port_buf, "{d}", .{self.config.upstream_port});
+        var child = std.process.Child.init(
             &[_][]const u8{
                 "zig-out/bin/mock-upstream",
-                anthropic_port_str,
-                "anthropic",
+                port_str,
+                "upstream",
                 self.case_name,
             },
             self.allocator,
         );
-        try anthropic_child.spawn();
-        self.anthropic_upstream_process = anthropic_child;
-
-        // Start OpenAI mock upstream
-        var openai_port_buf: [8]u8 = undefined;
-        const openai_port_str = try std.fmt.bufPrint(&openai_port_buf, "{d}", .{self.config.openai_port});
-        var openai_child = std.process.Child.init(
-            &[_][]const u8{
-                "zig-out/bin/mock-upstream",
-                openai_port_str,
-                "openai",
-                self.case_name,
-            },
-            self.allocator,
-        );
-        try openai_child.spawn();
-        self.openai_upstream_process = openai_child;
-
-        // Start Groq mock upstream
-        var groq_port_buf: [8]u8 = undefined;
-        const groq_port_str = try std.fmt.bufPrint(&groq_port_buf, "{d}", .{self.config.groq_port});
-        var groq_child = std.process.Child.init(
-            &[_][]const u8{
-                "zig-out/bin/mock-upstream",
-                groq_port_str,
-                "groq",
-                self.case_name,
-            },
-            self.allocator,
-        );
-        try groq_child.spawn();
-        self.groq_upstream_process = groq_child;
-
-        // Start SAP AI Core mock upstream
-        var sap_ai_core_port_buf: [8]u8 = undefined;
-        const sap_ai_core_port_str = try std.fmt.bufPrint(&sap_ai_core_port_buf, "{d}", .{self.config.sap_ai_core_port});
-        var sap_ai_core_child = std.process.Child.init(
-            &[_][]const u8{
-                "zig-out/bin/mock-upstream",
-                sap_ai_core_port_str,
-                "sap_ai_core",
-                self.case_name,
-            },
-            self.allocator,
-        );
-        try sap_ai_core_child.spawn();
-        self.sap_ai_core_upstream_process = sap_ai_core_child;
+        try child.spawn();
+        self.upstream_process = child;
         
-        // Give servers time to start and bind to ports
-        std.Thread.sleep(1000 * std.time.ns_per_ms);
+        // Give server time to start and bind to port
+        std.Thread.sleep(500 * std.time.ns_per_ms);
     }
 
-    /// Stop all mock upstream servers
+    /// Stop mock upstream server
     pub fn stopUpstreams(self: *TestContext) !void {
-        if (self.anthropic_upstream_process) |*proc| {
-            _ = try proc.kill();
-            _ = try proc.wait();
-        }
-        if (self.openai_upstream_process) |*proc| {
-            _ = try proc.kill();
-            _ = try proc.wait();
-        }
-        if (self.groq_upstream_process) |*proc| {
-            _ = try proc.kill();
-            _ = try proc.wait();
-        }
-        if (self.sap_ai_core_upstream_process) |*proc| {
+        if (self.upstream_process) |*proc| {
             _ = try proc.kill();
             _ = try proc.wait();
         }
