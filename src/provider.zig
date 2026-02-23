@@ -5,6 +5,7 @@ const testing = std.testing;
 pub const Provider = enum {
     anthropic,
     openai,
+    sap_ai_core,
 
     /// Parse provider name from string (case-insensitive)
     pub fn fromString(name: []const u8) !Provider {
@@ -15,6 +16,7 @@ pub const Provider = enum {
         
         if (std.mem.eql(u8, lower, "anthropic")) return .anthropic;
         if (std.mem.eql(u8, lower, "openai")) return .openai;
+        if (std.mem.eql(u8, lower, "sap_ai_core")) return .sap_ai_core;
         
         return error.UnsupportedProvider;
     }
@@ -27,10 +29,11 @@ pub const ProviderError = error{
 };
 
 /// Check if provider is currently supported
-pub fn isSupported(provider: Provider) bool {
-    return switch (provider) {
+pub fn isSupported(p: Provider) bool {
+    return switch (p) {
         .anthropic => true,
-        .openai => false, // Not yet implemented
+        .openai => true,
+        .sap_ai_core => true,
     };
 }
 
