@@ -1,0 +1,1 @@
+{"providers":{"sap_ai_core":{"api_key":"test-sap-ai-core-key","api_url":"http://localhost:8004"}},"server":{"host":"127.0.0.1","port":8080}}
