@@ -133,6 +133,7 @@ pub fn transformStreamLine(
         .created = parsed.value.created,
         .model = original_model,
         .choices = parsed.value.choices,
+        .usage = parsed.value.usage,
     };
 
     // Serialize back to JSON
