@@ -2,4 +2,5 @@
 zig-out
 test/fixtures/recorded
 test/cases/*/agent_res.json
+test/cases/*/agent_res.txt
 test/cases/*/upstream_req.json
