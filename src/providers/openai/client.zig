@@ -128,10 +128,7 @@ pub const OpenAIClient = struct {
         defer req.deinit();
 
         // Send request (no body for GET)
-        var buf: [4096]u8 = undefined;
-        var body_writer = try req.sendBodyUnflushed(&buf);
-        try body_writer.end();
-        try req.connection.?.flush();
+        try req.sendBodiless();
 
         // Wait for response
         const redirect_buffer: [0]u8 = undefined;

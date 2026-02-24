@@ -91,8 +91,16 @@ pub const MockUpstream = struct {
         const parsed = try parseHttpRequest(request_allocator, request_data);
 
         // Handle OAuth token endpoint for SAP AI Core
-        if (std.mem.eql(u8, parsed.path, "/oauth/token")) {
+        if (std.mem.endsWith(u8, parsed.path, "/oauth/token")) {
             try self.sendOAuthTokenResponse(connection, request_allocator);
+            return;
+        }
+
+        // Handle models endpoint with path-based routing
+        if (std.mem.endsWith(u8, parsed.path, "/v1/models") or
+            std.mem.endsWith(u8, parsed.path, "/v2/lm/scenarios/foundation-models/models"))
+        {
+            try self.sendModelsResponse(connection, request_allocator, parsed.path);
             return;
         }
 
@@ -142,6 +150,62 @@ pub const MockUpstream = struct {
         try writer.writeAll(token_response);
 
         _ = try connection.stream.writeAll(response_buf.items);
+    }
+
+    fn sendModelsResponse(self: *MockUpstream, connection: std.net.Server.Connection, request_allocator: std.mem.Allocator, path: []const u8) !void {
+        // Determine which provider based on path prefix
+        const response_file = self.getModelsResponseFile(path);
+
+        const response_body = recorder.readCaseFile(
+            self.allocator,
+            "test/cases",
+            self.case_name,
+            response_file,
+            1024 * 1024,
+        ) catch |err| {
+            std.debug.print("[MockUpstream] Failed to read {s}: {}\n", .{ response_file, err });
+            return err;
+        };
+        defer self.allocator.free(response_body);
+
+        // Send HTTP response
+        var response_buf = std.ArrayList(u8){};
+        defer response_buf.deinit(request_allocator);
+
+        const writer = response_buf.writer(request_allocator);
+        try writer.writeAll("HTTP/1.1 200 OK\r\n");
+        try writer.writeAll("Content-Type: application/json\r\n");
+        try writer.print("Content-Length: {d}\r\n", .{response_body.len});
+        try writer.writeAll("Connection: close\r\n");
+        try writer.writeAll("\r\n");
+        try writer.writeAll(response_body);
+
+        _ = try connection.stream.writeAll(response_buf.items);
+    }
+
+    fn getModelsResponseFile(self: *MockUpstream, path: []const u8) []const u8 {
+        _ = self;
+        // Extract provider from path: /openai/v1/models -> openai
+        // Path format: /{provider}/v1/models or /{provider}/v2/lm/scenarios/...
+        if (path.len > 1) {
+            const path_without_leading_slash = path[1..];
+            if (std.mem.indexOf(u8, path_without_leading_slash, "/")) |slash_pos| {
+                const provider = path_without_leading_slash[0..slash_pos];
+                if (std.mem.eql(u8, provider, "openai")) {
+                    return "upstream_openai_models_res.json";
+                } else if (std.mem.eql(u8, provider, "anthropic")) {
+                    return "upstream_anthropic_models_res.json";
+                } else if (std.mem.eql(u8, provider, "sap_ai_core")) {
+                    return "upstream_sap_models_res.json";
+                } else if (std.mem.eql(u8, provider, "groq")) {
+                    return "upstream_groq_models_res.json";
+                } else if (std.mem.eql(u8, provider, "claude_compatible")) {
+                    return "upstream_claude_models_res.json";
+                }
+            }
+        }
+        // Fallback to generic upstream_res.json
+        return "upstream_res.json";
     }
 
     fn sendJsonResponse(self: *MockUpstream, connection: std.net.Server.Connection, request_allocator: std.mem.Allocator) !void {

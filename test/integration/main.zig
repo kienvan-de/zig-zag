@@ -450,17 +450,38 @@ fn runCase(allocator: std.mem.Allocator, cases_root: []const u8, case_name: []co
     try ctx.startProxy();
     defer ctx.stopProxy() catch {};
 
-    // Run case
-    const response = try ctx.client.sendCaseRequest(cases_root);
-    defer allocator.free(response);
+    // Detect test type: models test (no agent_req.json) vs chat completion test
+    const is_models_test = !caseFileExists(allocator, cases_root, case_name, "agent_req.json") and
+        caseFileExists(allocator, cases_root, case_name, "expected_agent_res.json");
 
-    try assertCaseFileEqual(allocator, cases_root, case_name, "upstream_req.json", "expected_upstream_req.json");
+    if (is_models_test) {
+        // Models test - use sendModelsRequest
+        const response = try ctx.client.sendModelsRequest();
+        defer allocator.free(response);
 
-    // Check if this is a streaming case (expected_agent_res.txt vs .json)
-    if (caseFileExists(allocator, cases_root, case_name, "expected_agent_res.txt")) {
-        try assertCaseFileEqual(allocator, cases_root, case_name, "agent_res.txt", "expected_agent_res.txt");
-    } else {
+        // Write response to agent_res.json for comparison
+        try recorder.writeCaseFile(
+            allocator,
+            cases_root,
+            case_name,
+            "agent_res.json",
+            response,
+        );
+
         try assertCaseFileEqual(allocator, cases_root, case_name, "agent_res.json", "expected_agent_res.json");
+    } else {
+        // Chat completion test - use sendCaseRequest
+        const response = try ctx.client.sendCaseRequest(cases_root);
+        defer allocator.free(response);
+
+        try assertCaseFileEqual(allocator, cases_root, case_name, "upstream_req.json", "expected_upstream_req.json");
+
+        // Check if this is a streaming case (expected_agent_res.txt vs .json)
+        if (caseFileExists(allocator, cases_root, case_name, "expected_agent_res.txt")) {
+            try assertCaseFileEqual(allocator, cases_root, case_name, "agent_res.txt", "expected_agent_res.txt");
+        } else {
+            try assertCaseFileEqual(allocator, cases_root, case_name, "agent_res.json", "expected_agent_res.json");
+        }
     }
 
     std.debug.print("  ✓ {s} passed\n", .{case_name});

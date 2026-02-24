@@ -82,11 +82,30 @@ fn fetchModelsForProvider(
     provider_name: []const u8,
     provider_config: *const config_mod.ProviderConfig,
 ) !?[]OpenAI.Model {
-    // Get provider type
-    const provider_type_str = provider_config.getString("type") orelse return null;
+    // First check for "compatible" field (takes precedence for compatible providers)
+    if (provider_config.getString("compatible")) |compatible| {
+        if (std.mem.eql(u8, compatible, "openai")) {
+            return try fetchModels(
+                openai.client.OpenAIClient,
+                openai.transformer,
+                allocator,
+                provider_name,
+                provider_config,
+            );
+        } else if (std.mem.eql(u8, compatible, "anthropic")) {
+            return try fetchModels(
+                anthropic.client.AnthropicClient,
+                anthropic.transformer,
+                allocator,
+                provider_name,
+                provider_config,
+            );
+        }
+        return null;
+    }
 
-    // Check if this is a native provider
-    if (provider_mod.Provider.fromString(provider_type_str)) |native_provider| {
+    // Use provider_name as the provider type for native providers
+    if (provider_mod.Provider.fromString(provider_name)) |native_provider| {
         return switch (native_provider) {
             .openai => try fetchModels(
                 openai.client.OpenAIClient,
@@ -111,27 +130,7 @@ fn fetchModelsForProvider(
             ),
         };
     } else |_| {
-        // Not a native provider - check for "compatible" field
-        const compatible = provider_config.getString("compatible") orelse return null;
-
-        if (std.mem.eql(u8, compatible, "openai")) {
-            return try fetchModels(
-                openai.client.OpenAIClient,
-                openai.transformer,
-                allocator,
-                provider_name,
-                provider_config,
-            );
-        } else if (std.mem.eql(u8, compatible, "anthropic")) {
-            return try fetchModels(
-                anthropic.client.AnthropicClient,
-                anthropic.transformer,
-                allocator,
-                provider_name,
-                provider_config,
-            );
-        }
-
+        // Not a native provider and no compatible field
         return null;
     }
 }

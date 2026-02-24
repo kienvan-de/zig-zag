@@ -129,6 +129,38 @@ pub const MockClient = struct {
             std.mem.indexOf(u8, request_body, "\"stream\": true") != null;
     }
 
+    /// Send a GET request to /v1/models and return the response
+    pub fn sendModelsRequest(self: *MockClient) ![]u8 {
+        // Construct full URL
+        var url_buffer: [256]u8 = undefined;
+        const url = try std.fmt.bufPrint(
+            &url_buffer,
+            "{s}/v1/models",
+            .{self.proxy_url},
+        );
+
+        // Parse URI
+        const uri = try std.Uri.parse(url);
+
+        // Make GET request
+        var req = try self.http_client.request(.GET, uri, .{});
+        defer req.deinit();
+
+        // Send request without body
+        try req.sendBodiless();
+
+        // Wait for response
+        const redirect_buffer: [0]u8 = undefined;
+        var response = try req.receiveHead(&redirect_buffer);
+
+        // Read response body
+        var transfer_buf: [4096]u8 = undefined;
+        const reader = response.reader(&transfer_buf);
+        const response_body = try reader.allocRemaining(self.allocator, std.io.Limit.limited(1024 * 1024));
+
+        return response_body;
+    }
+
     /// Send a raw request with custom body
     pub fn sendRaw(
         self: *MockClient,
