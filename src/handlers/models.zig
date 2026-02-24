@@ -164,7 +164,7 @@ fn fetchModels(
     // Transform to OpenAI models with provider prefix
     defer {
         // Deinit parsed response if it has a deinit method
-        if (@TypeOf(response) == std.json.Parsed(openai.client.ModelsResponse)) {
+        if (@TypeOf(response) == std.json.Parsed(OpenAI.ModelsResponse)) {
             var r = response;
             r.deinit();
         }

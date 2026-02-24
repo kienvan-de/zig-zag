@@ -1,7 +1,6 @@
 const std = @import("std");
 const testing = std.testing;
 const OpenAI = @import("types.zig");
-const client = @import("client.zig");
 
 /// OpenAI transformer is a pass-through since the proxy accepts OpenAI format
 /// and the OpenAI API also expects OpenAI format - no transformation needed!
@@ -27,7 +26,7 @@ pub const StreamState = struct {
 /// Transform OpenAI ModelsResponse to OpenAI.Model array with provider prefix
 pub fn transformModelsResponse(
     allocator: std.mem.Allocator,
-    response: std.json.Parsed(client.ModelsResponse),
+    response: std.json.Parsed(OpenAI.ModelsResponse),
     provider_name: []const u8,
 ) ![]OpenAI.Model {
     var models = try allocator.alloc(OpenAI.Model, response.value.data.len);
@@ -40,8 +39,8 @@ pub fn transformModelsResponse(
         models[i] = OpenAI.Model{
             .id = prefixed_id,
             .object = "model",
-            .created = upstream_model.created orelse 0,
-            .owned_by = try allocator.dupe(u8, upstream_model.owned_by orelse "unknown"),
+            .created = upstream_model.created,
+            .owned_by = try allocator.dupe(u8, upstream_model.owned_by),
         };
     }
 
