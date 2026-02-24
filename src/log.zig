@@ -1,10 +1,11 @@
 //! Logging Module
 //!
 //! Provides file-based logging with configurable log levels.
-//! Supports writing to file or stderr (default).
+//! Supports async writing to file using worker pool.
 
 const std = @import("std");
 const builtin = @import("builtin");
+const worker_pool = @import("worker_pool.zig");
 
 /// Log configuration
 pub const LogConfig = struct {
@@ -12,15 +13,23 @@ pub const LogConfig = struct {
     path: ?[]const u8 = null, // null = use OS default
 };
 
+/// Log entry for async writing
+const LogEntry = struct {
+    msg: []u8,
+    allocator: std.mem.Allocator,
+};
+
 /// Global log state
 var log_file: ?std.fs.File = null;
 var log_level: std.log.Level = .info;
 var initialized: bool = false;
 var log_mutex: std.Thread.Mutex = .{};
+var log_allocator: ?std.mem.Allocator = null;
 
 /// Initialize logging with configuration
-pub fn init(config: LogConfig) !void {
+pub fn init(config: LogConfig, allocator: std.mem.Allocator) !void {
     log_level = config.level;
+    log_allocator = allocator;
 
     const path = config.path orelse getDefaultLogPath();
 
@@ -40,7 +49,8 @@ pub fn init(config: LogConfig) !void {
 
     initialized = true;
 
-    info("Logging initialized: level={s}, path={s}", .{ @tagName(log_level), path });
+    // Use sync write for init message since pool may not be ready
+    writeSync("Logging initialized: level={s}, path={s}", .{ @tagName(log_level), path });
 }
 
 /// Deinitialize logging
@@ -50,6 +60,7 @@ pub fn deinit() void {
         log_file = null;
     }
     initialized = false;
+    log_allocator = null;
 }
 
 /// Get default log path based on OS
@@ -164,6 +175,38 @@ fn isLeapYear(year: u32) bool {
     return (year % 4 == 0 and year % 100 != 0) or (year % 400 == 0);
 }
 
+/// Synchronous write to log file (used during init/deinit or when pool unavailable)
+fn writeSync(comptime format: []const u8, args: anytype) void {
+    var ts_buf: [32]u8 = undefined;
+    const timestamp = getTimestamp(&ts_buf);
+
+    var msg_buf: [4096]u8 = undefined;
+    const msg = std.fmt.bufPrint(&msg_buf, "[{s}] [info] " ++ format ++ "\n", .{timestamp} ++ args) catch return;
+
+    if (log_file) |f| {
+        log_mutex.lock();
+        defer log_mutex.unlock();
+        f.writeAll(msg) catch {};
+    } else {
+        std.debug.print("{s}", .{msg});
+    }
+}
+
+/// Async write task executed by worker pool
+fn asyncWriteTask(ctx: *anyopaque) void {
+    const entry: *LogEntry = @ptrCast(@alignCast(ctx));
+    defer {
+        entry.allocator.free(entry.msg);
+        entry.allocator.destroy(entry);
+    }
+
+    if (log_file) |f| {
+        log_mutex.lock();
+        defer log_mutex.unlock();
+        f.writeAll(entry.msg) catch {};
+    }
+}
+
 /// Core logging function
 fn logImpl(
     comptime level: std.log.Level,
@@ -182,16 +225,48 @@ fn logImpl(
     var ts_buf: [32]u8 = undefined;
     const timestamp = getTimestamp(&ts_buf);
 
-    // Format the message first
+    // Format the message
     var msg_buf: [4096]u8 = undefined;
     const msg = std.fmt.bufPrint(&msg_buf, "[{s}] [{s}] {s}" ++ format ++ "\n", .{ timestamp, level_txt, scope_prefix } ++ args) catch return;
 
+    // Try async write via worker pool
+    if (worker_pool.getPool()) |pool| {
+        if (log_allocator) |allocator| {
+            // Allocate entry and copy message for async processing
+            const entry = allocator.create(LogEntry) catch {
+                // Fallback to sync write on allocation failure
+                writeSyncDirect(msg);
+                return;
+            };
+
+            entry.msg = allocator.dupe(u8, msg) catch {
+                allocator.destroy(entry);
+                writeSyncDirect(msg);
+                return;
+            };
+            entry.allocator = allocator;
+
+            pool.submit(asyncWriteTask, @ptrCast(entry)) catch {
+                // Fallback to sync write on submit failure
+                allocator.free(entry.msg);
+                allocator.destroy(entry);
+                writeSyncDirect(msg);
+            };
+            return;
+        }
+    }
+
+    // Fallback: sync write
+    writeSyncDirect(msg);
+}
+
+/// Direct synchronous write (for fallback cases)
+fn writeSyncDirect(msg: []const u8) void {
     if (log_file) |f| {
         log_mutex.lock();
         defer log_mutex.unlock();
         f.writeAll(msg) catch {};
     } else {
-        // Use std.debug for stderr output (Zig 0.15 compatible)
         std.debug.print("{s}", .{msg});
     }
 }
