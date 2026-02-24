@@ -4,7 +4,6 @@
       "api_key": "sk-ant-api03-your-key-here",
       "api_url": "https://api.anthropic.com",
       "api_version": "2023-06-01",
-      "timeout_ms": 30000,
       "max_response_size_mb": 10,
       "retry_count": 0,
       "retry_delay_ms": 1000
@@ -13,27 +12,27 @@
       "api_key": "sk-your-openai-key-here",
       "organization": "org-your-org-id",
       "api_url": "https://api.openai.com",
-      "timeout_ms": 30000,
+      "max_response_size_mb": 10,
+      "retry_count": 0,
+      "retry_delay_ms": 1000
+    },
+    "sap_ai_core": {
+      "api_domain": "https://api.ai.prod.us-east-1.aws.ml.hana.ondemand.com",
+      "deployment_id": "your-deployment-id",
+      "resource_group": "your-resource-group",
+      "oauth_domain": "https://your-subdomain.authentication.us10.hana.ondemand.com",
+      "oauth_client_id": "your-client-id",
+      "oauth_client_secret": "your-client-secret",
       "max_response_size_mb": 10,
       "retry_count": 0,
       "retry_delay_ms": 1000
     },
     "groq": {
       "api_key": "gsk-your-groq-key-here",
-      "api_url": "https://api.groq.com",
+      "api_url": "https://api.groq.com/openai",
       "compatible": "openai",
-      "timeout_ms": 30000,
       "max_response_size_mb": 10,
       "retry_count": 2,
-      "retry_delay_ms": 1000
-    },
-    "azure": {
-      "api_key": "your-azure-api-key",
-      "api_url": "https://your-resource.openai.azure.com",
-      "compatible": "openai",
-      "timeout_ms": 60000,
-      "max_response_size_mb": 10,
-      "retry_count": 0,
       "retry_delay_ms": 1000
     }
   },
