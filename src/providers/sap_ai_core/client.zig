@@ -1,6 +1,8 @@
 const std = @import("std");
 const SapAiCore = @import("types.zig");
 const config_mod = @import("../../config.zig");
+const token_cache = @import("../../cache/token_cache.zig");
+const log = @import("../../log.zig");
 
 /// Iterator for SAP AI Core SSE streaming responses
 pub const StreamIterator = struct {
@@ -57,10 +59,7 @@ const OAuthTokenResponse = struct {
 };
 
 /// Cached OAuth token
-const CachedToken = struct {
-    access_token: []const u8,
-    expires_at: i64,
-};
+
 
 pub const SapAiCoreClient = struct {
     allocator: std.mem.Allocator,
@@ -76,13 +75,12 @@ pub const SapAiCoreClient = struct {
     retry_delay_ms: u64,
     config: *const config_mod.ProviderConfig,
     client: std.http.Client,
-    cached_token: ?CachedToken = null,
 
     const DEFAULT_TIMEOUT_MS = 30000;
     const DEFAULT_MAX_RESPONSE_SIZE_MB = 10;
     const DEFAULT_RETRY_COUNT = 0;
     const DEFAULT_RETRY_DELAY_MS = 1000;
-    const TOKEN_EXPIRY_BUFFER_SECONDS = 60; // Refresh token 60 seconds before expiry
+    const TOKEN_EXPIRY_BUFFER_SECONDS: i64 = 60; // Refresh token 60 seconds before expiry
 
     pub fn init(allocator: std.mem.Allocator, provider_config: *const config_mod.ProviderConfig) !SapAiCoreClient {
         const api_domain = provider_config.getString("api_domain") orelse {
@@ -134,14 +132,11 @@ pub const SapAiCoreClient = struct {
             .retry_delay_ms = @intCast(retry_delay_ms),
             .config = provider_config,
             .client = std.http.Client{ .allocator = allocator },
-            .cached_token = null,
         };
     }
 
     pub fn deinit(self: *SapAiCoreClient) void {
-        if (self.cached_token) |token| {
-            self.allocator.free(token.access_token);
-        }
+        // Token is managed by global cache, no need to free here
         self.client.deinit();
     }
 
@@ -202,33 +197,33 @@ pub const SapAiCoreClient = struct {
         };
     }
 
-    /// Get current timestamp in seconds
-    fn getCurrentTimestamp() i64 {
-        return @divTrunc(std.time.milliTimestamp(), 1000);
-    }
-
-    /// Get a valid OAuth access token, refreshing if necessary
+    /// Get a valid OAuth access token, using global cache
     fn getAccessToken(self: *SapAiCoreClient) ![]const u8 {
-        const now = getCurrentTimestamp();
+        // Check global cache first (without lock)
+        if (token_cache.get(self.oauth_domain, TOKEN_EXPIRY_BUFFER_SECONDS)) |cached_token| {
+            return cached_token;
+        }
 
-        // Check if cached token is still valid
-        if (self.cached_token) |token| {
-            if (now < token.expires_at - TOKEN_EXPIRY_BUFFER_SECONDS) {
-                return token.access_token;
-            }
-            // Token expired or about to expire, free it
-            self.allocator.free(token.access_token);
-            self.cached_token = null;
+        // Acquire fetch lock to prevent thundering herd
+        try token_cache.acquireFetchLock(self.oauth_domain);
+        defer token_cache.releaseFetchLock(self.oauth_domain);
+
+        // Check cache again (another thread may have fetched while we waited)
+        if (token_cache.get(self.oauth_domain, TOKEN_EXPIRY_BUFFER_SECONDS)) |cached_token| {
+            log.debug("Token found in cache after acquiring lock for '{s}'", .{self.oauth_domain});
+            return cached_token;
         }
 
         // Fetch new token
+        log.info("Fetching new OAuth token for '{s}'", .{self.oauth_domain});
         const new_token = try self.fetchOAuthToken();
-        self.cached_token = .{
-            .access_token = new_token.access_token,
-            .expires_at = now + new_token.expires_in,
-        };
+        defer self.allocator.free(new_token.access_token);
 
-        return self.cached_token.?.access_token;
+        // Store in global cache
+        try token_cache.put(self.oauth_domain, new_token.access_token, new_token.expires_in);
+
+        // Return from cache (cache owns the memory now)
+        return token_cache.get(self.oauth_domain, TOKEN_EXPIRY_BUFFER_SECONDS) orelse error.TokenCacheError;
     }
 
     /// Fetch OAuth token from the OAuth server

@@ -1,5 +1,6 @@
 const std = @import("std");
 const provider_mod = @import("provider.zig");
+const log_mod = @import("log.zig");
 
 /// Provider-specific configuration
 /// Wraps a parsed JSON object and provides type-safe accessors
@@ -58,6 +59,14 @@ pub const ProviderConfig = struct {
 pub const ServerConfig = struct {
     port: u16 = 8080,
     host: []const u8 = "0.0.0.0",
+    http_pool_size: ?i64 = null,
+    io_pool_size: ?i64 = null,
+};
+
+/// Logging configuration
+pub const LogConfig = struct {
+    level: std.log.Level = .info,
+    path: ?[]const u8 = null, // null = use OS default
 };
 
 /// Main application configuration
@@ -65,6 +74,7 @@ pub const Config = struct {
     allocator: std.mem.Allocator,
     providers: std.StringHashMap(ProviderConfig),
     server: ServerConfig,
+    log: LogConfig,
     _parsed: std.json.Parsed(std.json.Value), // Keep root parsed alive
 
     /// Load configuration from ZIG_ZAG_CONFIG env var or ~/.config/zig-zag/config.json
@@ -135,6 +145,34 @@ pub const Config = struct {
                     server_config.host = host_value.string;
                 }
             }
+            if (server_obj.get("http_pool_size")) |pool_value| {
+                if (pool_value == .integer) {
+                    server_config.http_pool_size = pool_value.integer;
+                }
+            }
+            if (server_obj.get("io_pool_size")) |pool_value| {
+                if (pool_value == .integer) {
+                    server_config.io_pool_size = pool_value.integer;
+                }
+            }
+        }
+
+        // Parse logging config (optional, with defaults)
+        var log_config = LogConfig{};
+        if (root_obj.get("logging")) |log_value| {
+            if (log_value == .object) {
+                const log_obj = log_value.object;
+                if (log_obj.get("level")) |level_value| {
+                    if (level_value == .string) {
+                        log_config.level = log_mod.parseLevel(level_value.string);
+                    }
+                }
+                if (log_obj.get("path")) |path_value| {
+                    if (path_value == .string) {
+                        log_config.path = path_value.string;
+                    }
+                }
+            }
         }
 
         // Get providers object
@@ -186,6 +224,7 @@ pub const Config = struct {
             .allocator = allocator,
             .providers = providers,
             .server = server_config,
+            .log = log_config,
             ._parsed = parsed,
         };
     }

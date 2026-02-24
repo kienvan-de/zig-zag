@@ -42,6 +42,7 @@ const errors = @import("../errors.zig");
 const http = @import("../http.zig");
 const utils = @import("../utils.zig");
 const provider = @import("../provider.zig");
+const log = @import("../log.zig");
 
 // Provider modules
 const anthropic = struct {
@@ -284,6 +285,9 @@ fn handleProviderStreaming(
     model: []const u8,
     provider_config: *const @import("../config.zig").ProviderConfig,
 ) !void {
+    const start_time = std.time.milliTimestamp();
+    log.info("POST /v1/chat/completions - streaming request for model '{s}'", .{openai_request.model});
+
     // Transform OpenAI request to provider format
     const provider_request = Transformer.transform(
         openai_request,
@@ -350,6 +354,9 @@ fn handleProviderStreaming(
         }
         // Skip null returns (non-data lines, parse errors, or events with no output)
     }
+
+    const elapsed = std.time.milliTimestamp() - start_time;
+    log.info("POST /v1/chat/completions - streaming completed in {d}ms for model '{s}'", .{ elapsed, openai_request.model });
 }
 
 /// Generic provider handler using comptime duck typing
@@ -405,6 +412,9 @@ fn handleProvider(
     model: []const u8,
     provider_config: *const @import("../config.zig").ProviderConfig,
 ) !void {
+    const start_time = std.time.milliTimestamp();
+    log.info("POST /v1/chat/completions - request for model '{s}'", .{openai_request.model});
+
     // Transform OpenAI request to provider format
     const provider_request = Transformer.transform(
         openai_request,
@@ -467,4 +477,7 @@ fn handleProvider(
 
     // Send response
     try http.sendJsonResponse(connection, .ok, response_buffer.items);
+
+    const elapsed = std.time.milliTimestamp() - start_time;
+    log.info("POST /v1/chat/completions - completed in {d}ms for model '{s}'", .{ elapsed, openai_request.model });
 }
