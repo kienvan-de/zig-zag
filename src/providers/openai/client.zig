@@ -2,19 +2,6 @@ const std = @import("std");
 const OpenAI = @import("types.zig");
 const config_mod = @import("../../config.zig");
 
-/// Response from OpenAI /v1/models endpoint
-pub const Model = struct {
-    id: []const u8,
-    object: []const u8,
-    created: ?i64 = null,
-    owned_by: ?[]const u8 = null,
-};
-
-pub const ModelsResponse = struct {
-    object: []const u8,
-    data: []const Model,
-};
-
 /// Iterator for SSE streaming responses
 pub const StreamIterator = struct {
     allocator: std.mem.Allocator,
@@ -112,7 +99,7 @@ pub const OpenAIClient = struct {
     }
 
     /// Fetch list of available models from OpenAI API
-    pub fn listModels(self: *OpenAIClient) !std.json.Parsed(ModelsResponse) {
+    pub fn listModels(self: *OpenAIClient) !std.json.Parsed(OpenAI.ModelsResponse) {
         // Build URL
         var url_buffer: [512]u8 = undefined;
         const url = try std.fmt.bufPrint(&url_buffer, "{s}/v1/models", .{self.api_url});
@@ -164,7 +151,7 @@ pub const OpenAIClient = struct {
 
         // Parse response
         return std.json.parseFromSlice(
-            ModelsResponse,
+            OpenAI.ModelsResponse,
             self.allocator,
             response_body,
             .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
