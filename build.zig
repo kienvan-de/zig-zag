@@ -210,4 +210,19 @@ pub fn build(b: *std.Build) void {
 
     const run_integration_step = b.step("run:integration", "Run full integration test suite");
     run_integration_step.dependOn(&run_integration_exe.step);
+
+    // Release build (smallest binary)
+    const release_exe = b.addExecutable(.{
+        .name = "zig-zag",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = .ReleaseSmall,
+            .strip = true,
+        }),
+    });
+
+    const release_step = b.step("release", "Build release binary (smallest size)");
+    const install_release = b.addInstallArtifact(release_exe, .{});
+    release_step.dependOn(&install_release.step);
 }
