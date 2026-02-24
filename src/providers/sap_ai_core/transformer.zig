@@ -1,6 +1,20 @@
 const std = @import("std");
 const OpenAI = @import("../openai/types.zig");
 const SapAiCore = @import("types.zig");
+const client = @import("client.zig");
+
+/// Transform SAP AI Core ModelsResponse to OpenAI.Model array with provider prefix
+/// SAP AI Core doesn't have a models endpoint, so this returns an empty array
+pub fn transformModelsResponse(
+    allocator: std.mem.Allocator,
+    response: ?client.ModelsResponse,
+    provider_name: []const u8,
+) ![]OpenAI.Model {
+    _ = provider_name;
+    _ = response;
+    // SAP AI Core doesn't have a models listing endpoint
+    return try allocator.alloc(OpenAI.Model, 0);
+}
 
 /// Parsed OpenAI response from final_result JSON
 const ParsedFinalResult = struct {

@@ -95,6 +95,13 @@ pub const AnthropicClient = struct {
         self.client.deinit();
     }
 
+    /// Anthropic doesn't have a public models API
+    /// Returns null to indicate no models endpoint available
+    pub fn listModels(self: *AnthropicClient) !?void {
+        _ = self;
+        return null;
+    }
+
     /// Send a request to Anthropic Messages API (non-streaming)
     /// Implements automatic retry logic based on retry_count and retry_delay_ms config
     /// Returns parsed Anthropic.Response
