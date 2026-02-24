@@ -95,11 +95,57 @@ pub const AnthropicClient = struct {
         self.client.deinit();
     }
 
-    /// Anthropic doesn't have a public models API
-    /// Returns null to indicate no models endpoint available
-    pub fn listModels(self: *AnthropicClient) !?void {
-        _ = self;
-        return null;
+    /// Fetch list of available models from Anthropic API
+    pub fn listModels(self: *AnthropicClient) !std.json.Parsed(Anthropic.AnthropicModelsResponse) {
+        // Build URL
+        var url_buffer: [512]u8 = undefined;
+        const url = try std.fmt.bufPrint(&url_buffer, "{s}/v1/models", .{self.api_url});
+        const uri = try std.Uri.parse(url);
+
+        // Build headers
+        const extra_headers = [_]std.http.Header{
+            .{ .name = "x-api-key", .value = self.api_key },
+            .{ .name = "anthropic-version", .value = self.api_version },
+        };
+
+        // Make GET request
+        var req = try self.client.request(.GET, uri, .{
+            .extra_headers = &extra_headers,
+        });
+        defer req.deinit();
+
+        // Send request (no body for GET)
+        var buf: [4096]u8 = undefined;
+        var body_writer = try req.sendBodyUnflushed(&buf);
+        try body_writer.end();
+        try req.connection.?.flush();
+
+        // Wait for response
+        const redirect_buffer: [0]u8 = undefined;
+        var response = try req.receiveHead(&redirect_buffer);
+
+        // Check status code
+        if (response.head.status != .ok) {
+            return self.handleErrorResponse(response.head.status);
+        }
+
+        // Read response body
+        var transfer_buf: [4096]u8 = undefined;
+        const reader = response.reader(&transfer_buf);
+
+        const response_body = try reader.allocRemaining(self.allocator, std.io.Limit.limited(self.max_response_size));
+        defer self.allocator.free(response_body);
+
+        // Parse response
+        return std.json.parseFromSlice(
+            Anthropic.AnthropicModelsResponse,
+            self.allocator,
+            response_body,
+            .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+        ) catch |err| {
+            std.debug.print("Failed to parse Anthropic models response: {}\n", .{err});
+            return error.InvalidResponse;
+        };
     }
 
     /// Send a request to Anthropic Messages API (non-streaming)

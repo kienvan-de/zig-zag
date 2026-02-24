@@ -1,19 +1,67 @@
 const std = @import("std");
 const OpenAI = @import("../openai/types.zig");
 const SapAiCore = @import("types.zig");
-const client = @import("client.zig");
 
-/// Transform SAP AI Core ModelsResponse to OpenAI.Model array with provider prefix
-/// SAP AI Core doesn't have a models endpoint, so this returns an empty array
+/// Check if a model has orchestration scenario
+fn hasOrchestrationScenario(sap_model: SapAiCore.SapModel) bool {
+    for (sap_model.allowedScenarios) |scenario| {
+        if (std.mem.eql(u8, scenario.scenarioId, "orchestration")) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// Check if a model has a valid latest non-deprecated version
+fn hasValidLatestVersion(sap_model: SapAiCore.SapModel) bool {
+    for (sap_model.versions) |version| {
+        if (version.isLatest and !version.deprecated) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// Transform SAP AI Core SapModelsResponse to OpenAI.Model array with provider prefix
+/// Filters to only include models with:
+/// - isLatest = true and deprecated = false (in versions)
+/// - scenarioId = "orchestration" (in allowedScenarios)
 pub fn transformModelsResponse(
     allocator: std.mem.Allocator,
-    response: ?client.ModelsResponse,
+    response: std.json.Parsed(SapAiCore.SapModelsResponse),
     provider_name: []const u8,
 ) ![]OpenAI.Model {
-    _ = provider_name;
-    _ = response;
-    // SAP AI Core doesn't have a models listing endpoint
-    return try allocator.alloc(OpenAI.Model, 0);
+    const resources = response.value.resources;
+
+    // First pass: count valid models
+    var valid_count: usize = 0;
+    for (resources) |sap_model| {
+        if (hasValidLatestVersion(sap_model) and hasOrchestrationScenario(sap_model)) {
+            valid_count += 1;
+        }
+    }
+
+    var models = try allocator.alloc(OpenAI.Model, valid_count);
+    errdefer allocator.free(models);
+
+    // Second pass: populate valid models
+    var idx: usize = 0;
+    for (resources) |sap_model| {
+        if (hasValidLatestVersion(sap_model) and hasOrchestrationScenario(sap_model)) {
+            // Create prefixed model ID: {provider_name}/{model_id}
+            const prefixed_id = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ provider_name, sap_model.model });
+
+            models[idx] = OpenAI.Model{
+                .id = prefixed_id,
+                .object = "model",
+                .created = 0,
+                .owned_by = try allocator.dupe(u8, sap_model.provider),
+            };
+            idx += 1;
+        }
+    }
+
+    return models;
 }
 
 /// Parsed OpenAI response from final_result JSON

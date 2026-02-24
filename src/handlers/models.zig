@@ -8,6 +8,7 @@ const http = @import("../http.zig");
 const errors = @import("../errors.zig");
 const config_mod = @import("../config.zig");
 const OpenAI = @import("../providers/openai/types.zig");
+const SapAiCore = @import("../providers/sap_ai_core/types.zig");
 const provider_mod = @import("../provider.zig");
 
 // Provider modules
@@ -162,13 +163,11 @@ fn fetchModels(
     }
 
     // Transform to OpenAI models with provider prefix
-    defer {
-        // Deinit parsed response if it has a deinit method
-        if (@TypeOf(response) == std.json.Parsed(OpenAI.ModelsResponse)) {
-            var r = response;
-            r.deinit();
-        }
-    }
+    const models = try transformer.transformModelsResponse(allocator, response, provider_name);
 
-    return try transformer.transformModelsResponse(allocator, response, provider_name);
+    // Deinit parsed response
+    var r = response;
+    r.deinit();
+
+    return models;
 }
