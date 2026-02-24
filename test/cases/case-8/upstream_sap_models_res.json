@@ -1,0 +1,96 @@
+{
+  "count": 2,
+  "resources": [
+    {
+      "model": "gpt-4o",
+      "executableId": "azure-openai",
+      "description": "GPT-4o model",
+      "displayName": "GPT-4o",
+      "accessType": "public",
+      "provider": "azure",
+      "versions": [
+        {
+          "name": "2024-05-13",
+          "isLatest": true,
+          "deprecated": false,
+          "retirementDate": "",
+          "contextLength": 128000,
+          "streamingSupported": true
+        }
+      ],
+      "allowedScenarios": [
+        {
+          "executableId": "azure-openai",
+          "scenarioId": "orchestration"
+        }
+      ]
+    },
+    {
+      "model": "gemini-1.5-pro",
+      "executableId": "gcp-vertexai",
+      "description": "Gemini 1.5 Pro model",
+      "displayName": "Gemini 1.5 Pro",
+      "accessType": "public",
+      "provider": "gcp",
+      "versions": [
+        {
+          "name": "001",
+          "isLatest": true,
+          "deprecated": false,
+          "retirementDate": "",
+          "contextLength": 1000000,
+          "streamingSupported": true
+        }
+      ],
+      "allowedScenarios": [
+        {
+          "executableId": "gcp-vertexai",
+          "scenarioId": "orchestration"
+        }
+      ]
+    },
+    {
+      "model": "old-model",
+      "executableId": "azure-openai",
+      "description": "Old deprecated model",
+      "displayName": "Old Model",
+      "accessType": "public",
+      "provider": "azure",
+      "versions": [
+        {
+          "name": "2023-01-01",
+          "isLatest": false,
+          "deprecated": true,
+          "retirementDate": "2024-01-01"
+        }
+      ],
+      "allowedScenarios": [
+        {
+          "executableId": "azure-openai",
+          "scenarioId": "orchestration"
+        }
+      ]
+    },
+    {
+      "model": "non-orchestration-model",
+      "executableId": "other",
+      "description": "Model without orchestration scenario",
+      "displayName": "Non-Orchestration",
+      "accessType": "public",
+      "provider": "other",
+      "versions": [
+        {
+          "name": "1.0",
+          "isLatest": true,
+          "deprecated": false
+        }
+      ],
+      "allowedScenarios": [
+        {
+          "executableId": "other",
+          "scenarioId": "other-scenario"
+        }
+      ]
+    }
+  ]
+}

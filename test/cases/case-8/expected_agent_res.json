@@ -1,0 +1,77 @@
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "openai/gpt-4",
+      "object": "model",
+      "created": 0,
+      "owned_by": "unknown"
+    },
+    {
+      "id": "openai/gpt-4-turbo",
+      "object": "model",
+      "created": 0,
+      "owned_by": "unknown"
+    },
+    {
+      "id": "openai/gpt-3.5-turbo",
+      "object": "model",
+      "created": 0,
+      "owned_by": "unknown"
+    },
+    {
+      "id": "anthropic/claude-3-7-sonnet-20250219",
+      "object": "model",
+      "created": 0,
+      "owned_by": "unknown"
+    },
+    {
+      "id": "anthropic/claude-3-5-sonnet-20241022",
+      "object": "model",
+      "created": 0,
+      "owned_by": "unknown"
+    },
+    {
+      "id": "sap_ai_core/gpt-4o",
+      "object": "model",
+      "created": 0,
+      "owned_by": "unknown"
+    },
+    {
+      "id": "sap_ai_core/gemini-1.5-pro",
+      "object": "model",
+      "created": 0,
+      "owned_by": "unknown"
+    },
+    {
+      "id": "groq/llama-3.1-70b-versatile",
+      "object": "model",
+      "created": 0,
+      "owned_by": "unknown"
+    },
+    {
+      "id": "groq/llama-3.1-8b-instant",
+      "object": "model",
+      "created": 0,
+      "owned_by": "unknown"
+    },
+    {
+      "id": "groq/mixtral-8x7b-32768",
+      "object": "model",
+      "created": 0,
+      "owned_by": "unknown"
+    },
+    {
+      "id": "claude_compatible/claude-3-opus-20240229",
+      "object": "model",
+      "created": 0,
+      "owned_by": "unknown"
+    },
+    {
+      "id": "claude_compatible/claude-3-sonnet-20240229",
+      "object": "model",
+      "created": 0,
+      "owned_by": "unknown"
+    }
+  ]
+}
