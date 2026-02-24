@@ -1,6 +1,7 @@
 const std = @import("std");
 const OpenAI = @import("../openai/types.zig");
 const SapAiCore = @import("types.zig");
+const log = @import("../../log.zig");
 
 /// Check if a model has orchestration scenario
 fn hasOrchestrationScenario(sap_model: SapAiCore.SapModel) bool {
@@ -164,7 +165,10 @@ pub fn transformResponse(
         allocator,
         buffer.items,
         .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
-    ) catch return error.InvalidFinalResult;
+    ) catch |err| {
+        log.debug("[SAP] Failed to parse final_result: {}", .{err});
+        return error.InvalidFinalResult;
+    };
     defer parsed.deinit();
 
     // Allocate model string with provider prefix
@@ -229,7 +233,8 @@ pub fn transformStreamLine(
         allocator,
         json_part,
         .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
-    ) catch {
+    ) catch |err| {
+        log.debug("[SAP] [STREAM] Failed to parse wrapper chunk: {}", .{err});
         return null;
     };
     defer parsed.deinit();
@@ -245,7 +250,10 @@ pub fn transformStreamLine(
         allocator,
         inner_buffer.items,
         .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
-    ) catch return null;
+    ) catch |err| {
+        log.debug("[SAP] [STREAM] Failed to parse inner chunk: {}", .{err});
+        return null;
+    };
     defer chunk_parsed.deinit();
 
     // Skip empty chunks (initial templating results)

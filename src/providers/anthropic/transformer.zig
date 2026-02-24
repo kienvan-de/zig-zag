@@ -2,6 +2,7 @@ const std = @import("std");
 const testing = std.testing;
 const OpenAI = @import("../openai/types.zig");
 const Anthropic = @import("types.zig");
+const log = @import("../../log.zig");
 
 // ============================================================================
 // Models Response Transformation
@@ -86,7 +87,10 @@ pub fn transformStreamLine(
         allocator,
         json_part,
         .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
-    ) catch return null;
+    ) catch |err| {
+        log.debug("[Anthropic] Failed to parse stream event type: {}", .{err});
+        return null;
+    };
     defer type_info.deinit();
 
     const event_type = type_info.value.type;
@@ -112,7 +116,10 @@ fn handleMessageStart(json_part: []const u8, state: *StreamState, allocator: std
         allocator,
         json_part,
         .{ .allocate = .alloc_always },
-    ) catch return null;
+    ) catch |err| {
+        log.debug("[Anthropic] Failed to parse message_start event: {}", .{err});
+        return null;
+    };
     defer parsed.deinit();
 
     state.message_id = parsed.value.message.id;
@@ -130,7 +137,10 @@ fn handleContentBlockStart(json_part: []const u8, state: *StreamState, allocator
         allocator,
         json_part,
         .{ .allocate = .alloc_always },
-    ) catch return null;
+    ) catch |err| {
+        log.debug("[Anthropic] Failed to parse content_block_start event: {}", .{err});
+        return null;
+    };
     defer parsed.deinit();
 
     const block_type = parsed.value.content_block.type;
@@ -164,7 +174,10 @@ fn handleContentBlockDelta(json_part: []const u8, state: *StreamState, allocator
         allocator,
         json_part,
         .{ .allocate = .alloc_always },
-    ) catch return null;
+    ) catch |err| {
+        log.debug("[Anthropic] Failed to parse content_block_delta event: {}", .{err});
+        return null;
+    };
     defer parsed.deinit();
 
     const delta_type = parsed.value.delta.type;
@@ -200,7 +213,10 @@ fn handleMessageDelta(json_part: []const u8, state: *StreamState, allocator: std
         allocator,
         json_part,
         .{ .allocate = .alloc_always },
-    ) catch return null;
+    ) catch |err| {
+        log.debug("[Anthropic] Failed to parse message_delta event: {}", .{err});
+        return null;
+    };
     defer parsed.deinit();
 
     // Build usage from input_tokens (from message_start) and output_tokens (from message_delta)
