@@ -25,11 +25,36 @@ const WorkerContext = struct {
     shutdown: *std.atomic.Value(bool),
 };
 
+// ============================================================================
+// Shutdown support
+// ============================================================================
+
+/// Global listener pointer and mutex for shutdown support.
+/// Protected by listener_mutex - set while server is running, null otherwise.
+var global_listener: ?*std.net.Server = null;
+var listener_mutex: std.Thread.Mutex = .{};
+
+/// Signal the running server to stop.
+/// Closes the listener socket which causes all accept() calls to return an
+/// error, allowing worker threads to exit cleanly.
+pub fn shutdown() void {
+    listener_mutex.lock();
+    defer listener_mutex.unlock();
+
+    if (global_listener) |l| {
+        l.deinit();
+        global_listener = null;
+    }
+}
+
+// ============================================================================
+// Server entry point
+// ============================================================================
+
 pub fn start(allocator: std.mem.Allocator, cfg: *const config.Config) !void {
     const host = cfg.server.host;
     const port = cfg.server.port;
 
-    // Get HTTP pool size from config or use default
     const pool_size: usize = if (cfg.server.http_pool_size) |size|
         @intCast(size)
     else
@@ -39,14 +64,21 @@ pub fn start(allocator: std.mem.Allocator, cfg: *const config.Config) !void {
     std.debug.print("Loaded providers: {d}\n", .{cfg.providers.count()});
     std.debug.print("HTTP pool size: {d}\n", .{pool_size});
 
-    // Create server address
     const address = try std.net.Address.parseIp(host, port);
 
-    // Create TCP listener
     var listener = try address.listen(.{
         .reuse_address = true,
     });
-    defer listener.deinit();
+    // NOTE: We do NOT defer listener.deinit() here.
+    // shutdown() owns deinit when called externally.
+    // If we exit normally (no shutdown), we deinit below after joining threads.
+
+    // Register in global state so shutdown() can close the socket.
+    {
+        listener_mutex.lock();
+        global_listener = &listener;
+        listener_mutex.unlock();
+    }
 
     std.debug.print("Listening on http://{s}:{d}\n", .{ host, port });
     std.debug.print("Endpoints:\n", .{});
@@ -55,18 +87,15 @@ pub fn start(allocator: std.mem.Allocator, cfg: *const config.Config) !void {
 
     log.info("Server started on {s}:{d} with {d} HTTP workers", .{ host, port, pool_size });
 
-    // Shutdown flag
-    var shutdown = std.atomic.Value(bool).init(false);
+    var shutdown_flag = std.atomic.Value(bool).init(false);
 
-    // Worker context shared by all threads
     var worker_ctx = WorkerContext{
         .allocator = allocator,
         .cfg = cfg,
         .listener = &listener,
-        .shutdown = &shutdown,
+        .shutdown = &shutdown_flag,
     };
 
-    // Create worker threads
     var threads = try allocator.alloc(std.Thread, pool_size);
     defer allocator.free(threads);
 
@@ -75,24 +104,49 @@ pub fn start(allocator: std.mem.Allocator, cfg: *const config.Config) !void {
         log.debug("Started worker thread {d}", .{i});
     }
 
-    // Wait for all threads (they run until shutdown)
+    // Wait for all threads to exit (they exit when accept() fails after shutdown).
     for (threads) |thread| {
         thread.join();
     }
+
+    // Clear global listener reference.
+    // If shutdown() already called deinit(), global_listener is already null
+    // and listener.deinit() would double-free, so only deinit if we still own it.
+    {
+        listener_mutex.lock();
+        defer listener_mutex.unlock();
+        if (global_listener != null) {
+            global_listener = null;
+            listener.deinit();
+        }
+        // else: shutdown() already called deinit(), nothing to do.
+    }
+
+    log.info("Server stopped", .{});
 }
+
+// ============================================================================
+// Worker threads
+// ============================================================================
 
 fn workerThread(ctx: *WorkerContext) void {
     log.debug("Worker thread started", .{});
 
     while (!ctx.shutdown.load(.acquire)) {
-        // Accept a connection (blocking)
         const connection = ctx.listener.accept() catch |err| {
+            // Any error after shutdown is expected (socket closed).
             if (ctx.shutdown.load(.acquire)) break;
+            // Check if the listener was closed externally via shutdown().
+            {
+                listener_mutex.lock();
+                const still_valid = global_listener != null;
+                listener_mutex.unlock();
+                if (!still_valid) break;
+            }
             log.warn("Failed to accept connection: {}", .{err});
             continue;
         };
 
-        // Handle the connection
         handleConnection(ctx.allocator, connection, ctx.cfg) catch |err| {
             log.warn("Error handling connection: {}", .{err});
         };
@@ -101,26 +155,57 @@ fn workerThread(ctx: *WorkerContext) void {
     log.debug("Worker thread exiting", .{});
 }
 
+// ============================================================================
+// Connection handling
+// ============================================================================
+
 fn handleConnection(allocator: std.mem.Allocator, connection: std.net.Server.Connection, cfg: *const config.Config) !void {
     defer connection.stream.close();
 
-    // Use arena for per-request allocations
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const request_allocator = arena.allocator();
 
-    var read_buffer: [16384]u8 = undefined;
+    // Read the full request into a dynamically grown buffer so large bodies
+    // are not silently truncated.
+    var request_buf = std.ArrayListUnmanaged(u8){};
 
-    // Read HTTP request
-    const bytes_read = try connection.stream.read(&read_buffer);
-    if (bytes_read == 0) return;
+    var read_buf: [16384]u8 = undefined;
+    var header_end: ?usize = null;
+    var content_length: ?usize = null;
 
-    const request_data = read_buffer[0..bytes_read];
+    // Phase 1: read until we have the full headers (find \r\n\r\n).
+    while (true) {
+        const n = try connection.stream.read(&read_buf);
+        if (n == 0) return;
 
-    // Try to match route
+        try request_buf.appendSlice(request_allocator, read_buf[0..n]);
+
+        // Check if we now have the end of headers.
+        if (header_end == null) {
+            if (std.mem.indexOf(u8, request_buf.items, "\r\n\r\n")) |pos| {
+                header_end = pos + 4;
+            } else if (std.mem.indexOf(u8, request_buf.items, "\n\n")) |pos| {
+                header_end = pos + 2;
+            }
+        }
+
+        if (header_end) |hend| {
+            // Parse Content-Length from headers if not yet done.
+            if (content_length == null) {
+                const headers = request_buf.items[0..hend];
+                content_length = parseContentLength(headers) orelse 0;
+            }
+
+            // Check if we have the full body.
+            const body_received = request_buf.items.len - hend;
+            if (body_received >= content_length.?) break;
+        }
+    }
+
+    const request_data = request_buf.items;
+
     if (router.match(request_data)) |route| {
-        // Extract request body
-        // GET requests don't need a body, POST requests do
         const body = extractRequestBody(request_data) orelse blk: {
             if (std.mem.eql(u8, route.method, "GET")) {
                 break :blk "";
@@ -131,22 +216,31 @@ fn handleConnection(allocator: std.mem.Allocator, connection: std.net.Server.Con
                     .invalid_request_error,
                     null,
                 );
-                defer request_allocator.free(error_json);
                 try http.sendJsonResponse(connection, .bad_request, error_json);
                 return;
             }
         };
 
-        // Dispatch to handler
         try route.handler(request_allocator, connection, body, cfg);
     } else {
-        // No route matched - return 404
         _ = try connection.stream.writeAll(NOT_FOUND_RESPONSE);
     }
 }
 
+fn parseContentLength(headers: []const u8) ?usize {
+    // Case-insensitive search for Content-Length header.
+    var it = std.mem.splitSequence(u8, headers, "\r\n");
+    while (it.next()) |line| {
+        if (line.len < 16) continue;
+        if (std.ascii.startsWithIgnoreCase(line, "content-length:")) {
+            const value = std.mem.trim(u8, line[15..], " \t");
+            return std.fmt.parseUnsigned(usize, value, 10) catch null;
+        }
+    }
+    return null;
+}
+
 fn extractRequestBody(request_data: []const u8) ?[]const u8 {
-    // Find double CRLF or double LF (end of headers)
     if (std.mem.indexOf(u8, request_data, "\r\n\r\n")) |pos| {
         return request_data[pos + 4 ..];
     }
