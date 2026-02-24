@@ -155,8 +155,8 @@ pub const SapAiCoreClient = struct {
         const url = try std.fmt.bufPrint(&url_buffer, "{s}/v2/lm/scenarios/foundation-models/models", .{self.api_domain});
         const uri = try std.Uri.parse(url);
 
-        // Build Authorization header
-        var auth_buffer: [2048]u8 = undefined;
+        // Build Authorization header (JWT tokens can be 7000+ chars)
+        var auth_buffer: [8192]u8 = undefined;
         const auth_value = try std.fmt.bufPrint(&auth_buffer, "Bearer {s}", .{access_token});
 
         // Build headers
@@ -239,16 +239,16 @@ pub const SapAiCoreClient = struct {
         const uri = try std.Uri.parse(url);
 
         // Build Basic Auth header (client_id:client_secret base64 encoded)
-        var credentials_buffer: [512]u8 = undefined;
+        var credentials_buffer: [1024]u8 = undefined;
         const credentials = try std.fmt.bufPrint(&credentials_buffer, "{s}:{s}", .{ self.oauth_client_id, self.oauth_client_secret });
 
-        var base64_buffer: [1024]u8 = undefined;
+        var base64_buffer: [2048]u8 = undefined;
         const base64_encoder = std.base64.standard;
         const encoded_len = base64_encoder.Encoder.calcSize(credentials.len);
         const encoded_credentials = base64_buffer[0..encoded_len];
         _ = base64_encoder.Encoder.encode(encoded_credentials, credentials);
 
-        var auth_buffer: [1100]u8 = undefined;
+        var auth_buffer: [2048]u8 = undefined;
         const auth_value = try std.fmt.bufPrint(&auth_buffer, "Basic {s}", .{encoded_credentials});
 
         // Request body
@@ -376,8 +376,8 @@ pub const SapAiCoreClient = struct {
         const url = try self.buildApiUrl(&url_buffer);
         const uri = try std.Uri.parse(url);
 
-        // Build Authorization header
-        var auth_buffer: [2048]u8 = undefined;
+        // Build Authorization header (JWT tokens can be 7000+ chars)
+        var auth_buffer: [8192]u8 = undefined;
         const auth_value = try std.fmt.bufPrint(&auth_buffer, "Bearer {s}", .{access_token});
 
         // Build extra headers
@@ -458,8 +458,8 @@ pub const SapAiCoreClient = struct {
         const url = try self.buildApiUrl(&url_buffer);
         const uri = try std.Uri.parse(url);
 
-        // Build Authorization header
-        var auth_buffer: [2048]u8 = undefined;
+        // Build Authorization header (JWT tokens can be 7000+ chars)
+        var auth_buffer: [8192]u8 = undefined;
         const auth_value = try std.fmt.bufPrint(&auth_buffer, "Bearer {s}", .{access_token});
 
         // Build extra headers

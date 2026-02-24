@@ -65,16 +65,21 @@ fn handleConnection(allocator: std.mem.Allocator, connection: std.net.Server.Con
     // Try to match route
     if (router.match(request_data)) |route| {
         // Extract request body
-        const body = extractRequestBody(request_data) orelse {
-            const error_json = try errors.createErrorResponse(
-                request_allocator,
-                "No request body found",
-                .invalid_request_error,
-                null,
-            );
-            defer request_allocator.free(error_json);
-            try http.sendJsonResponse(connection, .bad_request, error_json);
-            return;
+        // GET requests don't need a body, POST requests do
+        const body = extractRequestBody(request_data) orelse blk: {
+            if (std.mem.eql(u8, route.method, "GET")) {
+                break :blk "";
+            } else {
+                const error_json = try errors.createErrorResponse(
+                    request_allocator,
+                    "No request body found",
+                    .invalid_request_error,
+                    null,
+                );
+                defer request_allocator.free(error_json);
+                try http.sendJsonResponse(connection, .bad_request, error_json);
+                return;
+            }
         };
 
         // Dispatch to handler
