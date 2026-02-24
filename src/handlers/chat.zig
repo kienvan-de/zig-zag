@@ -77,7 +77,7 @@ pub fn handle(
         body,
         .{},
     ) catch |err| {
-        std.debug.print("JSON parse error: {}\n", .{err});
+        log.err("JSON parse error: {}", .{err});
         const error_json = try errors.createErrorResponse(
             allocator,
             "Invalid JSON in request body",
@@ -95,7 +95,7 @@ pub fn handle(
 
     // Parse model string to extract provider
     const model_info = utils.parseModelString(openai_request.value.model, allocator) catch |err| {
-        std.debug.print("Model parsing error: {}\n", .{err});
+        log.err("Model parsing error: {} for model '{s}'", .{ err, openai_request.value.model });
         const error_json = try errors.createErrorResponse(
             allocator,
             "Invalid model format. Expected 'provider/model-name' (e.g., 'anthropic/claude-3-5-sonnet-latest')",
@@ -112,6 +112,7 @@ pub fn handle(
 
     // Try to get provider config by name (allows any provider name, not just enum values)
     const provider_config = config.providers.getPtr(model_info.provider) orelse {
+        log.err("Provider not configured: '{s}'", .{model_info.provider});
         const error_json = try errors.createErrorResponse(
             allocator,
             "Provider not configured",
@@ -203,6 +204,7 @@ pub fn handle(
     } else |_| {
         // Not a native provider - check for "compatible" field
         const compatible = provider_config.getString("compatible") orelse {
+            log.err("Provider '{s}' not supported and no 'compatible' field specified", .{model_info.provider});
             const error_json = try errors.createErrorResponse(
                 allocator,
                 "Provider not supported and no 'compatible' field specified",
@@ -262,6 +264,7 @@ pub fn handle(
                 );
             }
         } else {
+            log.err("Unknown compatible provider type: '{s}'. Must be 'openai' or 'anthropic'", .{compatible});
             const error_json = try errors.createErrorResponse(
                 allocator,
                 "Unknown compatible provider type. Must be 'openai' or 'anthropic'",
@@ -295,7 +298,7 @@ fn handleProviderStreaming(
         model,
         allocator,
     ) catch |err| {
-        std.debug.print("Transformation error: {}\n", .{err});
+        log.err("[STREAM] Transform request error: {} for model '{s}'", .{ err, openai_request.model });
         const error_json = try errors.createErrorResponse(
             allocator,
             "Failed to transform request",
@@ -313,7 +316,7 @@ fn handleProviderStreaming(
     // Initialize client
     const client_init_start = std.time.milliTimestamp();
     var client = Client.init(allocator, provider_config) catch |err| {
-        std.debug.print("Client initialization error: {}\n", .{err});
+        log.err("[STREAM] Client initialization error: {} for model '{s}'", .{ err, openai_request.model });
         const error_json = try errors.createErrorResponse(
             allocator,
             "Failed to initialize provider client",
@@ -331,7 +334,7 @@ fn handleProviderStreaming(
     // Start streaming request and get iterator
     const stream_connect_start = std.time.milliTimestamp();
     var stream_result = client.sendStreamingRequest(provider_request) catch |err| {
-        std.debug.print("Provider streaming error: {}\n", .{err});
+        log.err("[STREAM] Provider streaming error: {} for model '{s}'", .{ err, openai_request.model });
         const error_json = try errors.createErrorResponse(
             allocator,
             "Failed to communicate with upstream API",
@@ -449,7 +452,7 @@ fn handleProvider(
         model,
         allocator,
     ) catch |err| {
-        std.debug.print("Transformation error: {}\n", .{err});
+        log.err("[SYNC] Transform request error: {} for model '{s}'", .{ err, openai_request.model });
         const error_json = try errors.createErrorResponse(
             allocator,
             "Failed to transform request",
@@ -467,7 +470,7 @@ fn handleProvider(
     // Initialize client
     const client_init_start = std.time.milliTimestamp();
     var client = Client.init(allocator, provider_config) catch |err| {
-        std.debug.print("Client initialization error: {}\n", .{err});
+        log.err("[SYNC] Client initialization error: {} for model '{s}'", .{ err, openai_request.model });
         const error_json = try errors.createErrorResponse(
             allocator,
             "Failed to initialize provider client",
@@ -485,7 +488,7 @@ fn handleProvider(
     // Send request to provider
     const provider_request_start = std.time.milliTimestamp();
     const provider_response = client.sendRequest(provider_request) catch |err| {
-        std.debug.print("Provider API error: {}\n", .{err});
+        log.err("[SYNC] Provider API error: {} for model '{s}'", .{ err, openai_request.model });
         const error_json = try errors.createErrorFromStatus(
             allocator,
             .bad_gateway,

@@ -1,6 +1,7 @@
 const std = @import("std");
 const OpenAI = @import("types.zig");
 const config_mod = @import("../../config.zig");
+const log = @import("../../log.zig");
 
 /// Iterator for SSE streaming responses
 pub const StreamIterator = struct {
@@ -69,7 +70,7 @@ pub const OpenAIClient = struct {
 
     pub fn init(allocator: std.mem.Allocator, provider_config: *const config_mod.ProviderConfig) !OpenAIClient {
         const api_key = provider_config.getString("api_key") orelse {
-            std.debug.print("ERROR: OpenAI provider config missing 'api_key' field\n", .{});
+            log.err("OpenAI provider config missing 'api_key' field", .{});
             return error.MissingApiKey;
         };
 
@@ -153,7 +154,7 @@ pub const OpenAIClient = struct {
             response_body,
             .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
         ) catch |err| {
-            std.debug.print("Failed to parse models response: {}\n", .{err});
+            log.err("Failed to parse OpenAI models response: {}", .{err});
             return error.InvalidResponse;
         };
     }
@@ -185,7 +186,7 @@ pub const OpenAIClient = struct {
                 }
 
                 // Log retry attempt
-                std.debug.print("Request failed with error {}, retrying ({d}/{d}) after {d}ms...\n", .{
+                log.warn("OpenAI request failed with error {}, retrying ({d}/{d}) after {d}ms...", .{
                     err,
                     attempts + 1,
                     self.retry_count,
@@ -279,7 +280,7 @@ pub const OpenAIClient = struct {
             response_body,
             .{ .allocate = .alloc_always },
         ) catch |err| {
-            std.debug.print("Failed to parse OpenAI response: {}\n", .{err});
+            log.err("Failed to parse OpenAI response: {}", .{err});
             return error.InvalidResponse;
         };
     }
