@@ -286,9 +286,10 @@ fn handleProviderStreaming(
     provider_config: *const @import("../config.zig").ProviderConfig,
 ) !void {
     const start_time = std.time.milliTimestamp();
-    log.info("POST /v1/chat/completions - streaming request for model '{s}'", .{openai_request.model});
+    log.info("[STREAM] POST /v1/chat/completions - request received for model '{s}'", .{openai_request.model});
 
     // Transform OpenAI request to provider format
+    const transform_start = std.time.milliTimestamp();
     const provider_request = Transformer.transform(
         openai_request,
         model,
@@ -306,8 +307,11 @@ fn handleProviderStreaming(
         return;
     };
     defer Transformer.cleanupRequest(provider_request, allocator);
+    const transform_time = std.time.milliTimestamp() - transform_start;
+    log.debug("[STREAM] Transform request completed in {d}ms", .{transform_time});
 
     // Initialize client
+    const client_init_start = std.time.milliTimestamp();
     var client = Client.init(allocator, provider_config) catch |err| {
         std.debug.print("Client initialization error: {}\n", .{err});
         const error_json = try errors.createErrorResponse(
@@ -321,8 +325,11 @@ fn handleProviderStreaming(
         return;
     };
     defer client.deinit();
+    const client_init_time = std.time.milliTimestamp() - client_init_start;
+    log.debug("[STREAM] Client init completed in {d}ms", .{client_init_time});
 
     // Start streaming request and get iterator
+    const stream_connect_start = std.time.milliTimestamp();
     var stream_result = client.sendStreamingRequest(provider_request) catch |err| {
         std.debug.print("Provider streaming error: {}\n", .{err});
         const error_json = try errors.createErrorResponse(
@@ -336,6 +343,8 @@ fn handleProviderStreaming(
         return;
     };
     defer stream_result.deinit();
+    const stream_connect_time = std.time.milliTimestamp() - stream_connect_start;
+    log.debug("[STREAM] Stream connection established in {d}ms", .{stream_connect_time});
 
     // Send SSE headers to client
     try http.sendSseHeaders(connection);
@@ -345,18 +354,36 @@ fn handleProviderStreaming(
     defer state.deinit();
 
     // Process each chunk from upstream
+    const process_start = std.time.milliTimestamp();
+    var chunk_count: u32 = 0;
+    var first_chunk_time: ?i64 = null;
     while (stream_result.iterator.next()) |line| {
         // Transform the chunk
         if (Transformer.transformStreamLine(line, &state, allocator)) |transformed| {
+            if (first_chunk_time == null) {
+                first_chunk_time = std.time.milliTimestamp() - process_start;
+                log.debug("[STREAM] Time to first chunk: {d}ms", .{first_chunk_time.?});
+            }
+            chunk_count += 1;
             defer allocator.free(transformed);
             _ = try connection.stream.writeAll(transformed);
             _ = try connection.stream.writeAll("\n\n");
         }
         // Skip null returns (non-data lines, parse errors, or events with no output)
     }
+    const process_time = std.time.milliTimestamp() - process_start;
+    log.debug("[STREAM] Processed {d} chunks in {d}ms", .{ chunk_count, process_time });
 
-    const elapsed = std.time.milliTimestamp() - start_time;
-    log.info("POST /v1/chat/completions - streaming completed in {d}ms for model '{s}'", .{ elapsed, openai_request.model });
+    const total_elapsed = std.time.milliTimestamp() - start_time;
+    log.info("[STREAM] POST /v1/chat/completions - completed | model='{s}' | total={d}ms | transform_req={d}ms | client_init={d}ms | stream_connect={d}ms | process={d}ms | chunks={d}", .{
+        openai_request.model,
+        total_elapsed,
+        transform_time,
+        client_init_time,
+        stream_connect_time,
+        process_time,
+        chunk_count,
+    });
 }
 
 /// Generic provider handler using comptime duck typing
@@ -413,9 +440,10 @@ fn handleProvider(
     provider_config: *const @import("../config.zig").ProviderConfig,
 ) !void {
     const start_time = std.time.milliTimestamp();
-    log.info("POST /v1/chat/completions - request for model '{s}'", .{openai_request.model});
+    log.info("[SYNC] POST /v1/chat/completions - request received for model '{s}'", .{openai_request.model});
 
     // Transform OpenAI request to provider format
+    const transform_start = std.time.milliTimestamp();
     const provider_request = Transformer.transform(
         openai_request,
         model,
@@ -433,8 +461,11 @@ fn handleProvider(
         return;
     };
     defer Transformer.cleanupRequest(provider_request, allocator);
+    const transform_request_time = std.time.milliTimestamp() - transform_start;
+    log.debug("[SYNC] Transform request completed in {d}ms", .{transform_request_time});
 
-    // Initialize client and send request
+    // Initialize client
+    const client_init_start = std.time.milliTimestamp();
     var client = Client.init(allocator, provider_config) catch |err| {
         std.debug.print("Client initialization error: {}\n", .{err});
         const error_json = try errors.createErrorResponse(
@@ -448,7 +479,11 @@ fn handleProvider(
         return;
     };
     defer client.deinit();
+    const client_init_time = std.time.milliTimestamp() - client_init_start;
+    log.debug("[SYNC] Client init completed in {d}ms", .{client_init_time});
 
+    // Send request to provider
+    const provider_request_start = std.time.milliTimestamp();
     const provider_response = client.sendRequest(provider_request) catch |err| {
         std.debug.print("Provider API error: {}\n", .{err});
         const error_json = try errors.createErrorFromStatus(
@@ -461,23 +496,43 @@ fn handleProvider(
         return;
     };
     defer provider_response.deinit();
+    const provider_request_time = std.time.milliTimestamp() - provider_request_start;
+    log.debug("[SYNC] Provider request/response completed in {d}ms", .{provider_request_time});
 
     // Transform provider response back to OpenAI format
+    const transform_response_start = std.time.milliTimestamp();
     const openai_response = try Transformer.transformResponse(
         provider_response.value,
         allocator,
         openai_request.model,
     );
     defer Transformer.cleanupResponse(openai_response, allocator);
+    const transform_response_time = std.time.milliTimestamp() - transform_response_start;
+    log.debug("[SYNC] Transform response completed in {d}ms", .{transform_response_time});
 
     // Serialize OpenAI response
+    const serialize_start = std.time.milliTimestamp();
     var response_buffer = std.ArrayList(u8){};
     defer response_buffer.deinit(allocator);
     try response_buffer.writer(allocator).print("{f}", .{std.json.fmt(openai_response, .{})});
+    const serialize_time = std.time.milliTimestamp() - serialize_start;
+    log.debug("[SYNC] Response serialization completed in {d}ms", .{serialize_time});
 
     // Send response
+    const send_start = std.time.milliTimestamp();
     try http.sendJsonResponse(connection, .ok, response_buffer.items);
+    const send_time = std.time.milliTimestamp() - send_start;
+    log.debug("[SYNC] Response sent in {d}ms", .{send_time});
 
-    const elapsed = std.time.milliTimestamp() - start_time;
-    log.info("POST /v1/chat/completions - completed in {d}ms for model '{s}'", .{ elapsed, openai_request.model });
+    const total_elapsed = std.time.milliTimestamp() - start_time;
+    log.info("[SYNC] POST /v1/chat/completions - completed | model='{s}' | total={d}ms | transform_req={d}ms | client_init={d}ms | provider_req={d}ms | transform_resp={d}ms | serialize={d}ms | send={d}ms", .{
+        openai_request.model,
+        total_elapsed,
+        transform_request_time,
+        client_init_time,
+        provider_request_time,
+        transform_response_time,
+        serialize_time,
+        send_time,
+    });
 }
