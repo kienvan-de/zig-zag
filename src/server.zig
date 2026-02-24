@@ -3,6 +3,7 @@ const config = @import("config.zig");
 const router = @import("router.zig");
 const errors = @import("errors.zig");
 const http = @import("http.zig");
+const log = @import("log.zig");
 
 // HTTP response constants
 const NOT_FOUND_RESPONSE =
@@ -14,12 +15,29 @@ const NOT_FOUND_RESPONSE =
     \\{"error": "Not Found"}
 ;
 
+const DEFAULT_THREAD_POOL_SIZE = 8;
+
+/// Thread pool worker context
+const WorkerContext = struct {
+    allocator: std.mem.Allocator,
+    cfg: *const config.Config,
+    listener: *std.net.Server,
+    shutdown: *std.atomic.Value(bool),
+};
+
 pub fn start(allocator: std.mem.Allocator, cfg: *const config.Config) !void {
     const host = cfg.server.host;
     const port = cfg.server.port;
 
+    // Get HTTP pool size from config or use default
+    const pool_size: usize = if (cfg.server.http_pool_size) |size|
+        @intCast(size)
+    else
+        DEFAULT_THREAD_POOL_SIZE;
+
     std.debug.print("Starting zig-zag proxy server on {s}:{d}...\n", .{ host, port });
     std.debug.print("Loaded providers: {d}\n", .{cfg.providers.count()});
+    std.debug.print("HTTP pool size: {d}\n", .{pool_size});
 
     // Create server address
     const address = try std.net.Address.parseIp(host, port);
@@ -35,15 +53,52 @@ pub fn start(allocator: std.mem.Allocator, cfg: *const config.Config) !void {
     std.debug.print("  POST /v1/chat/completions\n", .{});
     std.debug.print("  GET  /v1/models\n", .{});
 
-    // Accept connections in a loop
-    while (true) {
-        const connection = try listener.accept();
+    log.info("Server started on {s}:{d} with {d} HTTP workers", .{ host, port, pool_size });
 
-        // Handle each connection (for now, single-threaded)
-        handleConnection(allocator, connection, cfg) catch |err| {
-            std.debug.print("Error handling connection: {}\n", .{err});
+    // Shutdown flag
+    var shutdown = std.atomic.Value(bool).init(false);
+
+    // Worker context shared by all threads
+    var worker_ctx = WorkerContext{
+        .allocator = allocator,
+        .cfg = cfg,
+        .listener = &listener,
+        .shutdown = &shutdown,
+    };
+
+    // Create worker threads
+    var threads = try allocator.alloc(std.Thread, pool_size);
+    defer allocator.free(threads);
+
+    for (0..pool_size) |i| {
+        threads[i] = try std.Thread.spawn(.{}, workerThread, .{&worker_ctx});
+        log.debug("Started worker thread {d}", .{i});
+    }
+
+    // Wait for all threads (they run until shutdown)
+    for (threads) |thread| {
+        thread.join();
+    }
+}
+
+fn workerThread(ctx: *WorkerContext) void {
+    log.debug("Worker thread started", .{});
+
+    while (!ctx.shutdown.load(.acquire)) {
+        // Accept a connection (blocking)
+        const connection = ctx.listener.accept() catch |err| {
+            if (ctx.shutdown.load(.acquire)) break;
+            log.warn("Failed to accept connection: {}", .{err});
+            continue;
+        };
+
+        // Handle the connection
+        handleConnection(ctx.allocator, connection, ctx.cfg) catch |err| {
+            log.warn("Error handling connection: {}", .{err});
         };
     }
+
+    log.debug("Worker thread exiting", .{});
 }
 
 fn handleConnection(allocator: std.mem.Allocator, connection: std.net.Server.Connection, cfg: *const config.Config) !void {

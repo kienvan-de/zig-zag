@@ -2,6 +2,7 @@
 //!
 //! This module handles GET /v1/models requests and aggregates models from all
 //! configured providers using comptime generics.
+//! Fetches from providers in parallel using the IO worker pool.
 
 const std = @import("std");
 
@@ -11,6 +12,8 @@ const config_mod = @import("../config.zig");
 const OpenAI = @import("../providers/openai/types.zig");
 const SapAiCore = @import("../providers/sap_ai_core/types.zig");
 const provider_mod = @import("../provider.zig");
+const log = @import("../log.zig");
+const worker_pool = @import("../worker_pool.zig");
 
 // Provider modules
 const openai = struct {
@@ -28,6 +31,71 @@ const sap_ai_core = struct {
     const transformer = @import("../providers/sap_ai_core/transformer.zig");
 };
 
+/// Thread-safe allocator wrapper
+const ThreadSafeAllocator = struct {
+    backing_allocator: std.mem.Allocator,
+    mutex: std.Thread.Mutex = .{},
+
+    pub fn allocator(self: *ThreadSafeAllocator) std.mem.Allocator {
+        return .{
+            .ptr = self,
+            .vtable = &vtable,
+        };
+    }
+
+    const vtable = std.mem.Allocator.VTable{
+        .alloc = alloc,
+        .resize = resize,
+        .remap = remap,
+        .free = free,
+    };
+
+    fn alloc(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, ret_addr: usize) ?[*]u8 {
+        const self: *ThreadSafeAllocator = @ptrCast(@alignCast(ctx));
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.backing_allocator.vtable.alloc(self.backing_allocator.ptr, len, alignment, ret_addr);
+    }
+
+    fn resize(ctx: *anyopaque, buf: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) bool {
+        const self: *ThreadSafeAllocator = @ptrCast(@alignCast(ctx));
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.backing_allocator.vtable.resize(self.backing_allocator.ptr, buf, alignment, new_len, ret_addr);
+    }
+
+    fn remap(ctx: *anyopaque, buf: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
+        const self: *ThreadSafeAllocator = @ptrCast(@alignCast(ctx));
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.backing_allocator.vtable.remap(self.backing_allocator.ptr, buf, alignment, new_len, ret_addr);
+    }
+
+    fn free(ctx: *anyopaque, buf: []u8, alignment: std.mem.Alignment, ret_addr: usize) void {
+        const self: *ThreadSafeAllocator = @ptrCast(@alignCast(ctx));
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.backing_allocator.vtable.free(self.backing_allocator.ptr, buf, alignment, ret_addr);
+    }
+};
+
+/// Result from a provider fetch task
+const FetchResult = struct {
+    provider_name: []const u8,
+    models: ?[]OpenAI.Model,
+    err: ?anyerror,
+    elapsed_ms: i64,
+};
+
+/// Context passed to each fetch task
+const FetchContext = struct {
+    allocator: std.mem.Allocator,
+    provider_name: []const u8,
+    provider_config: *const config_mod.ProviderConfig,
+    result: *FetchResult,
+    wg: *worker_pool.WaitGroup,
+};
+
 /// Handle GET /v1/models request
 pub fn handle(
     allocator: std.mem.Allocator,
@@ -37,42 +105,188 @@ pub fn handle(
 ) !void {
     _ = body; // GET request, no body needed
 
-    var all_models = std.ArrayList(OpenAI.Model){};
-    defer all_models.deinit(allocator);
+    const start_time = std.time.milliTimestamp();
 
-    // Iterate all configured providers
+    const provider_count = cfg.providers.count();
+    log.info("GET /v1/models - starting parallel fetch from {d} providers", .{provider_count});
+
+    if (provider_count == 0) {
+        // No providers configured, return empty list
+        try sendModelsResponse(allocator, connection, &[_]OpenAI.Model{});
+        return;
+    }
+
+    // Get worker pool
+    const pool = worker_pool.getPool() orelse {
+        log.warn("Worker pool not initialized, falling back to sequential fetch", .{});
+        try handleSequential(allocator, connection, cfg, start_time);
+        return;
+    };
+
+    // Wrap allocator with thread-safe wrapper
+    var ts_alloc = ThreadSafeAllocator{ .backing_allocator = allocator };
+    const safe_allocator = ts_alloc.allocator();
+
+    // Allocate arrays for contexts and results
+    var contexts = try safe_allocator.alloc(FetchContext, provider_count);
+    defer safe_allocator.free(contexts);
+
+    var results = try safe_allocator.alloc(FetchResult, provider_count);
+    defer safe_allocator.free(results);
+
+    // Initialize results
+    for (results) |*result| {
+        result.* = .{
+            .provider_name = "",
+            .models = null,
+            .err = null,
+            .elapsed_ms = 0,
+        };
+    }
+
+    // Create wait group
+    var wg = worker_pool.WaitGroup.init();
+
+    // Submit tasks for each provider
+    var i: usize = 0;
     var provider_iter = cfg.providers.iterator();
     while (provider_iter.next()) |entry| {
         const provider_name = entry.key_ptr.*;
         const provider_config = entry.value_ptr;
 
-        // Try to fetch models from this provider
-        const models = fetchModelsForProvider(allocator, provider_name, provider_config) catch {
+        contexts[i] = .{
+            .allocator = safe_allocator,
+            .provider_name = provider_name,
+            .provider_config = provider_config,
+            .result = &results[i],
+            .wg = &wg,
+        };
+
+        wg.add(1);
+        pool.submit(fetchTask, @ptrCast(&contexts[i])) catch |err| {
+            log.warn("Failed to submit task for provider '{s}': {}", .{ provider_name, err });
+            results[i].err = err;
+            results[i].provider_name = provider_name;
+            wg.done();
+        };
+
+        i += 1;
+    }
+
+    // Wait for all tasks to complete
+    wg.wait();
+
+    // Aggregate results
+    var all_models = std.ArrayList(OpenAI.Model){};
+    defer all_models.deinit(safe_allocator);
+
+    for (results[0..provider_count]) |result| {
+        if (result.err) |err| {
+            log.warn("Provider '{s}' failed after {d}ms: {}", .{ result.provider_name, result.elapsed_ms, err });
+            continue;
+        }
+
+        if (result.models) |model_list| {
+            log.info("Provider '{s}' returned {d} models in {d}ms", .{ result.provider_name, model_list.len, result.elapsed_ms });
+
+            for (model_list) |model| {
+                try all_models.append(safe_allocator, model);
+            }
+
+            // Free the model list (but not the model strings, they're owned by allocator)
+            safe_allocator.free(model_list);
+        } else {
+            log.debug("Provider '{s}' returned no models in {d}ms", .{ result.provider_name, result.elapsed_ms });
+        }
+    }
+
+    const total_elapsed = std.time.milliTimestamp() - start_time;
+    log.info("GET /v1/models - completed in {d}ms, total models: {d}", .{ total_elapsed, all_models.items.len });
+
+    // Send response
+    try sendModelsResponse(allocator, connection, all_models.items);
+}
+
+/// Task function for worker pool
+fn fetchTask(ctx_ptr: *anyopaque) void {
+    const ctx: *FetchContext = @ptrCast(@alignCast(ctx_ptr));
+    defer ctx.wg.done();
+
+    const start_time = std.time.milliTimestamp();
+    ctx.result.provider_name = ctx.provider_name;
+
+    ctx.result.models = fetchModelsForProvider(
+        ctx.allocator,
+        ctx.provider_name,
+        ctx.provider_config,
+    ) catch |err| {
+        ctx.result.err = err;
+        ctx.result.elapsed_ms = std.time.milliTimestamp() - start_time;
+        return;
+    };
+
+    ctx.result.elapsed_ms = std.time.milliTimestamp() - start_time;
+}
+
+/// Fallback sequential fetch when worker pool is not available
+fn handleSequential(
+    allocator: std.mem.Allocator,
+    connection: std.net.Server.Connection,
+    cfg: *const config_mod.Config,
+    start_time: i64,
+) !void {
+    var all_models = std.ArrayList(OpenAI.Model){};
+    defer all_models.deinit(allocator);
+
+    var provider_iter = cfg.providers.iterator();
+    while (provider_iter.next()) |entry| {
+        const provider_name = entry.key_ptr.*;
+        const provider_config = entry.value_ptr;
+
+        const provider_start = std.time.milliTimestamp();
+
+        const models = fetchModelsForProvider(allocator, provider_name, provider_config) catch |err| {
+            const provider_elapsed = std.time.milliTimestamp() - provider_start;
+            log.warn("Provider '{s}' failed after {d}ms: {}", .{ provider_name, provider_elapsed, err });
             continue;
         };
+
+        const provider_elapsed = std.time.milliTimestamp() - provider_start;
 
         if (models) |model_list| {
             defer allocator.free(model_list);
 
-            // Add to aggregated list
+            log.info("Provider '{s}' returned {d} models in {d}ms", .{ provider_name, model_list.len, provider_elapsed });
+
             for (model_list) |model| {
                 try all_models.append(allocator, model);
             }
+        } else {
+            log.debug("Provider '{s}' returned no models in {d}ms", .{ provider_name, provider_elapsed });
         }
     }
 
-    // Build response
+    const total_elapsed = std.time.milliTimestamp() - start_time;
+    log.info("GET /v1/models - completed in {d}ms, total models: {d}", .{ total_elapsed, all_models.items.len });
+
+    try sendModelsResponse(allocator, connection, all_models.items);
+}
+
+/// Send models response to client
+fn sendModelsResponse(
+    allocator: std.mem.Allocator,
+    connection: std.net.Server.Connection,
+    models: []const OpenAI.Model,
+) !void {
     const response = OpenAI.ModelsResponse{
-        .data = all_models.items,
+        .data = models,
     };
 
-    // Serialize to JSON
     var json_buf = std.ArrayList(u8){};
     defer json_buf.deinit(allocator);
 
     try json_buf.writer(allocator).print("{f}", .{std.json.fmt(response, .{})});
 
-    // Send response
     try http.sendJsonResponse(connection, .ok, json_buf.items);
 }
 
