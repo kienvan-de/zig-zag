@@ -14,24 +14,24 @@ pub fn main() !void {
     var cfg = try config.Config.load(allocator);
     defer cfg.deinit();
 
-    // Initialize logging
-    try log.init(.{
-        .level = cfg.log.level,
-        .path = cfg.log.path,
-    });
-    defer log.deinit();
-
     // Initialize token cache
     token_cache.init(allocator);
     defer token_cache.deinit();
 
-    // Initialize IO worker pool
+    // Initialize IO worker pool (before logging so async writes work)
     const io_pool_size: usize = if (cfg.server.io_pool_size) |size|
         @intCast(size)
     else
         4;
     try worker_pool.init(allocator, io_pool_size);
     defer worker_pool.deinit();
+
+    // Initialize logging (after worker pool for async writes)
+    try log.init(.{
+        .level = cfg.log.level,
+        .path = cfg.log.path,
+    }, allocator);
+    defer log.deinit();
 
     // Start the HTTP server
     try server.start(allocator, &cfg);
