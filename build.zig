@@ -225,4 +225,31 @@ pub fn build(b: *std.Build) void {
     const release_step = b.step("release", "Build release binary (smallest size)");
     const install_release = b.addInstallArtifact(release_exe, .{});
     release_step.dependOn(&install_release.step);
+
+    const lib = b.addLibrary(.{
+        .name = "zig-zag",
+        .linkage = .dynamic,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/lib.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    const lib_step = b.step("lib", "Build shared library for Swift integration");
+    lib_step.dependOn(&b.addInstallArtifact(lib, .{}).step);
+
+    const lib_release = b.addLibrary(.{
+        .name = "zig-zag",
+        .linkage = .dynamic,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/lib.zig"),
+            .target = target,
+            .optimize = .ReleaseSmall,
+            .strip = true,
+        }),
+    });
+
+    const lib_release_step = b.step("lib:release", "Build release shared library for Swift integration");
+    lib_release_step.dependOn(&b.addInstallArtifact(lib_release, .{}).step);
 }
