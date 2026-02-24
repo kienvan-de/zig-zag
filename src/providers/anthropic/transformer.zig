@@ -7,16 +7,30 @@ const Anthropic = @import("types.zig");
 // Models Response Transformation
 // ============================================================================
 
-/// Anthropic doesn't have a public models API, so this returns null
+/// Transform Anthropic AnthropicModelsResponse to OpenAI.Model array with provider prefix
 pub fn transformModelsResponse(
     allocator: std.mem.Allocator,
-    response: ?void,
+    response: std.json.Parsed(Anthropic.AnthropicModelsResponse),
     provider_name: []const u8,
-) !?[]OpenAI.Model {
-    _ = allocator;
-    _ = response;
-    _ = provider_name;
-    return null;
+) ![]OpenAI.Model {
+    const data = response.value.data;
+
+    var models = try allocator.alloc(OpenAI.Model, data.len);
+    errdefer allocator.free(models);
+
+    for (data, 0..) |anthropic_model, i| {
+        // Create prefixed model ID: {provider_name}/{model_id}
+        const prefixed_id = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ provider_name, anthropic_model.id });
+
+        models[i] = OpenAI.Model{
+            .id = prefixed_id,
+            .object = "model",
+            .created = 0,
+            .owned_by = "anthropic",
+        };
+    }
+
+    return models;
 }
 
 // ============================================================================

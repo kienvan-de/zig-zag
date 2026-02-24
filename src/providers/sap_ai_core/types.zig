@@ -144,3 +144,43 @@ pub const StreamChunk = struct {
     final_result: std.json.Value, // OpenAI.StreamChunk format
 };
 
+// ============================================================================
+// SAP AI Core Models API Structures
+// ============================================================================
+
+/// Model version info from SAP AI Core models endpoint
+pub const SapModelVersion = struct {
+    name: []const u8,
+    isLatest: bool = false,
+    deprecated: bool = false,
+    retirementDate: []const u8 = "",
+    contextLength: ?u64 = null,
+    inputTypes: ?[]const []const u8 = null,
+    capabilities: ?[]const []const u8 = null,
+    streamingSupported: bool = false,
+};
+
+/// Allowed scenario for a model
+pub const SapAllowedScenario = struct {
+    executableId: []const u8 = "",
+    scenarioId: []const u8 = "",
+};
+
+/// Model resource from SAP AI Core models endpoint
+pub const SapModel = struct {
+    model: []const u8,
+    executableId: []const u8,
+    description: []const u8 = "",
+    versions: []const SapModelVersion = &.{},
+    displayName: []const u8 = "",
+    accessType: []const u8 = "",
+    provider: []const u8 = "",
+    allowedScenarios: []const SapAllowedScenario = &.{},
+};
+
+/// Response from SAP AI Core /v2/lm/scenarios/foundation-models/models endpoint
+pub const SapModelsResponse = struct {
+    count: u64 = 0,
+    resources: []const SapModel = &.{},
+};
+

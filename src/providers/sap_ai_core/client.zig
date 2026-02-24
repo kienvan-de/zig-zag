@@ -2,20 +2,6 @@ const std = @import("std");
 const SapAiCore = @import("types.zig");
 const config_mod = @import("../../config.zig");
 
-/// Model object for models listing
-pub const Model = struct {
-    id: []const u8,
-    object: []const u8 = "model",
-    created: ?i64 = null,
-    owned_by: ?[]const u8 = null,
-};
-
-/// Response from models endpoint
-pub const ModelsResponse = struct {
-    object: []const u8 = "list",
-    data: []const Model,
-};
-
 /// Iterator for SAP AI Core SSE streaming responses
 pub const StreamIterator = struct {
     allocator: std.mem.Allocator,
@@ -159,11 +145,64 @@ pub const SapAiCoreClient = struct {
         self.client.deinit();
     }
 
-    /// SAP AI Core doesn't have a standard models listing endpoint
-    /// Returns null to indicate no models list available
-    pub fn listModels(self: *SapAiCoreClient) !?ModelsResponse {
-        _ = self;
-        return null;
+    /// Fetch list of available models from SAP AI Core
+    pub fn listModels(self: *SapAiCoreClient) !std.json.Parsed(SapAiCore.SapModelsResponse) {
+        // Get access token
+        const access_token = try self.getAccessToken();
+
+        // Build URL: {api_domain}/v2/lm/scenarios/foundation-models/models
+        var url_buffer: [512]u8 = undefined;
+        const url = try std.fmt.bufPrint(&url_buffer, "{s}/v2/lm/scenarios/foundation-models/models", .{self.api_domain});
+        const uri = try std.Uri.parse(url);
+
+        // Build Authorization header
+        var auth_buffer: [2048]u8 = undefined;
+        const auth_value = try std.fmt.bufPrint(&auth_buffer, "Bearer {s}", .{access_token});
+
+        // Build headers
+        const extra_headers = [_]std.http.Header{
+            .{ .name = "Authorization", .value = auth_value },
+            .{ .name = "AI-Resource-Group", .value = self.resource_group },
+        };
+
+        // Make GET request
+        var req = try self.client.request(.GET, uri, .{
+            .extra_headers = &extra_headers,
+        });
+        defer req.deinit();
+
+        // Send request (no body for GET)
+        var buf: [4096]u8 = undefined;
+        var body_writer = try req.sendBodyUnflushed(&buf);
+        try body_writer.end();
+        try req.connection.?.flush();
+
+        // Wait for response
+        const redirect_buffer: [0]u8 = undefined;
+        var response = try req.receiveHead(&redirect_buffer);
+
+        // Check status code
+        if (response.head.status != .ok) {
+            return self.handleErrorResponse(response.head.status);
+        }
+
+        // Read response body
+        var transfer_buf: [4096]u8 = undefined;
+        const reader = response.reader(&transfer_buf);
+
+        const response_body = try reader.allocRemaining(self.allocator, std.io.Limit.limited(self.max_response_size));
+        defer self.allocator.free(response_body);
+
+        // Parse response
+        return std.json.parseFromSlice(
+            SapAiCore.SapModelsResponse,
+            self.allocator,
+            response_body,
+            .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+        ) catch |err| {
+            std.debug.print("Failed to parse SAP AI Core models response: {}\n", .{err});
+            return error.InvalidResponse;
+        };
     }
 
     /// Get current timestamp in seconds

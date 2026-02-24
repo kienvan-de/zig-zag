@@ -571,5 +571,23 @@ pub const MessageStop = struct {
 };
 
 // ============================================================================
+// Models API Structures
+// ============================================================================
+
+/// Model info from Anthropic /v1/models endpoint
+pub const AnthropicModel = struct {
+    id: []const u8,
+    name: ?[]const u8 = null,
+    type: []const u8 = "model_info",
+};
+
+/// Response from Anthropic /v1/models endpoint
+pub const AnthropicModelsResponse = struct {
+    data: []const AnthropicModel = &.{},
+    next_cursor: ?[]const u8 = null,
+    type: []const u8 = "list",
+};
+
+// ============================================================================
 // Unit Tests
 // ============================================================================
