@@ -4,6 +4,7 @@
 //! configured providers using comptime generics.
 
 const std = @import("std");
+
 const http = @import("../http.zig");
 const errors = @import("../errors.zig");
 const config_mod = @import("../config.zig");
@@ -46,8 +47,7 @@ pub fn handle(
         const provider_config = entry.value_ptr;
 
         // Try to fetch models from this provider
-        const models = fetchModelsForProvider(allocator, provider_name, provider_config) catch |err| {
-            std.debug.print("Failed to fetch models from {s}: {}\n", .{ provider_name, err });
+        const models = fetchModelsForProvider(allocator, provider_name, provider_config) catch {
             continue;
         };
 
