@@ -134,7 +134,9 @@ fn isFixtureFile(name: []const u8) bool {
         std.mem.eql(u8, name, "upstream_res.json") or
         std.mem.eql(u8, name, "expected_agent_res.json") or
         std.mem.eql(u8, name, "expected_upstream_req.json") or
-        std.mem.eql(u8, name, "config.json");
+        std.mem.eql(u8, name, "config.json") or
+        std.mem.startsWith(u8, name, "upstream_") or
+        std.mem.startsWith(u8, name, "expected_");
 }
 
 test "Recorder initialization" {
