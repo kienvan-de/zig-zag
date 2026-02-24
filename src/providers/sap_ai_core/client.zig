@@ -84,32 +84,32 @@ pub const SapAiCoreClient = struct {
 
     pub fn init(allocator: std.mem.Allocator, provider_config: *const config_mod.ProviderConfig) !SapAiCoreClient {
         const api_domain = provider_config.getString("api_domain") orelse {
-            std.debug.print("ERROR: SAP AI Core provider config missing 'api_domain' field\n", .{});
+            log.err("SAP AI Core provider config missing 'api_domain' field", .{});
             return error.MissingApiDomain;
         };
 
         const deployment_id = provider_config.getString("deployment_id") orelse {
-            std.debug.print("ERROR: SAP AI Core provider config missing 'deployment_id' field\n", .{});
+            log.err("SAP AI Core provider config missing 'deployment_id' field", .{});
             return error.MissingDeploymentId;
         };
 
         const resource_group = provider_config.getString("resource_group") orelse {
-            std.debug.print("ERROR: SAP AI Core provider config missing 'resource_group' field\n", .{});
+            log.err("SAP AI Core provider config missing 'resource_group' field", .{});
             return error.MissingResourceGroup;
         };
 
         const oauth_domain = provider_config.getString("oauth_domain") orelse {
-            std.debug.print("ERROR: SAP AI Core provider config missing 'oauth_domain' field\n", .{});
+            log.err("SAP AI Core provider config missing 'oauth_domain' field", .{});
             return error.MissingOAuthDomain;
         };
 
         const oauth_client_id = provider_config.getString("oauth_client_id") orelse {
-            std.debug.print("ERROR: SAP AI Core provider config missing 'oauth_client_id' field\n", .{});
+            log.err("SAP AI Core provider config missing 'oauth_client_id' field", .{});
             return error.MissingOAuthClientId;
         };
 
         const oauth_client_secret = provider_config.getString("oauth_client_secret") orelse {
-            std.debug.print("ERROR: SAP AI Core provider config missing 'oauth_client_secret' field\n", .{});
+            log.err("SAP AI Core provider config missing 'oauth_client_secret' field", .{});
             return error.MissingOAuthClientSecret;
         };
 
@@ -192,7 +192,7 @@ pub const SapAiCoreClient = struct {
             response_body,
             .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
         ) catch |err| {
-            std.debug.print("Failed to parse SAP AI Core models response: {}\n", .{err});
+            log.err("Failed to parse SAP AI Core models response: {}", .{err});
             return error.InvalidResponse;
         };
     }
@@ -276,7 +276,7 @@ pub const SapAiCoreClient = struct {
         var response = try req.receiveHead(&redirect_buffer);
 
         if (response.head.status != .ok) {
-            std.debug.print("OAuth token request failed with status: {}\n", .{response.head.status});
+            log.err("OAuth token request failed with status: {}", .{response.head.status});
             return error.OAuthTokenError;
         }
 
@@ -293,7 +293,7 @@ pub const SapAiCoreClient = struct {
             response_body,
             .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
         ) catch |err| {
-            std.debug.print("Failed to parse OAuth response: {}\n", .{err});
+            log.err("Failed to parse OAuth response: {}", .{err});
             return error.OAuthParseError;
         };
         defer parsed.deinit();
@@ -335,7 +335,7 @@ pub const SapAiCoreClient = struct {
                     return err;
                 }
 
-                std.debug.print("Request failed with error {}, retrying ({d}/{d}) after {d}ms...\n", .{
+                log.warn("Request failed with error {}, retrying ({d}/{d}) after {d}ms...", .{
                     err,
                     attempts + 1,
                     self.retry_count,
@@ -419,7 +419,7 @@ pub const SapAiCoreClient = struct {
             response_body,
             .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
         ) catch |err| {
-            std.debug.print("Failed to parse SAP AI Core response: {}\n", .{err});
+            log.err("Failed to parse SAP AI Core response: {}", .{err});
             return error.InvalidResponse;
         };
     }
