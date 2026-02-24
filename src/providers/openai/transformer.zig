@@ -1,6 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
 const OpenAI = @import("types.zig");
+const log = @import("../../log.zig");
 
 /// OpenAI transformer is a pass-through since the proxy accepts OpenAI format
 /// and the OpenAI API also expects OpenAI format - no transformation needed!
@@ -145,7 +146,8 @@ pub fn transformStreamLine(
         allocator,
         json_part,
         .{ .allocate = .alloc_always },
-    ) catch {
+    ) catch |err| {
+        log.debug("[OpenAI] Failed to parse stream chunk: {}", .{err});
         return null; // Pass through unparseable lines unchanged
     };
     defer parsed.deinit();
