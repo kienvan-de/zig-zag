@@ -4,6 +4,22 @@ const OpenAI = @import("../openai/types.zig");
 const Anthropic = @import("types.zig");
 
 // ============================================================================
+// Models Response Transformation
+// ============================================================================
+
+/// Anthropic doesn't have a public models API, so this returns null
+pub fn transformModelsResponse(
+    allocator: std.mem.Allocator,
+    response: ?void,
+    provider_name: []const u8,
+) !?[]OpenAI.Model {
+    _ = allocator;
+    _ = response;
+    _ = provider_name;
+    return null;
+}
+
+// ============================================================================
 // Streaming State and Transformation
 // ============================================================================
 

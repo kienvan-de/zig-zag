@@ -1,16 +1,30 @@
 //! Models Handler
 //!
 //! This module handles GET /v1/models requests and aggregates models from all
-//! configured providers.
+//! configured providers using comptime generics.
 
 const std = @import("std");
 const http = @import("../http.zig");
 const errors = @import("../errors.zig");
 const config_mod = @import("../config.zig");
 const OpenAI = @import("../providers/openai/types.zig");
+const provider_mod = @import("../provider.zig");
 
-// Provider clients
-const openai_client = @import("../providers/openai/client.zig");
+// Provider modules
+const openai = struct {
+    const client = @import("../providers/openai/client.zig");
+    const transformer = @import("../providers/openai/transformer.zig");
+};
+
+const anthropic = struct {
+    const client = @import("../providers/anthropic/client.zig");
+    const transformer = @import("../providers/anthropic/transformer.zig");
+};
+
+const sap_ai_core = struct {
+    const client = @import("../providers/sap_ai_core/client.zig");
+    const transformer = @import("../providers/sap_ai_core/transformer.zig");
+};
 
 /// Handle GET /v1/models request
 pub fn handle(
@@ -30,22 +44,17 @@ pub fn handle(
         const provider_name = entry.key_ptr.*;
         const provider_config = entry.value_ptr;
 
-        // Get provider type
-        const provider_type_str = provider_config.getString("type") orelse continue;
+        // Try to fetch models from this provider
+        const models = fetchModelsForProvider(allocator, provider_name, provider_config) catch |err| {
+            std.debug.print("Failed to fetch models from {s}: {}\n", .{ provider_name, err });
+            continue;
+        };
 
-        // Only handle OpenAI-compatible providers for now
-        if (std.mem.eql(u8, provider_type_str, "openai") or
-            std.mem.eql(u8, provider_type_str, "groq"))
-        {
-            // Fetch models from this provider
-            const models = fetchOpenAIModels(allocator, provider_name, provider_config) catch |err| {
-                std.debug.print("Failed to fetch models from {s}: {}\n", .{ provider_name, err });
-                continue;
-            };
-            defer allocator.free(models);
+        if (models) |model_list| {
+            defer allocator.free(model_list);
 
             // Add to aggregated list
-            for (models) |model| {
+            for (model_list) |model| {
                 try all_models.append(allocator, model);
             }
         }
@@ -66,93 +75,100 @@ pub fn handle(
     try http.sendJsonResponse(connection, .ok, json_buf.items);
 }
 
-/// Fetch models from an OpenAI-compatible provider
-fn fetchOpenAIModels(
+/// Fetch models for a provider based on its type or compatibility
+fn fetchModelsForProvider(
     allocator: std.mem.Allocator,
     provider_name: []const u8,
     provider_config: *const config_mod.ProviderConfig,
-) ![]OpenAI.Model {
-    var client = try openai_client.OpenAIClient.init(allocator, provider_config);
+) !?[]OpenAI.Model {
+    // Get provider type
+    const provider_type_str = provider_config.getString("type") orelse return null;
+
+    // Check if this is a native provider
+    if (provider_mod.Provider.fromString(provider_type_str)) |native_provider| {
+        return switch (native_provider) {
+            .openai => try fetchModels(
+                openai.client.OpenAIClient,
+                openai.transformer,
+                allocator,
+                provider_name,
+                provider_config,
+            ),
+            .anthropic => try fetchModels(
+                anthropic.client.AnthropicClient,
+                anthropic.transformer,
+                allocator,
+                provider_name,
+                provider_config,
+            ),
+            .sap_ai_core => try fetchModels(
+                sap_ai_core.client.SapAiCoreClient,
+                sap_ai_core.transformer,
+                allocator,
+                provider_name,
+                provider_config,
+            ),
+        };
+    } else |_| {
+        // Not a native provider - check for "compatible" field
+        const compatible = provider_config.getString("compatible") orelse return null;
+
+        if (std.mem.eql(u8, compatible, "openai")) {
+            return try fetchModels(
+                openai.client.OpenAIClient,
+                openai.transformer,
+                allocator,
+                provider_name,
+                provider_config,
+            );
+        } else if (std.mem.eql(u8, compatible, "anthropic")) {
+            return try fetchModels(
+                anthropic.client.AnthropicClient,
+                anthropic.transformer,
+                allocator,
+                provider_name,
+                provider_config,
+            );
+        }
+
+        return null;
+    }
+}
+
+/// Generic function to fetch models using comptime client and transformer
+fn fetchModels(
+    comptime ClientType: type,
+    comptime transformer: type,
+    allocator: std.mem.Allocator,
+    provider_name: []const u8,
+    provider_config: *const config_mod.ProviderConfig,
+) !?[]OpenAI.Model {
+    var client = try ClientType.init(allocator, provider_config);
     defer client.deinit();
 
-    // Build URL
-    var url_buffer: [512]u8 = undefined;
-    const url = try std.fmt.bufPrint(&url_buffer, "{s}/v1/models", .{client.api_url});
-    const uri = try std.Uri.parse(url);
+    // Call listModels on the client
+    const response = try client.listModels();
 
-    // Build Authorization header
-    var auth_buffer: [512]u8 = undefined;
-    const auth_value = try std.fmt.bufPrint(&auth_buffer, "Bearer {s}", .{client.api_key});
-
-    var extra_headers_buf: [2]std.http.Header = undefined;
-    var extra_headers_count: usize = 1;
-    extra_headers_buf[0] = .{ .name = "Authorization", .value = auth_value };
-
-    if (client.organization) |org| {
-        extra_headers_buf[1] = .{ .name = "OpenAI-Organization", .value = org };
-        extra_headers_count = 2;
+    // Handle null response (provider doesn't support models listing)
+    if (@TypeOf(response) == ?void) {
+        return null;
     }
 
-    const extra_headers = extra_headers_buf[0..extra_headers_count];
-
-    // Make GET request
-    var req = try client.client.request(.GET, uri, .{
-        .extra_headers = extra_headers,
-    });
-    defer req.deinit();
-
-    // Send request (no body for GET)
-    var buf: [4096]u8 = undefined;
-    var body_writer = try req.sendBodyUnflushed(&buf);
-    try body_writer.end();
-    try req.connection.?.flush();
-
-    // Receive response
-    const redirect_buffer: [0]u8 = undefined;
-    var response = try req.receiveHead(&redirect_buffer);
-
-    if (response.head.status != .ok) {
-        return error.UpstreamError;
+    // For optional responses that are null
+    if (@typeInfo(@TypeOf(response)) == .optional) {
+        if (response == null) {
+            return null;
+        }
     }
 
-    // Read response body
-    var transfer_buf: [4096]u8 = undefined;
-    const reader = response.reader(&transfer_buf);
-    const response_body = try reader.allocRemaining(allocator, std.io.Limit.limited(client.max_response_size));
-    defer allocator.free(response_body);
-
-    // Parse response
-    const parsed = try std.json.parseFromSlice(
-        struct {
-            object: []const u8,
-            data: []const struct {
-                id: []const u8,
-                object: []const u8 = "model",
-                created: i64 = 0,
-                owned_by: []const u8 = "unknown",
-            },
-        },
-        allocator,
-        response_body,
-        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
-    );
-    defer parsed.deinit();
-
-    // Transform models with provider prefix
-    var models = try allocator.alloc(OpenAI.Model, parsed.value.data.len);
-    errdefer allocator.free(models);
-
-    for (parsed.value.data, 0..) |upstream_model, i| {
-        // Create prefixed model ID: {provider_name}/{model_id}
-        const prefixed_id = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ provider_name, upstream_model.id });
-
-        models[i] = OpenAI.Model{
-            .id = prefixed_id,
-            .object = "model",
-            .created = upstream_model.created,
-            .owned_by = try allocator.dupe(u8, upstream_model.owned_by),
-        };
+    // Transform to OpenAI models with provider prefix
+    defer {
+        // Deinit parsed response if it has a deinit method
+        if (@TypeOf(response) == std.json.Parsed(openai.client.ModelsResponse)) {
+            var r = response;
+            r.deinit();
+        }
     }
 
-    return models;
+    return try transformer.transformModelsResponse(allocator, response, provider_name);
 }

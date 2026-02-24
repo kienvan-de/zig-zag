@@ -2,6 +2,20 @@ const std = @import("std");
 const SapAiCore = @import("types.zig");
 const config_mod = @import("../../config.zig");
 
+/// Model object for models listing
+pub const Model = struct {
+    id: []const u8,
+    object: []const u8 = "model",
+    created: ?i64 = null,
+    owned_by: ?[]const u8 = null,
+};
+
+/// Response from models endpoint
+pub const ModelsResponse = struct {
+    object: []const u8 = "list",
+    data: []const Model,
+};
+
 /// Iterator for SAP AI Core SSE streaming responses
 pub const StreamIterator = struct {
     allocator: std.mem.Allocator,
@@ -143,6 +157,13 @@ pub const SapAiCoreClient = struct {
             self.allocator.free(token.access_token);
         }
         self.client.deinit();
+    }
+
+    /// SAP AI Core doesn't have a standard models listing endpoint
+    /// Returns null to indicate no models list available
+    pub fn listModels(self: *SapAiCoreClient) !?ModelsResponse {
+        _ = self;
+        return null;
     }
 
     /// Get current timestamp in seconds
