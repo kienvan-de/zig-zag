@@ -1,24 +1,34 @@
-//
-//  ContentView.swift
-//  zig-zag
-//
-//  Created by Nguyen, De on 25/2/26.
-//
-
 import SwiftUI
 
 struct ContentView: View {
-    var body: some View {
-        VStack {
-            Image(systemName: "globe")
-                .imageScale(.large)
-                .foregroundStyle(.tint)
-            Text("Hello, world!")
-        }
-        .padding()
-    }
-}
+    @State private var running: Bool = isServerRunning()
+    @State private var port: UInt16 = getServerPort()
 
-#Preview {
-    ContentView()
+    var body: some View {
+        // Status
+        Label(
+            running ? "Running on port \(port)" : "Stopped",
+            systemImage: running ? "circle.fill" : "circle"
+        )
+        .foregroundColor(running ? .green : .red)
+
+        Divider()
+
+        // Start / Stop
+        Button(running ? "Stop Server" : "Start Server") {
+            if running {
+                stopServer()
+            } else {
+                _ = startServer()
+            }
+            running = isServerRunning()
+            port = getServerPort()
+        }
+
+        Divider()
+
+        Button("Quit") {
+            NSApp.terminate(nil)
+        }
+    }
 }
