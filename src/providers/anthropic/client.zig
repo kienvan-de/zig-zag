@@ -3,6 +3,28 @@ const Anthropic = @import("types.zig");
 const config_mod = @import("../../config.zig");
 const log = @import("../../log.zig");
 
+/// Set socket read/write timeout
+fn setSocketTimeout(handle: std.posix.socket_t, timeout_ms: u64) void {
+    if (timeout_ms == 0) return;
+
+    const timeout_sec: i64 = @intCast(timeout_ms / 1000);
+    const timeout_usec: i32 = @intCast((timeout_ms % 1000) * 1000);
+    const timeval = std.posix.timeval{
+        .sec = timeout_sec,
+        .usec = timeout_usec,
+    };
+
+    // Set read timeout
+    std.posix.setsockopt(handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&timeval)) catch |err| {
+        log.debug("Failed to set socket read timeout: {}", .{err});
+    };
+
+    // Set write timeout
+    std.posix.setsockopt(handle, std.posix.SOL.SOCKET, std.posix.SO.SNDTIMEO, std.mem.asBytes(&timeval)) catch |err| {
+        log.debug("Failed to set socket write timeout: {}", .{err});
+    };
+}
+
 /// Iterator for Anthropic SSE streaming responses
 pub const StreamIterator = struct {
     allocator: std.mem.Allocator,
@@ -115,6 +137,11 @@ pub const AnthropicClient = struct {
         });
         defer req.deinit();
 
+        // Apply socket timeout
+        if (req.connection) |conn| {
+            setSocketTimeout(conn.stream_reader.getStream().handle, self.timeout_ms);
+        }
+
         // Send request (no body for GET)
         try req.sendBodiless();
 
@@ -224,6 +251,11 @@ pub const AnthropicClient = struct {
         });
         defer req.deinit();
 
+        // Apply socket timeout
+        if (req.connection) |conn| {
+            setSocketTimeout(conn.stream_reader.getStream().handle, self.timeout_ms);
+        }
+
         // Set content length and send
         req.transfer_encoding = .{ .content_length = request_body.items.len };
         var buf: [4096]u8 = undefined;
@@ -304,6 +336,11 @@ pub const AnthropicClient = struct {
             .extra_headers = &extra_headers,
         });
         errdefer req.deinit();
+
+        // Apply socket timeout
+        if (req.connection) |conn| {
+            setSocketTimeout(conn.stream_reader.getStream().handle, self.timeout_ms);
+        }
 
         // Set content length and send
         req.transfer_encoding = .{ .content_length = request_body.items.len };
