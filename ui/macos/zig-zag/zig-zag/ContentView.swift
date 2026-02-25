@@ -23,6 +23,7 @@ struct ContentView: View {
         Divider()
 
         Button("Quit") {
+            serverState.stop()
             NSApp.terminate(nil)
         }
     }
