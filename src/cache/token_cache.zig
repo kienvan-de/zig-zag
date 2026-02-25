@@ -79,8 +79,9 @@ pub fn deinit() void {
 }
 
 /// Get a cached token if valid
-/// Returns null if not found or expired
-pub fn get(key: []const u8, expiry_buffer_seconds: i64) ?[]const u8 {
+/// Returns a duplicated token that the caller must free, or null if not found/expired
+/// This prevents use-after-free if another thread refreshes the token concurrently
+pub fn get(allocator: std.mem.Allocator, key: []const u8, expiry_buffer_seconds: i64) ?[]const u8 {
     mutex.lock();
     defer mutex.unlock();
 
@@ -88,7 +89,8 @@ pub fn get(key: []const u8, expiry_buffer_seconds: i64) ?[]const u8 {
         if (c.get(key)) |token| {
             if (token.isValid(expiry_buffer_seconds)) {
                 log.debug("Token cache hit for '{s}'", .{key});
-                return token.access_token;
+                // Return a copy to avoid use-after-free if token is refreshed concurrently
+                return allocator.dupe(u8, token.access_token) catch null;
             } else {
                 log.debug("Token cache expired for '{s}'", .{key});
             }

@@ -26,12 +26,14 @@ pub const WorkerPool = struct {
     allocator: std.mem.Allocator,
     threads: []std.Thread,
     queue: std.ArrayList(Task),
+    queue_head: usize,
     queue_mutex: std.Thread.Mutex,
     queue_not_empty: std.Thread.Condition,
     shutdown: bool,
     active_tasks: usize,
 
     const DEFAULT_POOL_SIZE = 4;
+    const COMPACT_THRESHOLD = 64;
 
     /// Initialize the worker pool
     pub fn init(allocator: std.mem.Allocator, pool_size: usize) !*WorkerPool {
@@ -42,6 +44,7 @@ pub const WorkerPool = struct {
             .allocator = allocator,
             .threads = try allocator.alloc(std.Thread, size),
             .queue = std.ArrayList(Task){},
+            .queue_head = 0,
             .queue_mutex = .{},
             .queue_not_empty = .{},
             .shutdown = false,
@@ -105,7 +108,19 @@ pub const WorkerPool = struct {
     pub fn pendingTasks(self: *WorkerPool) usize {
         self.queue_mutex.lock();
         defer self.queue_mutex.unlock();
-        return self.queue.items.len;
+        return self.queue.items.len - self.queue_head;
+    }
+
+    /// Compact the queue by removing consumed items (call with lock held)
+    fn compactQueue(self: *WorkerPool) void {
+        if (self.queue_head >= COMPACT_THRESHOLD) {
+            const remaining = self.queue.items.len - self.queue_head;
+            if (remaining > 0) {
+                std.mem.copyForwards(Task, self.queue.items[0..remaining], self.queue.items[self.queue_head..]);
+            }
+            self.queue.shrinkRetainingCapacity(remaining);
+            self.queue_head = 0;
+        }
     }
 
     /// Worker thread main loop
@@ -118,16 +133,21 @@ pub const WorkerPool = struct {
                 self.queue_mutex.lock();
                 defer self.queue_mutex.unlock();
 
-                while (self.queue.items.len == 0 and !self.shutdown) {
+                while (self.queue_head >= self.queue.items.len and !self.shutdown) {
                     self.queue_not_empty.wait(&self.queue_mutex);
                 }
 
-                if (self.shutdown and self.queue.items.len == 0) {
+                if (self.shutdown and self.queue_head >= self.queue.items.len) {
                     return;
                 }
 
-                task = self.queue.orderedRemove(0);
+                // O(1) dequeue using head index
+                task = self.queue.items[self.queue_head];
+                self.queue_head += 1;
                 self.active_tasks += 1;
+
+                // Compact queue periodically to reclaim memory
+                self.compactQueue();
             }
 
             // Execute task outside of lock

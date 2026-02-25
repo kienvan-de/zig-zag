@@ -4,6 +4,28 @@ const config_mod = @import("../../config.zig");
 const token_cache = @import("../../cache/token_cache.zig");
 const log = @import("../../log.zig");
 
+/// Set socket read/write timeout
+fn setSocketTimeout(handle: std.posix.socket_t, timeout_ms: u64) void {
+    if (timeout_ms == 0) return;
+
+    const timeout_sec: i64 = @intCast(timeout_ms / 1000);
+    const timeout_usec: i32 = @intCast((timeout_ms % 1000) * 1000);
+    const timeval = std.posix.timeval{
+        .sec = timeout_sec,
+        .usec = timeout_usec,
+    };
+
+    // Set read timeout
+    std.posix.setsockopt(handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&timeval)) catch |err| {
+        log.debug("Failed to set socket read timeout: {}", .{err});
+    };
+
+    // Set write timeout
+    std.posix.setsockopt(handle, std.posix.SOL.SOCKET, std.posix.SO.SNDTIMEO, std.mem.asBytes(&timeval)) catch |err| {
+        log.debug("Failed to set socket write timeout: {}", .{err});
+    };
+}
+
 /// Iterator for SAP AI Core SSE streaming responses
 pub const StreamIterator = struct {
     allocator: std.mem.Allocator,
@@ -142,8 +164,9 @@ pub const SapAiCoreClient = struct {
 
     /// Fetch list of available models from SAP AI Core
     pub fn listModels(self: *SapAiCoreClient) !std.json.Parsed(SapAiCore.SapModelsResponse) {
-        // Get access token
+        // Get access token (caller owns this memory)
         const access_token = try self.getAccessToken();
+        defer self.allocator.free(access_token);
 
         // Build URL: {api_domain}/v2/lm/scenarios/foundation-models/models
         var url_buffer: [512]u8 = undefined;
@@ -165,6 +188,11 @@ pub const SapAiCoreClient = struct {
             .extra_headers = &extra_headers,
         });
         defer req.deinit();
+
+        // Apply socket timeout
+        if (req.connection) |conn| {
+            setSocketTimeout(conn.stream_reader.getStream().handle, self.timeout_ms);
+        }
 
         // Send request (no body for GET)
         try req.sendBodiless();
@@ -198,9 +226,11 @@ pub const SapAiCoreClient = struct {
     }
 
     /// Get a valid OAuth access token, using global cache
+    /// Returns owned memory that the caller must free
     fn getAccessToken(self: *SapAiCoreClient) ![]const u8 {
         // Check global cache first (without lock)
-        if (token_cache.get(self.oauth_domain, TOKEN_EXPIRY_BUFFER_SECONDS)) |cached_token| {
+        // token_cache.get returns a copy to avoid use-after-free
+        if (token_cache.get(self.allocator, self.oauth_domain, TOKEN_EXPIRY_BUFFER_SECONDS)) |cached_token| {
             return cached_token;
         }
 
@@ -210,7 +240,7 @@ pub const SapAiCoreClient = struct {
         defer token_cache.releaseFetchLock(fetch_mutex);
 
         // Check cache again (another thread may have fetched while we waited)
-        if (token_cache.get(self.oauth_domain, TOKEN_EXPIRY_BUFFER_SECONDS)) |cached_token| {
+        if (token_cache.get(self.allocator, self.oauth_domain, TOKEN_EXPIRY_BUFFER_SECONDS)) |cached_token| {
             log.debug("Token found in cache after acquiring lock for '{s}'", .{self.oauth_domain});
             return cached_token;
         }
@@ -223,8 +253,8 @@ pub const SapAiCoreClient = struct {
         // Store in global cache
         try token_cache.put(self.oauth_domain, new_token.access_token, new_token.expires_in);
 
-        // Return from cache (cache owns the memory now)
-        return token_cache.get(self.oauth_domain, TOKEN_EXPIRY_BUFFER_SECONDS) orelse error.TokenCacheError;
+        // Return from cache (returns a copy that caller must free)
+        return token_cache.get(self.allocator, self.oauth_domain, TOKEN_EXPIRY_BUFFER_SECONDS) orelse error.TokenCacheError;
     }
 
     /// Fetch OAuth token from the OAuth server
@@ -264,6 +294,11 @@ pub const SapAiCoreClient = struct {
             .extra_headers = &extra_headers,
         });
         defer req.deinit();
+
+        // Apply socket timeout
+        if (req.connection) |conn| {
+            setSocketTimeout(conn.stream_reader.getStream().handle, self.timeout_ms);
+        }
 
         req.transfer_encoding = .{ .content_length = request_body.len };
         var buf: [4096]u8 = undefined;
@@ -358,8 +393,9 @@ pub const SapAiCoreClient = struct {
         self: *SapAiCoreClient,
         request: SapAiCore.Request,
     ) !std.json.Parsed(SapAiCore.Response) {
-        // Get access token
+        // Get access token (caller owns this memory)
         const access_token = try self.getAccessToken();
+        defer self.allocator.free(access_token);
 
         // Serialize request to JSON
         var request_body = std.ArrayList(u8){};
@@ -393,6 +429,12 @@ pub const SapAiCoreClient = struct {
         });
         defer req.deinit();
 
+        // Apply socket timeout
+        if (req.connection) |conn| {
+            setSocketTimeout(conn.stream_reader.getStream().handle, self.timeout_ms);
+        }
+
+        // Set content length and send
         req.transfer_encoding = .{ .content_length = request_body.items.len };
         var buf: [4096]u8 = undefined;
         var body_writer = try req.sendBodyUnflushed(&buf);
@@ -440,8 +482,9 @@ pub const SapAiCoreClient = struct {
         self: *SapAiCoreClient,
         request: SapAiCore.Request,
     ) !StreamingResult {
-        // Get access token
+        // Get access token (caller owns this memory)
         const access_token = try self.getAccessToken();
+        defer self.allocator.free(access_token);
 
         // Serialize request to JSON
         var request_body = std.ArrayList(u8){};
@@ -474,6 +517,11 @@ pub const SapAiCoreClient = struct {
             .extra_headers = &extra_headers,
         });
         errdefer req.deinit();
+
+        // Apply socket timeout
+        if (req.connection) |conn| {
+            setSocketTimeout(conn.stream_reader.getStream().handle, self.timeout_ms);
+        }
 
         req.transfer_encoding = .{ .content_length = request_body.items.len };
         var buf: [4096]u8 = undefined;

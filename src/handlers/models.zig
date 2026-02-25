@@ -193,7 +193,7 @@ pub fn handle(
                 try all_models.append(safe_allocator, model);
             }
 
-            // Free the model list (but not the model strings, they're owned by allocator)
+            // Free the model list slice only - strings are moved to all_models
             safe_allocator.free(model_list);
         } else {
             log.debug("Provider '{s}' returned no models in {d}ms", .{ result.provider_name, result.elapsed_ms });
@@ -203,8 +203,32 @@ pub fn handle(
     const total_elapsed = std.time.milliTimestamp() - start_time;
     log.info("GET /v1/models - completed in {d}ms, total models: {d}", .{ total_elapsed, all_models.items.len });
 
-    // Send response
+    // Send response then free model strings
+    defer freeModelStrings(safe_allocator, all_models.items);
     try sendModelsResponse(allocator, connection, all_models.items);
+}
+
+/// Free allocated strings in model array
+fn freeModelStrings(allocator: std.mem.Allocator, models: []const OpenAI.Model) void {
+    for (models) |model| {
+        allocator.free(model.id);
+        // owned_by may be a static string ("anthropic", "model") or allocated
+        // Check if it's one of the known static strings before freeing
+        if (!isStaticOwnedBy(model.owned_by)) {
+            allocator.free(model.owned_by);
+        }
+    }
+}
+
+/// Check if owned_by is a static string that shouldn't be freed
+fn isStaticOwnedBy(owned_by: []const u8) bool {
+    const static_values = [_][]const u8{ "anthropic", "model", "openai", "system" };
+    for (static_values) |static_val| {
+        if (std.mem.eql(u8, owned_by, static_val)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 /// Task function for worker pool
@@ -254,7 +278,11 @@ fn handleSequential(
         const provider_elapsed = std.time.milliTimestamp() - provider_start;
 
         if (models) |model_list| {
-            defer allocator.free(model_list);
+            defer {
+                // Free model strings then the list
+                freeModelStrings(allocator, model_list);
+                allocator.free(model_list);
+            }
 
             log.info("Provider '{s}' returned {d} models in {d}ms", .{ provider_name, model_list.len, provider_elapsed });
 
