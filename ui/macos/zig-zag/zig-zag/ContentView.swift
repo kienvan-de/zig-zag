@@ -1,28 +1,23 @@
 import SwiftUI
 
 struct ContentView: View {
-    @State private var running: Bool = isServerRunning()
-    @State private var port: UInt16 = getServerPort()
+    var serverState: ServerState
 
     var body: some View {
-        // Status
         Label(
-            running ? "Running on port \(port)" : "Stopped",
-            systemImage: running ? "circle.fill" : "circle"
+            serverState.running ? "Running on port \(serverState.port)" : "Stopped",
+            systemImage: serverState.running ? "circle.fill" : "circle"
         )
-        .foregroundColor(running ? .green : .red)
+        .foregroundColor(serverState.running ? .green : .red)
 
         Divider()
 
-        // Start / Stop
-        Button(running ? "Stop Server" : "Start Server") {
-            if running {
-                stopServer()
+        Button(serverState.running ? "Stop Server" : "Start Server") {
+            if serverState.running {
+                serverState.stop()
             } else {
-                _ = startServer()
+                serverState.start()
             }
-            running = isServerRunning()
-            port = getServerPort()
         }
 
         Divider()
