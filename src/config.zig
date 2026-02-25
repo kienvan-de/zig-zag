@@ -61,6 +61,9 @@ pub const ServerConfig = struct {
     host: []const u8 = "0.0.0.0",
     http_pool_size: ?i64 = null,
     io_pool_size: ?i64 = null,
+    max_header_size: i64 = 8 * 1024, // 8KB default
+    max_body_size: i64 = 10 * 1024 * 1024, // 10MB default
+    read_timeout_ms: i64 = 30000, // 30 seconds default
 };
 
 /// Logging configuration
@@ -157,6 +160,21 @@ pub const Config = struct {
             if (server_obj.get("io_pool_size")) |pool_value| {
                 if (pool_value == .integer) {
                     server_config.io_pool_size = pool_value.integer;
+                }
+            }
+            if (server_obj.get("max_header_size")) |v| {
+                if (v == .integer) {
+                    server_config.max_header_size = v.integer;
+                }
+            }
+            if (server_obj.get("max_body_size")) |v| {
+                if (v == .integer) {
+                    server_config.max_body_size = v.integer;
+                }
+            }
+            if (server_obj.get("read_timeout_ms")) |v| {
+                if (v == .integer) {
+                    server_config.read_timeout_ms = v.integer;
                 }
             }
         }

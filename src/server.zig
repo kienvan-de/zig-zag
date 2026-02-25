@@ -166,6 +166,24 @@ fn handleConnection(allocator: std.mem.Allocator, connection: std.net.Server.Con
     defer arena.deinit();
     const request_allocator = arena.allocator();
 
+    // Size limits from config
+    const max_header_size: usize = @intCast(cfg.server.max_header_size);
+    const max_body_size: usize = @intCast(cfg.server.max_body_size);
+    const read_timeout_ms: i64 = cfg.server.read_timeout_ms;
+
+    // Set read timeout on the socket using SO_RCVTIMEO
+    if (read_timeout_ms > 0) {
+        const timeout_sec: i64 = @divTrunc(read_timeout_ms, 1000);
+        const timeout_usec: i32 = @intCast(@rem(read_timeout_ms, 1000) * 1000);
+        const timeval = std.posix.timeval{
+            .sec = timeout_sec,
+            .usec = timeout_usec,
+        };
+        std.posix.setsockopt(connection.stream.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&timeval)) catch |err| {
+            log.warn("Failed to set read timeout: {}", .{err});
+        };
+    }
+
     // Read the full request into a dynamically grown buffer so large bodies
     // are not silently truncated.
     var request_buf = std.ArrayListUnmanaged(u8){};
@@ -176,13 +194,26 @@ fn handleConnection(allocator: std.mem.Allocator, connection: std.net.Server.Con
 
     // Phase 1: read until we have the full headers (find \r\n\r\n).
     while (true) {
-        const n = try connection.stream.read(&read_buf);
+        const n = connection.stream.read(&read_buf) catch |err| {
+            if (err == error.WouldBlock) {
+                log.debug("Read timeout waiting for request", .{});
+                return;
+            }
+            return err;
+        };
         if (n == 0) return;
 
         try request_buf.appendSlice(request_allocator, read_buf[0..n]);
 
         // Check if we now have the end of headers.
         if (header_end == null) {
+            // Enforce max header size before finding header end
+            if (request_buf.items.len > max_header_size) {
+                log.warn("Request headers exceed max size ({d} bytes)", .{max_header_size});
+                _ = try connection.stream.writeAll("HTTP/1.1 431 Request Header Fields Too Large\r\nConnection: close\r\n\r\n");
+                return;
+            }
+
             if (std.mem.indexOf(u8, request_buf.items, "\r\n\r\n")) |pos| {
                 header_end = pos + 4;
             } else if (std.mem.indexOf(u8, request_buf.items, "\n\n")) |pos| {
@@ -195,6 +226,13 @@ fn handleConnection(allocator: std.mem.Allocator, connection: std.net.Server.Con
             if (content_length == null) {
                 const headers = request_buf.items[0..hend];
                 content_length = parseContentLength(headers) orelse 0;
+
+                // Enforce max body size
+                if (content_length.? > max_body_size) {
+                    log.warn("Request body too large: {d} bytes (max: {d})", .{ content_length.?, max_body_size });
+                    _ = try connection.stream.writeAll("HTTP/1.1 413 Content Too Large\r\nConnection: close\r\n\r\n");
+                    return;
+                }
             }
 
             // Check if we have the full body.
