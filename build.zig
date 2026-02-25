@@ -211,7 +211,7 @@ pub fn build(b: *std.Build) void {
     const run_integration_step = b.step("run:integration", "Run full integration test suite");
     run_integration_step.dependOn(&run_integration_exe.step);
 
-    // Release build (smallest binary)
+    // Release build of executable (smallest binary)
     const release_exe = b.addExecutable(.{
         .name = "zig-zag",
         .root_module = b.createModule(.{
@@ -226,6 +226,26 @@ pub fn build(b: *std.Build) void {
     const install_release = b.addInstallArtifact(release_exe, .{});
     release_step.dependOn(&install_release.step);
 
+    // =========================================================================
+    // Shared library for platform UI integration
+    // =========================================================================
+
+    // Determine OS-specific output paths and filenames
+    const os = target.result.os.tag;
+    const dylib_name = switch (os) {
+        .macos => "libzig-zag.dylib",
+        .linux => "libzig-zag.so",
+        .windows => "zig-zag.dll",
+        else => "libzig-zag.so",
+    };
+    const ui_dir: ?[]const u8 = switch (os) {
+        .macos => "ui/macos/zig-zag/zig-zag",
+        .linux => "ui/linux/zig-zag",
+        .windows => "ui/windows/zig-zag",
+        else => null,
+    };
+
+    // Debug shared library
     const lib = b.addLibrary(.{
         .name = "zig-zag",
         .linkage = .dynamic,
@@ -236,9 +256,11 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
-    const lib_step = b.step("lib", "Build shared library for Swift integration");
-    lib_step.dependOn(&b.addInstallArtifact(lib, .{}).step);
+    const lib_install = b.addInstallArtifact(lib, .{});
+    const lib_step = b.step("lib", "Build shared library for platform UI integration");
+    lib_step.dependOn(&lib_install.step);
 
+    // Release shared library
     const lib_release = b.addLibrary(.{
         .name = "zig-zag",
         .linkage = .dynamic,
@@ -250,6 +272,32 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
-    const lib_release_step = b.step("lib:release", "Build release shared library for Swift integration");
-    lib_release_step.dependOn(&b.addInstallArtifact(lib_release, .{}).step);
+    const lib_release_install = b.addInstallArtifact(lib_release, .{});
+    const lib_release_step = b.step("lib:release", "Build release shared library for platform UI integration");
+    lib_release_step.dependOn(&lib_release_install.step);
+
+    // Auto-copy dylib + header to the platform UI project folder after build
+    if (ui_dir) |dir| {
+        const src_dylib = b.pathJoin(&.{ "zig-out/lib", dylib_name });
+        const dst_dylib = b.pathJoin(&.{ dir, dylib_name });
+        const dst_header = b.pathJoin(&.{ dir, "zig-zag.h" });
+
+        // Debug copy
+        const copy_dylib = b.addSystemCommand(&.{ "cp", src_dylib, dst_dylib });
+        copy_dylib.step.dependOn(&lib_install.step);
+
+        const copy_header = b.addSystemCommand(&.{ "cp", "src/zig-zag.h", dst_header });
+
+        lib_step.dependOn(&copy_dylib.step);
+        lib_step.dependOn(&copy_header.step);
+
+        // Release copy
+        const copy_dylib_release = b.addSystemCommand(&.{ "cp", src_dylib, dst_dylib });
+        copy_dylib_release.step.dependOn(&lib_release_install.step);
+
+        const copy_header_release = b.addSystemCommand(&.{ "cp", "src/zig-zag.h", dst_header });
+
+        lib_release_step.dependOn(&copy_dylib_release.step);
+        lib_release_step.dependOn(&copy_header_release.step);
+    }
 }
