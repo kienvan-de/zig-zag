@@ -106,8 +106,8 @@ pub const Config = struct {
     pub fn loadFromFile(allocator: std.mem.Allocator, path: []const u8) !Config {
         // Read file
         const file = std.fs.cwd().openFile(path, .{}) catch |err| {
-            std.debug.print("Failed to open config file: {s}\n", .{path});
-            std.debug.print("Error: {}\n", .{err});
+            log_mod.err("Failed to open config file: {s}", .{path});
+            log_mod.err("Error: {}", .{err});
             return err;
         };
         defer file.close();
@@ -127,7 +127,7 @@ pub const Config = struct {
         // Validate it's an object
         if (parsed.value != .object) {
             parsed.deinit();
-            std.debug.print("Config must be a JSON object\n", .{});
+            log_mod.err("Config must be a JSON object", .{});
             return error.InvalidConfigFormat;
         }
 
@@ -138,7 +138,7 @@ pub const Config = struct {
         if (root_obj.get("server")) |server_value| {
             if (server_value != .object) {
                 parsed.deinit();
-                std.debug.print("Server config must be an object\n", .{});
+                log_mod.err("Server config must be an object", .{});
                 return error.InvalidConfigFormat;
             }
             const server_obj = server_value.object;
@@ -220,13 +220,13 @@ pub const Config = struct {
         // Get providers object
         const providers_value = root_obj.get("providers") orelse {
             parsed.deinit();
-            std.debug.print("Config must contain 'providers' object\n", .{});
+            log_mod.err("Config must contain 'providers' object", .{});
             return error.InvalidConfigFormat;
         };
 
         if (providers_value != .object) {
             parsed.deinit();
-            std.debug.print("'providers' must be a JSON object\n", .{});
+            log_mod.err("'providers' must be a JSON object", .{});
             return error.InvalidConfigFormat;
         }
 
@@ -248,7 +248,7 @@ pub const Config = struct {
 
             // Validate provider config is an object
             if (provider_value_ptr.* != .object) {
-                std.debug.print("Provider config must be an object: {s}\n", .{provider_name});
+                log_mod.err("Provider config must be an object: {s}", .{provider_name});
                 return error.InvalidProviderConfig;
             }
 

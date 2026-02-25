@@ -60,9 +60,9 @@ pub fn start(allocator: std.mem.Allocator, cfg: *const config.Config) !void {
     else
         DEFAULT_THREAD_POOL_SIZE;
 
-    std.debug.print("Starting zig-zag proxy server on {s}:{d}...\n", .{ host, port });
-    std.debug.print("Loaded providers: {d}\n", .{cfg.providers.count()});
-    std.debug.print("HTTP pool size: {d}\n", .{pool_size});
+    log.info("Starting zig-zag proxy server on {s}:{d}...", .{ host, port });
+    log.info("Loaded providers: {d}", .{cfg.providers.count()});
+    log.info("HTTP pool size: {d}", .{pool_size});
 
     const address = try std.net.Address.parseIp(host, port);
 
@@ -80,10 +80,10 @@ pub fn start(allocator: std.mem.Allocator, cfg: *const config.Config) !void {
         listener_mutex.unlock();
     }
 
-    std.debug.print("Listening on http://{s}:{d}\n", .{ host, port });
-    std.debug.print("Endpoints:\n", .{});
-    std.debug.print("  POST /v1/chat/completions\n", .{});
-    std.debug.print("  GET  /v1/models\n", .{});
+    log.info("Listening on http://{s}:{d}", .{ host, port });
+    log.info("Endpoints:", .{});
+    log.info("  POST /v1/chat/completions", .{});
+    log.info("  GET  /v1/models", .{});
 
     log.info("Server started on {s}:{d} with {d} HTTP workers", .{ host, port, pool_size });
 

@@ -435,7 +435,7 @@ test "Error handling - invalid model" {
 
 /// Run a single test case
 fn runCase(allocator: std.mem.Allocator, cases_root: []const u8, case_name: []const u8) !void {
-    std.debug.print("\n[Test] {s}\n", .{case_name});
+    std.log.info("[Test] {s}", .{case_name});
 
     // Initialize context for this case
     const ctx = try TestContext.init(allocator, case_name);
@@ -484,7 +484,7 @@ fn runCase(allocator: std.mem.Allocator, cases_root: []const u8, case_name: []co
         }
     }
 
-    std.debug.print("  ✓ {s} passed\n", .{case_name});
+    std.log.info("  ✓ {s} passed", .{case_name});
 }
 
 /// Main entry point for integration tests
@@ -493,14 +493,14 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    std.debug.print("Starting integration tests...\n", .{});
+    std.log.info("Starting integration tests...", .{});
 
     const cases_root = "test/cases";
 
     // Check if specific case is requested via env var
     if (std.posix.getenv("CASE_FOLDER")) |case_name| {
         try runCase(allocator, cases_root, case_name);
-        std.debug.print("\nTest completed!\n", .{});
+        std.log.info("Test completed!", .{});
         return;
     }
 
@@ -514,27 +514,27 @@ pub fn main() !void {
     }
 
     if (case_dirs.len == 0) {
-        std.debug.print("No test cases found in {s}\n", .{cases_root});
+        std.log.warn("No test cases found in {s}", .{cases_root});
         return;
     }
 
-    std.debug.print("Found {d} test case(s)\n", .{case_dirs.len});
+    std.log.info("Found {d} test case(s)", .{case_dirs.len});
 
     var passed: usize = 0;
     var failed: usize = 0;
 
     for (case_dirs) |case_name| {
         runCase(allocator, cases_root, case_name) catch |err| {
-            std.debug.print("  ✗ {s} failed: {}\n", .{ case_name, err });
+            std.log.err("  ✗ {s} failed: {}", .{ case_name, err });
             failed += 1;
             continue;
         };
         passed += 1;
     }
 
-    std.debug.print("\n========================================\n", .{});
-    std.debug.print("Results: {d} passed, {d} failed\n", .{ passed, failed });
-    std.debug.print("========================================\n", .{});
+    std.log.info("========================================", .{});
+    std.log.info("Results: {d} passed, {d} failed", .{ passed, failed });
+    std.log.info("========================================", .{});
 
     if (failed > 0) {
         return error.TestsFailed;

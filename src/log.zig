@@ -219,8 +219,6 @@ fn writeDirectSync(comptime format: []const u8, args: anytype) void {
 
     if (log_file) |f| {
         f.writeAll(msg) catch {};
-    } else {
-        std.debug.print("{s}", .{msg});
     }
 }
 
@@ -334,8 +332,6 @@ fn logImpl(
         // Fallback: write directly if worker pool not available
         if (log_file) |f| {
             f.writeAll(msg) catch {};
-        } else {
-            std.debug.print("{s}", .{msg});
         }
     }
 }

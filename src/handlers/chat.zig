@@ -333,7 +333,7 @@ fn handleProviderStreaming(
 
     // Start streaming request and get iterator
     const stream_connect_start = std.time.milliTimestamp();
-    var stream_result = client.sendStreamingRequest(provider_request) catch |err| {
+    const stream_result = client.sendStreamingRequest(provider_request) catch |err| {
         log.err("[STREAM] Provider streaming error: {} for model '{s}'", .{ err, openai_request.model });
         const error_json = try errors.createErrorResponse(
             allocator,
@@ -345,7 +345,7 @@ fn handleProviderStreaming(
         try http.sendJsonResponse(connection, .bad_gateway, error_json);
         return;
     };
-    defer stream_result.deinit();
+    defer client.freeStreamingResult(stream_result);
     const stream_connect_time = std.time.milliTimestamp() - stream_connect_start;
     log.debug("[STREAM] Stream connection established in {d}ms", .{stream_connect_time});
 
