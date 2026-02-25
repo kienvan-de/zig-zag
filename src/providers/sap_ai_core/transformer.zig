@@ -148,6 +148,42 @@ pub fn cleanupRequest(request: SapAiCore.Request, allocator: std.mem.Allocator) 
 // Response Transformation: SAP AI Core -> OpenAI
 // ============================================================================
 
+/// Deep copy a ResponseMessage
+fn dupeResponseMessage(allocator: std.mem.Allocator, msg: OpenAI.ResponseMessage) !OpenAI.ResponseMessage {
+    return OpenAI.ResponseMessage{
+        .role = msg.role,
+        .content = if (msg.content) |c| try allocator.dupe(u8, c) else null,
+        .tool_calls = if (msg.tool_calls) |tcs| blk: {
+            const duped = try allocator.alloc(OpenAI.ToolCall, tcs.len);
+            for (tcs, 0..) |tc, i| {
+                duped[i] = OpenAI.ToolCall{
+                    .id = try allocator.dupe(u8, tc.id),
+                    .type = try allocator.dupe(u8, tc.type),
+                    .function = OpenAI.ToolCallFunction{
+                        .name = try allocator.dupe(u8, tc.function.name),
+                        .arguments = try allocator.dupe(u8, tc.function.arguments),
+                    },
+                };
+            }
+            break :blk duped;
+        } else null,
+        .function_call = if (msg.function_call) |fc| OpenAI.FunctionCall{
+            .name = try allocator.dupe(u8, fc.name),
+            .arguments = try allocator.dupe(u8, fc.arguments),
+        } else null,
+    };
+}
+
+/// Deep copy a ResponseChoice
+fn dupeResponseChoice(allocator: std.mem.Allocator, choice: OpenAI.ResponseChoice) !OpenAI.ResponseChoice {
+    return OpenAI.ResponseChoice{
+        .index = choice.index,
+        .message = try dupeResponseMessage(allocator, choice.message),
+        .finish_reason = try allocator.dupe(u8, choice.finish_reason),
+        .logprobs = choice.logprobs, // json.Value is managed separately
+    };
+}
+
 /// Transform SAP AI Core response to OpenAI format
 pub fn transformResponse(
     response: SapAiCore.Response,
@@ -175,7 +211,10 @@ pub fn transformResponse(
     const model_str = try allocator.dupe(u8, original_model);
 
     // Deep copy choices since parsed will be freed
-    const choices = try allocator.dupe(OpenAI.ResponseChoice, parsed.value.choices);
+    const choices = try allocator.alloc(OpenAI.ResponseChoice, parsed.value.choices.len);
+    for (parsed.value.choices, 0..) |choice, i| {
+        choices[i] = try dupeResponseChoice(allocator, choice);
+    }
 
     return OpenAI.Response{
         .id = try allocator.dupe(u8, parsed.value.id),
@@ -193,11 +232,33 @@ pub fn transformResponse(
     };
 }
 
+/// Free a ResponseMessage's allocated fields
+fn freeResponseMessage(allocator: std.mem.Allocator, msg: OpenAI.ResponseMessage) void {
+    if (msg.content) |c| allocator.free(c);
+    if (msg.tool_calls) |tcs| {
+        for (tcs) |tc| {
+            allocator.free(tc.id);
+            allocator.free(tc.type);
+            allocator.free(tc.function.name);
+            allocator.free(tc.function.arguments);
+        }
+        allocator.free(tcs);
+    }
+    if (msg.function_call) |fc| {
+        allocator.free(fc.name);
+        allocator.free(fc.arguments);
+    }
+}
+
 /// Cleanup transformed response
 pub fn cleanupResponse(response: OpenAI.Response, allocator: std.mem.Allocator) void {
     allocator.free(response.id);
     allocator.free(response.object);
     allocator.free(response.model);
+    for (response.choices) |choice| {
+        freeResponseMessage(allocator, choice.message);
+        allocator.free(choice.finish_reason);
+    }
     allocator.free(response.choices);
 }
 
