@@ -16,8 +16,10 @@ const Task = struct {
 };
 
 /// Global worker pool instance
-var pool: ?*WorkerPool = null;
+/// pool_ptr uses atomic operations for lock-free read access via getPool()
+var pool_ptr: std.atomic.Value(?*WorkerPool) = std.atomic.Value(?*WorkerPool).init(null);
 var pool_allocator: ?std.mem.Allocator = null;
+var pool_mutex: std.Thread.Mutex = .{};
 
 /// Worker Pool implementation
 pub const WorkerPool = struct {
@@ -192,32 +194,41 @@ pub const WaitGroup = struct {
 
 /// Initialize the global worker pool
 pub fn init(allocator: std.mem.Allocator, pool_size: usize) !void {
-    if (pool != null) {
+    pool_mutex.lock();
+    defer pool_mutex.unlock();
+
+    if (pool_ptr.load(.acquire) != null) {
         return error.AlreadyInitialized;
     }
-    pool = try WorkerPool.init(allocator, pool_size);
+    const p = try WorkerPool.init(allocator, pool_size);
     pool_allocator = allocator;
+    pool_ptr.store(p, .release);
 }
 
 /// Shutdown the global worker pool
 pub fn deinit() void {
-    if (pool) |p| {
-        p.deinit();
-        pool = null;
-        pool_allocator = null;
-    }
+    pool_mutex.lock();
+
+    const p = pool_ptr.swap(null, .acq_rel) orelse {
+        pool_mutex.unlock();
+        return;
+    };
+    pool_allocator = null;
+
+    pool_mutex.unlock();
+
+    // Deinit outside of lock to avoid deadlock if workers try to access pool
+    p.deinit();
 }
 
 /// Submit a task to the global pool
 pub fn submit(comptime func: fn (*anyopaque) void, context: *anyopaque) !void {
-    if (pool) |p| {
-        try p.submit(func, context);
-    } else {
-        return error.PoolNotInitialized;
-    }
+    const p = pool_ptr.load(.acquire) orelse return error.PoolNotInitialized;
+    try p.submit(func, context);
 }
 
 /// Get the global pool instance (for advanced usage)
+/// Lock-free read - safe to call from any context including logging
 pub fn getPool() ?*WorkerPool {
-    return pool;
+    return pool_ptr.load(.acquire);
 }

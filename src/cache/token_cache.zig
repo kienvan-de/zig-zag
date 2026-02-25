@@ -7,6 +7,9 @@
 const std = @import("std");
 const log = @import("../log.zig");
 
+/// Opaque handle returned by acquireFetchLock, must be passed to releaseFetchLock
+pub const FetchLockHandle = *std.Thread.Mutex;
+
 /// Cached token entry
 pub const CachedToken = struct {
     access_token: []const u8,
@@ -96,7 +99,8 @@ pub fn get(key: []const u8, expiry_buffer_seconds: i64) ?[]const u8 {
 
 /// Acquire fetch lock for a domain to prevent thundering herd
 /// Only one thread can fetch a token for a given domain at a time
-pub fn acquireFetchLock(key: []const u8) !void {
+/// Returns a handle that MUST be passed to releaseFetchLock
+pub fn acquireFetchLock(key: []const u8) !FetchLockHandle {
     const domain_mutex = blk: {
         fetch_mutex_lock.lock();
         defer fetch_mutex_lock.unlock();
@@ -122,18 +126,13 @@ pub fn acquireFetchLock(key: []const u8) !void {
 
     // Now lock the domain-specific mutex (outside fetch_mutex_lock to avoid deadlock)
     domain_mutex.lock();
+    return domain_mutex;
 }
 
-/// Release fetch lock for a domain
-pub fn releaseFetchLock(key: []const u8) void {
-    fetch_mutex_lock.lock();
-    defer fetch_mutex_lock.unlock();
-
-    if (fetch_mutexes) |fm| {
-        if (fm.get(key)) |m| {
-            m.unlock();
-        }
-    }
+/// Release fetch lock using the handle returned by acquireFetchLock
+/// This ensures the exact same mutex is unlocked, avoiding races with deinit
+pub fn releaseFetchLock(handle: FetchLockHandle) void {
+    handle.unlock();
 }
 
 /// Store a token in the cache
