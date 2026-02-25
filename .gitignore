@@ -4,3 +4,16 @@ test/fixtures/recorded
 test/cases/*/agent_res.json
 test/cases/*/agent_res.txt
 test/cases/*/upstream_req.json
+# Xcode
+ui/macos/zig-zag/*.xcodeproj/xcuserdata/
+ui/macos/zig-zag/*.xcodeproj/project.xcworkspace/xcuserdata/
+ui/macos/zig-zag/xcuserdata/
+ui/macos/zig-zag/*.xcworkspace/xcuserdata/
+
+# Build output
+ui/macos/zig-zag/build/
+ui/macos/zig-zag/DerivedData/
+
+# Auto-copied by zig build lib (regenerated, don't commit)
+ui/macos/zig-zag/zig-zag/libzig-zag.dylib
+ui/macos/zig-zag/zig-zag/zig-zag.h
