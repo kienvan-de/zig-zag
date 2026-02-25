@@ -67,6 +67,10 @@ pub const ServerConfig = struct {
 pub const LogConfig = struct {
     level: std.log.Level = .info,
     path: ?[]const u8 = null, // null = use OS default
+    max_file_size_mb: i64 = 10, // rotate when file exceeds this size
+    max_files: i64 = 5, // keep this many rotated files
+    buffer_size: i64 = 100, // number of messages to buffer before flush
+    flush_interval_ms: i64 = 1000, // auto-flush interval in milliseconds
 };
 
 /// Main application configuration
@@ -170,6 +174,26 @@ pub const Config = struct {
                 if (log_obj.get("path")) |path_value| {
                     if (path_value == .string) {
                         log_config.path = path_value.string;
+                    }
+                }
+                if (log_obj.get("max_file_size_mb")) |v| {
+                    if (v == .integer) {
+                        log_config.max_file_size_mb = v.integer;
+                    }
+                }
+                if (log_obj.get("max_files")) |v| {
+                    if (v == .integer) {
+                        log_config.max_files = v.integer;
+                    }
+                }
+                if (log_obj.get("buffer_size")) |v| {
+                    if (v == .integer) {
+                        log_config.buffer_size = v.integer;
+                    }
+                }
+                if (log_obj.get("flush_interval_ms")) |v| {
+                    if (v == .integer) {
+                        log_config.flush_interval_ms = v.integer;
                     }
                 }
             }

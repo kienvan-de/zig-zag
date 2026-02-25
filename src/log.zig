@@ -1,7 +1,7 @@
 //! Logging Module
 //!
 //! Provides file-based logging with configurable log levels.
-//! Supports async writing to file using worker pool.
+//! Supports buffered writes and size-based log rotation.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -11,12 +11,10 @@ const worker_pool = @import("worker_pool.zig");
 pub const LogConfig = struct {
     level: std.log.Level = .info,
     path: ?[]const u8 = null, // null = use OS default
-};
-
-/// Log entry for async writing
-const LogEntry = struct {
-    msg: []u8,
-    allocator: std.mem.Allocator,
+    max_file_size_mb: i64 = 10, // rotate when file exceeds this size
+    max_files: i64 = 5, // keep this many rotated files
+    buffer_size: i64 = 100, // number of messages to buffer before flush
+    flush_interval_ms: i64 = 1000, // auto-flush interval
 };
 
 /// Global log state
@@ -26,26 +24,61 @@ var initialized: bool = false;
 var log_mutex: std.Thread.Mutex = .{};
 var log_allocator: ?std.mem.Allocator = null;
 
+/// Buffering state
+var log_buffer: std.ArrayList(u8) = .{};
+var buffer_count: usize = 0;
+var last_flush_time: i64 = 0;
+var current_file_size: usize = 0;
+
+/// Rotation config (set during init)
+var max_file_size: usize = 10 * 1024 * 1024; // 10 MB default
+var max_files: usize = 5;
+var buffer_threshold: usize = 100;
+var flush_interval_ms: i64 = 1000;
+var log_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+var log_path: []const u8 = "";
+
 /// Initialize logging with configuration
 pub fn init(config: LogConfig, allocator: std.mem.Allocator) !void {
     log_level = config.level;
     log_allocator = allocator;
 
+    // Set rotation config
+    max_file_size = @intCast(@as(u64, @intCast(config.max_file_size_mb)) * 1024 * 1024);
+    max_files = @intCast(config.max_files);
+    buffer_threshold = @intCast(config.buffer_size);
+    flush_interval_ms = config.flush_interval_ms;
+
     const path = config.path orelse getDefaultLogPath();
+
+    // Store path for rotation
+    @memcpy(log_path_buf[0..path.len], path);
+    log_path = log_path_buf[0..path.len];
 
     // Ensure parent directory exists
     if (std.fs.path.dirname(path)) |dir| {
         std.fs.cwd().makePath(dir) catch {};
     }
 
-    log_file = try std.fs.cwd().createFile(path, .{
-        .truncate = false,
-    });
+    // Open file in append mode
+    log_file = std.fs.cwd().openFile(path, .{ .mode = .write_only }) catch |e| blk: {
+        if (e == error.FileNotFound) {
+            break :blk try std.fs.cwd().createFile(path, .{ .truncate = false });
+        }
+        return e;
+    };
 
-    // Seek to end for append mode
+    // Seek to end for append mode and get current size
     if (log_file) |f| {
+        const stat = try f.stat();
+        current_file_size = stat.size;
         f.seekFromEnd(0) catch {};
     }
+
+    // Initialize buffer
+    log_buffer = .{};
+    buffer_count = 0;
+    last_flush_time = std.time.milliTimestamp();
 
     initialized = true;
 
@@ -55,12 +88,25 @@ pub fn init(config: LogConfig, allocator: std.mem.Allocator) !void {
 
 /// Deinitialize logging
 pub fn deinit() void {
+    log_mutex.lock();
+    defer log_mutex.unlock();
+
+    // Flush remaining buffer
+    flushBufferLocked();
+
     if (log_file) |f| {
         f.close();
         log_file = null;
     }
+
+    if (log_allocator) |allocator| {
+        log_buffer.deinit(allocator);
+    }
+
     initialized = false;
     log_allocator = null;
+    buffer_count = 0;
+    current_file_size = 0;
 }
 
 /// Get default log path based on OS
@@ -187,24 +233,89 @@ fn writeSync(comptime format: []const u8, args: anytype) void {
         log_mutex.lock();
         defer log_mutex.unlock();
         f.writeAll(msg) catch {};
+        current_file_size += msg.len;
     } else {
         std.debug.print("{s}", .{msg});
     }
 }
 
-/// Async write task executed by worker pool
-fn asyncWriteTask(ctx: *anyopaque) void {
-    const entry: *LogEntry = @ptrCast(@alignCast(ctx));
-    defer {
-        entry.allocator.free(entry.msg);
-        entry.allocator.destroy(entry);
-    }
+/// Flush buffer to file (must be called with log_mutex held)
+fn flushBufferLocked() void {
+    if (buffer_count == 0 or log_buffer.items.len == 0) return;
 
     if (log_file) |f| {
-        log_mutex.lock();
-        defer log_mutex.unlock();
-        f.writeAll(entry.msg) catch {};
+        // Check if rotation needed before writing
+        if (current_file_size + log_buffer.items.len > max_file_size) {
+            rotateLogsLocked();
+        }
+
+        f.writeAll(log_buffer.items) catch {};
+        current_file_size += log_buffer.items.len;
     }
+
+    log_buffer.clearRetainingCapacity();
+    buffer_count = 0;
+    last_flush_time = std.time.milliTimestamp();
+}
+
+/// Rotate log files (must be called with log_mutex held)
+fn rotateLogsLocked() void {
+    // Close current file
+    if (log_file) |f| {
+        f.close();
+        log_file = null;
+    }
+
+    // Rotate existing files: .log.N -> .log.N+1, delete oldest
+    var i: usize = max_files;
+    while (i > 0) : (i -= 1) {
+        var old_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        var new_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+
+        const old_path = if (i == 1)
+            log_path
+        else
+            std.fmt.bufPrint(&old_path_buf, "{s}.{d}", .{ log_path, i - 1 }) catch continue;
+
+        const new_path = std.fmt.bufPrint(&new_path_buf, "{s}.{d}", .{ log_path, i }) catch continue;
+
+        if (i == max_files) {
+            // Delete oldest file
+            std.fs.cwd().deleteFile(new_path) catch {};
+        }
+
+        // Rename old to new
+        std.fs.cwd().rename(old_path, new_path) catch {};
+    }
+
+    // Create new log file
+    log_file = std.fs.cwd().createFile(log_path, .{ .truncate = false }) catch null;
+    current_file_size = 0;
+}
+
+/// Check if flush is needed and flush if so (must be called with log_mutex held)
+fn maybeFlushLocked() void {
+    const now = std.time.milliTimestamp();
+    const time_elapsed = now - last_flush_time;
+
+    if (buffer_count >= buffer_threshold or time_elapsed >= flush_interval_ms) {
+        flushBufferLocked();
+    }
+}
+
+/// Append message to buffer (must be called with log_mutex held)
+fn appendToBufferLocked(msg: []const u8) void {
+    const allocator = log_allocator orelse return;
+    log_buffer.appendSlice(allocator, msg) catch {
+        // If buffer append fails, try direct write
+        if (log_file) |f| {
+            f.writeAll(msg) catch {};
+            current_file_size += msg.len;
+        }
+        return;
+    };
+    buffer_count += 1;
+    maybeFlushLocked();
 }
 
 /// Core logging function
@@ -229,46 +340,28 @@ fn logImpl(
     var msg_buf: [4096]u8 = undefined;
     const msg = std.fmt.bufPrint(&msg_buf, "[{s}] [{s}] {s}" ++ format ++ "\n", .{ timestamp, level_txt, scope_prefix } ++ args) catch return;
 
-    // Try async write via worker pool
-    if (worker_pool.getPool()) |pool| {
-        if (log_allocator) |allocator| {
-            // Allocate entry and copy message for async processing
-            const entry = allocator.create(LogEntry) catch {
-                // Fallback to sync write on allocation failure
-                writeSyncDirect(msg);
-                return;
-            };
+    // Use buffered write
+    log_mutex.lock();
+    defer log_mutex.unlock();
 
-            entry.msg = allocator.dupe(u8, msg) catch {
-                allocator.destroy(entry);
-                writeSyncDirect(msg);
-                return;
-            };
-            entry.allocator = allocator;
-
-            pool.submit(asyncWriteTask, @ptrCast(entry)) catch {
-                // Fallback to sync write on submit failure
-                allocator.free(entry.msg);
-                allocator.destroy(entry);
-                writeSyncDirect(msg);
-            };
-            return;
+    if (initialized and log_allocator != null) {
+        appendToBufferLocked(msg);
+    } else {
+        // Fallback: direct write if not initialized
+        if (log_file) |f| {
+            f.writeAll(msg) catch {};
+            current_file_size += msg.len;
+        } else {
+            std.debug.print("{s}", .{msg});
         }
     }
-
-    // Fallback: sync write
-    writeSyncDirect(msg);
 }
 
-/// Direct synchronous write (for fallback cases)
-fn writeSyncDirect(msg: []const u8) void {
-    if (log_file) |f| {
-        log_mutex.lock();
-        defer log_mutex.unlock();
-        f.writeAll(msg) catch {};
-    } else {
-        std.debug.print("{s}", .{msg});
-    }
+/// Force flush the log buffer (public API for explicit flush)
+pub fn flush() void {
+    log_mutex.lock();
+    defer log_mutex.unlock();
+    flushBufferLocked();
 }
 
 /// Custom log function for std.log override

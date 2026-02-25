@@ -1,7 +1,11 @@
 {
   "logging": {
     "level": "info",
-    "path": null
+    "path": null,
+    "max_file_size_mb": 10,
+    "max_files": 5,
+    "buffer_size": 100,
+    "flush_interval_ms": 1000
   },
   "providers": {
     "anthropic": {
