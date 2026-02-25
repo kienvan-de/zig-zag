@@ -1,73 +1,21 @@
 const std = @import("std");
 const OpenAI = @import("types.zig");
 const config_mod = @import("../../config.zig");
+const common = @import("../common.zig");
 const log = @import("../../log.zig");
 
-/// Set socket read/write timeout
-fn setSocketTimeout(handle: std.posix.socket_t, timeout_ms: u64) void {
-    if (timeout_ms == 0) return;
+const setSocketTimeout = common.setSocketTimeout;
 
-    const timeout_sec: i64 = @intCast(timeout_ms / 1000);
-    const timeout_usec: i32 = @intCast((timeout_ms % 1000) * 1000);
-    const timeval = std.posix.timeval{
-        .sec = timeout_sec,
-        .usec = timeout_usec,
-    };
-
-    // Set read timeout
-    std.posix.setsockopt(handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&timeval)) catch |err| {
-        log.debug("Failed to set socket read timeout: {}", .{err});
-    };
-
-    // Set write timeout
-    std.posix.setsockopt(handle, std.posix.SOL.SOCKET, std.posix.SO.SNDTIMEO, std.mem.asBytes(&timeval)) catch |err| {
-        log.debug("Failed to set socket write timeout: {}", .{err});
-    };
-}
-
-/// Iterator for SSE streaming responses
-pub const StreamIterator = struct {
-    allocator: std.mem.Allocator,
-    body: []const u8,
-    lines: std.mem.SplitIterator(u8, .scalar),
-    done: bool = false,
-
-    /// Get the next SSE data line (full line including "data: " prefix)
-    /// Returns null when stream is complete
-    pub fn next(self: *StreamIterator) ?[]const u8 {
-        if (self.done) return null;
-
-        while (self.lines.next()) |line| {
-            const trimmed = std.mem.trimRight(u8, line, "\r");
-            if (trimmed.len == 0) continue;
-
-            // Only return lines with "data: " prefix
-            if (std.mem.startsWith(u8, trimmed, "data: ")) {
-                const data = trimmed["data: ".len..];
-                // Check for [DONE] marker
-                if (std.mem.eql(u8, data, "[DONE]")) {
-                    self.done = true;
-                }
-                return trimmed;
-            }
-        }
-
-        self.done = true;
-        return null;
-    }
-
-    pub fn deinit(self: *StreamIterator) void {
-        self.allocator.free(self.body);
-    }
-};
+/// Iterator for SSE streaming responses - reads from socket on-demand
+pub const StreamIterator = common.StreamIterator;
 
 /// Result of starting a streaming request
 pub const StreamingResult = struct {
     iterator: StreamIterator,
     request: std.http.Client.Request,
+    transfer_buffer: [8192]u8 = undefined,
 
     pub fn deinit(self: *StreamingResult) void {
-        self.iterator.deinit();
         self.request.deinit();
     }
 };
@@ -329,10 +277,11 @@ pub const OpenAIClient = struct {
 
     /// Send a streaming request to OpenAI Chat Completions API
     /// Returns a StreamingResult with an iterator for processing chunks
+    /// Reads from socket on-demand - does not buffer full response
     pub fn sendStreamingRequest(
         self: *OpenAIClient,
         request: OpenAI.Request,
-    ) !StreamingResult {
+    ) !*StreamingResult {
         // Serialize request to JSON
         var request_body = std.ArrayList(u8){};
         defer request_body.deinit(self.allocator);
@@ -385,29 +334,40 @@ pub const OpenAIClient = struct {
         try body_writer.end();
         try req.connection.?.flush();
 
+        // Allocate result on heap to ensure stable pointers for reader
+        const result = try self.allocator.create(StreamingResult);
+        errdefer self.allocator.destroy(result);
+
+        result.request = req;
+
         // Wait for response headers
+
         const redirect_buffer: [0]u8 = undefined;
-        const response = try req.receiveHead(&redirect_buffer);
+        var response = try result.request.receiveHead(&redirect_buffer);
+
+
 
         // Check status code
         if (response.head.status != .ok) {
+            self.allocator.destroy(result);
             return self.handleErrorResponse(response.head.status);
         }
 
-        // Read entire response body (required for now due to reader lifetime issues)
-        var transfer_buf: [4096]u8 = undefined;
-        var response_mut = response;
-        const reader = response_mut.reader(&transfer_buf);
-        const body = try reader.allocRemaining(self.allocator, std.io.Limit.limited(self.max_response_size));
+        // Get reader for streaming - reads from socket on-demand
 
-        return StreamingResult{
-            .iterator = StreamIterator{
-                .allocator = self.allocator,
-                .body = body,
-                .lines = std.mem.splitScalar(u8, body, '\n'),
-            },
-            .request = req,
-        };
+        const reader = response.reader(&result.transfer_buffer);
+
+
+        result.iterator = StreamIterator.init(reader);
+
+
+        return result;
+    }
+
+    /// Free a streaming result allocated by sendStreamingRequest
+    pub fn freeStreamingResult(self: *OpenAIClient, result: *StreamingResult) void {
+        result.deinit();
+        self.allocator.destroy(result);
     }
 };
 

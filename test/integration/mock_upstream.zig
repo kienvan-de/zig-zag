@@ -68,7 +68,7 @@ pub const MockUpstream = struct {
             };
 
             self.handleConnection(connection) catch |err| {
-                std.debug.print("[MockUpstream] {s} error handling connection: {}\n", .{self.provider_name, err});
+                std.log.err("[MockUpstream] {s} error handling connection: {}", .{self.provider_name, err});
             };
         }
     }
@@ -163,7 +163,7 @@ pub const MockUpstream = struct {
             response_file,
             1024 * 1024,
         ) catch |err| {
-            std.debug.print("[MockUpstream] Failed to read {s}: {}\n", .{ response_file, err });
+            std.log.err("[MockUpstream] Failed to read {s}: {}", .{ response_file, err });
             return err;
         };
         defer self.allocator.free(response_body);
@@ -365,10 +365,10 @@ pub fn main() !void {
     defer std.process.argsFree(allocator, args);
 
     if (args.len < 4) {
-        std.debug.print("Usage: mock-upstream <port> <provider_name> <case_name>\n", .{});
-        std.debug.print("  port: Port number to listen on\n", .{});
-        std.debug.print("  provider_name: anthropic, openai, or groq\n", .{});
-        std.debug.print("  case_name: test case folder name (e.g., case-1)\n", .{});
+        std.log.err("Usage: mock-upstream <port> <provider_name> <case_name>", .{});
+        std.log.err("  port: Port number to listen on", .{});
+        std.log.err("  provider_name: anthropic, openai, or groq", .{});
+        std.log.err("  case_name: test case folder name (e.g., case-1)", .{});
         return error.InvalidArguments;
     }
 

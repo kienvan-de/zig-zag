@@ -37,7 +37,7 @@ fn serverThreadFn(s: *State) void {
         4;
 
     worker_pool.init(allocator, io_pool_size) catch |err| {
-        std.debug.print("Failed to init worker pool: {}\n", .{err});
+        log.err("Failed to init worker pool: {}", .{err});
         return;
     };
     defer worker_pool.deinit();
@@ -46,14 +46,14 @@ fn serverThreadFn(s: *State) void {
         .level = s.cfg.log.level,
         .path = s.cfg.log.path,
     }, allocator) catch |err| {
-        std.debug.print("Failed to init logging: {}\n", .{err});
+        log.err("Failed to init logging: {}", .{err});
         return;
     };
     defer log.deinit();
 
     // server.start() blocks until server.shutdown() closes the listener.
     server.start(allocator, &s.cfg) catch |err| {
-        std.debug.print("Server error: {}\n", .{err});
+        log.err("Server error: {}", .{err});
     };
 }
 
@@ -86,7 +86,7 @@ export fn startServer() bool {
 
     // Load config using GPA.
     s.cfg = config.Config.load(allocator) catch |err| {
-        std.debug.print("Failed to load config: {}\n", .{err});
+        log.err("Failed to load config: {}", .{err});
         _ = s.gpa.deinit();
         bootstrap.destroy(s);
         return false;
@@ -97,7 +97,7 @@ export fn startServer() bool {
 
     // Spawn server thread.
     s.thread = std.Thread.spawn(.{}, serverThreadFn, .{s}) catch |err| {
-        std.debug.print("Failed to spawn server thread: {}\n", .{err});
+        log.err("Failed to spawn server thread: {}", .{err});
         s.cfg.deinit();
         _ = s.gpa.deinit();
         bootstrap.destroy(s);
