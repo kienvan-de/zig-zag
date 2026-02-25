@@ -205,8 +205,9 @@ pub const SapAiCoreClient = struct {
         }
 
         // Acquire fetch lock to prevent thundering herd
-        try token_cache.acquireFetchLock(self.oauth_domain);
-        defer token_cache.releaseFetchLock(self.oauth_domain);
+        // Returns the mutex pointer to ensure we unlock the exact same mutex
+        const fetch_mutex = try token_cache.acquireFetchLock(self.oauth_domain);
+        defer token_cache.releaseFetchLock(fetch_mutex);
 
         // Check cache again (another thread may have fetched while we waited)
         if (token_cache.get(self.oauth_domain, TOKEN_EXPIRY_BUFFER_SECONDS)) |cached_token| {
