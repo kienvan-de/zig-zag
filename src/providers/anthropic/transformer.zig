@@ -269,26 +269,6 @@ fn buildOpenAIChunk(
 // Type alias for OpenAI message content union
 const MessageContent = OpenAI.MessageContent;
 
-/// Parsed tool_choice from OpenAI (can be string or object)
-pub const ToolChoiceOption = union(enum) {
-    mode: []const u8, // "none", "auto", "required"
-    specific: struct {
-        function: struct {
-            name: []const u8,
-        },
-    },
-};
-
-/// Transformation errors
-pub const TransformError = error{
-    EmptyMessages,
-    InvalidMessageSequence,
-    UnsupportedContentType,
-    AllMessagesAreSystem,
-    OutOfMemory,
-    InvalidJson,
-};
-
 /// Extract system prompt from OpenAI messages
 /// System messages are removed from the message list and concatenated
 pub fn extractSystemPrompt(
