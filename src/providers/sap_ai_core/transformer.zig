@@ -102,10 +102,10 @@ pub fn transform(
                     .prompt = .{
                         .template = request.messages,
                         .tools = request.tools,
-                        .model = .{
-                            .name = model,
-                            .version = "latest",
-                        },
+                    },
+                    .model = .{
+                        .name = model,
+                        .version = "latest",
                     },
                 },
             },
@@ -260,7 +260,7 @@ pub fn transformStreamLine(
         json_part,
         .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
     ) catch |err| {
-        log.debug("[SAP] [STREAM] Failed to parse wrapper chunk: {}", .{err});
+        log.debug("[SAP] [STREAM] Failed to parse wrapper chunk: {} | raw: {s}", .{ err, json_part });
         return null;
     };
     defer parsed.deinit();

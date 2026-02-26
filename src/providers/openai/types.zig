@@ -686,9 +686,9 @@ pub const Delta = struct {
 
 /// Choice in streaming chunk
 pub const StreamChoice = struct {
-    index: u32,
-    delta: Delta,
-    finish_reason: ?[]const u8,
+    index: u32 = 0,
+    delta: Delta = .{},
+    finish_reason: ?[]const u8 = null,
     logprobs: ?std.json.Value = null,
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {

@@ -449,42 +449,42 @@ pub const MessageStartData = struct {
 /// Content block start event data
 pub const ContentBlockStartData = struct {
     type: []const u8,
-    index: u32,
+    index: u32 = 0,
     content_block: struct {
-        type: []const u8,
-        text: []const u8,
-    },
+        type: []const u8 = "",
+        text: []const u8 = "",
+    } = .{},
 };
 
 /// Text delta in streaming
 pub const TextDelta = struct {
-    type: []const u8,
-    text: []const u8,
+    type: []const u8 = "",
+    text: []const u8 = "",
 };
 
 /// Content block delta event data
 pub const ContentBlockDeltaData = struct {
-    type: []const u8,
-    index: u32,
-    delta: TextDelta,
+    type: []const u8 = "",
+    index: u32 = 0,
+    delta: TextDelta = .{},
 };
 
 /// Content block stop event data
 pub const ContentBlockStopData = struct {
-    type: []const u8,
-    index: u32,
+    type: []const u8 = "",
+    index: u32 = 0,
 };
 
 /// Message delta event data
 pub const MessageDeltaData = struct {
-    type: []const u8,
+    type: []const u8 = "",
     delta: struct {
-        stop_reason: ?[]const u8,
-        stop_sequence: ?[]const u8,
-    },
+        stop_reason: ?[]const u8 = null,
+        stop_sequence: ?[]const u8 = null,
+    } = .{},
     usage: struct {
-        output_tokens: u32,
-    },
+        output_tokens: u32 = 0,
+    } = .{},
 };
 
 /// Ping event data
@@ -519,14 +519,14 @@ pub const MessageStart = struct {
 
 /// Content block start event
 pub const ContentBlockStart = struct {
-    type: []const u8,
-    index: u32,
-    content_block: ContentBlockInfo,
+    type: []const u8 = "",
+    index: u32 = 0,
+    content_block: ContentBlockInfo = .{},
 };
 
 /// Content block info in start event
 pub const ContentBlockInfo = struct {
-    type: []const u8,
+    type: []const u8 = "",
     text: ?[]const u8 = null,
     id: ?[]const u8 = null,
     name: ?[]const u8 = null,
@@ -535,39 +535,39 @@ pub const ContentBlockInfo = struct {
 
 /// Content block delta event
 pub const ContentBlockDelta = struct {
-    type: []const u8,
-    index: u32,
-    delta: DeltaContent,
+    type: []const u8 = "",
+    index: u32 = 0,
+    delta: DeltaContent = .{},
 };
 
 /// Delta content - can be text_delta or input_json_delta
 pub const DeltaContent = struct {
-    type: []const u8,
+    type: []const u8 = "",
     text: ?[]const u8 = null,
     partial_json: ?[]const u8 = null,
 };
 
 /// Content block stop event
 pub const ContentBlockStop = struct {
-    type: []const u8,
-    index: u32,
+    type: []const u8 = "",
+    index: u32 = 0,
 };
 
 /// Message delta event - contains stop reason
 pub const MessageDelta = struct {
-    type: []const u8,
+    type: []const u8 = "",
     delta: struct {
-        stop_reason: ?[]const u8,
-        stop_sequence: ?[]const u8,
-    },
+        stop_reason: ?[]const u8 = null,
+        stop_sequence: ?[]const u8 = null,
+    } = .{},
     usage: struct {
-        output_tokens: u32,
-    },
+        output_tokens: u32 = 0,
+    } = .{},
 };
 
 /// Message stop event
 pub const MessageStop = struct {
-    type: []const u8,
+    type: []const u8 = "",
 };
 
 // ============================================================================
