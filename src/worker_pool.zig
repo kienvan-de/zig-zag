@@ -4,7 +4,6 @@
 //! Supports configurable pool size and task queue.
 
 const std = @import("std");
-const log = @import("log.zig");
 
 /// Task function type - takes a context pointer and executes work
 pub const TaskFn = *const fn (*anyopaque) void;
@@ -57,7 +56,6 @@ pub const WorkerPool = struct {
             _ = i;
         }
 
-        log.info("IO worker pool initialized with {d} threads", .{size});
         return self;
     }
 
@@ -80,8 +78,6 @@ pub const WorkerPool = struct {
 
         self.allocator.free(self.threads);
         self.queue.deinit(self.allocator);
-
-        log.info("IO worker pool shutdown complete", .{});
 
         self.allocator.destroy(self);
     }

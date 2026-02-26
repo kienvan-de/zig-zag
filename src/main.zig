@@ -30,6 +30,7 @@ pub fn main() !void {
     try log.init(.{
         .level = cfg.log.level,
         .path = cfg.log.path,
+        .output = cfg.log.output,
     }, allocator);
     defer log.deinit();
 

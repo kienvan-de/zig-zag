@@ -8,6 +8,12 @@ const std = @import("std");
 const builtin = @import("builtin");
 const worker_pool = @import("worker_pool.zig");
 
+/// Log output destination
+pub const LogOutput = enum {
+    file,
+    stderr,
+};
+
 /// Log configuration
 pub const LogConfig = struct {
     level: std.log.Level = .info,
@@ -15,6 +21,8 @@ pub const LogConfig = struct {
     max_file_size_mb: i64 = 10, // rotate when file exceeds this size
     max_files: i64 = 5, // keep this many rotated files
     buffer_size: i64 = 8192, // buffer size in bytes before flush
+    output: LogOutput = .stderr, // output destination
+    flush_interval_ms: i64 = 1000, // auto-flush interval in milliseconds
 };
 
 /// Global log state
@@ -22,6 +30,12 @@ var log_file: ?std.fs.File = null;
 var log_level: std.log.Level = .info;
 var initialized: bool = false;
 var log_allocator: ?std.mem.Allocator = null;
+var log_output: LogOutput = .file;
+
+/// Flush timer state
+var flush_thread: ?std.Thread = null;
+var flush_interval_ns: u64 = 1000 * std.time.ns_per_ms;
+var shutdown_flush: bool = false;
 
 /// Buffer state (only accessed by worker threads)
 var buffer_mutex: std.Thread.Mutex = .{};
@@ -44,47 +58,78 @@ const LogTaskContext = struct {
 pub fn init(config: LogConfig, allocator: std.mem.Allocator) !void {
     log_level = config.level;
     log_allocator = allocator;
+    log_output = config.output;
 
     // Set rotation config
     max_file_size = @intCast(@as(u64, @intCast(config.max_file_size_mb)) * 1024 * 1024);
     max_files = @intCast(config.max_files);
     buffer_threshold = @intCast(config.buffer_size);
 
-    const path = config.path orelse getDefaultLogPath();
+    if (log_output == .file) {
+        const path = config.path orelse getDefaultLogPath();
 
-    // Store path for rotation
-    @memcpy(log_path_buf[0..path.len], path);
-    log_path = log_path_buf[0..path.len];
+        // Store path for rotation
+        @memcpy(log_path_buf[0..path.len], path);
+        log_path = log_path_buf[0..path.len];
 
-    // Ensure parent directory exists
-    if (std.fs.path.dirname(path)) |dir| {
-        std.fs.cwd().makePath(dir) catch {};
-    }
-
-    // Open file in append mode
-    log_file = std.fs.cwd().openFile(path, .{ .mode = .write_only }) catch |e| blk: {
-        if (e == error.FileNotFound) {
-            break :blk try std.fs.cwd().createFile(path, .{ .truncate = false });
+        // Ensure parent directory exists
+        if (std.fs.path.dirname(path)) |dir| {
+            std.fs.cwd().makePath(dir) catch {};
         }
-        return e;
-    };
 
-    // Seek to end for append mode
-    if (log_file) |f| {
-        f.seekFromEnd(0) catch {};
+        // Open file in append mode
+        log_file = std.fs.cwd().openFile(path, .{ .mode = .write_only }) catch |e| blk: {
+            if (e == error.FileNotFound) {
+                break :blk try std.fs.cwd().createFile(path, .{ .truncate = false });
+            }
+            return e;
+        };
+
+        // Seek to end for append mode
+        if (log_file) |f| {
+            f.seekFromEnd(0) catch {};
+        }
+
+        // Initialize buffer
+        log_buffer = .{};
+
+        initialized = true;
+
+        // Write init message directly (worker pool may not be ready)
+        writeDirectSync("Logging initialized: level={s}, path={s}", .{ @tagName(log_level), path });
+    } else {
+        // stderr mode - no file setup needed
+        initialized = true;
+        writeDirectSync("Logging initialized: level={s}, output=stderr", .{@tagName(log_level)});
     }
 
-    // Initialize buffer
-    log_buffer = .{};
+    // Start flush timer thread
+    flush_interval_ns = @intCast(@as(u64, @intCast(config.flush_interval_ms)) * std.time.ns_per_ms);
+    shutdown_flush = false;
+    flush_thread = std.Thread.spawn(.{}, flushTimerLoop, .{}) catch null;
+}
 
-    initialized = true;
+/// Flush timer thread loop
+fn flushTimerLoop() void {
+    while (!shutdown_flush) {
+        std.Thread.sleep(flush_interval_ns);
+        if (shutdown_flush) break;
 
-    // Write init message directly (worker pool may not be ready)
-    writeDirectSync("Logging initialized: level={s}, path={s}", .{ @tagName(log_level), path });
+        buffer_mutex.lock();
+        defer buffer_mutex.unlock();
+        flushBufferLocked();
+    }
 }
 
 /// Deinitialize logging
 pub fn deinit() void {
+    // Stop flush timer thread
+    shutdown_flush = true;
+    if (flush_thread) |thread| {
+        thread.join();
+        flush_thread = null;
+    }
+
     buffer_mutex.lock();
     defer buffer_mutex.unlock();
 
@@ -209,7 +254,7 @@ fn isLeapYear(year: u32) bool {
     return (year % 4 == 0 and year % 100 != 0) or (year % 400 == 0);
 }
 
-/// Write directly to file synchronously (used during init/deinit)
+/// Write directly to file/stderr synchronously (used during init/deinit)
 fn writeDirectSync(comptime format: []const u8, args: anytype) void {
     var ts_buf: [32]u8 = undefined;
     const timestamp = getTimestamp(&ts_buf);
@@ -217,7 +262,9 @@ fn writeDirectSync(comptime format: []const u8, args: anytype) void {
     var msg_buf: [4096]u8 = undefined;
     const msg = std.fmt.bufPrint(&msg_buf, "[{s}] [info] " ++ format ++ "\n", .{timestamp} ++ args) catch return;
 
-    if (log_file) |f| {
+    if (log_output == .stderr) {
+        _ = std.posix.write(std.posix.STDERR_FILENO, msg) catch {};
+    } else if (log_file) |f| {
         f.writeAll(msg) catch {};
     }
 }
@@ -226,7 +273,9 @@ fn writeDirectSync(comptime format: []const u8, args: anytype) void {
 fn flushBufferLocked() void {
     if (log_buffer.items.len == 0) return;
 
-    if (log_file) |f| {
+    if (log_output == .stderr) {
+        _ = std.posix.write(std.posix.STDERR_FILENO, log_buffer.items) catch {};
+    } else if (log_file) |f| {
         const stat = f.stat() catch return;
         if (stat.size + log_buffer.items.len > max_file_size) {
             rotateLogsLocked();
@@ -330,7 +379,9 @@ fn logImpl(
         };
     } else {
         // Fallback: write directly if worker pool not available
-        if (log_file) |f| {
+        if (log_output == .stderr) {
+            _ = std.posix.write(std.posix.STDERR_FILENO, msg) catch {};
+        } else if (log_file) |f| {
             f.writeAll(msg) catch {};
         }
     }
