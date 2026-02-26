@@ -22,12 +22,11 @@ pub const ModelConfig = struct {
     }
 };
 
-/// Prompt configuration containing messages, tools, and model
+/// Prompt configuration containing messages and tools
 pub const PromptConfig = struct {
     template: []const OpenAI.Message,
     tools: ?[]const OpenAI.Tool = null,
     tool_choice: ?std.json.Value = null,
-    model: ModelConfig,
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         try jw.beginObject();
@@ -45,9 +44,6 @@ pub const PromptConfig = struct {
             try jw.write(tc);
         }
 
-        try jw.objectField("model");
-        try self.model.jsonStringify(jw);
-
         try jw.endObject();
     }
 };
@@ -55,11 +51,14 @@ pub const PromptConfig = struct {
 /// Prompt templating module configuration
 pub const PromptTemplatingModule = struct {
     prompt: PromptConfig,
+    model: ModelConfig,
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         try jw.beginObject();
         try jw.objectField("prompt");
         try self.prompt.jsonStringify(jw);
+        try jw.objectField("model");
+        try self.model.jsonStringify(jw);
         try jw.endObject();
     }
 };

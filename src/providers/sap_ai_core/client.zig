@@ -233,7 +233,7 @@ pub const SapAiCoreClient = struct {
 
     /// Build the API endpoint URL
     fn buildApiUrl(self: *SapAiCoreClient, buffer: []u8) ![]const u8 {
-        return try std.fmt.bufPrint(buffer, "{s}/v2/inference/deployments/{s}/chat/completions?api-version=2024-02-01", .{
+        return try std.fmt.bufPrint(buffer, "{s}/v2/inference/deployments/{s}/v2/completion", .{
             self.api_domain,
             self.deployment_id,
         });
@@ -322,11 +322,15 @@ pub const SapAiCoreClient = struct {
 
     fn handleErrorResponse(self: *SapAiCoreClient, status: std.http.Status) error{ AuthenticationError, RateLimitError, ServerError, InvalidStatusCode } {
         _ = self;
+        log.debug("SAP AI Core response status: {} ({})", .{ @intFromEnum(status), status });
         return switch (status) {
             .unauthorized => error.AuthenticationError,
             .too_many_requests => error.RateLimitError,
             .internal_server_error, .bad_gateway, .service_unavailable, .gateway_timeout => error.ServerError,
-            else => error.InvalidStatusCode,
+            else => {
+                log.err("SAP AI Core unexpected status code: {} ({})", .{ @intFromEnum(status), status });
+                return error.InvalidStatusCode;
+            },
         };
     }
 
@@ -342,6 +346,7 @@ pub const SapAiCoreClient = struct {
         // Build URL
         var url_buffer: [512]u8 = undefined;
         const url = try self.buildApiUrl(&url_buffer);
+        log.debug("SAP AI Core streaming request URL: {s}", .{url});
 
         // Build headers
         var auth_buffer: [8192]u8 = undefined;
@@ -353,6 +358,12 @@ pub const SapAiCoreClient = struct {
 
         // Check status code
         if (result.response.head.status != .ok) {
+            // Log request body on error for debugging
+            var debug_buf = std.ArrayList(u8){};
+            defer debug_buf.deinit(self.allocator);
+            debug_buf.writer(self.allocator).print("{f}", .{std.json.fmt(request, .{})}) catch {};
+            log.err("SAP AI Core request failed. URL: {s} | Body: {s}", .{ url, debug_buf.items });
+
             self.client.freeStreamingResult(SSEIterator, result);
             return self.handleErrorResponse(result.response.head.status);
         }
