@@ -232,11 +232,7 @@ pub const HttpClient = struct {
     ) !HttpResponse {
         const uri = try std.Uri.parse(url);
 
-        var headers = std.http.Client.Request.Headers{};
-        headers.content_type = .{ .override = "application/octet-stream" };
-
         var req = try self.client.request(.POST, uri, .{
-            .headers = headers,
             .extra_headers = extra_headers,
         });
         defer req.deinit();
