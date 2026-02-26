@@ -360,7 +360,7 @@ fn handleProviderStreaming(
     const process_start = std.time.milliTimestamp();
     var chunk_count: u32 = 0;
     var first_chunk_time: ?i64 = null;
-    while (stream_result.iterator.next()) |line| {
+    while (try stream_result.iterator.next()) |line| {
         // Transform the chunk
         if (Transformer.transformStreamLine(line, &state, allocator)) |transformed| {
             if (first_chunk_time == null) {

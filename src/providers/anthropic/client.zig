@@ -1,41 +1,28 @@
 const std = @import("std");
 const Anthropic = @import("types.zig");
 const config_mod = @import("../../config.zig");
-const common = @import("../common.zig");
+const http_client = @import("../../client.zig");
 const log = @import("../../log.zig");
 
-const setSocketTimeout = common.setSocketTimeout;
-
-/// Iterator for Anthropic SSE streaming responses - reads from socket on-demand
-pub const StreamIterator = common.StreamIterator;
+/// Iterator for SSE streaming responses
+pub const SSEIterator = http_client.SSEIterator;
 
 /// Result of starting a streaming request
-pub const StreamingResult = struct {
-    iterator: StreamIterator,
-    request: std.http.Client.Request,
-    response: std.http.Client.Response,
-    transfer_buffer: [8192]u8,
-
-    pub fn deinit(self: *StreamingResult) void {
-        self.request.deinit();
-    }
-};
+pub const StreamingResult = http_client.SSEResult;
 
 pub const AnthropicClient = struct {
     allocator: std.mem.Allocator,
     api_key: []const u8,
     api_url: []const u8,
     api_version: []const u8,
-    timeout_ms: u64,
-    max_response_size: usize,
     retry_count: u32,
     retry_delay_ms: u64,
     config: *const config_mod.ProviderConfig,
-    client: std.http.Client,
+    client: http_client.HttpClient,
 
     const DEFAULT_API_URL = "https://api.anthropic.com";
     const DEFAULT_API_VERSION = "2023-06-01";
-    const DEFAULT_TIMEOUT_MS = 30000; // Reserved for future implementation
+    const DEFAULT_TIMEOUT_MS = 60000;
     const DEFAULT_MAX_RESPONSE_SIZE_MB = 10;
     const DEFAULT_RETRY_COUNT = 0;
     const DEFAULT_RETRY_DELAY_MS = 1000;
@@ -58,12 +45,15 @@ pub const AnthropicClient = struct {
             .api_key = api_key,
             .api_url = api_url,
             .api_version = api_version,
-            .timeout_ms = @intCast(timeout_ms),
-            .max_response_size = @intCast(max_response_size_mb * 1024 * 1024),
             .retry_count = @intCast(retry_count),
             .retry_delay_ms = @intCast(retry_delay_ms),
             .config = provider_config,
-            .client = std.http.Client{ .allocator = allocator },
+            .client = http_client.HttpClient.initWithOptions(
+                allocator,
+                @intCast(timeout_ms),
+                @intCast(max_response_size_mb * 1024 * 1024),
+                null,
+            ),
         };
     }
 
@@ -71,54 +61,37 @@ pub const AnthropicClient = struct {
         self.client.deinit();
     }
 
+    /// Build headers for Anthropic API
+    fn buildHeaders(self: *AnthropicClient, headers_buf: []std.http.Header) []std.http.Header {
+        headers_buf[0] = .{ .name = "x-api-key", .value = self.api_key };
+        headers_buf[1] = .{ .name = "anthropic-version", .value = self.api_version };
+        return headers_buf[0..2];
+    }
+
     /// Fetch list of available models from Anthropic API
     pub fn listModels(self: *AnthropicClient) !std.json.Parsed(Anthropic.AnthropicModelsResponse) {
         // Build URL
         var url_buffer: [512]u8 = undefined;
         const url = try std.fmt.bufPrint(&url_buffer, "{s}/v1/models", .{self.api_url});
-        const uri = try std.Uri.parse(url);
 
         // Build headers
-        const extra_headers = [_]std.http.Header{
-            .{ .name = "x-api-key", .value = self.api_key },
-            .{ .name = "anthropic-version", .value = self.api_version },
-        };
+        var headers_buf: [2]std.http.Header = undefined;
+        const headers = self.buildHeaders(&headers_buf);
 
         // Make GET request
-        var req = try self.client.request(.GET, uri, .{
-            .extra_headers = &extra_headers,
-        });
-        defer req.deinit();
-
-        // Apply socket timeout
-        if (req.connection) |conn| {
-            setSocketTimeout(conn.stream_reader.getStream().handle, self.timeout_ms);
-        }
-
-        // Send request (no body for GET)
-        try req.sendBodiless();
-
-        // Wait for response
-        const redirect_buffer: [0]u8 = undefined;
-        var response = try req.receiveHead(&redirect_buffer);
+        var response = try self.client.get(url, headers);
+        defer response.deinit();
 
         // Check status code
-        if (response.head.status != .ok) {
-            return self.handleErrorResponse(response.head.status);
+        if (response.status != .ok) {
+            return self.handleErrorResponse(response.status);
         }
-
-        // Read response body
-        var transfer_buf: [4096]u8 = undefined;
-        const reader = response.reader(&transfer_buf);
-
-        const response_body = try reader.allocRemaining(self.allocator, std.io.Limit.limited(self.max_response_size));
-        defer self.allocator.free(response_body);
 
         // Parse response
         return std.json.parseFromSlice(
             Anthropic.AnthropicModelsResponse,
             self.allocator,
-            response_body,
+            response.body,
             .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
         ) catch |err| {
             log.err("Failed to parse Anthropic models response: {}", .{err});
@@ -138,17 +111,8 @@ pub const AnthropicClient = struct {
 
         while (attempts < max_attempts) : (attempts += 1) {
             const result = self.sendRequestOnce(request) catch |err| {
-                // Determine if error is retryable
-                // Only retry on server errors and rate limits
-                // Don't retry on auth errors or invalid status codes
-                const is_retryable = switch (err) {
-                    error.ServerError, error.RateLimitError => true,
-                    error.AuthenticationError, error.InvalidStatusCode => false,
-                    else => true, // Retry on other errors (network, allocation, etc.)
-                };
-
-                // If not retryable or out of attempts, return error
-                if (!is_retryable or attempts + 1 >= max_attempts) {
+                // If out of attempts, return error
+                if (attempts + 1 >= max_attempts) {
                     return err;
                 }
 
@@ -176,77 +140,22 @@ pub const AnthropicClient = struct {
         self: *AnthropicClient,
         request: Anthropic.Request,
     ) !std.json.Parsed(Anthropic.Response) {
-        // Serialize request to JSON
-        var request_body = std.ArrayList(u8){};
-        defer request_body.deinit(self.allocator);
-
-        try request_body.writer(self.allocator).print("{f}", .{std.json.fmt(request, .{})});
-
-        // Build URL from config
+        // Build URL
         var url_buffer: [512]u8 = undefined;
         const url = try std.fmt.bufPrint(&url_buffer, "{s}/v1/messages", .{self.api_url});
-        const uri = try std.Uri.parse(url);
 
-        // Build extra headers
-        const extra_headers = [_]std.http.Header{
-            .{ .name = "x-api-key", .value = self.api_key },
-            .{ .name = "anthropic-version", .value = self.api_version },
-        };
+        // Build headers
+        var headers_buf: [2]std.http.Header = undefined;
+        const headers = self.buildHeaders(&headers_buf);
 
-        // Standard headers
-        var headers = std.http.Client.Request.Headers{};
-        headers.content_type = .{ .override = "application/json" };
-
-        // Make request using lower-level API for better control
-        var req = try self.client.request(.POST, uri, .{
-            .headers = headers,
-            .extra_headers = &extra_headers,
-        });
-        defer req.deinit();
-
-        // Apply socket timeout
-        if (req.connection) |conn| {
-            setSocketTimeout(conn.stream_reader.getStream().handle, self.timeout_ms);
-        }
-
-        // Set content length and send
-        req.transfer_encoding = .{ .content_length = request_body.items.len };
-        var buf: [4096]u8 = undefined;
-        var body_writer = try req.sendBodyUnflushed(&buf);
-        try body_writer.writer.writeAll(request_body.items);
-        try body_writer.end();
-        try req.connection.?.flush();
-
-        // Wait for response
-        const redirect_buffer: [0]u8 = undefined;
-        var response = try req.receiveHead(&redirect_buffer);
-
-        // Check status code
-        if (response.head.status != .ok) {
-            return self.handleErrorResponse(response.head.status);
-        }
-
-        // Read response body
-        var transfer_buf: [4096]u8 = undefined;
-        const reader = response.reader(&transfer_buf);
-        
-        const response_body = try reader.allocRemaining(self.allocator, std.io.Limit.limited(self.max_response_size));
-        defer self.allocator.free(response_body);
-
-        // Parse response JSON into Anthropic.Response
-        // Use .alloc_always to force copying all strings, so they survive after response_body is freed
-        return std.json.parseFromSlice(
-            Anthropic.Response,
-            self.allocator,
-            response_body,
-            .{ .allocate = .alloc_always },
-        ) catch |err| {
-            log.err("Failed to parse Anthropic response: {}", .{err});
-            return error.InvalidResponse;
+        // Make POST request with JSON body and parse response
+        return self.client.postJson(Anthropic.Response, url, headers, request) catch |err| {
+            log.err("Failed to send Anthropic request: {}", .{err});
+            return err;
         };
     }
 
-    fn handleErrorResponse(self: *AnthropicClient, status: std.http.Status) error{AuthenticationError, RateLimitError, ServerError, InvalidStatusCode} {
+    fn handleErrorResponse(self: *AnthropicClient, status: std.http.Status) error{ AuthenticationError, RateLimitError, ServerError, InvalidStatusCode } {
         _ = self;
         return switch (status) {
             .unauthorized => error.AuthenticationError,
@@ -263,79 +172,32 @@ pub const AnthropicClient = struct {
         self: *AnthropicClient,
         request: Anthropic.Request,
     ) !*StreamingResult {
-        // Serialize request to JSON
-        var request_body = std.ArrayList(u8){};
-        defer request_body.deinit(self.allocator);
-
-        try request_body.writer(self.allocator).print("{f}", .{std.json.fmt(request, .{})});
-
-        // Build URL from config
+        // Build URL
         var url_buffer: [512]u8 = undefined;
         const url = try std.fmt.bufPrint(&url_buffer, "{s}/v1/messages", .{self.api_url});
-        const uri = try std.Uri.parse(url);
 
-        // Build extra headers
-        const extra_headers = [_]std.http.Header{
-            .{ .name = "x-api-key", .value = self.api_key },
-            .{ .name = "anthropic-version", .value = self.api_version },
-        };
+        // Build headers
+        var headers_buf: [2]std.http.Header = undefined;
+        const headers = self.buildHeaders(&headers_buf);
 
-        // Standard headers
-        var headers = std.http.Client.Request.Headers{};
-        headers.content_type = .{ .override = "application/json" };
-
-        // Make request
-        var req = try self.client.request(.POST, uri, .{
-            .headers = headers,
-            .extra_headers = &extra_headers,
-        });
-        errdefer req.deinit();
-
-        // Apply socket timeout
-        if (req.connection) |conn| {
-            setSocketTimeout(conn.stream_reader.getStream().handle, self.timeout_ms);
-        }
-
-        // Set content length and send
-        req.transfer_encoding = .{ .content_length = request_body.items.len };
-        var buf: [4096]u8 = undefined;
-        var body_writer = try req.sendBodyUnflushed(&buf);
-        try body_writer.writer.writeAll(request_body.items);
-        try body_writer.end();
-        try req.connection.?.flush();
-
-        // Allocate result on heap to ensure stable pointers for reader
-        var result = try self.allocator.create(StreamingResult);
-        errdefer self.allocator.destroy(result);
-
-        result.request = req;
-
-        // Wait for response headers
-        const redirect_buffer: [0]u8 = undefined;
-        result.response = try result.request.receiveHead(&redirect_buffer);
+        // Make streaming POST request
+        const result = try self.client.postStreaming(SSEIterator, url, headers, request);
 
         // Check status code
         if (result.response.head.status != .ok) {
-            self.allocator.destroy(result);
+            self.client.freeStreamingResult(SSEIterator, result);
             return self.handleErrorResponse(result.response.head.status);
         }
-
-        // Get reader for streaming - reads from socket on-demand
-        const reader = result.response.reader(&result.transfer_buffer);
-
-        result.iterator = StreamIterator.init(reader);
 
         return result;
     }
 
     /// Free a streaming result allocated by sendStreamingRequest
     pub fn freeStreamingResult(self: *AnthropicClient, result: *StreamingResult) void {
-        result.deinit();
-        self.allocator.destroy(result);
+        self.client.freeStreamingResult(SSEIterator, result);
     }
 };
 
 // ============================================================================
 // Unit Tests
 // ============================================================================
-
