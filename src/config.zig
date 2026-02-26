@@ -1,6 +1,7 @@
 const std = @import("std");
 const provider_mod = @import("provider.zig");
 const log_mod = @import("log.zig");
+const LogOutput = log_mod.LogOutput;
 
 /// Provider-specific configuration
 /// Wraps a parsed JSON object and provides type-safe accessors
@@ -74,6 +75,7 @@ pub const LogConfig = struct {
     max_files: i64 = 5, // keep this many rotated files
     buffer_size: i64 = 100, // number of messages to buffer before flush
     flush_interval_ms: i64 = 1000, // auto-flush interval in milliseconds
+    output: LogOutput = .stderr, // output destination: "file" or "stderr"
 };
 
 /// Main application configuration
@@ -212,6 +214,15 @@ pub const Config = struct {
                 if (log_obj.get("flush_interval_ms")) |v| {
                     if (v == .integer) {
                         log_config.flush_interval_ms = v.integer;
+                    }
+                }
+                if (log_obj.get("output")) |v| {
+                    if (v == .string) {
+                        if (std.mem.eql(u8, v.string, "stderr")) {
+                            log_config.output = .stderr;
+                        } else {
+                            log_config.output = .file;
+                        }
                     }
                 }
             }

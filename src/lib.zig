@@ -45,6 +45,7 @@ fn serverThreadFn(s: *State) void {
     log.init(.{
         .level = s.cfg.log.level,
         .path = s.cfg.log.path,
+        .output = s.cfg.log.output,
     }, allocator) catch |err| {
         log.err("Failed to init logging: {}", .{err});
         return;
