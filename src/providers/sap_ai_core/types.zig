@@ -134,14 +134,14 @@ pub const IntermediateResults = struct {
 pub const Response = struct {
     request_id: []const u8,
     intermediate_results: ?IntermediateResults = null,
-    final_result: std.json.Value, // OpenAI.Response format
+    final_result: OpenAI.Response,
 };
 
 /// SAP AI Core Streaming Chunk
 pub const StreamChunk = struct {
     request_id: []const u8,
     intermediate_results: ?IntermediateResults = null,
-    final_result: std.json.Value, // OpenAI.StreamChunk format
+    final_result: OpenAI.StreamChunk,
 };
 
 // ============================================================================

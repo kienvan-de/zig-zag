@@ -650,6 +650,7 @@ pub const Request = struct {
 pub const Delta = struct {
     role: ?Role = null,
     content: ?[]const u8 = null,
+    refusal: ?[]const u8 = null,
     tool_calls: ?[]const DeltaToolCall = null,
     function_call: ?FunctionCall = null,
 
@@ -662,6 +663,10 @@ pub const Delta = struct {
         if (self.content) |c| {
             try jw.objectField("content");
             try jw.write(c);
+        }
+        if (self.refusal) |r| {
+            try jw.objectField("refusal");
+            try jw.write(r);
         }
         if (self.tool_calls) |tc| {
             try jw.objectField("tool_calls");
@@ -684,6 +689,7 @@ pub const StreamChoice = struct {
     index: u32,
     delta: Delta,
     finish_reason: ?[]const u8,
+    logprobs: ?std.json.Value = null,
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         try jw.beginObject();
@@ -691,6 +697,10 @@ pub const StreamChoice = struct {
         try jw.write(self.index);
         try jw.objectField("delta");
         try self.delta.jsonStringify(jw);
+        if (self.logprobs) |lp| {
+            try jw.objectField("logprobs");
+            try jw.write(lp);
+        }
         try jw.objectField("finish_reason");
         try jw.write(self.finish_reason);
         try jw.endObject();
@@ -705,6 +715,8 @@ pub const StreamChunk = struct {
     model: []const u8,
     choices: []const StreamChoice,
     usage: ?Usage = null,
+    system_fingerprint: ?[]const u8 = null,
+    service_tier: ?[]const u8 = null,
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         try jw.beginObject();
@@ -733,6 +745,14 @@ pub const StreamChunk = struct {
             try jw.write(u.total_tokens);
             try jw.endObject();
         }
+        if (self.system_fingerprint) |sf| {
+            try jw.objectField("system_fingerprint");
+            try jw.write(sf);
+        }
+        if (self.service_tier) |st| {
+            try jw.objectField("service_tier");
+            try jw.write(st);
+        }
         try jw.endObject();
     }
 };
@@ -741,8 +761,11 @@ pub const StreamChunk = struct {
 pub const ResponseMessage = struct {
     role: Role,
     content: ?[]const u8,
+    refusal: ?[]const u8 = null,
     tool_calls: ?[]const ToolCall = null,
     function_call: ?FunctionCall = null,
+    annotations: ?std.json.Value = null,
+    audio: ?std.json.Value = null,
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         try jw.beginObject();
@@ -755,6 +778,11 @@ pub const ResponseMessage = struct {
             try jw.write(c);
         }
         
+        if (self.refusal) |r| {
+            try jw.objectField("refusal");
+            try jw.write(r);
+        }
+        
         if (self.tool_calls) |tc| {
             try jw.objectField("tool_calls");
             try jw.write(tc);
@@ -763,6 +791,16 @@ pub const ResponseMessage = struct {
         if (self.function_call) |fc| {
             try jw.objectField("function_call");
             try jw.write(fc);
+        }
+        
+        if (self.annotations) |a| {
+            try jw.objectField("annotations");
+            try jw.write(a);
+        }
+        
+        if (self.audio) |au| {
+            try jw.objectField("audio");
+            try jw.write(au);
         }
         
         try jw.endObject();
@@ -811,7 +849,7 @@ pub const Response = struct {
     created: i64,
     model: []const u8,
     choices: []const ResponseChoice,
-    usage: Usage,
+    usage: ?Usage = null,
     system_fingerprint: ?[]const u8 = null,
     service_tier: ?[]const u8 = null,
 
@@ -837,8 +875,10 @@ pub const Response = struct {
         }
         try jw.endArray();
         
-        try jw.objectField("usage");
-        try jw.write(self.usage);
+        if (self.usage) |u| {
+            try jw.objectField("usage");
+            try jw.write(u);
+        }
         
         if (self.system_fingerprint) |sf| {
             try jw.objectField("system_fingerprint");
