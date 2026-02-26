@@ -27,15 +27,15 @@ pub fn setSocketTimeout(handle: std.posix.socket_t, timeout_ms: u64) void {
 pub const SSEIterator = struct {
     reader: *std.Io.Reader,
     done: bool,
-    line_delimiter: u8,
+    delimiter: u8,
     allocator: std.mem.Allocator,
     line_buffer: std.ArrayList(u8),
 
-    pub fn init(reader: *std.Io.Reader, line_delimiter: u8, allocator: std.mem.Allocator) SSEIterator {
+    pub fn init(reader: *std.Io.Reader, delimiter: u8, allocator: std.mem.Allocator) SSEIterator {
         return .{
             .reader = reader,
             .done = false,
-            .line_delimiter = line_delimiter,
+            .delimiter = delimiter,
             .allocator = allocator,
             .line_buffer = std.ArrayList(u8){},
         };
@@ -58,7 +58,7 @@ pub const SSEIterator = struct {
 
             // Read one line using streamDelimiterEnding (no size limit)
             var writer: std.Io.Writer.Allocating = .fromArrayList(self.allocator, &self.line_buffer);
-            _ = self.reader.streamDelimiterEnding(&writer.writer, self.line_delimiter) catch |err| {
+            _ = self.reader.streamDelimiterEnding(&writer.writer, self.delimiter) catch |err| {
                 writer.deinit();
                 self.done = true;
                 return err;
@@ -77,7 +77,7 @@ pub const SSEIterator = struct {
                     return null;
                 }
                 // Consume the delimiter (streamDelimiterEnding leaves buffer starting with delimiter)
-                _ = self.reader.takeDelimiterInclusive(self.line_delimiter) catch {
+                _ = self.reader.takeDelimiterInclusive(self.delimiter) catch {
                     self.line_buffer = writer.toArrayList();
                     self.done = true;
                     return null;
@@ -149,11 +149,11 @@ pub const HttpClient = struct {
     client: std.http.Client,
     timeout_ms: u64,
     max_response_size: usize,
-    line_delimiter: u8,
+    delimiter: u8,
 
     const DEFAULT_TIMEOUT_MS: u64 = 60000;
     const DEFAULT_MAX_RESPONSE_SIZE: usize = 10 * 1024 * 1024; // 10MB
-    const DEFAULT_LINE_DELIMITER: u8 = '\n';
+    const DEFAULT_DELIMITER: u8 = '\n';
 
     pub fn init(allocator: std.mem.Allocator) HttpClient {
         return .{
@@ -161,7 +161,7 @@ pub const HttpClient = struct {
             .client = std.http.Client{ .allocator = allocator },
             .timeout_ms = DEFAULT_TIMEOUT_MS,
             .max_response_size = DEFAULT_MAX_RESPONSE_SIZE,
-            .line_delimiter = DEFAULT_LINE_DELIMITER,
+            .delimiter = DEFAULT_DELIMITER,
         };
     }
 
@@ -169,14 +169,14 @@ pub const HttpClient = struct {
         allocator: std.mem.Allocator,
         timeout_ms: u64,
         max_response_size: usize,
-        line_delimiter: ?u8,
+        delimiter: ?u8,
     ) HttpClient {
         return .{
             .allocator = allocator,
             .client = std.http.Client{ .allocator = allocator },
             .timeout_ms = timeout_ms,
             .max_response_size = max_response_size,
-            .line_delimiter = line_delimiter orelse DEFAULT_LINE_DELIMITER,
+            .delimiter = delimiter orelse DEFAULT_DELIMITER,
         };
     }
 
@@ -386,7 +386,7 @@ pub const HttpClient = struct {
 
         // Get reader for streaming - reads from socket on-demand
         const reader = result.response.reader(&result.transfer_buffer);
-        result.iterator = Iterator.init(reader, self.line_delimiter, self.allocator);
+        result.iterator = Iterator.init(reader, self.delimiter, self.allocator);
 
         return result;
     }
