@@ -2,25 +2,14 @@ const std = @import("std");
 const SapAiCore = @import("types.zig");
 const config_mod = @import("../../config.zig");
 const token_cache = @import("../../cache/token_cache.zig");
-const common = @import("../common.zig");
+const http_client = @import("../../client.zig");
 const log = @import("../../log.zig");
 
-const setSocketTimeout = common.setSocketTimeout;
-
-/// Iterator for SAP AI Core SSE streaming responses - reads from socket on-demand
-pub const StreamIterator = common.StreamIterator;
+/// Iterator for SSE streaming responses
+pub const SSEIterator = http_client.SSEIterator;
 
 /// Result of starting a streaming request
-pub const StreamingResult = struct {
-    iterator: StreamIterator,
-    request: std.http.Client.Request,
-    response: std.http.Client.Response,
-    transfer_buffer: [8192]u8,
-
-    pub fn deinit(self: *StreamingResult) void {
-        self.request.deinit();
-    }
-};
+pub const StreamingResult = http_client.SSEResult;
 
 /// OAuth token response
 const OAuthTokenResponse = struct {
@@ -28,9 +17,6 @@ const OAuthTokenResponse = struct {
     token_type: []const u8,
     expires_in: i64,
 };
-
-/// Cached OAuth token
-
 
 pub const SapAiCoreClient = struct {
     allocator: std.mem.Allocator,
@@ -40,18 +26,16 @@ pub const SapAiCoreClient = struct {
     oauth_domain: []const u8,
     oauth_client_id: []const u8,
     oauth_client_secret: []const u8,
-    timeout_ms: u64,
-    max_response_size: usize,
     retry_count: u32,
     retry_delay_ms: u64,
     config: *const config_mod.ProviderConfig,
-    client: std.http.Client,
+    client: http_client.HttpClient,
 
-    const DEFAULT_TIMEOUT_MS = 30000;
+    const DEFAULT_TIMEOUT_MS = 60000;
     const DEFAULT_MAX_RESPONSE_SIZE_MB = 10;
     const DEFAULT_RETRY_COUNT = 0;
     const DEFAULT_RETRY_DELAY_MS = 1000;
-    const TOKEN_EXPIRY_BUFFER_SECONDS: i64 = 60; // Refresh token 60 seconds before expiry
+    const TOKEN_EXPIRY_BUFFER_SECONDS: i64 = 60;
 
     pub fn init(allocator: std.mem.Allocator, provider_config: *const config_mod.ProviderConfig) !SapAiCoreClient {
         const api_domain = provider_config.getString("api_domain") orelse {
@@ -97,76 +81,61 @@ pub const SapAiCoreClient = struct {
             .oauth_domain = oauth_domain,
             .oauth_client_id = oauth_client_id,
             .oauth_client_secret = oauth_client_secret,
-            .timeout_ms = @intCast(timeout_ms),
-            .max_response_size = @intCast(max_response_size_mb * 1024 * 1024),
             .retry_count = @intCast(retry_count),
             .retry_delay_ms = @intCast(retry_delay_ms),
             .config = provider_config,
-            .client = std.http.Client{ .allocator = allocator },
+            .client = http_client.HttpClient.initWithOptions(
+                allocator,
+                @intCast(timeout_ms),
+                @intCast(max_response_size_mb * 1024 * 1024),
+                null,
+            ),
         };
     }
 
     pub fn deinit(self: *SapAiCoreClient) void {
-        // Token is managed by global cache, no need to free here
         self.client.deinit();
+    }
+
+    /// Build headers for SAP AI Core API (requires access token)
+    fn buildHeaders(self: *SapAiCoreClient, auth_buffer: []u8, headers_buf: []std.http.Header, access_token: []const u8) ![]std.http.Header {
+        const auth_value = try std.fmt.bufPrint(auth_buffer, "Bearer {s}", .{access_token});
+
+        headers_buf[0] = .{ .name = "Authorization", .value = auth_value };
+        headers_buf[1] = .{ .name = "ai-resource-group", .value = self.resource_group };
+
+        return headers_buf[0..2];
     }
 
     /// Fetch list of available models from SAP AI Core
     pub fn listModels(self: *SapAiCoreClient) !std.json.Parsed(SapAiCore.SapModelsResponse) {
-        // Get access token (caller owns this memory)
+        // Get access token
         const access_token = try self.getAccessToken();
         defer self.allocator.free(access_token);
 
-        // Build URL: {api_domain}/v2/lm/scenarios/foundation-models/models
+        // Build URL
         var url_buffer: [512]u8 = undefined;
         const url = try std.fmt.bufPrint(&url_buffer, "{s}/v2/lm/scenarios/foundation-models/models", .{self.api_domain});
-        const uri = try std.Uri.parse(url);
 
-        // Build Authorization header (JWT tokens can be 7000+ chars)
+        // Build headers (JWT tokens can be 7000+ chars)
         var auth_buffer: [8192]u8 = undefined;
-        const auth_value = try std.fmt.bufPrint(&auth_buffer, "Bearer {s}", .{access_token});
-
-        // Build headers
-        const extra_headers = [_]std.http.Header{
-            .{ .name = "Authorization", .value = auth_value },
-            .{ .name = "AI-Resource-Group", .value = self.resource_group },
-        };
+        var headers_buf: [2]std.http.Header = undefined;
+        const headers = try self.buildHeaders(&auth_buffer, &headers_buf, access_token);
 
         // Make GET request
-        var req = try self.client.request(.GET, uri, .{
-            .extra_headers = &extra_headers,
-        });
-        defer req.deinit();
-
-        // Apply socket timeout
-        if (req.connection) |conn| {
-            setSocketTimeout(conn.stream_reader.getStream().handle, self.timeout_ms);
-        }
-
-        // Send request (no body for GET)
-        try req.sendBodiless();
-
-        // Wait for response
-        const redirect_buffer: [0]u8 = undefined;
-        var response = try req.receiveHead(&redirect_buffer);
+        var response = try self.client.get(url, headers);
+        defer response.deinit();
 
         // Check status code
-        if (response.head.status != .ok) {
-            return self.handleErrorResponse(response.head.status);
+        if (response.status != .ok) {
+            return self.handleErrorResponse(response.status);
         }
-
-        // Read response body
-        var transfer_buf: [4096]u8 = undefined;
-        const reader = response.reader(&transfer_buf);
-
-        const response_body = try reader.allocRemaining(self.allocator, std.io.Limit.limited(self.max_response_size));
-        defer self.allocator.free(response_body);
 
         // Parse response
         return std.json.parseFromSlice(
             SapAiCore.SapModelsResponse,
             self.allocator,
-            response_body,
+            response.body,
             .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
         ) catch |err| {
             log.err("Failed to parse SAP AI Core models response: {}", .{err});
@@ -177,14 +146,12 @@ pub const SapAiCoreClient = struct {
     /// Get a valid OAuth access token, using global cache
     /// Returns owned memory that the caller must free
     fn getAccessToken(self: *SapAiCoreClient) ![]const u8 {
-        // Check global cache first (without lock)
-        // token_cache.get returns a copy to avoid use-after-free
+        // Check global cache first
         if (token_cache.get(self.allocator, self.oauth_domain, TOKEN_EXPIRY_BUFFER_SECONDS)) |cached_token| {
             return cached_token;
         }
 
         // Acquire fetch lock to prevent thundering herd
-        // Returns the mutex pointer to ensure we unlock the exact same mutex
         const fetch_mutex = try token_cache.acquireFetchLock(self.oauth_domain);
         defer token_cache.releaseFetchLock(fetch_mutex);
 
@@ -211,7 +178,6 @@ pub const SapAiCoreClient = struct {
         // Build OAuth URL
         var url_buffer: [512]u8 = undefined;
         const url = try std.fmt.bufPrint(&url_buffer, "{s}/oauth/token", .{self.oauth_domain});
-        const uri = try std.Uri.parse(url);
 
         // Build Basic Auth header (client_id:client_secret base64 encoded)
         var credentials_buffer: [1024]u8 = undefined;
@@ -232,50 +198,23 @@ pub const SapAiCoreClient = struct {
         // Build headers
         const extra_headers = [_]std.http.Header{
             .{ .name = "Authorization", .value = auth_value },
+            .{ .name = "Content-Type", .value = "application/x-www-form-urlencoded" },
         };
 
-        var headers = std.http.Client.Request.Headers{};
-        headers.content_type = .{ .override = "application/x-www-form-urlencoded" };
+        // Make POST request
+        var response = try self.client.post(url, &extra_headers, request_body);
+        defer response.deinit();
 
-        // Make request
-        var req = try self.client.request(.POST, uri, .{
-            .headers = headers,
-            .extra_headers = &extra_headers,
-        });
-        defer req.deinit();
-
-        // Apply socket timeout
-        if (req.connection) |conn| {
-            setSocketTimeout(conn.stream_reader.getStream().handle, self.timeout_ms);
-        }
-
-        req.transfer_encoding = .{ .content_length = request_body.len };
-        var buf: [4096]u8 = undefined;
-        var body_writer = try req.sendBodyUnflushed(&buf);
-        try body_writer.writer.writeAll(request_body);
-        try body_writer.end();
-        try req.connection.?.flush();
-
-        // Wait for response
-        const redirect_buffer: [0]u8 = undefined;
-        var response = try req.receiveHead(&redirect_buffer);
-
-        if (response.head.status != .ok) {
-            log.err("OAuth token request failed with status: {}", .{response.head.status});
+        if (response.status != .ok) {
+            log.err("OAuth token request failed with status: {}", .{response.status});
             return error.OAuthTokenError;
         }
-
-        // Read response body
-        var transfer_buf: [4096]u8 = undefined;
-        const reader = response.reader(&transfer_buf);
-        const response_body = try reader.allocRemaining(self.allocator, std.io.Limit.limited(self.max_response_size));
-        defer self.allocator.free(response_body);
 
         // Parse response
         const parsed = std.json.parseFromSlice(
             OAuthTokenResponse,
             self.allocator,
-            response_body,
+            response.body,
             .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
         ) catch |err| {
             log.err("Failed to parse OAuth response: {}", .{err});
@@ -342,73 +281,38 @@ pub const SapAiCoreClient = struct {
         self: *SapAiCoreClient,
         request: SapAiCore.Request,
     ) !std.json.Parsed(SapAiCore.Response) {
-        // Get access token (caller owns this memory)
+        // Get access token
         const access_token = try self.getAccessToken();
         defer self.allocator.free(access_token);
-
-        // Serialize request to JSON
-        var request_body = std.ArrayList(u8){};
-        defer request_body.deinit(self.allocator);
-
-        try request_body.writer(self.allocator).print("{f}", .{std.json.fmt(request, .{})});
 
         // Build URL
         var url_buffer: [512]u8 = undefined;
         const url = try self.buildApiUrl(&url_buffer);
-        const uri = try std.Uri.parse(url);
 
-        // Build Authorization header (JWT tokens can be 7000+ chars)
+        // Build headers
         var auth_buffer: [8192]u8 = undefined;
-        const auth_value = try std.fmt.bufPrint(&auth_buffer, "Bearer {s}", .{access_token});
+        var headers_buf: [2]std.http.Header = undefined;
+        const headers = try self.buildHeaders(&auth_buffer, &headers_buf, access_token);
 
-        // Build extra headers
-        const extra_headers = [_]std.http.Header{
-            .{ .name = "Authorization", .value = auth_value },
-            .{ .name = "ai-resource-group", .value = self.resource_group },
-        };
+        // Serialize request to JSON
+        var request_body = std.ArrayList(u8){};
+        defer request_body.deinit(self.allocator);
+        try request_body.writer(self.allocator).print("{f}", .{std.json.fmt(request, .{})});
 
-        // Standard headers
-        var headers = std.http.Client.Request.Headers{};
-        headers.content_type = .{ .override = "application/json" };
+        // Make POST request
+        var response = try self.client.post(url, headers, request_body.items);
+        defer response.deinit();
 
-        // Make request
-        var req = try self.client.request(.POST, uri, .{
-            .headers = headers,
-            .extra_headers = &extra_headers,
-        });
-        defer req.deinit();
-
-        // Apply socket timeout
-        if (req.connection) |conn| {
-            setSocketTimeout(conn.stream_reader.getStream().handle, self.timeout_ms);
+        // Check status code
+        if (response.status != .ok) {
+            return self.handleErrorResponse(response.status);
         }
 
-        // Set content length and send
-        req.transfer_encoding = .{ .content_length = request_body.items.len };
-        var buf: [4096]u8 = undefined;
-        var body_writer = try req.sendBodyUnflushed(&buf);
-        try body_writer.writer.writeAll(request_body.items);
-        try body_writer.end();
-        try req.connection.?.flush();
-
-        // Wait for response
-        const redirect_buffer: [0]u8 = undefined;
-        var response = try req.receiveHead(&redirect_buffer);
-
-        if (response.head.status != .ok) {
-            return self.handleErrorResponse(response.head.status);
-        }
-
-        // Read response body
-        var transfer_buf: [4096]u8 = undefined;
-        const reader = response.reader(&transfer_buf);
-        const response_body = try reader.allocRemaining(self.allocator, std.io.Limit.limited(self.max_response_size));
-        defer self.allocator.free(response_body);
-
+        // Parse response JSON
         return std.json.parseFromSlice(
             SapAiCore.Response,
             self.allocator,
-            response_body,
+            response.body,
             .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
         ) catch |err| {
             log.err("Failed to parse SAP AI Core response: {}", .{err});
@@ -427,86 +331,37 @@ pub const SapAiCoreClient = struct {
     }
 
     /// Send a streaming request to SAP AI Core Orchestration API
-    /// Reads from socket on-demand - does not buffer full response
     pub fn sendStreamingRequest(
         self: *SapAiCoreClient,
         request: SapAiCore.Request,
     ) !*StreamingResult {
-        // Get access token (caller owns this memory)
+        // Get access token
         const access_token = try self.getAccessToken();
         defer self.allocator.free(access_token);
-
-        // Serialize request to JSON
-        var request_body = std.ArrayList(u8){};
-        defer request_body.deinit(self.allocator);
-
-        try request_body.writer(self.allocator).print("{f}", .{std.json.fmt(request, .{})});
 
         // Build URL
         var url_buffer: [512]u8 = undefined;
         const url = try self.buildApiUrl(&url_buffer);
-        const uri = try std.Uri.parse(url);
 
-        // Build Authorization header (JWT tokens can be 7000+ chars)
+        // Build headers
         var auth_buffer: [8192]u8 = undefined;
-        const auth_value = try std.fmt.bufPrint(&auth_buffer, "Bearer {s}", .{access_token});
+        var headers_buf: [2]std.http.Header = undefined;
+        const headers = try self.buildHeaders(&auth_buffer, &headers_buf, access_token);
 
-        // Build extra headers
-        const extra_headers = [_]std.http.Header{
-            .{ .name = "Authorization", .value = auth_value },
-            .{ .name = "ai-resource-group", .value = self.resource_group },
-        };
-
-        // Standard headers
-        var headers = std.http.Client.Request.Headers{};
-        headers.content_type = .{ .override = "application/json" };
-
-        // Make request
-        var req = try self.client.request(.POST, uri, .{
-            .headers = headers,
-            .extra_headers = &extra_headers,
-        });
-        errdefer req.deinit();
-
-        // Apply socket timeout
-        if (req.connection) |conn| {
-            setSocketTimeout(conn.stream_reader.getStream().handle, self.timeout_ms);
-        }
-
-        req.transfer_encoding = .{ .content_length = request_body.items.len };
-        var buf: [4096]u8 = undefined;
-        var body_writer = try req.sendBodyUnflushed(&buf);
-        try body_writer.writer.writeAll(request_body.items);
-        try body_writer.end();
-        try req.connection.?.flush();
-
-        // Allocate result on heap to ensure stable pointers for reader
-        var result = try self.allocator.create(StreamingResult);
-        errdefer self.allocator.destroy(result);
-
-        result.request = req;
-
-        // Wait for response headers
-        const redirect_buffer: [0]u8 = undefined;
-        result.response = try result.request.receiveHead(&redirect_buffer);
+        // Make streaming POST request
+        const result = try self.client.postStreaming(SSEIterator, url, headers, request);
 
         // Check status code
         if (result.response.head.status != .ok) {
-            self.allocator.destroy(result);
+            self.client.freeStreamingResult(SSEIterator, result);
             return self.handleErrorResponse(result.response.head.status);
         }
-
-        // Get reader for streaming - reads from socket on-demand
-        const reader = result.response.reader(&result.transfer_buffer);
-
-        result.iterator = StreamIterator.init(reader);
 
         return result;
     }
 
     /// Free a streaming result allocated by sendStreamingRequest
     pub fn freeStreamingResult(self: *SapAiCoreClient, result: *StreamingResult) void {
-        result.deinit();
-        self.allocator.destroy(result);
+        self.client.freeStreamingResult(SSEIterator, result);
     }
 };
