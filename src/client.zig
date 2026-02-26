@@ -59,26 +59,43 @@ pub const SSEIterator = struct {
             // Read one line using streamDelimiterEnding (no size limit)
             var writer: std.Io.Writer.Allocating = .fromArrayList(self.allocator, &self.line_buffer);
             _ = self.reader.streamDelimiterEnding(&writer.writer, self.line_delimiter) catch |err| {
+                writer.deinit();
                 self.done = true;
                 return err;
             };
 
+            // Get written data from the writer (fromArrayList takes ownership)
+            const written = writer.written();
+
             // Check if we got any data
-            if (self.line_buffer.items.len == 0) {
-                // Check if stream ended
+            if (written.len == 0) {
+                // Check if stream ended (reader buffer is empty)
                 if (self.reader.end == self.reader.seek) {
+                    // Transfer ownership back to line_buffer before returning
+                    self.line_buffer = writer.toArrayList();
                     self.done = true;
                     return null;
                 }
+                // Consume the delimiter (streamDelimiterEnding leaves buffer starting with delimiter)
+                _ = self.reader.takeDelimiterInclusive(self.line_delimiter) catch {
+                    self.line_buffer = writer.toArrayList();
+                    self.done = true;
+                    return null;
+                };
+                // Transfer ownership back and continue
+                self.line_buffer = writer.toArrayList();
                 continue;
             }
 
             // Trim carriage return if present
-            var line = self.line_buffer.items;
+            var line = written;
             if (line.len > 0 and line[line.len - 1] == '\r') {
                 line = line[0 .. line.len - 1];
             }
-            if (line.len == 0) continue;
+            if (line.len == 0) {
+                self.line_buffer = writer.toArrayList();
+                continue;
+            }
 
             // Only return lines with "data: " prefix
             if (std.mem.startsWith(u8, line, "data: ")) {
@@ -87,8 +104,12 @@ pub const SSEIterator = struct {
                 if (std.mem.eql(u8, data, "[DONE]")) {
                     self.done = true;
                 }
+                // Transfer ownership back to line_buffer and return
+                self.line_buffer = writer.toArrayList();
                 return line;
             }
+            // Transfer ownership back and continue
+            self.line_buffer = writer.toArrayList();
         }
     }
 };
