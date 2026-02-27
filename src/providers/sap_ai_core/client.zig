@@ -355,6 +355,8 @@ pub const SapAiCoreClient = struct {
         var headers_buf: [3]std.http.Header = undefined;
         const headers = try self.buildHeaders(&auth_buffer, &headers_buf, access_token);
 
+
+
         // Make streaming POST request
         const result = try self.client.postStreaming(SSEIterator, url, headers, request);
 

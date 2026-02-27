@@ -246,7 +246,7 @@ pub const MessageContent = union(enum) {
 /// Represents a message in the conversation
 pub const Message = struct {
     role: Role,
-    content: ?MessageContent = null,
+    content: ?MessageContent = .{ .text = "" },
     name: ?[]const u8 = null,
     tool_calls: ?[]const ToolCall = null,
     tool_call_id: ?[]const u8 = null,
@@ -271,7 +271,7 @@ pub const Message = struct {
                 },
             }
         } else {
-            try jw.write(null);
+            try jw.write("");
         }
 
         if (self.name) |n| {
