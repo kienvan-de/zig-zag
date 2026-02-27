@@ -11,6 +11,7 @@ struct ServerStats {
     var uptimeSeconds: UInt64 = 0
     var memoryBytes: UInt64 = 0
     var cpuPercent: Float = 0.0
+    var cpuTimeUs: UInt64 = 0
     var networkRxBytes: UInt64 = 0
     var networkTxBytes: UInt64 = 0
     
@@ -31,6 +32,7 @@ struct ServerStats {
         self.uptimeSeconds = cStats.uptime_seconds
         self.memoryBytes = cStats.memory_bytes
         self.cpuPercent = cStats.cpu_percent
+        self.cpuTimeUs = cStats.cpu_time_us
         self.networkRxBytes = cStats.network_rx_bytes
         self.networkTxBytes = cStats.network_tx_bytes
         self.llmProviderCount = cStats.llm_provider_count
