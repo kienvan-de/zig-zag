@@ -135,7 +135,6 @@ open ui/macos/zig-zag/zig-zag.xcodeproj
 |----------|--------|-------------|
 | `/v1/chat/completions` | POST | Chat completion (streaming & non-streaming) |
 | `/v1/models` | GET | List available models from all providers |
-| `/health` | GET | Health check |
 
 ## Configuration
 
@@ -226,14 +225,27 @@ groq/llama-3.1-70b-versatile
 
 ## Development
 
+### Build
+
+```bash
+# Build debug executable
+zig build exec
+
+# Build release executable
+zig build exec:release
+
+# Build debug library (for macOS app development)
+zig build lib
+
+# Build release library (for macOS app distribution)
+zig build lib:release
+```
+
 ### Run Tests
 
 ```bash
-# Unit tests
-zig build test
-
 # Integration tests
-zig build run:integration
+zig build test
 ```
 
 ### Project Structure
