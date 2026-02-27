@@ -3,25 +3,36 @@ import Observation
 
 @Observable
 class ServerState {
-    var running: Bool = false
-    var port: UInt16 = 0
-
-    init() {
-        refresh()
-    }
-
-    func refresh() {
-        running = isServerRunning()
-        port = getServerPort()
-    }
-
+    var stats: ServerStats = ServerStats()
+    
+    private var statsTimer: Timer?
+    
     func start() {
-        _ = startServer()
-        refresh()
+        if startServer() {
+            refresh()
+            startStatsPolling()
+        }
     }
-
+    
     func stop() {
+        stopStatsPolling()
         stopServer()
-        refresh()
+        stats = ServerStats()
+    }
+    
+    func refresh() {
+        let cStats = getServerStats()
+        stats = ServerStats(cStats)
+    }
+    
+    private func startStatsPolling() {
+        statsTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            self?.refresh()
+        }
+    }
+    
+    private func stopStatsPolling() {
+        statsTimer?.invalidate()
+        statsTimer = nil
     }
 }

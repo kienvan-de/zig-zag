@@ -4,6 +4,7 @@ const server = @import("server.zig");
 const log = @import("log.zig");
 const token_cache = @import("cache/token_cache.zig");
 const worker_pool = @import("worker_pool.zig");
+const metrics = @import("metrics.zig");
 
 // ============================================================================
 // Global state
@@ -15,10 +16,27 @@ const State = struct {
     cfg: config.Config,
     thread: std.Thread,
     port: u16,
+    start_timestamp: i64,
 };
 
 var state: ?*State = null;
 var state_mutex: std.Thread.Mutex = .{};
+
+// ============================================================================
+// C-compatible types (must match include/zig-zag.h)
+// ============================================================================
+
+pub const CServerStats = extern struct {
+    running: bool,
+    port: u16,
+    uptime_seconds: u64,
+    memory_bytes: u64,
+    cpu_percent: f32,
+    network_rx_bytes: u64,
+    network_tx_bytes: u64,
+    llm_provider_count: u32,
+    total_tokens: u64,
+};
 
 // ============================================================================
 // Server thread entry point
@@ -59,6 +77,24 @@ fn serverThreadFn(s: *State) void {
 }
 
 // ============================================================================
+// Helper functions
+// ============================================================================
+
+/// Get process RSS (Resident Set Size) memory in bytes using rusage.
+/// Returns 0 on error.
+fn getProcessRss() u64 {
+    var usage: std.posix.rusage = undefined;
+    const result = std.posix.system.getrusage(std.posix.system.rusage.SELF, &usage);
+    if (result != 0) {
+        return 0;
+    }
+    // On macOS, ru_maxrss is in bytes
+    // On Linux, ru_maxrss is in kilobytes (would need * 1024)
+    // We target macOS for now based on project context
+    return @intCast(@max(0, usage.maxrss));
+}
+
+// ============================================================================
 // Public C API
 // ============================================================================
 
@@ -69,6 +105,9 @@ export fn startServer() bool {
     defer state_mutex.unlock();
 
     if (state != null) return false; // already running
+
+    // Reset metrics for fresh start
+    metrics.reset();
 
     // We need a stable allocator before we can allocate State itself.
     // Use the process allocator just for bootstrapping, then switch to GPA.
@@ -95,6 +134,7 @@ export fn startServer() bool {
     errdefer s.cfg.deinit();
 
     s.port = s.cfg.server.port;
+    s.start_timestamp = std.time.timestamp();
 
     // Spawn server thread.
     s.thread = std.Thread.spawn(.{}, serverThreadFn, .{s}) catch |err| {
@@ -118,8 +158,8 @@ export fn stopServer() void {
         state_mutex.unlock();
         return;
     };
-    // Clear state pointer before unlocking so isServerRunning() returns false
-    // immediately while we wait for the thread to join.
+    // Clear state pointer before unlocking so getServerStats() returns
+    // running=false immediately while we wait for the thread to join.
     state = null;
     state_mutex.unlock();
 
@@ -138,16 +178,44 @@ export fn stopServer() void {
     std.heap.page_allocator.destroy(s);
 }
 
-/// Returns true if the server is currently running.
-export fn isServerRunning() bool {
+/// Get current server statistics and metrics.
+/// Returns zeroed struct if server is not running.
+export fn getServerStats() CServerStats {
     state_mutex.lock();
     defer state_mutex.unlock();
-    return state != null;
-}
 
-/// Returns the port the server is listening on, or 0 if not running.
-export fn getServerPort() u16 {
-    state_mutex.lock();
-    defer state_mutex.unlock();
-    return if (state) |s| s.port else 0;
+    const s = state orelse {
+        // Server not running - return zeroed stats
+        return CServerStats{
+            .running = false,
+            .port = 0,
+            .uptime_seconds = 0,
+            .memory_bytes = 0,
+            .cpu_percent = 0.0,
+            .network_rx_bytes = 0,
+            .network_tx_bytes = 0,
+            .llm_provider_count = 0,
+            .total_tokens = 0,
+        };
+    };
+
+    const now = std.time.timestamp();
+    const uptime: u64 = if (now > s.start_timestamp)
+        @intCast(now - s.start_timestamp)
+    else
+        0;
+
+    const metrics_snapshot = metrics.snapshot();
+
+    return CServerStats{
+        .running = true,
+        .port = s.port,
+        .uptime_seconds = uptime,
+        .memory_bytes = getProcessRss(),
+        .cpu_percent = 0.0, // Placeholder - no native Zig function
+        .network_rx_bytes = metrics_snapshot.network_rx_bytes,
+        .network_tx_bytes = metrics_snapshot.network_tx_bytes,
+        .llm_provider_count = @intCast(s.cfg.providers.count()),
+        .total_tokens = metrics_snapshot.total_tokens,
+    };
 }
