@@ -62,7 +62,7 @@ pub const ServerConfig = struct {
     host: []const u8 = "0.0.0.0",
     http_pool_size: ?i64 = null,
     io_pool_size: ?i64 = null,
-    max_header_size: i64 = 8 * 1024, // 8KB default
+    max_header_size: i64 = 32 * 1024, // 32KB default
     max_body_size: i64 = 10 * 1024 * 1024, // 10MB default
     read_timeout_ms: i64 = 30000, // 30 seconds default
 };

@@ -283,11 +283,7 @@ pub const HttpClient = struct {
 
         const uri = try std.Uri.parse(url);
 
-        var headers = std.http.Client.Request.Headers{};
-        headers.content_type = .{ .override = "application/json" };
-
         var req = try self.client.request(.POST, uri, .{
-            .headers = headers,
             .extra_headers = extra_headers,
         });
         defer req.deinit();
@@ -348,11 +344,7 @@ pub const HttpClient = struct {
 
         const uri = try std.Uri.parse(url);
 
-        var headers = std.http.Client.Request.Headers{};
-        headers.content_type = .{ .override = "application/json" };
-
         var req = try self.client.request(.POST, uri, .{
-            .headers = headers,
             .extra_headers = extra_headers,
         });
         errdefer req.deinit();
@@ -379,6 +371,12 @@ pub const HttpClient = struct {
         // Wait for response headers
         const redirect_buffer: [0]u8 = undefined;
         result.response = try result.request.receiveHead(&redirect_buffer);
+
+        // Log request/response details for debugging (only on error to avoid huge logs)
+        if (result.response.head.status != .ok) {
+            log.err("HTTP POST streaming failed | Status: {} | URL: {s}", .{ result.response.head.status, url });
+            log.err("HTTP POST streaming failed | Request body: {s}", .{request_body.items});
+        }
 
         // Get reader for streaming - reads from socket on-demand
         const reader = result.response.reader(&result.transfer_buffer);

@@ -103,8 +103,9 @@ pub const SapAiCoreClient = struct {
 
         headers_buf[0] = .{ .name = "Authorization", .value = auth_value };
         headers_buf[1] = .{ .name = "ai-resource-group", .value = self.resource_group };
+        headers_buf[2] = .{ .name = "Content-Type", .value = "application/json" };
 
-        return headers_buf[0..2];
+        return headers_buf[0..3];
     }
 
     /// Fetch list of available models from SAP AI Core
@@ -119,7 +120,7 @@ pub const SapAiCoreClient = struct {
 
         // Build headers (JWT tokens can be 7000+ chars)
         var auth_buffer: [8192]u8 = undefined;
-        var headers_buf: [2]std.http.Header = undefined;
+        var headers_buf: [3]std.http.Header = undefined;
         const headers = try self.buildHeaders(&auth_buffer, &headers_buf, access_token);
 
         // Make GET request
@@ -291,7 +292,7 @@ pub const SapAiCoreClient = struct {
 
         // Build headers
         var auth_buffer: [8192]u8 = undefined;
-        var headers_buf: [2]std.http.Header = undefined;
+        var headers_buf: [3]std.http.Header = undefined;
         const headers = try self.buildHeaders(&auth_buffer, &headers_buf, access_token);
 
         // Serialize request to JSON
@@ -305,6 +306,7 @@ pub const SapAiCoreClient = struct {
 
         // Check status code
         if (response.status != .ok) {
+            log.err("SAP AI Core request failed. Status: {} | URL: {s} | Request: {s} | Response: {s}", .{ response.status, url, request_body.items, response.body });
             return self.handleErrorResponse(response.status);
         }
 
@@ -350,7 +352,7 @@ pub const SapAiCoreClient = struct {
 
         // Build headers
         var auth_buffer: [8192]u8 = undefined;
-        var headers_buf: [2]std.http.Header = undefined;
+        var headers_buf: [3]std.http.Header = undefined;
         const headers = try self.buildHeaders(&auth_buffer, &headers_buf, access_token);
 
         // Make streaming POST request
@@ -358,12 +360,6 @@ pub const SapAiCoreClient = struct {
 
         // Check status code
         if (result.response.head.status != .ok) {
-            // Log request body on error for debugging
-            var debug_buf = std.ArrayList(u8){};
-            defer debug_buf.deinit(self.allocator);
-            debug_buf.writer(self.allocator).print("{f}", .{std.json.fmt(request, .{})}) catch {};
-            log.err("SAP AI Core request failed. URL: {s} | Body: {s}", .{ url, debug_buf.items });
-
             self.client.freeStreamingResult(SSEIterator, result);
             return self.handleErrorResponse(result.response.head.status);
         }
