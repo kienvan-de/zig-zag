@@ -65,7 +65,8 @@ pub const AnthropicClient = struct {
     fn buildHeaders(self: *AnthropicClient, headers_buf: []std.http.Header) []std.http.Header {
         headers_buf[0] = .{ .name = "x-api-key", .value = self.api_key };
         headers_buf[1] = .{ .name = "anthropic-version", .value = self.api_version };
-        return headers_buf[0..2];
+        headers_buf[2] = .{ .name = "Content-Type", .value = "application/json" };
+        return headers_buf[0..3];
     }
 
     /// Fetch list of available models from Anthropic API
@@ -75,7 +76,7 @@ pub const AnthropicClient = struct {
         const url = try std.fmt.bufPrint(&url_buffer, "{s}/v1/models", .{self.api_url});
 
         // Build headers
-        var headers_buf: [2]std.http.Header = undefined;
+        var headers_buf: [3]std.http.Header = undefined;
         const headers = self.buildHeaders(&headers_buf);
 
         // Make GET request
@@ -145,7 +146,7 @@ pub const AnthropicClient = struct {
         const url = try std.fmt.bufPrint(&url_buffer, "{s}/v1/messages", .{self.api_url});
 
         // Build headers
-        var headers_buf: [2]std.http.Header = undefined;
+        var headers_buf: [3]std.http.Header = undefined;
         const headers = self.buildHeaders(&headers_buf);
 
         // Make POST request with JSON body and parse response
@@ -177,7 +178,7 @@ pub const AnthropicClient = struct {
         const url = try std.fmt.bufPrint(&url_buffer, "{s}/v1/messages", .{self.api_url});
 
         // Build headers
-        var headers_buf: [2]std.http.Header = undefined;
+        var headers_buf: [3]std.http.Header = undefined;
         const headers = self.buildHeaders(&headers_buf);
 
         // Make streaming POST request
