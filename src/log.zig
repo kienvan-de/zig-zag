@@ -356,24 +356,21 @@ fn logImpl(
     const timestamp = getTimestamp(&ts_buf);
 
     // Format the message
-    var msg_buf: [4096]u8 = undefined;
-    const msg = std.fmt.bufPrint(&msg_buf, "[{s}] [{s}] {s}" ++ format ++ "\n", .{ timestamp, level_txt, scope_prefix } ++ args) catch return;
+    const msg = std.fmt.allocPrint(allocator, "[{s}] [{s}] {s}" ++ format ++ "\n", .{ timestamp, level_txt, scope_prefix } ++ args) catch return;
 
     // Try to submit to worker pool
     if (worker_pool.getPool()) |_| {
-        const message = allocator.dupe(u8, msg) catch return;
-
         const task_ctx = allocator.create(LogTaskContext) catch {
-            allocator.free(message);
+            allocator.free(msg);
             return;
         };
         task_ctx.* = .{
-            .message = message,
+            .message = msg,
             .allocator = allocator,
         };
 
         worker_pool.submit(logWorkerTask, task_ctx) catch {
-            allocator.free(message);
+            allocator.free(msg);
             allocator.destroy(task_ctx);
             return;
         };
@@ -384,6 +381,7 @@ fn logImpl(
         } else if (log_file) |f| {
             f.writeAll(msg) catch {};
         }
+        allocator.free(msg);
     }
 }
 

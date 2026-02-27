@@ -376,6 +376,7 @@ pub const HttpClient = struct {
         if (result.response.head.status != .ok) {
             log.err("HTTP POST streaming failed | Status: {} | URL: {s}", .{ result.response.head.status, url });
             log.err("HTTP POST streaming failed | Request body: {s}", .{request_body.items});
+
         }
 
         // Get reader for streaming - reads from socket on-demand

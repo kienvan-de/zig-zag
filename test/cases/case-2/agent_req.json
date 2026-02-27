@@ -11,7 +11,7 @@
     },
     {
       "role": "assistant",
-      "content": null,
+      "content": "",
       "tool_calls": [
         {
           "id": "call_abc123",

@@ -31,11 +31,11 @@
                 }
               }
             }
-          ],
-          "model": {
-            "name": "gemini-2.5-pro",
-            "version": "latest"
-          }
+          ]
+        },
+        "model": {
+          "name": "gemini-2.5-pro",
+          "version": "latest"
         }
       }
     },
