@@ -43,6 +43,7 @@ const http = @import("../http.zig");
 const utils = @import("../utils.zig");
 const provider = @import("../provider.zig");
 const log = @import("../log.zig");
+const metrics = @import("../metrics.zig");
 
 // Provider modules
 const anthropic = struct {
@@ -512,6 +513,11 @@ fn handleProvider(
     defer Transformer.cleanupResponse(openai_response, allocator);
     const transform_response_time = std.time.milliTimestamp() - transform_response_start;
     log.debug("[SYNC] Transform response completed in {d}ms", .{transform_response_time});
+
+    // Track tokens from the response
+    if (openai_response.usage) |usage| {
+        metrics.addTokens(@intCast(usage.total_tokens));
+    }
 
     // Serialize OpenAI response
     const serialize_start = std.time.milliTimestamp();

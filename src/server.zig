@@ -4,6 +4,7 @@ const router = @import("router.zig");
 const errors = @import("errors.zig");
 const http = @import("http.zig");
 const log = @import("log.zig");
+const metrics = @import("metrics.zig");
 
 // HTTP response constants
 const NOT_FOUND_RESPONSE =
@@ -202,6 +203,9 @@ fn handleConnection(allocator: std.mem.Allocator, connection: std.net.Server.Con
             return err;
         };
         if (n == 0) return;
+
+        // Track network receive bytes
+        metrics.addNetworkRx(n);
 
         try request_buf.appendSlice(request_allocator, read_buf[0..n]);
 

@@ -155,7 +155,7 @@ pub fn build(b: *std.Build) void {
         const copy_dylib = b.addSystemCommand(&.{ "cp", src_dylib, dst_dylib });
         copy_dylib.step.dependOn(&lib_install.step);
 
-        const copy_header = b.addSystemCommand(&.{ "cp", "src/zig-zag.h", dst_header });
+        const copy_header = b.addSystemCommand(&.{ "cp", "include/zig-zag.h", dst_header });
 
         lib_step.dependOn(&copy_dylib.step);
         lib_step.dependOn(&copy_header.step);
@@ -164,7 +164,7 @@ pub fn build(b: *std.Build) void {
         const copy_dylib_release = b.addSystemCommand(&.{ "cp", src_dylib, dst_dylib });
         copy_dylib_release.step.dependOn(&lib_release_install.step);
 
-        const copy_header_release = b.addSystemCommand(&.{ "cp", "src/zig-zag.h", dst_header });
+        const copy_header_release = b.addSystemCommand(&.{ "cp", "include/zig-zag.h", dst_header });
 
         lib_release_step.dependOn(&copy_dylib_release.step);
         lib_release_step.dependOn(&copy_header_release.step);

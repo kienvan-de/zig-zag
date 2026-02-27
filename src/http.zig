@@ -1,4 +1,5 @@
 const std = @import("std");
+const metrics = @import("metrics.zig");
 
 /// Send SSE (Server-Sent Events) headers to start a streaming response
 pub fn sendSseHeaders(connection: std.net.Server.Connection) !void {
@@ -9,6 +10,7 @@ pub fn sendSseHeaders(connection: std.net.Server.Connection) !void {
         "Connection: keep-alive\r\n" ++
         "\r\n";
     _ = try connection.stream.writeAll(headers);
+    metrics.addNetworkTx(headers.len);
 }
 
 /// Send a single SSE event line (data: <json>\n\n)
@@ -16,11 +18,14 @@ pub fn sendSseEvent(connection: std.net.Server.Connection, data: []const u8) !vo
     _ = try connection.stream.writeAll("data: ");
     _ = try connection.stream.writeAll(data);
     _ = try connection.stream.writeAll("\n\n");
+    metrics.addNetworkTx(6 + data.len + 2); // "data: " + data + "\n\n"
 }
 
 /// Send SSE done marker
 pub fn sendSseDone(connection: std.net.Server.Connection) !void {
-    _ = try connection.stream.writeAll("data: [DONE]\n\n");
+    const done_msg = "data: [DONE]\n\n";
+    _ = try connection.stream.writeAll(done_msg);
+    metrics.addNetworkTx(done_msg.len);
 }
 
 /// Send an HTTP JSON response with the specified status code
@@ -46,6 +51,7 @@ pub fn sendJsonResponse(
 
     _ = try connection.stream.writeAll(headers);
     _ = try connection.stream.writeAll(json_body);
+    metrics.addNetworkTx(headers.len + json_body.len);
 }
 
 // ============================================================================
