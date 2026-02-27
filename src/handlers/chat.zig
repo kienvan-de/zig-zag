@@ -362,19 +362,45 @@ fn handleProviderStreaming(
     var chunk_count: u32 = 0;
     var first_chunk_time: ?i64 = null;
     while (try stream_result.iterator.next()) |line| {
+        // Check for [DONE] marker (OpenAI format) - skip it, we send our own at the end
+        if (std.mem.startsWith(u8, line, "data: [DONE]")) {
+            break;
+        }
+
         // Transform the chunk
-        if (Transformer.transformStreamLine(line, &state, allocator)) |transformed| {
+        if (Transformer.transformStreamLine(line, &state, allocator)) |parsed| {
+            var chunk = parsed;
+            defer chunk.deinit();
+
             if (first_chunk_time == null) {
                 first_chunk_time = std.time.milliTimestamp() - process_start;
                 log.debug("[STREAM] Time to first chunk: {d}ms", .{first_chunk_time.?});
             }
             chunk_count += 1;
-            defer allocator.free(transformed);
-            _ = try connection.stream.writeAll(transformed);
-            _ = try connection.stream.writeAll("\n\n");
+
+            // Track tokens from usage (usually in final chunk)
+            if (chunk.value.usage) |usage| {
+                metrics.addInputTokens(@intCast(usage.prompt_tokens));
+                metrics.addOutputTokens(@intCast(usage.completion_tokens));
+            }
+
+            // Serialize chunk to SSE format
+            var buffer = std.ArrayList(u8){};
+            defer buffer.deinit(allocator);
+            buffer.writer(allocator).print("data: {f}\n\n", .{std.json.fmt(chunk.value, .{})}) catch continue;
+
+            // Track network TX bytes and send
+            metrics.addNetworkTx(buffer.items.len);
+            _ = try connection.stream.writeAll(buffer.items);
         }
-        // Skip null returns (non-data lines, parse errors, or events with no output)
     }
+
+    // Always send [DONE] marker at the end (OpenAI format)
+    // This ensures clients get a proper stream termination regardless of upstream provider
+    const done_msg = "data: [DONE]\n\n";
+    metrics.addNetworkTx(done_msg.len);
+    _ = try connection.stream.writeAll(done_msg);
+
     const process_time = std.time.milliTimestamp() - process_start;
     log.debug("[STREAM] Processed {d} chunks in {d}ms", .{ chunk_count, process_time });
 
@@ -516,7 +542,8 @@ fn handleProvider(
 
     // Track tokens from the response
     if (openai_response.usage) |usage| {
-        metrics.addTokens(@intCast(usage.total_tokens));
+        metrics.addInputTokens(@intCast(usage.prompt_tokens));
+        metrics.addOutputTokens(@intCast(usage.completion_tokens));
     }
 
     // Serialize OpenAI response

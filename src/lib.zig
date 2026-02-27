@@ -35,7 +35,11 @@ pub const CServerStats = extern struct {
     network_rx_bytes: u64,
     network_tx_bytes: u64,
     llm_provider_count: u32,
-    total_tokens: u64,
+    input_tokens: u64,
+    output_tokens: u64,
+    total_cost: f32,
+    input_cost: f32,
+    output_cost: f32,
 };
 
 // ============================================================================
@@ -195,7 +199,11 @@ export fn getServerStats() CServerStats {
             .network_rx_bytes = 0,
             .network_tx_bytes = 0,
             .llm_provider_count = 0,
-            .total_tokens = 0,
+            .input_tokens = 0,
+            .output_tokens = 0,
+            .total_cost = 0.0,
+            .input_cost = 0.0,
+            .output_cost = 0.0,
         };
     };
 
@@ -216,6 +224,10 @@ export fn getServerStats() CServerStats {
         .network_rx_bytes = metrics_snapshot.network_rx_bytes,
         .network_tx_bytes = metrics_snapshot.network_tx_bytes,
         .llm_provider_count = @intCast(s.cfg.providers.count()),
-        .total_tokens = metrics_snapshot.total_tokens,
+        .input_tokens = metrics_snapshot.input_tokens,
+        .output_tokens = metrics_snapshot.output_tokens,
+        .total_cost = metrics_snapshot.input_cost + metrics_snapshot.output_cost,
+        .input_cost = metrics_snapshot.input_cost,
+        .output_cost = metrics_snapshot.output_cost,
     };
 }

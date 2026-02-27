@@ -121,24 +121,21 @@ pub fn cleanupResponse(response: OpenAI.Response, allocator: std.mem.Allocator) 
 
 /// Transform a single SSE line for streaming responses
 /// Replaces the model field in the JSON chunk with the original model name
-/// Returns null if line should be passed through unchanged (e.g., "data: [DONE]")
+/// Returns null for non-data lines or parse errors
+/// Caller must check for [DONE] before calling, and call .deinit() on result
 pub fn transformStreamLine(
     line: []const u8,
     state: *StreamState,
     allocator: std.mem.Allocator,
-) ?[]const u8 {
+) ?std.json.Parsed(OpenAI.StreamChunk) {
     const original_model = state.original_model;
+
     // Check if this is a data line
     if (!std.mem.startsWith(u8, line, "data: ")) {
-        return null; // Pass through non-data lines unchanged
+        return null;
     }
 
     const json_part = line["data: ".len..];
-    
-    // Handle [DONE] marker
-    if (std.mem.eql(u8, json_part, "[DONE]")) {
-        return allocator.dupe(u8, "data: [DONE]") catch null;
-    }
 
     // Parse the JSON chunk
     const parsed = std.json.parseFromSlice(
@@ -148,11 +145,11 @@ pub fn transformStreamLine(
         .{ .allocate = .alloc_always },
     ) catch |err| {
         log.debug("[OpenAI] Failed to parse stream chunk: {}", .{err});
-        return null; // Pass through unparseable lines unchanged
+        return null;
     };
-    defer parsed.deinit();
 
-    // Create new chunk with original model
+    // Create new chunk with original model, serialize, then parse back
+    // This ensures consistent ownership model (Parsed owns all data)
     const new_chunk = OpenAI.StreamChunk{
         .id = parsed.value.id,
         .object = parsed.value.object,
@@ -162,13 +159,29 @@ pub fn transformStreamLine(
         .usage = parsed.value.usage,
     };
 
-    // Serialize back to JSON
+    // Serialize to JSON
     var buffer = std.ArrayList(u8){};
-    errdefer buffer.deinit(allocator);
-    
-    buffer.writer(allocator).print("data: {f}", .{std.json.fmt(new_chunk, .{})}) catch return null;
-    
-    return buffer.toOwnedSlice(allocator) catch null;
+    buffer.writer(allocator).print("{f}", .{std.json.fmt(new_chunk, .{})}) catch {
+        parsed.deinit();
+        return null;
+    };
+    defer buffer.deinit(allocator);
+
+    // Parse back to get new Parsed that owns the data
+    const new_parsed = std.json.parseFromSlice(
+        OpenAI.StreamChunk,
+        allocator,
+        buffer.items,
+        .{ .allocate = .alloc_always },
+    ) catch {
+        parsed.deinit();
+        return null;
+    };
+
+    // Clean up original parsed data
+    parsed.deinit();
+
+    return new_parsed;
 }
 
 // ============================================================================

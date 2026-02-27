@@ -23,7 +23,13 @@ typedef struct {
     
     // LLM metrics
     uint32_t llm_provider_count;
-    uint64_t total_tokens;      // Accumulated tokens from LLM responses
+    uint64_t input_tokens;      // Accumulated input/prompt tokens
+    uint64_t output_tokens;     // Accumulated output/completion tokens
+    
+    // Cost metrics (placeholder: always 0.0)
+    float total_cost;
+    float input_cost;
+    float output_cost;
 } CServerStats;
 
 /// Start the server.

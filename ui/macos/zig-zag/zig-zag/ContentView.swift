@@ -16,7 +16,13 @@ struct ServerStats {
     
     // LLM metrics
     var llmProviderCount: UInt32 = 0
-    var totalTokens: UInt64 = 0
+    var inputTokens: UInt64 = 0
+    var outputTokens: UInt64 = 0
+    
+    // Cost metrics (placeholder)
+    var totalCost: Float = 0.0
+    var inputCost: Float = 0.0
+    var outputCost: Float = 0.0
     
     // Initialize from C struct
     init(_ cStats: CServerStats) {
@@ -28,7 +34,11 @@ struct ServerStats {
         self.networkRxBytes = cStats.network_rx_bytes
         self.networkTxBytes = cStats.network_tx_bytes
         self.llmProviderCount = cStats.llm_provider_count
-        self.totalTokens = cStats.total_tokens
+        self.inputTokens = cStats.input_tokens
+        self.outputTokens = cStats.output_tokens
+        self.totalCost = cStats.total_cost
+        self.inputCost = cStats.input_cost
+        self.outputCost = cStats.output_cost
     }
     
     // Default initializer
@@ -70,13 +80,42 @@ extension ServerStats {
         return String(format: "%.0f MB", mb)
     }
     
-    var formattedTokens: String {
-        if totalTokens >= 1_000_000 {
-            return String(format: "%.1fM", Double(totalTokens) / 1_000_000)
-        } else if totalTokens >= 1_000 {
-            return String(format: "%.1fK", Double(totalTokens) / 1_000)
+    var formattedInputTokens: String {
+        formatTokenCount(inputTokens)
+    }
+    
+    var formattedOutputTokens: String {
+        formatTokenCount(outputTokens)
+    }
+    
+    private func formatTokenCount(_ tokens: UInt64) -> String {
+        if tokens >= 1_000_000 {
+            return String(format: "%.1fM", Double(tokens) / 1_000_000)
+        } else if tokens >= 1_000 {
+            return String(format: "%.1fK", Double(tokens) / 1_000)
         }
-        return "\(totalTokens)"
+        return "\(tokens)"
+    }
+    
+    var formattedTotalCost: String {
+        formatCost(totalCost)
+    }
+    
+    var formattedInputCost: String {
+        formatCost(inputCost)
+    }
+    
+    var formattedOutputCost: String {
+        formatCost(outputCost)
+    }
+    
+    private func formatCost(_ cost: Float) -> String {
+        if cost >= 1.0 {
+            return String(format: "$%.2f", cost)
+        } else if cost >= 0.01 {
+            return String(format: "$%.3f", cost)
+        }
+        return String(format: "$%.4f", cost)
     }
 }
 
@@ -86,7 +125,7 @@ struct ContentView: View {
     var serverState: ServerState
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .center, spacing: 0) {
             // Status Row
             statusRow
             
@@ -104,133 +143,180 @@ struct ContentView: View {
                 
                 Divider()
                     .padding(.vertical, 4)
+                
+                costRow
+                
+                Divider()
+                    .padding(.vertical, 4)
             }
             
-            // Action Button
-            actionButton
-            
-            Divider()
-                .padding(.vertical, 4)
-            
-            // Quit Button
-            quitButton
+            // Action Buttons Row
+            actionButtonsRow
         }
         .padding(.vertical, 8)
-        .frame(width: 280)
+        .frame(width: 240)
     }
     
     // MARK: - Status Row
     
     private var statusRow: some View {
         HStack {
-            Image(systemName: serverState.stats.running ? "circle.fill" : "circle")
-                .foregroundColor(serverState.stats.running ? .green : .red)
-                .font(.system(size: 8))
-            
-            Text(serverState.stats.running ? "Running on :\(serverState.stats.port)" : "Stopped")
-                .font(.system(size: 13, weight: .medium))
+            HStack(spacing: 4) {
+                Image(systemName: "globe")
+                    .foregroundColor(serverState.stats.running ? .green : .red)
+                    .font(.system(size: 12))
+                
+                Text(serverState.stats.running ? ":\(String(serverState.stats.port))" : "Stopped")
+                    .font(.system(size: 13, weight: .medium))
+            }
             
             Spacer()
             
             if serverState.stats.running {
-                Image(systemName: "clock")
-                    .foregroundColor(.secondary)
-                    .font(.system(size: 11))
-                
-                Text(serverState.stats.formattedUptime)
-                    .font(.system(size: 12, weight: .medium, design: .monospaced))
-                    .foregroundColor(.secondary)
+                HStack(spacing: 4) {
+                    Image(systemName: "clock")
+                        .foregroundColor(.secondary)
+                        .font(.system(size: 11))
+                    
+                    Text(serverState.stats.formattedUptime)
+                        .font(.system(size: 12, weight: .medium, design: .monospaced))
+                        .foregroundColor(.primary)
+                }
             }
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, 8)
         .padding(.vertical, 4)
     }
     
     // MARK: - Stats Row
     
     private var statsRow: some View {
-        HStack(spacing: 16) {
+        HStack {
             StatItem(icon: "memorychip", value: serverState.stats.formattedMemory)
+            
+            Spacer()
+            
             StatItem(icon: "bolt.fill", value: serverState.stats.formattedCPU)
-            StatItem(icon: "network", value: serverState.stats.formattedNetworkTotal)
+            
+            Spacer()
+            
+            StatItem(icon: "arrow.up.arrow.down", value: serverState.stats.formattedNetworkTotal)
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, 8)
         .padding(.vertical, 6)
     }
     
     // MARK: - LLM Row
     
     private var llmRow: some View {
-        HStack(spacing: 16) {
+        HStack {
             StatItem(
                 icon: "cpu",
                 label: "providers",
                 value: "\(serverState.stats.llmProviderCount)"
             )
-            StatItem(
-                icon: "text.bubble",
-                label: "tokens",
-                value: serverState.stats.formattedTokens
-            )
+            
             Spacer()
+            
+            StatItem(
+                icon: "arrow.down.circle",
+                value: serverState.stats.formattedInputTokens
+            )
+            
+            StatItem(
+                icon: "arrow.up.circle",
+                value: serverState.stats.formattedOutputTokens
+            )
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, 8)
         .padding(.vertical, 6)
     }
     
-    // MARK: - Action Button
+    // MARK: - Cost Row
     
-    private var actionButton: some View {
-        Button(action: {
-            if serverState.stats.running {
-                serverState.stop()
-            } else {
-                serverState.start()
-            }
-        }) {
-            HStack {
-                Image(systemName: serverState.stats.running ? "stop.fill" : "play.fill")
-                    .font(.system(size: 11))
-                Text(serverState.stats.running ? "Stop Server" : "Start Server")
-                    .font(.system(size: 13))
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
+    private var costRow: some View {
+        HStack {
+            StatItem(
+                icon: "dollarsign.circle",
+                value: serverState.stats.formattedTotalCost
+            )
+            
+            Spacer()
+            
+            StatItem(
+                icon: "arrow.down.circle",
+                value: serverState.stats.formattedInputCost
+            )
+            
+            StatItem(
+                icon: "arrow.up.circle",
+                value: serverState.stats.formattedOutputCost
+            )
         }
-        .buttonStyle(.plain)
-        .contentShape(Rectangle())
-        .onHover { hovering in
-            if hovering {
-                NSCursor.pointingHand.push()
-            } else {
-                NSCursor.pop()
-            }
-        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
     }
     
-    // MARK: - Quit Button
+    // MARK: - Action Buttons Row
     
-    private var quitButton: some View {
-        Button(action: {
-            serverState.stop()
-            NSApp.terminate(nil)
-        }) {
-            HStack {
-                Text("Quit")
-                    .font(.system(size: 13))
-                Spacer()
-                Text("⌘Q")
-                    .font(.system(size: 12))
-                    .foregroundColor(.secondary)
+    private var actionButtonsRow: some View {
+        HStack(spacing: 0) {
+            // Start/Stop Button
+            Button(action: {
+                if serverState.stats.running {
+                    serverState.stop()
+                } else {
+                    serverState.start()
+                }
+            }) {
+                HStack(spacing: 4) {
+                    Image(systemName: serverState.stats.running ? "stop.fill" : "play.fill")
+                        .font(.system(size: 11))
+                    Text(serverState.stats.running ? "Stop" : "Start")
+                        .font(.system(size: 13))
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 6)
             }
-            .frame(maxWidth: .infinity)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
+            .buttonStyle(.plain)
+            .contentShape(Rectangle())
+            .onHover { hovering in
+                if hovering {
+                    NSCursor.pointingHand.push()
+                } else {
+                    NSCursor.pop()
+                }
+            }
+            
+            Divider()
+                .frame(height: 20)
+            
+            // Quit Button
+            Button(action: {
+                serverState.stop()
+                NSApp.terminate(nil)
+            }) {
+                HStack(spacing: 4) {
+                    Image(systemName: "power")
+                        .font(.system(size: 11))
+                    Text("Quit")
+                        .font(.system(size: 13))
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 6)
+            }
+            .buttonStyle(.plain)
+            .contentShape(Rectangle())
+            .keyboardShortcut("q", modifiers: .command)
+            .onHover { hovering in
+                if hovering {
+                    NSCursor.pointingHand.push()
+                } else {
+                    NSCursor.pop()
+                }
+            }
         }
-        .buttonStyle(.plain)
-        .contentShape(Rectangle())
-        .keyboardShortcut("q", modifiers: .command)
+        .padding(.horizontal, 8)
     }
 }
 
@@ -283,7 +369,11 @@ extension ServerStats {
         stats.networkRxBytes = 48_000_000
         stats.networkTxBytes = 2_200_000
         stats.llmProviderCount = 3
-        stats.totalTokens = 1_234_567
+        stats.inputTokens = 987_654
+        stats.outputTokens = 246_913
+        stats.totalCost = 1.23
+        stats.inputCost = 0.45
+        stats.outputCost = 0.78
         return stats
     }
 }
