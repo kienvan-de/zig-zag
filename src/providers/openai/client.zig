@@ -64,12 +64,13 @@ pub const OpenAIClient = struct {
     fn buildHeaders(self: *OpenAIClient, auth_buffer: []u8, headers_buf: []std.http.Header) ![]std.http.Header {
         const auth_value = try std.fmt.bufPrint(auth_buffer, "Bearer {s}", .{self.api_key});
 
-        var headers_count: usize = 1;
+        var headers_count: usize = 2;
         headers_buf[0] = .{ .name = "Authorization", .value = auth_value };
+        headers_buf[1] = .{ .name = "Content-Type", .value = "application/json" };
 
         if (self.organization) |org| {
-            headers_buf[1] = .{ .name = "OpenAI-Organization", .value = org };
-            headers_count = 2;
+            headers_buf[2] = .{ .name = "OpenAI-Organization", .value = org };
+            headers_count = 3;
         }
 
         return headers_buf[0..headers_count];
@@ -83,7 +84,7 @@ pub const OpenAIClient = struct {
 
         // Build headers
         var auth_buffer: [512]u8 = undefined;
-        var headers_buf: [2]std.http.Header = undefined;
+        var headers_buf: [3]std.http.Header = undefined;
         const headers = try self.buildHeaders(&auth_buffer, &headers_buf);
 
         // Make GET request
@@ -154,7 +155,7 @@ pub const OpenAIClient = struct {
 
         // Build headers
         var auth_buffer: [512]u8 = undefined;
-        var headers_buf: [2]std.http.Header = undefined;
+        var headers_buf: [3]std.http.Header = undefined;
         const headers = try self.buildHeaders(&auth_buffer, &headers_buf);
 
         // Make POST request with JSON body and parse response
@@ -187,7 +188,7 @@ pub const OpenAIClient = struct {
 
         // Build headers
         var auth_buffer: [512]u8 = undefined;
-        var headers_buf: [2]std.http.Header = undefined;
+        var headers_buf: [3]std.http.Header = undefined;
         const headers = try self.buildHeaders(&auth_buffer, &headers_buf);
 
         // Make streaming POST request
