@@ -67,13 +67,13 @@ pub const StreamState = struct {
 };
 
 /// Transform a single Anthropic SSE line to OpenAI SSE format
-/// Returns null if no output should be emitted for this event
-/// Returns allocated string that caller must free
+/// Returns null for non-data lines, parse errors, or message_stop (caller should check for [DONE])
+/// Caller must call .deinit() on result
 pub fn transformStreamLine(
     line: []const u8,
     state: *StreamState,
     allocator: std.mem.Allocator,
-) ?[]const u8 {
+) ?std.json.Parsed(OpenAI.StreamChunk) {
     // Check if this is a data line
     if (!std.mem.startsWith(u8, line, "data: ")) {
         return null;
@@ -103,14 +103,12 @@ pub fn transformStreamLine(
         return handleContentBlockDelta(json_part, state, allocator);
     } else if (std.mem.eql(u8, event_type, "message_delta")) {
         return handleMessageDelta(json_part, state, allocator);
-    } else if (std.mem.eql(u8, event_type, "message_stop")) {
-        return allocator.dupe(u8, "data: [DONE]") catch null;
     }
-    // Ignore: content_block_stop, ping, etc.
+    // Ignore: message_stop (handled as done in chat.zig), content_block_stop, ping, etc.
     return null;
 }
 
-fn handleMessageStart(json_part: []const u8, state: *StreamState, allocator: std.mem.Allocator) ?[]const u8 {
+fn handleMessageStart(json_part: []const u8, state: *StreamState, allocator: std.mem.Allocator) ?std.json.Parsed(OpenAI.StreamChunk) {
     const parsed = std.json.parseFromSlice(
         Anthropic.MessageStart,
         allocator,
@@ -131,7 +129,7 @@ fn handleMessageStart(json_part: []const u8, state: *StreamState, allocator: std
     return buildOpenAIChunk(state, .{ .role = .assistant }, null, null, allocator);
 }
 
-fn handleContentBlockStart(json_part: []const u8, state: *StreamState, allocator: std.mem.Allocator) ?[]const u8 {
+fn handleContentBlockStart(json_part: []const u8, state: *StreamState, allocator: std.mem.Allocator) ?std.json.Parsed(OpenAI.StreamChunk) {
     const parsed = std.json.parseFromSlice(
         Anthropic.ContentBlockStart,
         allocator,
@@ -168,7 +166,7 @@ fn handleContentBlockStart(json_part: []const u8, state: *StreamState, allocator
     return null;
 }
 
-fn handleContentBlockDelta(json_part: []const u8, state: *StreamState, allocator: std.mem.Allocator) ?[]const u8 {
+fn handleContentBlockDelta(json_part: []const u8, state: *StreamState, allocator: std.mem.Allocator) ?std.json.Parsed(OpenAI.StreamChunk) {
     const parsed = std.json.parseFromSlice(
         Anthropic.ContentBlockDelta,
         allocator,
@@ -207,7 +205,7 @@ fn handleContentBlockDelta(json_part: []const u8, state: *StreamState, allocator
     return null;
 }
 
-fn handleMessageDelta(json_part: []const u8, state: *StreamState, allocator: std.mem.Allocator) ?[]const u8 {
+fn handleMessageDelta(json_part: []const u8, state: *StreamState, allocator: std.mem.Allocator) ?std.json.Parsed(OpenAI.StreamChunk) {
     const parsed = std.json.parseFromSlice(
         Anthropic.MessageDelta,
         allocator,
@@ -234,13 +232,14 @@ fn handleMessageDelta(json_part: []const u8, state: *StreamState, allocator: std
 }
 
 /// Build an OpenAI streaming chunk from state and delta info
+/// Returns Parsed(StreamChunk) for consistent ownership model
 fn buildOpenAIChunk(
     state: *StreamState,
     delta: OpenAI.Delta,
     finish_reason: ?[]const u8,
     usage: ?OpenAI.Usage,
     allocator: std.mem.Allocator,
-) ?[]const u8 {
+) ?std.json.Parsed(OpenAI.StreamChunk) {
     const choice = OpenAI.StreamChoice{
         .index = 0,
         .delta = delta,
@@ -258,12 +257,20 @@ fn buildOpenAIChunk(
         .usage = usage,
     };
 
+    // Serialize to JSON
     var buffer = std.ArrayList(u8){};
-    errdefer buffer.deinit(allocator);
+    buffer.writer(allocator).print("{f}", .{std.json.fmt(chunk, .{})}) catch return null;
+    defer buffer.deinit(allocator);
 
-    buffer.writer(allocator).print("data: {f}", .{std.json.fmt(chunk, .{})}) catch return null;
+    // Parse back to get Parsed that owns the data
+    const parsed = std.json.parseFromSlice(
+        OpenAI.StreamChunk,
+        allocator,
+        buffer.items,
+        .{ .allocate = .alloc_always },
+    ) catch return null;
 
-    return buffer.toOwnedSlice(allocator) catch null;
+    return parsed;
 }
 
 // Type alias for OpenAI message content union

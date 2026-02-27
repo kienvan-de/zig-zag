@@ -233,12 +233,13 @@ pub fn cleanupResponse(response: OpenAI.Response, allocator: std.mem.Allocator) 
 
 /// Transform a single SSE line for streaming responses
 /// Extracts final_result from SAP AI Core wrapper and adds provider prefix to model
-/// Returns null if line should be skipped
+/// Returns null for non-data lines or parse errors
+/// Caller must check for [DONE] before calling, and call .deinit() on result
 pub fn transformStreamLine(
     line: []const u8,
     state: *StreamState,
     allocator: std.mem.Allocator,
-) ?[]const u8 {
+) ?std.json.Parsed(OpenAI.StreamChunk) {
     const original_model = state.original_model;
 
     // Check if this is a data line
@@ -247,11 +248,6 @@ pub fn transformStreamLine(
     }
 
     const json_part = line["data: ".len..];
-
-    // Handle [DONE] marker
-    if (std.mem.eql(u8, json_part, "[DONE]")) {
-        return allocator.dupe(u8, "data: [DONE]") catch null;
-    }
 
     // Parse the SAP AI Core wrapper
     const parsed = std.json.parseFromSlice(
@@ -284,9 +280,16 @@ pub fn transformStreamLine(
 
     // Serialize to JSON
     var buffer = std.ArrayList(u8){};
-    errdefer buffer.deinit(allocator);
+    buffer.writer(allocator).print("{f}", .{std.json.fmt(openai_chunk, .{})}) catch return null;
+    defer buffer.deinit(allocator);
 
-    buffer.writer(allocator).print("data: {f}", .{std.json.fmt(openai_chunk, .{})}) catch return null;
+    // Parse back to get Parsed that owns the data
+    const new_parsed = std.json.parseFromSlice(
+        OpenAI.StreamChunk,
+        allocator,
+        buffer.items,
+        .{ .allocate = .alloc_always },
+    ) catch return null;
 
-    return buffer.toOwnedSlice(allocator) catch null;
+    return new_parsed;
 }
