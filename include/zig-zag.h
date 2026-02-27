@@ -17,7 +17,8 @@ typedef struct {
     // Performance metrics
     uint64_t uptime_seconds;
     uint64_t memory_bytes;      // Process RSS from OS
-    float cpu_percent;          // Placeholder: always 0.0
+    float cpu_percent;          // Placeholder: always 0.0 (calculated by Swift)
+    uint64_t cpu_time_us;       // Total CPU time (user + system) in microseconds
     uint64_t network_rx_bytes;
     uint64_t network_tx_bytes;
     

@@ -32,6 +32,7 @@ pub const CServerStats = extern struct {
     uptime_seconds: u64,
     memory_bytes: u64,
     cpu_percent: f32,
+    cpu_time_us: u64,
     network_rx_bytes: u64,
     network_tx_bytes: u64,
     llm_provider_count: u32,
@@ -83,20 +84,6 @@ fn serverThreadFn(s: *State) void {
 // ============================================================================
 // Helper functions
 // ============================================================================
-
-/// Get process RSS (Resident Set Size) memory in bytes using rusage.
-/// Returns 0 on error.
-fn getProcessRss() u64 {
-    var usage: std.posix.rusage = undefined;
-    const result = std.posix.system.getrusage(std.posix.system.rusage.SELF, &usage);
-    if (result != 0) {
-        return 0;
-    }
-    // On macOS, ru_maxrss is in bytes
-    // On Linux, ru_maxrss is in kilobytes (would need * 1024)
-    // We target macOS for now based on project context
-    return @intCast(@max(0, usage.maxrss));
-}
 
 // ============================================================================
 // Public C API
@@ -196,6 +183,7 @@ export fn getServerStats() CServerStats {
             .uptime_seconds = 0,
             .memory_bytes = 0,
             .cpu_percent = 0.0,
+            .cpu_time_us = 0,
             .network_rx_bytes = 0,
             .network_tx_bytes = 0,
             .llm_provider_count = 0,
@@ -213,21 +201,22 @@ export fn getServerStats() CServerStats {
     else
         0;
 
-    const metrics_snapshot = metrics.snapshot();
+    const snap = metrics.snapshot();
 
     return CServerStats{
         .running = true,
         .port = s.port,
         .uptime_seconds = uptime,
-        .memory_bytes = getProcessRss(),
-        .cpu_percent = 0.0, // Placeholder - no native Zig function
-        .network_rx_bytes = metrics_snapshot.network_rx_bytes,
-        .network_tx_bytes = metrics_snapshot.network_tx_bytes,
+        .memory_bytes = snap.rss_bytes,
+        .cpu_percent = 0.0, // Placeholder - calculated by Swift from cpu_time_us
+        .cpu_time_us = snap.cpu_time_us,
+        .network_rx_bytes = snap.network_rx_bytes,
+        .network_tx_bytes = snap.network_tx_bytes,
         .llm_provider_count = @intCast(s.cfg.providers.count()),
-        .input_tokens = metrics_snapshot.input_tokens,
-        .output_tokens = metrics_snapshot.output_tokens,
-        .total_cost = metrics_snapshot.input_cost + metrics_snapshot.output_cost,
-        .input_cost = metrics_snapshot.input_cost,
-        .output_cost = metrics_snapshot.output_cost,
+        .input_tokens = snap.input_tokens,
+        .output_tokens = snap.output_tokens,
+        .total_cost = snap.input_cost + snap.output_cost,
+        .input_cost = snap.input_cost,
+        .output_cost = snap.output_cost,
     };
 }
