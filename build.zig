@@ -91,7 +91,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
-    const release_step = b.step("exec:release", "Build release binary (smallest size)");
+    const release_step = b.step("exec:rls", "Build release binary (smallest size)");
     const install_release = b.addInstallArtifact(release_exe, .{});
     release_step.dependOn(&install_release.step);
 
@@ -142,7 +142,7 @@ pub fn build(b: *std.Build) void {
     });
 
     const lib_release_install = b.addInstallArtifact(lib_release, .{});
-    const lib_release_step = b.step("lib:release", "Build release shared library for platform UI integration");
+    const lib_release_step = b.step("lib:rls", "Build release shared library for platform UI integration");
     lib_release_step.dependOn(&lib_release_install.step);
 
     // Auto-copy dylib + header to the platform UI project folder after build

@@ -894,3 +894,47 @@ pub const Response = struct {
     }
 };
 
+// ============================================================================
+// Error Response Structures (OpenAI format)
+// ============================================================================
+
+/// OpenAI error details
+pub const ErrorDetails = struct {
+    message: []const u8,
+    @"type": []const u8, // e.g., "invalid_request_error", "server_error"
+    param: ?[]const u8 = null,
+    code: ?[]const u8 = null, // e.g., "content_filter", "rate_limit_exceeded"
+
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("message");
+        try jw.write(self.message);
+        try jw.objectField("type");
+        try jw.write(self.@"type");
+        try jw.objectField("param");
+        try jw.write(self.param);
+        try jw.objectField("code");
+        try jw.write(self.code);
+        try jw.endObject();
+    }
+};
+
+/// OpenAI error response wrapper
+pub const ErrorResponse = struct {
+    @"error": ErrorDetails,
+
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("error");
+        try self.@"error".jsonStringify(jw);
+        try jw.endObject();
+    }
+};
+
+/// Result type for stream line transformation (shared across all transformers)
+pub const StreamLineResult = union(enum) {
+    chunk: std.json.Parsed(StreamChunk),
+    @"error": ErrorResponse,
+    skip: void, // For non-data lines or empty chunks
+};
+

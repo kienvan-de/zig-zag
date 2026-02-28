@@ -144,6 +144,24 @@ pub const StreamChunk = struct {
 };
 
 // ============================================================================
+// Error Response Structures
+// ============================================================================
+
+/// SAP AI Core error details
+pub const ErrorDetails = struct {
+    request_id: ?[]const u8 = null,
+    code: ?i64 = null, // SAP uses numeric HTTP status code
+    message: ?[]const u8 = null,
+    location: ?[]const u8 = null,
+    intermediate_results: ?IntermediateResults = null,
+};
+
+/// SAP AI Core error response wrapper
+pub const ErrorResponse = struct {
+    @"error": ErrorDetails,
+};
+
+// ============================================================================
 // SAP AI Core Models API Structures
 // ============================================================================
 

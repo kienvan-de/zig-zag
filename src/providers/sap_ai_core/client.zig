@@ -304,11 +304,17 @@ pub const SapAiCoreClient = struct {
         var response = try self.client.post(url, headers, request_body.items);
         defer response.deinit();
 
+        // Log request for debugging
+        log.debug("[SAP] [SYNC] Request payload: {s}", .{request_body.items});
+
         // Check status code
         if (response.status != .ok) {
-            log.err("SAP AI Core request failed. Status: {} | URL: {s} | Request: {s} | Response: {s}", .{ response.status, url, request_body.items, response.body });
+            log.err("[SAP] [SYNC] Request failed. Status: {} | URL: {s} | Request: {s} | Response: {s}", .{ response.status, url, request_body.items, response.body });
             return self.handleErrorResponse(response.status);
         }
+
+        // Log response for debugging
+        log.debug("[SAP] [SYNC] Response payload: {s}", .{response.body});
 
         // Parse response JSON
         return std.json.parseFromSlice(
@@ -317,7 +323,7 @@ pub const SapAiCoreClient = struct {
             response.body,
             .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
         ) catch |err| {
-            log.err("Failed to parse SAP AI Core response: {}", .{err});
+            log.err("[SAP] [SYNC] Failed to parse response: {} | Body: {s}", .{ err, response.body });
             return error.InvalidResponse;
         };
     }
@@ -348,14 +354,18 @@ pub const SapAiCoreClient = struct {
         // Build URL
         var url_buffer: [512]u8 = undefined;
         const url = try self.buildApiUrl(&url_buffer);
-        log.debug("SAP AI Core streaming request URL: {s}", .{url});
+        log.debug("[SAP] [STREAM] Request URL: {s}", .{url});
+
+        // Log request payload for debugging
+        var request_body = std.ArrayList(u8){};
+        defer request_body.deinit(self.allocator);
+        request_body.writer(self.allocator).print("{f}", .{std.json.fmt(request, .{})}) catch {};
+        log.debug("[SAP] [STREAM] Request payload: {s}", .{request_body.items});
 
         // Build headers
         var auth_buffer: [8192]u8 = undefined;
         var headers_buf: [3]std.http.Header = undefined;
         const headers = try self.buildHeaders(&auth_buffer, &headers_buf, access_token);
-
-
 
         // Make streaming POST request
         const result = try self.client.postStreaming(SSEIterator, url, headers, request);

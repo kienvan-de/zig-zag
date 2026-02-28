@@ -119,20 +119,50 @@ pub fn cleanupResponse(response: OpenAI.Response, allocator: std.mem.Allocator) 
     allocator.free(response.model);
 }
 
+// ============================================================================
+// Error Response Transformation
+// ============================================================================
+
+/// Transform OpenAI error response (pass-through, already in correct format)
+pub fn transformErrorResponse(error_response: OpenAI.ErrorResponse) OpenAI.ErrorResponse {
+    return error_response;
+}
+
+/// Try to parse JSON as OpenAI error response
+fn tryParseError(json_part: []const u8, allocator: std.mem.Allocator) ?OpenAI.ErrorResponse {
+    const parsed = std.json.parseFromSlice(
+        OpenAI.ErrorResponse,
+        allocator,
+        json_part,
+        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+    ) catch return null;
+    defer parsed.deinit();
+
+    // Copy the error details since parsed will be freed
+    return OpenAI.ErrorResponse{
+        .@"error" = OpenAI.ErrorDetails{
+            .message = parsed.value.@"error".message,
+            .@"type" = parsed.value.@"error".@"type",
+            .param = parsed.value.@"error".param,
+            .code = parsed.value.@"error".code,
+        },
+    };
+}
+
 /// Transform a single SSE line for streaming responses
 /// Replaces the model field in the JSON chunk with the original model name
-/// Returns null for non-data lines or parse errors
-/// Caller must check for [DONE] before calling, and call .deinit() on result
+/// Returns StreamLineResult with chunk, error, or skip
+/// Caller must check for [DONE] before calling
 pub fn transformStreamLine(
     line: []const u8,
     state: *StreamState,
     allocator: std.mem.Allocator,
-) ?std.json.Parsed(OpenAI.StreamChunk) {
+) OpenAI.StreamLineResult {
     const original_model = state.original_model;
 
     // Check if this is a data line
     if (!std.mem.startsWith(u8, line, "data: ")) {
-        return null;
+        return .{ .skip = {} };
     }
 
     const json_part = line["data: ".len..];
@@ -144,8 +174,13 @@ pub fn transformStreamLine(
         json_part,
         .{ .allocate = .alloc_always },
     ) catch |err| {
+        // Failed to parse as stream chunk - try parsing as error response
+        if (tryParseError(json_part, allocator)) |error_response| {
+            log.warn("[OpenAI] [STREAM] Provider returned error: {s}", .{error_response.@"error".message});
+            return .{ .@"error" = error_response };
+        }
         log.debug("[OpenAI] Failed to parse stream chunk: {}", .{err});
-        return null;
+        return .{ .skip = {} };
     };
 
     // Create new chunk with original model, serialize, then parse back
@@ -163,7 +198,7 @@ pub fn transformStreamLine(
     var buffer = std.ArrayList(u8){};
     buffer.writer(allocator).print("{f}", .{std.json.fmt(new_chunk, .{})}) catch {
         parsed.deinit();
-        return null;
+        return .{ .skip = {} };
     };
     defer buffer.deinit(allocator);
 
@@ -175,13 +210,13 @@ pub fn transformStreamLine(
         .{ .allocate = .alloc_always },
     ) catch {
         parsed.deinit();
-        return null;
+        return .{ .skip = {} };
     };
 
     // Clean up original parsed data
     parsed.deinit();
 
-    return new_parsed;
+    return .{ .chunk = new_parsed };
 }
 
 // ============================================================================

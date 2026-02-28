@@ -231,33 +231,85 @@ pub fn cleanupResponse(response: OpenAI.Response, allocator: std.mem.Allocator) 
 // Streaming Transformation
 // ============================================================================
 
+// ============================================================================
+// Error Response Transformation
+// ============================================================================
+
+/// Transform SAP AI Core error response to OpenAI error format
+pub fn transformErrorResponse(sap_error: SapAiCore.ErrorDetails) OpenAI.ErrorResponse {
+    // Map SAP numeric code to OpenAI string code
+    const code: ?[]const u8 = if (sap_error.code) |c| switch (c) {
+        400 => "bad_request",
+        401 => "invalid_api_key",
+        403 => "forbidden",
+        404 => "not_found",
+        429 => "rate_limit_exceeded",
+        500 => "server_error",
+        503 => "service_unavailable",
+        else => "unknown_error",
+    } else null;
+
+    // Determine error type based on code
+    const error_type: []const u8 = if (sap_error.code) |c|
+        if (c >= 400 and c < 500) "invalid_request_error" else "server_error"
+    else
+        "server_error";
+
+    return OpenAI.ErrorResponse{
+        .@"error" = OpenAI.ErrorDetails{
+            .message = sap_error.message orelse "Unknown error from SAP AI Core",
+            .@"type" = error_type,
+            .param = null,
+            .code = code,
+        },
+    };
+}
+
+/// Try to parse JSON as SAP AI Core error response
+fn tryParseError(json_part: []const u8, allocator: std.mem.Allocator) ?OpenAI.ErrorResponse {
+    const parsed = std.json.parseFromSlice(
+        SapAiCore.ErrorResponse,
+        allocator,
+        json_part,
+        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+    ) catch return null;
+    defer parsed.deinit();
+
+    return transformErrorResponse(parsed.value.@"error");
+}
+
 /// Transform a single SSE line for streaming responses
 /// Extracts final_result from SAP AI Core wrapper and adds provider prefix to model
-/// Returns null for non-data lines or parse errors
-/// Caller must check for [DONE] before calling, and call .deinit() on result
+/// Returns StreamLineResult with chunk, error, or skip
+/// Caller must check for [DONE] before calling
 pub fn transformStreamLine(
     line: []const u8,
     state: *StreamState,
     allocator: std.mem.Allocator,
-) ?std.json.Parsed(OpenAI.StreamChunk) {
+) OpenAI.StreamLineResult {
     const original_model = state.original_model;
 
     // Check if this is a data line
     if (!std.mem.startsWith(u8, line, "data: ")) {
-        return null;
+        return .{ .skip = {} };
     }
 
     const json_part = line["data: ".len..];
 
-    // Parse the SAP AI Core wrapper
+    // Try to parse as SAP AI Core stream chunk first
     const parsed = std.json.parseFromSlice(
         SapAiCore.StreamChunk,
         allocator,
         json_part,
         .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
     ) catch |err| {
-        log.debug("[SAP] [STREAM] Failed to parse wrapper chunk: {} | raw: {s}", .{ err, json_part });
-        return null;
+        // Failed to parse as stream chunk - try parsing as error response
+        if (tryParseError(json_part, allocator)) |error_response| {
+            log.warn("[SAP] [STREAM] Provider returned error: {s}", .{error_response.@"error".message});
+            return .{ .@"error" = error_response };
+        }
+        log.debug("[SAP] [STREAM] Failed to parse chunk: {} | raw: {s}", .{ err, json_part });
+        return .{ .skip = {} };
     };
     defer parsed.deinit();
 
@@ -265,7 +317,7 @@ pub fn transformStreamLine(
 
     // Skip empty chunks (initial templating results)
     if (final_result.id.len == 0) {
-        return null;
+        return .{ .skip = {} };
     }
 
     // Create OpenAI chunk with original model (including provider prefix)
@@ -280,7 +332,7 @@ pub fn transformStreamLine(
 
     // Serialize to JSON
     var buffer = std.ArrayList(u8){};
-    buffer.writer(allocator).print("{f}", .{std.json.fmt(openai_chunk, .{})}) catch return null;
+    buffer.writer(allocator).print("{f}", .{std.json.fmt(openai_chunk, .{})}) catch return .{ .skip = {} };
     defer buffer.deinit(allocator);
 
     // Parse back to get Parsed that owns the data
@@ -289,7 +341,7 @@ pub fn transformStreamLine(
         allocator,
         buffer.items,
         .{ .allocate = .alloc_always },
-    ) catch return null;
+    ) catch return .{ .skip = {} };
 
-    return new_parsed;
+    return .{ .chunk = new_parsed };
 }

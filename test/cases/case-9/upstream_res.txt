@@ -1,0 +1,1 @@
+data: {"error": {"request_id": "case10-req-001", "code": 400, "message": "400 - LLM Module: Output blocked by content filtering policy", "location": "LLM Module", "intermediate_results": {"templating": [{"role": "user", "content": "This streaming message will trigger content filter"}]}}}

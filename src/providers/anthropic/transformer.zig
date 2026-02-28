@@ -66,17 +66,62 @@ pub const StreamState = struct {
     }
 };
 
+// ============================================================================
+// Error Response Transformation
+// ============================================================================
+
+/// Transform Anthropic error response to OpenAI error format
+pub fn transformErrorResponse(anthro_error: Anthropic.ErrorResponse) OpenAI.ErrorResponse {
+    // Map Anthropic error type to OpenAI error type
+    const error_type: []const u8 = if (std.mem.eql(u8, anthro_error.@"error".type, "invalid_request_error"))
+        "invalid_request_error"
+    else if (std.mem.eql(u8, anthro_error.@"error".type, "authentication_error"))
+        "invalid_request_error"
+    else if (std.mem.eql(u8, anthro_error.@"error".type, "permission_error"))
+        "invalid_request_error"
+    else if (std.mem.eql(u8, anthro_error.@"error".type, "not_found_error"))
+        "invalid_request_error"
+    else if (std.mem.eql(u8, anthro_error.@"error".type, "rate_limit_error"))
+        "invalid_request_error"
+    else if (std.mem.eql(u8, anthro_error.@"error".type, "overloaded_error"))
+        "server_error"
+    else
+        "server_error";
+
+    return OpenAI.ErrorResponse{
+        .@"error" = OpenAI.ErrorDetails{
+            .message = anthro_error.@"error".message,
+            .@"type" = error_type,
+            .param = null,
+            .code = anthro_error.@"error".type,
+        },
+    };
+}
+
+/// Try to parse JSON as Anthropic error response
+fn tryParseError(json_part: []const u8, allocator: std.mem.Allocator) ?OpenAI.ErrorResponse {
+    const parsed = std.json.parseFromSlice(
+        Anthropic.ErrorResponse,
+        allocator,
+        json_part,
+        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+    ) catch return null;
+    defer parsed.deinit();
+
+    return transformErrorResponse(parsed.value);
+}
+
 /// Transform a single Anthropic SSE line to OpenAI SSE format
-/// Returns null for non-data lines, parse errors, or message_stop (caller should check for [DONE])
-/// Caller must call .deinit() on result
+/// Returns StreamLineResult with chunk, error, or skip
+/// Caller must check for message_stop event type
 pub fn transformStreamLine(
     line: []const u8,
     state: *StreamState,
     allocator: std.mem.Allocator,
-) ?std.json.Parsed(OpenAI.StreamChunk) {
+) OpenAI.StreamLineResult {
     // Check if this is a data line
     if (!std.mem.startsWith(u8, line, "data: ")) {
-        return null;
+        return .{ .skip = {} };
     }
 
     const json_part = line["data: ".len..];
@@ -88,24 +133,45 @@ pub fn transformStreamLine(
         json_part,
         .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
     ) catch |err| {
+        // Failed to parse event type - try parsing as error response
+        if (tryParseError(json_part, allocator)) |error_response| {
+            log.warn("[Anthropic] [STREAM] Provider returned error: {s}", .{error_response.@"error".message});
+            return .{ .@"error" = error_response };
+        }
         log.debug("[Anthropic] Failed to parse stream event type: {}", .{err});
-        return null;
+        return .{ .skip = {} };
     };
     defer type_info.deinit();
 
     const event_type = type_info.value.type;
 
+    // Check for error event type
+    if (std.mem.eql(u8, event_type, "error")) {
+        if (tryParseError(json_part, allocator)) |error_response| {
+            log.warn("[Anthropic] [STREAM] Provider returned error event: {s}", .{error_response.@"error".message});
+            return .{ .@"error" = error_response };
+        }
+    }
+
     if (std.mem.eql(u8, event_type, "message_start")) {
-        return handleMessageStart(json_part, state, allocator);
+        if (handleMessageStart(json_part, state, allocator)) |chunk| {
+            return .{ .chunk = chunk };
+        }
     } else if (std.mem.eql(u8, event_type, "content_block_start")) {
-        return handleContentBlockStart(json_part, state, allocator);
+        if (handleContentBlockStart(json_part, state, allocator)) |chunk| {
+            return .{ .chunk = chunk };
+        }
     } else if (std.mem.eql(u8, event_type, "content_block_delta")) {
-        return handleContentBlockDelta(json_part, state, allocator);
+        if (handleContentBlockDelta(json_part, state, allocator)) |chunk| {
+            return .{ .chunk = chunk };
+        }
     } else if (std.mem.eql(u8, event_type, "message_delta")) {
-        return handleMessageDelta(json_part, state, allocator);
+        if (handleMessageDelta(json_part, state, allocator)) |chunk| {
+            return .{ .chunk = chunk };
+        }
     }
     // Ignore: message_stop (handled as done in chat.zig), content_block_stop, ping, etc.
-    return null;
+    return .{ .skip = {} };
 }
 
 fn handleMessageStart(json_part: []const u8, state: *StreamState, allocator: std.mem.Allocator) ?std.json.Parsed(OpenAI.StreamChunk) {

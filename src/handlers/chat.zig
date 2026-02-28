@@ -361,6 +361,7 @@ fn handleProviderStreaming(
     const process_start = std.time.milliTimestamp();
     var chunk_count: u32 = 0;
     var first_chunk_time: ?i64 = null;
+    var had_error = false;
     while (try stream_result.iterator.next()) |line| {
         // Check for [DONE] marker (OpenAI format) - skip it, we send our own at the end
         if (std.mem.startsWith(u8, line, "data: [DONE]")) {
@@ -368,30 +369,54 @@ fn handleProviderStreaming(
         }
 
         // Transform the chunk
-        if (Transformer.transformStreamLine(line, &state, allocator)) |parsed| {
-            var chunk = parsed;
-            defer chunk.deinit();
+        const result = Transformer.transformStreamLine(line, &state, allocator);
+        switch (result) {
+            .chunk => |parsed| {
+                var chunk = parsed;
+                defer chunk.deinit();
 
-            if (first_chunk_time == null) {
-                first_chunk_time = std.time.milliTimestamp() - process_start;
-                log.debug("[STREAM] Time to first chunk: {d}ms", .{first_chunk_time.?});
-            }
-            chunk_count += 1;
+                if (first_chunk_time == null) {
+                    first_chunk_time = std.time.milliTimestamp() - process_start;
+                    log.debug("[STREAM] Time to first chunk: {d}ms", .{first_chunk_time.?});
+                }
+                chunk_count += 1;
 
-            // Track tokens from usage (usually in final chunk)
-            if (chunk.value.usage) |usage| {
-                metrics.addInputTokens(@intCast(usage.prompt_tokens));
-                metrics.addOutputTokens(@intCast(usage.completion_tokens));
-            }
+                // Track tokens from usage (usually in final chunk)
+                if (chunk.value.usage) |usage| {
+                    metrics.addInputTokens(@intCast(usage.prompt_tokens));
+                    metrics.addOutputTokens(@intCast(usage.completion_tokens));
+                }
 
-            // Serialize chunk to SSE format
-            var buffer = std.ArrayList(u8){};
-            defer buffer.deinit(allocator);
-            buffer.writer(allocator).print("data: {f}\n\n", .{std.json.fmt(chunk.value, .{})}) catch continue;
+                // Serialize chunk to SSE format
+                var buffer = std.ArrayList(u8){};
+                defer buffer.deinit(allocator);
+                buffer.writer(allocator).print("data: {f}\n\n", .{std.json.fmt(chunk.value, .{})}) catch continue;
 
-            // Track network TX bytes and send
-            metrics.addNetworkTx(buffer.items.len);
-            _ = try connection.stream.writeAll(buffer.items);
+                // Track network TX bytes and send
+                metrics.addNetworkTx(buffer.items.len);
+                _ = try connection.stream.writeAll(buffer.items);
+            },
+            .@"error" => |error_response| {
+                // Provider returned an error - send as SSE data event per OpenAI spec
+                // OpenAI streams errors as regular data events with {"error": {...}}
+                // Clients should check for 'error' field before assuming 'choices' exists
+                had_error = true;
+                log.warn("[STREAM] Provider returned error: {s}", .{
+                    error_response.@"error".message,
+                });
+
+                var buffer = std.ArrayList(u8){};
+                defer buffer.deinit(allocator);
+                buffer.writer(allocator).print("data: {f}\n\n", .{std.json.fmt(error_response, .{})}) catch break;
+
+                // Track network TX bytes and send error
+                metrics.addNetworkTx(buffer.items.len);
+                _ = try connection.stream.writeAll(buffer.items);
+                break; // Stop processing after error
+            },
+            .skip => {
+                // Non-data line or empty chunk, continue
+            },
         }
     }
 
@@ -405,15 +430,27 @@ fn handleProviderStreaming(
     log.debug("[STREAM] Processed {d} chunks in {d}ms", .{ chunk_count, process_time });
 
     const total_elapsed = std.time.milliTimestamp() - start_time;
-    log.info("[STREAM] POST /v1/chat/completions - completed | model='{s}' | total={d}ms | transform_req={d}ms | client_init={d}ms | stream_connect={d}ms | process={d}ms | chunks={d}", .{
-        openai_request.model,
-        total_elapsed,
-        transform_time,
-        client_init_time,
-        stream_connect_time,
-        process_time,
-        chunk_count,
-    });
+    if (had_error) {
+        log.warn("[STREAM] POST /v1/chat/completions - completed with error | model='{s}' | total={d}ms | transform_req={d}ms | client_init={d}ms | stream_connect={d}ms | process={d}ms | chunks={d}", .{
+            openai_request.model,
+            total_elapsed,
+            transform_time,
+            client_init_time,
+            stream_connect_time,
+            process_time,
+            chunk_count,
+        });
+    } else {
+        log.info("[STREAM] POST /v1/chat/completions - completed | model='{s}' | total={d}ms | transform_req={d}ms | client_init={d}ms | stream_connect={d}ms | process={d}ms | chunks={d}", .{
+            openai_request.model,
+            total_elapsed,
+            transform_time,
+            client_init_time,
+            stream_connect_time,
+            process_time,
+            chunk_count,
+        });
+    }
 }
 
 /// Generic provider handler using comptime duck typing

@@ -213,12 +213,15 @@ pub const MockUpstream = struct {
         const response_body = try self.generateMockResponse();
         defer self.allocator.free(response_body);
 
+        // Detect if response is an error (contains "error" field at top level)
+        const http_status = self.detectHttpStatus(response_body, request_allocator);
+
         // Send HTTP response
         var response_buf = std.ArrayList(u8){};
         defer response_buf.deinit(request_allocator);
 
         const writer = response_buf.writer(request_allocator);
-        try writer.writeAll("HTTP/1.1 200 OK\r\n");
+        try writer.print("HTTP/1.1 {d} {s}\r\n", .{ http_status.code, http_status.reason });
         try writer.writeAll("Content-Type: application/json\r\n");
         try writer.print("Content-Length: {d}\r\n", .{response_body.len});
         try writer.writeAll("Connection: close\r\n");
@@ -226,6 +229,43 @@ pub const MockUpstream = struct {
         try writer.writeAll(response_body);
 
         _ = try connection.stream.writeAll(response_buf.items);
+    }
+
+    const HttpStatus = struct {
+        code: u16,
+        reason: []const u8,
+    };
+
+    fn detectHttpStatus(self: *MockUpstream, response_body: []const u8, allocator: std.mem.Allocator) HttpStatus {
+        _ = self;
+        // Try to parse as JSON and check for "error" field
+        const parsed = std.json.parseFromSlice(
+            struct { @"error": ?struct { code: ?i64 = null } = null },
+            allocator,
+            response_body,
+            .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+        ) catch return .{ .code = 200, .reason = "OK" };
+        defer parsed.deinit();
+
+        if (parsed.value.@"error") |err| {
+            // Extract HTTP status code from error.code field
+            if (err.code) |code| {
+                return switch (code) {
+                    400 => .{ .code = 400, .reason = "Bad Request" },
+                    401 => .{ .code = 401, .reason = "Unauthorized" },
+                    403 => .{ .code = 403, .reason = "Forbidden" },
+                    404 => .{ .code = 404, .reason = "Not Found" },
+                    429 => .{ .code = 429, .reason = "Too Many Requests" },
+                    500 => .{ .code = 500, .reason = "Internal Server Error" },
+                    503 => .{ .code = 503, .reason = "Service Unavailable" },
+                    else => .{ .code = 400, .reason = "Bad Request" },
+                };
+            }
+            // Has error but no code - default to 400
+            return .{ .code = 400, .reason = "Bad Request" };
+        }
+
+        return .{ .code = 200, .reason = "OK" };
     }
 
     fn sendStreamingResponse(self: *MockUpstream, connection: std.net.Server.Connection) !void {
