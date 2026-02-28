@@ -1,0 +1,10 @@
+{
+  "model": "sap_ai_core/gpt-4o",
+  "messages": [
+    {
+      "role": "user",
+      "content": "This streaming message will trigger content filter"
+    }
+  ],
+  "stream": true
+}

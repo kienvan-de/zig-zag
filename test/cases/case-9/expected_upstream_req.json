@@ -1,0 +1,23 @@
+{
+  "config": {
+    "modules": {
+      "prompt_templating": {
+        "prompt": {
+          "template": [
+            {
+              "role": "user",
+              "content": "This streaming message will trigger content filter"
+            }
+          ]
+        },
+        "model": {
+          "name": "gpt-4o",
+          "version": "latest"
+        }
+      }
+    },
+    "stream": {
+      "enabled": true
+    }
+  }
+}

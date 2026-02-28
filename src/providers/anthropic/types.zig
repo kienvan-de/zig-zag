@@ -4,6 +4,25 @@ const std = @import("std");
 // Anthropic API Data Structures
 // ============================================================================
 
+// ============================================================================
+// Error Response Structures
+// ============================================================================
+
+/// Anthropic error details
+pub const ErrorDetails = struct {
+    type: []const u8,
+    message: []const u8,
+};
+
+/// Anthropic error response wrapper
+pub const ErrorResponse = struct {
+    @"error": ErrorDetails,
+};
+
+// ============================================================================
+// Request/Response Structures
+// ============================================================================
+
 /// Role in Anthropic conversation (only user and assistant)
 pub const Role = enum {
     user,
