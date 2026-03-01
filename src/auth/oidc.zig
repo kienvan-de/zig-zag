@@ -26,9 +26,9 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const HttpClient = @import("client.zig").HttpClient;
-const app_cache = @import("cache/app_cache.zig");
-const log = @import("log.zig");
+const HttpClient = @import("../client.zig").HttpClient;
+const app_cache = @import("../cache/app_cache.zig");
+const log = @import("../log.zig");
 
 // ============================================================================
 // Types
