@@ -25,7 +25,7 @@ Story 4 (Auth Server) ─────────────┘─────�
 | 1 | PKCE Module | Reusable PKCE in `src/pkce.zig` | ✅ Done |
 | 2 | OIDC Discovery | Reusable OIDC in `src/oidc.zig` | ✅ Done |
 | 2.5 | Auth URL Builder | Build authorization URL with PKCE | 🔲 TODO |
-| 3 | Token Exchange | Token exchange & refresh via OIDC | 🔲 TODO |
+| 3 | Token Exchange | Token exchange & refresh via OAuth | ✅ Done |
 | 4 | Auth Callback Server | Reusable auth server in `src/auth_server.zig` | 🔲 TODO |
 | 5 | HAI Client | `src/providers/hai/client.zig`, types, transformer | 🔲 TODO |
 | 6 | Server Init & Integration | Init flow, provider enum, handlers integration | 🔲 TODO |
@@ -169,7 +169,7 @@ pub fn deinit(self: *PKCE, allocator: Allocator) void
 
 ### Files
 
-- `src/pkce.zig` ✅
+- `src/auth/pkce.zig` ✅ (moved from `src/pkce.zig`)
 
 ### Tests
 
@@ -231,7 +231,7 @@ Two-level caching:
 
 ### Files
 
-- `src/oidc.zig` ✅
+- `src/auth/oidc.zig` ✅ (moved from `src/oidc.zig`)
 - `src/cache/app_cache.zig` (existing, used for caching)
 
 ### Dependencies
@@ -289,7 +289,7 @@ pub fn buildAuthorizationUrl(self: *OIDC, allocator: Allocator, params: Authoriz
 
 ### Files
 
-- `src/oidc.zig` (extend from Story 2)
+- `src/auth/oidc.zig` (extend from Story 2)
 
 ### Dependencies
 
@@ -306,12 +306,12 @@ pub fn buildAuthorizationUrl(self: *OIDC, allocator: Allocator, params: Authoriz
 
 ### Acceptance Criteria
 
-- [ ] Exchange authorization code for tokens (access_token, refresh_token, id_token)
-- [ ] Support PKCE code_verifier in exchange request
-- [ ] Refresh access token using refresh_token
-- [ ] Parse token response (expires_in, token_type)
-- [ ] Store tokens in existing `token_cache.zig` (in-memory, no persistence)
-- [ ] Handle token exchange errors
+- [x] Exchange authorization code for tokens (access_token, refresh_token, id_token)
+- [x] Support PKCE code_verifier in exchange request
+- [x] Refresh access token using refresh_token
+- [x] Parse token response (expires_in, token_type)
+- [ ] Store tokens in existing `token_cache.zig` (in-memory, no persistence) → Deferred to Story 6
+- [x] Handle token exchange errors
 
 ### Token Exchange Request
 
@@ -354,13 +354,14 @@ pub fn refreshToken(allocator: Allocator, config: *OIDCConfig, refresh_token: []
 
 ### Files
 
-- `src/oidc.zig` (extend from Story 2)
-- `src/cache/token_cache.zig` (existing, extend if needed)
+- `src/auth/oauth.zig` (NEW)
+- `src/auth/mod.zig` (update exports)
 
 ### Dependencies
 
 - Story 1 (PKCE Module)
 - Story 2 (OIDC Discovery)
+- Story 2.5 (Authorization URL Builder)
 
 ---
 
