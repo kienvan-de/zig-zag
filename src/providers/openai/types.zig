@@ -736,14 +736,7 @@ pub const StreamChunk = struct {
         try jw.endArray();
         if (self.usage) |u| {
             try jw.objectField("usage");
-            try jw.beginObject();
-            try jw.objectField("prompt_tokens");
-            try jw.write(u.prompt_tokens);
-            try jw.objectField("completion_tokens");
-            try jw.write(u.completion_tokens);
-            try jw.objectField("total_tokens");
-            try jw.write(u.total_tokens);
-            try jw.endObject();
+            try Usage.jsonStringify(u, jw);
         }
         if (self.system_fingerprint) |sf| {
             try jw.objectField("system_fingerprint");
@@ -840,6 +833,27 @@ pub const Usage = struct {
     prompt_tokens: u32,
     completion_tokens: u32,
     total_tokens: u32,
+    prompt_tokens_details: ?std.json.Value = null,
+    completion_tokens_details: ?std.json.Value = null,
+
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("prompt_tokens");
+        try jw.write(self.prompt_tokens);
+        try jw.objectField("completion_tokens");
+        try jw.write(self.completion_tokens);
+        try jw.objectField("total_tokens");
+        try jw.write(self.total_tokens);
+        if (self.prompt_tokens_details) |v| {
+            try jw.objectField("prompt_tokens_details");
+            try jw.write(v);
+        }
+        if (self.completion_tokens_details) |v| {
+            try jw.objectField("completion_tokens_details");
+            try jw.write(v);
+        }
+        try jw.endObject();
+    }
 };
 
 /// Non-streaming response
@@ -877,7 +891,7 @@ pub const Response = struct {
         
         if (self.usage) |u| {
             try jw.objectField("usage");
-            try jw.write(u);
+            try Usage.jsonStringify(u, jw);
         }
         
         if (self.system_fingerprint) |sf| {
