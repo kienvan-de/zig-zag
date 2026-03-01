@@ -1,8 +1,8 @@
 const std = @import("std");
 const SapAiCore = @import("types.zig");
 const config_mod = @import("../../config.zig");
-const token_cache = @import("../../cache/token_cache.zig");
 const http_client = @import("../../client.zig");
+const auth = @import("../../auth/mod.zig");
 const log = @import("../../log.zig");
 
 /// Iterator for SSE streaming responses
@@ -11,31 +11,26 @@ pub const SSEIterator = http_client.SSEIterator;
 /// Result of starting a streaming request
 pub const StreamingResult = http_client.SSEResult;
 
-/// OAuth token response
-const OAuthTokenResponse = struct {
-    access_token: []const u8,
-    token_type: []const u8,
-    expires_in: i64,
-};
-
 pub const SapAiCoreClient = struct {
     allocator: std.mem.Allocator,
     api_domain: []const u8,
     deployment_id: []const u8,
     resource_group: []const u8,
-    oauth_domain: []const u8,
-    oauth_client_id: []const u8,
     oauth_client_secret: []const u8,
+    token_endpoint: []const u8,
     retry_count: u32,
     retry_delay_ms: u64,
     config: *const config_mod.ProviderConfig,
     client: http_client.HttpClient,
+    oauth: auth.OAuth,
+
+    // Owned memory for token_endpoint
+    token_endpoint_buf: []u8,
 
     const DEFAULT_TIMEOUT_MS = 60000;
     const DEFAULT_MAX_RESPONSE_SIZE_MB = 10;
     const DEFAULT_RETRY_COUNT = 0;
     const DEFAULT_RETRY_DELAY_MS = 1000;
-    const TOKEN_EXPIRY_BUFFER_SECONDS: i64 = 60;
 
     pub fn init(allocator: std.mem.Allocator, provider_config: *const config_mod.ProviderConfig) !SapAiCoreClient {
         const api_domain = provider_config.getString("api_domain") orelse {
@@ -73,14 +68,17 @@ pub const SapAiCoreClient = struct {
         const retry_count = provider_config.getInt("retry_count") orelse DEFAULT_RETRY_COUNT;
         const retry_delay_ms = provider_config.getInt("retry_delay_ms") orelse DEFAULT_RETRY_DELAY_MS;
 
+        // Build token endpoint URL (owned memory)
+        const token_endpoint_buf = try std.fmt.allocPrint(allocator, "{s}/oauth/token", .{oauth_domain});
+
         return .{
             .allocator = allocator,
             .api_domain = api_domain,
             .deployment_id = deployment_id,
             .resource_group = resource_group,
-            .oauth_domain = oauth_domain,
-            .oauth_client_id = oauth_client_id,
             .oauth_client_secret = oauth_client_secret,
+            .token_endpoint = token_endpoint_buf,
+            .token_endpoint_buf = token_endpoint_buf,
             .retry_count = @intCast(retry_count),
             .retry_delay_ms = @intCast(retry_delay_ms),
             .config = provider_config,
@@ -90,10 +88,13 @@ pub const SapAiCoreClient = struct {
                 @intCast(max_response_size_mb * 1024 * 1024),
                 null,
             ),
+            // Use oauth_domain as cache key (unique per SAP AI Core instance)
+            .oauth = auth.OAuth.init(allocator, oauth_domain, oauth_client_id),
         };
     }
 
     pub fn deinit(self: *SapAiCoreClient) void {
+        self.allocator.free(self.token_endpoint_buf);
         self.client.deinit();
     }
 
@@ -147,96 +148,36 @@ pub const SapAiCoreClient = struct {
     /// Get a valid OAuth access token, using global cache
     /// Returns owned memory that the caller must free
     fn getAccessToken(self: *SapAiCoreClient) ![]const u8 {
-        // Check global cache first
-        if (token_cache.get(self.allocator, self.oauth_domain, TOKEN_EXPIRY_BUFFER_SECONDS)) |result| {
-            // SAP AI Core doesn't use refresh tokens, free if present
-            if (result.refresh_token) |rt| self.allocator.free(rt);
-            return result.access_token;
+        // 1. Check if we have a valid cached token
+        if (self.oauth.getCachedToken()) |token| {
+            log.debug("SAP AI Core: Using cached access token", .{});
+            return token;
         }
 
-        // Acquire fetch lock to prevent thundering herd
-        const fetch_mutex = try token_cache.acquireFetchLock(self.oauth_domain);
-        defer token_cache.releaseFetchLock(fetch_mutex);
+        // 2. Acquire fetch lock to prevent thundering herd
+        const lock_handle = try self.oauth.acquireFetchLock();
+        defer self.oauth.releaseFetchLock(lock_handle);
 
-        // Check cache again (another thread may have fetched while we waited)
-        if (token_cache.get(self.allocator, self.oauth_domain, TOKEN_EXPIRY_BUFFER_SECONDS)) |result| {
-            log.debug("Token found in cache after acquiring lock for '{s}'", .{self.oauth_domain});
-            if (result.refresh_token) |rt| self.allocator.free(rt);
-            return result.access_token;
+        // 3. Check cache again (another thread may have fetched while we waited)
+        if (self.oauth.getCachedToken()) |token| {
+            log.debug("SAP AI Core: Token found in cache after acquiring lock", .{});
+            return token;
         }
 
-        // Fetch new token
-        log.info("Fetching new OAuth token for '{s}'", .{self.oauth_domain});
-        const new_token = try self.fetchOAuthToken();
-        defer self.allocator.free(new_token.access_token);
+        // 4. Fetch new token using client_credentials
+        log.info("SAP AI Core: Fetching new OAuth token", .{});
+        var tokens = try auth.oauth.fetchClientCredentials(self.allocator, &self.client, .{
+            .token_endpoint = self.token_endpoint,
+            .client_id = self.oauth.client_id,
+            .client_secret = self.oauth_client_secret,
+        });
+        defer tokens.deinit();
 
-        // Store in global cache (no refresh_token for SAP AI Core)
-        try token_cache.put(self.oauth_domain, new_token.access_token, null, new_token.expires_in);
+        // 5. Cache token (no refresh_token for client_credentials)
+        try self.oauth.cacheTokens(tokens.access_token, null, tokens.expires_in);
 
-        // Return from cache (returns a copy that caller must free)
-        if (token_cache.get(self.allocator, self.oauth_domain, TOKEN_EXPIRY_BUFFER_SECONDS)) |result| {
-            if (result.refresh_token) |rt| self.allocator.free(rt);
-            return result.access_token;
-        }
-        return error.TokenCacheError;
-    }
-
-    /// Fetch OAuth token from the OAuth server
-    fn fetchOAuthToken(self: *SapAiCoreClient) !struct { access_token: []const u8, expires_in: i64 } {
-        // Build OAuth URL
-        var url_buffer: [512]u8 = undefined;
-        const url = try std.fmt.bufPrint(&url_buffer, "{s}/oauth/token", .{self.oauth_domain});
-
-        // Build Basic Auth header (client_id:client_secret base64 encoded)
-        var credentials_buffer: [1024]u8 = undefined;
-        const credentials = try std.fmt.bufPrint(&credentials_buffer, "{s}:{s}", .{ self.oauth_client_id, self.oauth_client_secret });
-
-        var base64_buffer: [2048]u8 = undefined;
-        const base64_encoder = std.base64.standard;
-        const encoded_len = base64_encoder.Encoder.calcSize(credentials.len);
-        const encoded_credentials = base64_buffer[0..encoded_len];
-        _ = base64_encoder.Encoder.encode(encoded_credentials, credentials);
-
-        var auth_buffer: [2048]u8 = undefined;
-        const auth_value = try std.fmt.bufPrint(&auth_buffer, "Basic {s}", .{encoded_credentials});
-
-        // Request body
-        const request_body = "grant_type=client_credentials";
-
-        // Build headers
-        const extra_headers = [_]std.http.Header{
-            .{ .name = "Authorization", .value = auth_value },
-            .{ .name = "Content-Type", .value = "application/x-www-form-urlencoded" },
-        };
-
-        // Make POST request
-        var response = try self.client.post(url, &extra_headers, request_body);
-        defer response.deinit();
-
-        if (response.status != .ok) {
-            log.err("OAuth token request failed with status: {}", .{response.status});
-            return error.OAuthTokenError;
-        }
-
-        // Parse response
-        const parsed = std.json.parseFromSlice(
-            OAuthTokenResponse,
-            self.allocator,
-            response.body,
-            .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
-        ) catch |err| {
-            log.err("Failed to parse OAuth response: {}", .{err});
-            return error.OAuthParseError;
-        };
-        defer parsed.deinit();
-
-        // Copy the access token since parsed will be freed
-        const access_token = try self.allocator.dupe(u8, parsed.value.access_token);
-
-        return .{
-            .access_token = access_token,
-            .expires_in = parsed.value.expires_in,
-        };
+        // 6. Return duplicated token
+        return self.allocator.dupe(u8, tokens.access_token);
     }
 
     /// Build the API endpoint URL

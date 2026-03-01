@@ -2,28 +2,47 @@
 //!
 //! Provides OAuth 2.0 token exchange and refresh functionality.
 //! Works with any OAuth 2.0 provider that supports:
-//! - Authorization Code flow with PKCE
+//! - Authorization Code flow with PKCE (HAI)
+//! - Client Credentials flow (SAP AI Core)
 //! - Refresh token flow
 //!
-//! Can be used as:
-//! 1. Standalone functions: `oauth.exchangeCode()`, `oauth.refreshToken()`
-//! 2. Member struct: `OAuth` for use as provider client component
+//! Components:
+//! 1. `OAuth` struct - Member for provider clients, handles caching via global token_cache
+//! 2. Standalone functions - `exchangeCode()`, `refreshToken()`, `fetchClientCredentials()`
 //!
-//! Usage as member:
+//! Token Flow Pattern (both providers use same pattern):
+//! ```
+//! 1. Check cache (fast path, no lock)
+//! 2. Acquire fetch lock (prevent thundering herd)
+//! 3. Check cache again (another thread may have fetched)
+//! 4. Fetch token (refresh/browser/client_credentials)
+//! 5. Cache and return
+//! ```
+//!
+//! Usage - HAI (authorization_code + PKCE):
 //! ```zig
-//! const HaiClient = struct {
-//!     http_client: HttpClient,
-//!     oidc: OIDC,
-//!     oauth: OAuth,
+//! fn getAccessToken(self: *HaiClient) ![]const u8 {
+//!     if (self.oauth.getCachedToken()) |t| return t;
+//!     const lock = try self.oauth.acquireFetchLock();
+//!     defer self.oauth.releaseFetchLock(lock);
+//!     if (self.oauth.getCachedToken()) |t| return t;
+//!     if (try self.oauth.refreshAndCache(&self.client, endpoint)) |t| return t;
+//!     return try self.browserAuthFlow(); // exchangeCodeAndCache inside
+//! }
+//! ```
 //!
-//!     pub fn init(allocator: Allocator, ...) HaiClient {
-//!         return .{
-//!             .http_client = HttpClient.init(allocator),
-//!             .oidc = OIDC.init(allocator, auth_domain, config_path),
-//!             .oauth = OAuth.init(allocator, "hai", client_id),
-//!         };
-//!     }
-//! };
+//! Usage - SAP AI Core (client_credentials):
+//! ```zig
+//! fn getAccessToken(self: *SapAiCoreClient) ![]const u8 {
+//!     if (self.oauth.getCachedToken()) |t| return t;
+//!     const lock = try self.oauth.acquireFetchLock();
+//!     defer self.oauth.releaseFetchLock(lock);
+//!     if (self.oauth.getCachedToken()) |t| return t;
+//!     var tokens = try fetchClientCredentials(self.allocator, &self.client, params);
+//!     defer tokens.deinit();
+//!     try self.oauth.cacheTokens(tokens.access_token, null, tokens.expires_in);
+//!     return self.allocator.dupe(u8, tokens.access_token);
+//! }
 //! ```
 
 const std = @import("std");
@@ -52,6 +71,13 @@ pub const RefreshTokenParams = struct {
     client_id: []const u8,
 };
 
+/// Parameters for client credentials flow
+pub const ClientCredentialsParams = struct {
+    token_endpoint: []const u8,
+    client_id: []const u8,
+    client_secret: []const u8,
+};
+
 /// Token response from OAuth server
 pub const TokenResponse = struct {
     allocator: Allocator,
@@ -77,6 +103,7 @@ pub const TokenResponse = struct {
 pub const OAuthError = error{
     TokenExchangeFailed,
     TokenRefreshFailed,
+    ClientCredentialsFailed,
     InvalidTokenResponse,
 };
 
@@ -365,6 +392,55 @@ pub fn refreshToken(
     return parseTokenResponse(allocator, response.body);
 }
 
+/// Fetch access token using client credentials grant
+/// POST to token_endpoint with grant_type=client_credentials and Basic Auth header
+pub fn fetchClientCredentials(
+    allocator: Allocator,
+    http_client: *HttpClient,
+    params: ClientCredentialsParams,
+) !TokenResponse {
+    log.info("Fetching token via client_credentials at {s}", .{params.token_endpoint});
+
+    // Build Basic Auth header (client_id:client_secret base64 encoded)
+    var credentials_buffer: [1024]u8 = undefined;
+    const credentials = std.fmt.bufPrint(&credentials_buffer, "{s}:{s}", .{
+        params.client_id,
+        params.client_secret,
+    }) catch return error.ClientCredentialsFailed;
+
+    var base64_buffer: [2048]u8 = undefined;
+    const base64_encoder = std.base64.standard;
+    const encoded_len = base64_encoder.Encoder.calcSize(credentials.len);
+    if (encoded_len > base64_buffer.len) return error.ClientCredentialsFailed;
+    const encoded_credentials = base64_buffer[0..encoded_len];
+    _ = base64_encoder.Encoder.encode(encoded_credentials, credentials);
+
+    var auth_buffer: [2048]u8 = undefined;
+    const auth_value = std.fmt.bufPrint(&auth_buffer, "Basic {s}", .{encoded_credentials}) catch return error.ClientCredentialsFailed;
+
+    // Request body
+    const request_body = "grant_type=client_credentials";
+
+    // POST to token endpoint
+    var response = try http_client.post(
+        params.token_endpoint,
+        &[_]std.http.Header{
+            .{ .name = "Authorization", .value = auth_value },
+            .{ .name = "Content-Type", .value = "application/x-www-form-urlencoded" },
+        },
+        request_body,
+    );
+    defer response.deinit();
+
+    if (response.status != .ok) {
+        log.err("Client credentials token request failed: HTTP {} - {s}", .{ response.status, response.body });
+        return error.ClientCredentialsFailed;
+    }
+
+    log.info("Client credentials token fetch successful", .{});
+    return parseTokenResponse(allocator, response.body);
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -454,4 +530,12 @@ test "parseTokenResponse returns error on missing access_token" {
 
     const result = parseTokenResponse(allocator, json);
     try std.testing.expectError(error.InvalidTokenResponse, result);
+}
+
+test "OAuth.init creates instance with correct fields" {
+    const allocator = std.testing.allocator;
+    const oauth = OAuth.init(allocator, "test-cache-key", "test-client-id");
+
+    try std.testing.expectEqualStrings("test-cache-key", oauth.cache_key);
+    try std.testing.expectEqualStrings("test-client-id", oauth.client_id);
 }
