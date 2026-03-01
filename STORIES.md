@@ -27,7 +27,7 @@ Story 4 (Auth Server) ─────────────┘─────�
 | 2.5 | Auth URL Builder | Build authorization URL with PKCE | 🔲 TODO |
 | 3 | Token Exchange | Token exchange & refresh via OAuth | ✅ Done |
 | 4 | Auth Callback Server | Reusable callback server in `src/auth/callback_server.zig` | ✅ Done |
-| 5 | HAI Client | `src/providers/hai/client.zig`, types, transformer | 🔲 TODO |
+| 5 | HAI Client | `src/providers/hai/client.zig`, types, transformer | ✅ Done |
 | 6 | Server Init & Integration | Init flow, provider enum, handlers integration | 🔲 TODO |
 | 7 | HAI Models Listing | Fetch models from HAI upstream | 🔲 TODO |
 

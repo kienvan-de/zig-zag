@@ -158,11 +158,12 @@ fn parseOIDCConfig(allocator: Allocator, json_body: []const u8) !OIDCConfig {
 
 /// OIDC Helper - manages OIDC discovery and caching
 /// Designed to be a member of provider clients
+/// Uses global app_cache for thread-safe config storage
 pub const OIDC = struct {
     allocator: Allocator,
     auth_domain: []const u8,
     config_path: []const u8,
-    config: ?OIDCConfig,
+    config: ?OIDCConfig, // Parsed config for current request lifetime
 
     /// Initialize OIDC helper
     /// auth_domain: e.g., "https://accounts.example.com"
@@ -185,32 +186,29 @@ pub const OIDC = struct {
     }
 
     /// Discover OIDC configuration
-    /// Uses two-level caching:
-    /// 1. Instance cache (self.config) - fastest, no allocation
-    /// 2. App cache - shared across instances, survives instance recreation
-    /// 3. HTTP fetch - only on cache miss
+    /// Uses global app_cache for thread-safe caching
+    /// Parses and stores config in self.config for current request lifetime
     ///
-    /// Returns pointer to cached config (valid until deinit)
+    /// Returns pointer to config (valid until deinit)
     pub fn discover(self: *OIDC, http_client: *HttpClient) !*const OIDCConfig {
-        // Level 1: Instance cache
+        // If already discovered in this request, return cached
         if (self.config) |*config| {
-            log.debug("OIDC config found in instance cache for {s}", .{self.auth_domain});
             return config;
         }
 
-        // Level 2: App cache
+        // Check app_cache (global, thread-safe)
         const cache_key = try self.buildCacheKey();
         defer self.allocator.free(cache_key);
 
         if (app_cache.get(self.allocator, cache_key)) |cached_json| {
             defer self.allocator.free(cached_json);
-            log.debug("OIDC config found in app cache for {s}", .{self.auth_domain});
+            log.debug("OIDC config found in app_cache for {s}", .{self.auth_domain});
 
             self.config = try parseOIDCConfig(self.allocator, cached_json);
             return &self.config.?;
         }
 
-        // Level 3: HTTP fetch
+        // Fetch from HTTP
         log.info("Fetching OIDC config from {s}{s}", .{ self.auth_domain, self.config_path });
 
         const url = try std.fmt.allocPrint(self.allocator, "{s}{s}", .{ self.auth_domain, self.config_path });

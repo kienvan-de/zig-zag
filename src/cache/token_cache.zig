@@ -13,6 +13,7 @@ pub const FetchLockHandle = *std.Thread.Mutex;
 /// Cached token entry
 pub const CachedToken = struct {
     access_token: []const u8,
+    refresh_token: ?[]const u8,
     expires_at: i64, // Unix timestamp in seconds
 
     pub fn isValid(self: CachedToken, buffer_seconds: i64) bool {
@@ -55,6 +56,7 @@ pub fn deinit() void {
             if (cache_allocator) |alloc| {
                 alloc.free(entry.key_ptr.*);
                 alloc.free(entry.value_ptr.access_token);
+                if (entry.value_ptr.refresh_token) |rt| alloc.free(rt);
             }
         }
         c.deinit();
@@ -78,10 +80,22 @@ pub fn deinit() void {
     log.debug("Token cache deinitialized", .{});
 }
 
+/// Result of getting a cached token
+pub const GetResult = struct {
+    access_token: []const u8,
+    refresh_token: ?[]const u8,
+
+    pub fn deinit(self: *GetResult, allocator: std.mem.Allocator) void {
+        allocator.free(self.access_token);
+        if (self.refresh_token) |rt| allocator.free(rt);
+        self.* = undefined;
+    }
+};
+
 /// Get a cached token if valid
-/// Returns a duplicated token that the caller must free, or null if not found/expired
+/// Returns duplicated tokens that the caller must free, or null if not found/expired
 /// This prevents use-after-free if another thread refreshes the token concurrently
-pub fn get(allocator: std.mem.Allocator, key: []const u8, expiry_buffer_seconds: i64) ?[]const u8 {
+pub fn get(allocator: std.mem.Allocator, key: []const u8, expiry_buffer_seconds: i64) ?GetResult {
     mutex.lock();
     defer mutex.unlock();
 
@@ -89,10 +103,38 @@ pub fn get(allocator: std.mem.Allocator, key: []const u8, expiry_buffer_seconds:
         if (c.get(key)) |token| {
             if (token.isValid(expiry_buffer_seconds)) {
                 log.debug("Token cache hit for '{s}'", .{key});
-                // Return a copy to avoid use-after-free if token is refreshed concurrently
-                return allocator.dupe(u8, token.access_token) catch null;
+                // Return copies to avoid use-after-free if token is refreshed concurrently
+                const access_token = allocator.dupe(u8, token.access_token) catch return null;
+                const refresh_token = if (token.refresh_token) |rt|
+                    allocator.dupe(u8, rt) catch {
+                        allocator.free(access_token);
+                        return null;
+                    }
+                else
+                    null;
+                return .{
+                    .access_token = access_token,
+                    .refresh_token = refresh_token,
+                };
             } else {
                 log.debug("Token cache expired for '{s}'", .{key});
+            }
+        }
+    }
+    return null;
+}
+
+/// Get refresh token even if access token is expired
+/// Used for token refresh flow
+pub fn getRefreshToken(allocator: std.mem.Allocator, key: []const u8) ?[]const u8 {
+    mutex.lock();
+    defer mutex.unlock();
+
+    if (cache) |c| {
+        if (c.get(key)) |token| {
+            if (token.refresh_token) |rt| {
+                log.debug("Token cache refresh_token found for '{s}'", .{key});
+                return allocator.dupe(u8, rt) catch null;
             }
         }
     }
@@ -138,8 +180,8 @@ pub fn releaseFetchLock(handle: FetchLockHandle) void {
 }
 
 /// Store a token in the cache
-/// The token and key are duplicated, caller retains ownership of originals
-pub fn put(key: []const u8, access_token: []const u8, expires_in_seconds: i64) !void {
+/// The tokens and key are duplicated, caller retains ownership of originals
+pub fn put(key: []const u8, access_token: []const u8, refresh_token: ?[]const u8, expires_in_seconds: i64) !void {
     mutex.lock();
     defer mutex.unlock();
 
@@ -151,21 +193,27 @@ pub fn put(key: []const u8, access_token: []const u8, expires_in_seconds: i64) !
 
     // Check if key already exists
     if (c.getPtr(key)) |existing| {
-        // Free old token and update
+        // Free old tokens and update
         alloc.free(existing.access_token);
+        if (existing.refresh_token) |rt| alloc.free(rt);
+
         existing.access_token = try alloc.dupe(u8, access_token);
+        existing.refresh_token = if (refresh_token) |rt| try alloc.dupe(u8, rt) else null;
         existing.expires_at = expires_at;
         log.debug("Token cache updated for '{s}', expires in {d}s", .{ key, expires_in_seconds });
     } else {
-        // New entry - duplicate both key and token
+        // New entry - duplicate key and tokens
         const key_copy = try alloc.dupe(u8, key);
         errdefer alloc.free(key_copy);
 
-        const token_copy = try alloc.dupe(u8, access_token);
-        errdefer alloc.free(token_copy);
+        const access_token_copy = try alloc.dupe(u8, access_token);
+        errdefer alloc.free(access_token_copy);
+
+        const refresh_token_copy = if (refresh_token) |rt| try alloc.dupe(u8, rt) else null;
 
         try c.put(key_copy, .{
-            .access_token = token_copy,
+            .access_token = access_token_copy,
+            .refresh_token = refresh_token_copy,
             .expires_at = expires_at,
         });
         log.debug("Token cache stored for '{s}', expires in {d}s", .{ key, expires_in_seconds });
@@ -182,6 +230,7 @@ pub fn remove(key: []const u8) void {
             if (cache_allocator) |alloc| {
                 alloc.free(entry.key);
                 alloc.free(entry.value.access_token);
+                if (entry.value.refresh_token) |rt| alloc.free(rt);
             }
             log.debug("Token cache removed for '{s}'", .{key});
         }
