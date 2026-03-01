@@ -148,13 +148,23 @@ pub const HaiClient = struct {
             return token;
         }
 
-        // 2. Try to refresh using cached refresh_token
+        // 2. Acquire fetch lock to prevent multiple browser sessions
+        const lock_handle = try self.oauth.acquireFetchLock();
+        defer self.oauth.releaseFetchLock(lock_handle);
+
+        // 3. Check cache again (another thread may have fetched while we waited)
+        if (self.oauth.getCachedToken()) |token| {
+            log.debug("HAI: Token found in cache after acquiring lock", .{});
+            return token;
+        }
+
+        // 4. Try to refresh using cached refresh_token
         if (try self.tryRefreshToken()) |access_token| {
             log.info("HAI: Token refreshed successfully", .{});
             return access_token;
         }
 
-        // 3. Need full browser auth flow
+        // 5. Need full browser auth flow
         log.info("HAI: Starting browser authentication flow", .{});
         return try self.browserAuthFlow();
     }
