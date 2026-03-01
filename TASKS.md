@@ -1,79 +1,105 @@
 # TASKS.md - Implementation Tasks
 
-## Story 1: PKCE Module
+## Story 2: OIDC Discovery Module
 
 ### Status: ✅ Complete
 
 ### Acceptance Criteria
-- [ ] Generate cryptographically random 32-byte code verifier
-- [ ] Base64URL encode (no padding) the verifier
-- [ ] Generate SHA256 code challenge from verifier
-- [ ] Place in `src/pkce.zig` for reuse
+- [ ] Fetch `{auth_domain}{oidc_config_path}` from configured endpoint
+- [ ] Parse JSON response into `OIDCConfig` struct
+- [ ] Extract: `authorization_endpoint`, `token_endpoint`, `jwks_uri`, `end_session_endpoint`
+- [ ] Cache OIDC configs in `app_cache.zig`
+- [ ] Design as member/component for provider client integration
+- [ ] Place in `src/oidc.zig` for reuse
 
-### Algorithm (RFC 7636)
+### Design
 
-```
-1. Generate 32 cryptographically random bytes
-2. Base64URL encode (no padding) → code_verifier (43 chars)
-3. SHA256(code_verifier) → 32 bytes hash
-4. Base64URL encode hash (no padding) → code_challenge (43 chars)
+OIDC helper as a **member** of provider client (like HttpClient):
+
+```zig
+// Provider client owns OIDC helper
+pub const HaiClient = struct {
+    http_client: HttpClient,
+    oidc: OIDC,              // OIDC helper as member
+    // ...
+};
 ```
 
 ### Interface
 
 ```zig
-pub const PKCE = struct {
-    code_verifier: []const u8,   // Random 32 bytes, base64url encoded (43 chars)
-    code_challenge: []const u8,  // SHA256(code_verifier), base64url encoded (43 chars)
+// src/oidc.zig
+
+pub const OIDC = struct {
+    allocator: Allocator,
+    auth_domain: []const u8,
+    config_path: []const u8,
+    config: ?OIDCConfig,      // Cached discovery result
+    
+    pub fn init(allocator: Allocator, auth_domain: []const u8, config_path: []const u8) OIDC;
+    pub fn deinit(self: *OIDC) void;
+    
+    /// Discover OIDC endpoints (checks app_cache, then fetches)
+    pub fn discover(self: *OIDC, http_client: *HttpClient) !*const OIDCConfig;
 };
 
-pub fn generate(allocator: Allocator) !PKCE
-pub fn deinit(self: *PKCE, allocator: Allocator) void
+pub const OIDCConfig = struct {
+    issuer: []const u8,
+    authorization_endpoint: []const u8,
+    token_endpoint: []const u8,
+    jwks_uri: []const u8,
+    end_session_endpoint: ?[]const u8,
+};
 ```
 
 ### Tasks
 
-#### Task 1.1: Create `src/pkce.zig` with module structure ✅
+#### Task 2.1: Create `src/oidc.zig` with module structure ✅
 - [x] Create new file with module documentation
-- [x] Add imports: std, crypto, base64
+- [x] Add imports: std, HttpClient, app_cache, log
 
-#### Task 1.2: Implement `PKCE` struct ✅
-- [x] Define struct with `code_verifier` and `code_challenge` fields
-- [x] Both fields are `[]const u8` (allocated slices)
+#### Task 2.2: Implement `OIDCConfig` struct ✅
+- [x] Define struct with required fields (issuer, authorization_endpoint, token_endpoint, jwks_uri)
+- [x] Add optional field: end_session_endpoint
+- [x] Implement `deinit()` to free allocated strings
 
-#### Task 1.3: Implement `generate(allocator)` function ✅
-- [x] Generate 32 random bytes using `std.crypto.random`
-- [x] Base64URL encode (no padding) → code_verifier
-- [x] SHA256 hash the code_verifier string
-- [x] Base64URL encode hash (no padding) → code_challenge
-- [x] Return PKCE struct with both values
+#### Task 2.3: Implement `OIDC` struct ✅
+- [x] Define struct with allocator, auth_domain, config_path, config fields
+- [x] Implement `init()` - store config, set config to null
+- [x] Implement `deinit()` - free config if set
 
-#### Task 1.4: Implement `deinit(self, allocator)` function ✅
-- [x] Free code_verifier slice
-- [x] Free code_challenge slice
+#### Task 2.4: Implement `discover()` function ✅
+- [x] Check if self.config already set → return cached (Level 1: instance cache)
+- [x] Build cache key: `oidc:{auth_domain}`
+- [x] Check app_cache for cached config (Level 2: app cache)
+- [x] If cache miss: fetch from `{auth_domain}{config_path}` (Level 3: HTTP)
+- [x] Parse JSON response into OIDCConfig
+- [x] Store in app_cache (raw JSON for reuse)
+- [x] Store in self.config (parsed struct)
+- [x] Return pointer to config
 
-#### Task 1.5: Verify build ✅
+#### Task 2.5: Verify build ✅
 - [x] Run `zig build` - compilation succeeds
-- [x] Run `zig test src/pkce.zig` - 2 tests pass
+
+### Caching Strategy
+
+```
+discover() called:
+  1. Check self.config (instance cache) → return if set
+  2. Check app_cache with key "oidc:{auth_domain}" → parse and return if hit
+  3. HTTP GET {auth_domain}{config_path}
+  4. Parse JSON → OIDCConfig
+  5. Store in app_cache (raw JSON for reuse across instances)
+  6. Store in self.config (parsed struct for this instance)
+  7. Return &self.config
+```
 
 ### Files
-- `src/pkce.zig` (NEW)
+- `src/oidc.zig` (NEW)
+- `src/cache/app_cache.zig` (existing, used for caching)
 
 ### Dependencies
-- None
-
-### Usage Example (for HAI client in Story 5/6)
-
-```zig
-// Generate PKCE pair
-var pkce = try pkce_mod.generate(allocator);
-defer pkce.deinit(allocator);
-
-// Use code_challenge in auth URL
-const auth_url = try buildAuthUrl(pkce.code_challenge, state);
-
-// Use code_verifier in token exchange
-const tokens = try oidc.exchangeCode(auth_code, pkce.code_verifier, ...);
-```
+- Story 0 (Config Design) ✅ Complete
+- Story 1 (PKCE Module) ✅ Complete
 
 ---
