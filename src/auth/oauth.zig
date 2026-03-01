@@ -47,7 +47,6 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const HttpClient = @import("../client.zig").HttpClient;
 const token_cache = @import("../cache/token_cache.zig");
 const log = @import("../log.zig");
 
@@ -175,15 +174,18 @@ pub const OAuth = struct {
     /// Exchange authorization code for tokens
     /// Stores tokens in cache on success
     /// Returns access_token (caller owns and must free)
+    ///
+    /// Parameters:
+    /// - client: HttpClient or CurlClient instance (anytype)
     pub fn exchangeCodeAndCache(
         self: *OAuth,
-        http_client: *HttpClient,
+        client: anytype,
         token_endpoint: []const u8,
         code: []const u8,
         redirect_uri: []const u8,
         code_verifier: []const u8,
     ) ![]const u8 {
-        var tokens = try exchangeCode(self.allocator, http_client, .{
+        var tokens = try exchangeCode(self.allocator, client, .{
             .token_endpoint = token_endpoint,
             .code = code,
             .redirect_uri = redirect_uri,
@@ -201,15 +203,18 @@ pub const OAuth = struct {
     /// Refresh access token using cached refresh_token
     /// Stores new tokens in cache on success
     /// Returns new access_token (caller owns and must free) or null if refresh not possible
+    ///
+    /// Parameters:
+    /// - client: HttpClient or CurlClient instance (anytype)
     pub fn refreshAndCache(
         self: *OAuth,
-        http_client: *HttpClient,
+        client: anytype,
         token_endpoint: []const u8,
     ) !?[]const u8 {
         const refresh_tok = self.getCachedRefreshToken() orelse return null;
         defer self.allocator.free(refresh_tok);
 
-        var tokens = refreshToken(self.allocator, http_client, .{
+        var tokens = refreshToken(self.allocator, client, .{
             .token_endpoint = token_endpoint,
             .refresh_token = refresh_tok,
             .client_id = self.client_id,
@@ -321,9 +326,12 @@ fn parseTokenResponse(allocator: Allocator, json_body: []const u8) !TokenRespons
 
 /// Exchange authorization code for tokens
 /// POST to token_endpoint with grant_type=authorization_code
+///
+/// Parameters:
+/// - client: HttpClient or CurlClient instance (anytype)
 pub fn exchangeCode(
     allocator: Allocator,
-    http_client: *HttpClient,
+    client: anytype,
     params: ExchangeCodeParams,
 ) !TokenResponse {
     log.info("Exchanging authorization code for tokens at {s}", .{params.token_endpoint});
@@ -339,7 +347,7 @@ pub fn exchangeCode(
     defer allocator.free(body);
 
     // POST to token endpoint
-    var response = try http_client.post(
+    var response = try client.post(
         params.token_endpoint,
         &[_]std.http.Header{
             .{ .name = "Content-Type", .value = "application/x-www-form-urlencoded" },
@@ -359,9 +367,12 @@ pub fn exchangeCode(
 
 /// Refresh access token using refresh token
 /// POST to token_endpoint with grant_type=refresh_token
+///
+/// Parameters:
+/// - client: HttpClient or CurlClient instance (anytype)
 pub fn refreshToken(
     allocator: Allocator,
-    http_client: *HttpClient,
+    client: anytype,
     params: RefreshTokenParams,
 ) !TokenResponse {
     log.info("Refreshing access token at {s}", .{params.token_endpoint});
@@ -375,7 +386,7 @@ pub fn refreshToken(
     defer allocator.free(body);
 
     // POST to token endpoint
-    var response = try http_client.post(
+    var response = try client.post(
         params.token_endpoint,
         &[_]std.http.Header{
             .{ .name = "Content-Type", .value = "application/x-www-form-urlencoded" },
@@ -395,9 +406,12 @@ pub fn refreshToken(
 
 /// Fetch access token using client credentials grant
 /// POST to token_endpoint with grant_type=client_credentials and Basic Auth header
+///
+/// Parameters:
+/// - client: HttpClient or CurlClient instance (anytype)
 pub fn fetchClientCredentials(
     allocator: Allocator,
-    http_client: *HttpClient,
+    client: anytype,
     params: ClientCredentialsParams,
 ) !TokenResponse {
     log.info("Fetching token via client_credentials at {s}", .{params.token_endpoint});
@@ -423,7 +437,7 @@ pub fn fetchClientCredentials(
     const request_body = "grant_type=client_credentials";
 
     // POST to token endpoint
-    var response = try http_client.post(
+    var response = try client.post(
         params.token_endpoint,
         &[_]std.http.Header{
             .{ .name = "Authorization", .value = auth_value },

@@ -193,10 +193,15 @@ pub const HttpClient = struct {
     ) !HttpResponse {
         const uri = try std.Uri.parse(url);
 
-        var req = try self.client.request(.GET, uri, .{
+        log.debug("HTTP GET: {s}", .{url});
+        var req = self.client.request(.GET, uri, .{
             .extra_headers = extra_headers,
-        });
+        }) catch |err| {
+            log.err("HTTP GET request creation failed: {} for URL: {s}", .{ err, url });
+            return err;
+        };
         defer req.deinit();
+        log.debug("HTTP GET: request created successfully", .{});
 
         // Apply socket timeout
         if (req.connection) |conn| {
@@ -204,11 +209,20 @@ pub const HttpClient = struct {
         }
 
         // Send request (no body for GET)
-        try req.sendBodiless();
+        log.debug("HTTP GET: sending request...", .{});
+        req.sendBodiless() catch |err| {
+            log.err("HTTP GET sendBodiless failed: {} for URL: {s}", .{ err, url });
+            return err;
+        };
+        log.debug("HTTP GET: request sent, waiting for response...", .{});
 
         // Wait for response
         const redirect_buffer: [0]u8 = undefined;
-        var response = try req.receiveHead(&redirect_buffer);
+        var response = req.receiveHead(&redirect_buffer) catch |err| {
+            log.err("HTTP GET receiveHead failed: {} for URL: {s}", .{ err, url });
+            return err;
+        };
+        log.debug("HTTP GET: response received, status: {}", .{response.head.status});
 
         // Read response body
         var transfer_buf: [4096]u8 = undefined;
@@ -232,10 +246,15 @@ pub const HttpClient = struct {
     ) !HttpResponse {
         const uri = try std.Uri.parse(url);
 
-        var req = try self.client.request(.POST, uri, .{
+        log.debug("HTTP POST: {s}", .{url});
+        var req = self.client.request(.POST, uri, .{
             .extra_headers = extra_headers,
-        });
+        }) catch |err| {
+            log.err("HTTP POST request creation failed: {} for URL: {s}", .{ err, url });
+            return err;
+        };
         defer req.deinit();
+        log.debug("HTTP POST: request created successfully", .{});
 
         // Apply socket timeout
         if (req.connection) |conn| {
@@ -245,14 +264,32 @@ pub const HttpClient = struct {
         // Set content length and send
         req.transfer_encoding = .{ .content_length = request_body.len };
         var buf: [4096]u8 = undefined;
-        var body_writer = try req.sendBodyUnflushed(&buf);
-        try body_writer.writer.writeAll(request_body);
-        try body_writer.end();
-        try req.connection.?.flush();
+        log.debug("HTTP POST: sending body ({d} bytes)...", .{request_body.len});
+        var body_writer = req.sendBodyUnflushed(&buf) catch |err| {
+            log.err("HTTP POST sendBodyUnflushed failed: {} for URL: {s}", .{ err, url });
+            return err;
+        };
+        body_writer.writer.writeAll(request_body) catch |err| {
+            log.err("HTTP POST writeAll failed: {} for URL: {s}", .{ err, url });
+            return err;
+        };
+        body_writer.end() catch |err| {
+            log.err("HTTP POST body_writer.end() failed: {} for URL: {s}", .{ err, url });
+            return err;
+        };
+        req.connection.?.flush() catch |err| {
+            log.err("HTTP POST flush failed: {} for URL: {s}", .{ err, url });
+            return err;
+        };
+        log.debug("HTTP POST: body sent, waiting for response...", .{});
 
         // Wait for response
         const redirect_buffer: [0]u8 = undefined;
-        var response = try req.receiveHead(&redirect_buffer);
+        var response = req.receiveHead(&redirect_buffer) catch |err| {
+            log.err("HTTP POST receiveHead failed: {} for URL: {s}", .{ err, url });
+            return err;
+        };
+        log.debug("HTTP POST: response received, status: {}", .{response.head.status});
 
         // Read response body
         var transfer_buf: [4096]u8 = undefined;

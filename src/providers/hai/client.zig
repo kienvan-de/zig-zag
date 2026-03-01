@@ -27,6 +27,7 @@ const Allocator = std.mem.Allocator;
 const OpenAI = @import("../openai/types.zig");
 const config_mod = @import("../../config.zig");
 const http_client = @import("../../client.zig");
+const curl = @import("../../curl.zig");
 const log = @import("../../log.zig");
 const auth = @import("../../auth/mod.zig");
 
@@ -44,6 +45,7 @@ pub const HaiClient = struct {
     allocator: Allocator,
     config: *const config_mod.ProviderConfig,
     client: http_client.HttpClient,
+    curl_client: curl.CurlClient,
     oidc: auth.OIDC,
     oauth: auth.OAuth,
 
@@ -113,6 +115,7 @@ pub const HaiClient = struct {
                 @intCast(max_response_size_mb * 1024 * 1024),
                 null,
             ),
+            .curl_client = curl.CurlClient.init(allocator),
             .oidc = auth.OIDC.init(allocator, auth_domain, oidc_config_path),
             .oauth = auth.OAuth.init(allocator, "hai", client_id),
             .api_url = api_url,
@@ -165,19 +168,37 @@ pub const HaiClient = struct {
     /// Try to refresh token using cached refresh token
     /// Returns new access_token (caller owns) or null if refresh not possible
     fn tryRefreshToken(self: *HaiClient) !?[]const u8 {
-        // Discover OIDC endpoints if not already done
-        _ = try self.oidc.discover(&self.client);
-        const oidc_config = self.oidc.config orelse return error.OIDCNotDiscovered;
+        // Discover OIDC endpoints if not already done (use curl for TLS compatibility)
+        log.debug("HAI: tryRefreshToken - discovering OIDC endpoints...", .{});
+        _ = self.oidc.discover(&self.curl_client) catch |err| {
+            log.err("HAI: OIDC discovery failed: {}", .{err});
+            return err;
+        };
+        log.debug("HAI: tryRefreshToken - OIDC discovery successful", .{});
 
-        // Try to refresh using oauth member
-        return self.oauth.refreshAndCache(&self.client, oidc_config.token_endpoint);
+        const oidc_config = self.oidc.config orelse return error.OIDCNotDiscovered;
+        log.debug("HAI: tryRefreshToken - token_endpoint: {s}", .{oidc_config.token_endpoint});
+
+        // Try to refresh using oauth member (use curl for TLS compatibility)
+        log.debug("HAI: tryRefreshToken - attempting token refresh...", .{});
+        const result = self.oauth.refreshAndCache(&self.curl_client, oidc_config.token_endpoint) catch |err| {
+            log.err("HAI: Token refresh failed with error: {}", .{err});
+            return err;
+        };
+        log.debug("HAI: tryRefreshToken - refresh result: {s}", .{if (result != null) "got token" else "no refresh token"});
+        return result;
     }
 
     /// Full browser-based OIDC authentication flow
     /// Returns access_token (caller owns)
     fn browserAuthFlow(self: *HaiClient) ![]const u8 {
-        // 1. Discover OIDC endpoints
-        _ = try self.oidc.discover(&self.client);
+        // 1. Discover OIDC endpoints (use curl for TLS compatibility)
+        log.debug("HAI: browserAuthFlow - discovering OIDC endpoints...", .{});
+        _ = self.oidc.discover(&self.curl_client) catch |err| {
+            log.err("HAI: browserAuthFlow - OIDC discovery failed: {}", .{err});
+            return err;
+        };
+        log.debug("HAI: browserAuthFlow - OIDC discovery successful", .{});
         const oidc_config = self.oidc.config orelse return error.OIDCNotDiscovered;
 
         // 2. Generate PKCE
@@ -213,9 +234,9 @@ pub const HaiClient = struct {
         });
         defer callback_result.deinit(self.allocator);
 
-        // 7. Exchange code for tokens and cache
+        // 7. Exchange code for tokens and cache (use curl for TLS compatibility)
         const access_token = try self.oauth.exchangeCodeAndCache(
-            &self.client,
+            &self.curl_client,
             oidc_config.token_endpoint,
             callback_result.code,
             redirect_uri,
@@ -242,13 +263,16 @@ pub const HaiClient = struct {
 
     /// Fetch list of available models from HAI API
     pub fn listModels(self: *HaiClient) !std.json.Parsed(OpenAI.ModelsResponse) {
+        log.debug("[HAI] listModels - getting access token...", .{});
         // Get valid access token
         const access_token = try self.getAccessToken();
         defer self.allocator.free(access_token);
+        log.debug("[HAI] listModels - access token obtained", .{});
 
         // Build URL
         var url_buffer: [512]u8 = undefined;
         const url = try std.fmt.bufPrint(&url_buffer, "{s}{s}", .{ self.api_url, self.models_path });
+        log.debug("[HAI] listModels - URL: {s}", .{url});
 
         // Build headers
         var auth_buffer: [4096]u8 = undefined;
@@ -256,12 +280,17 @@ pub const HaiClient = struct {
         const headers = try self.buildHeaders(access_token, &auth_buffer, &headers_buf);
 
         // Make GET request
-        var response = try self.client.get(url, headers);
+        log.debug("[HAI] listModels - sending GET request...", .{});
+        var response = self.client.get(url, headers) catch |err| {
+            log.err("[HAI] listModels - GET request failed: {}", .{err});
+            return err;
+        };
         defer response.deinit();
+        log.debug("[HAI] listModels - response status: {}, body length: {d}", .{ response.status, response.body.len });
 
         // Check status code
         if (response.status != .ok) {
-            log.err("HAI listModels failed: HTTP {}", .{response.status});
+            log.err("[HAI] listModels failed: HTTP {} | body: {s}", .{ response.status, response.body });
             return error.RequestFailed;
         }
 
@@ -272,20 +301,23 @@ pub const HaiClient = struct {
             response.body,
             .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
         ) catch |err| {
-            log.err("Failed to parse HAI models response: {}", .{err});
+            log.err("[HAI] Failed to parse models response: {} | body: {s}", .{ err, response.body });
             return error.InvalidResponse;
         };
     }
 
     /// Send a request to HAI Chat Completions API (non-streaming)
     pub fn sendRequest(self: *HaiClient, request: OpenAI.Request) !std.json.Parsed(OpenAI.Response) {
+        log.debug("[HAI] [SYNC] sendRequest - getting access token...", .{});
         // Get valid access token
         const access_token = try self.getAccessToken();
         defer self.allocator.free(access_token);
+        log.debug("[HAI] [SYNC] sendRequest - access token obtained", .{});
 
         // Build URL
         var url_buffer: [512]u8 = undefined;
         const url = try std.fmt.bufPrint(&url_buffer, "{s}{s}", .{ self.api_url, self.chat_completions_path });
+        log.debug("[HAI] [SYNC] sendRequest - URL: {s}", .{url});
 
         // Build headers
         var auth_buffer: [4096]u8 = undefined;
@@ -293,21 +325,25 @@ pub const HaiClient = struct {
         const headers = try self.buildHeaders(access_token, &auth_buffer, &headers_buf);
 
         // Make POST request with JSON body
+        log.debug("[HAI] [SYNC] sendRequest - sending POST request...", .{});
         return self.client.postJson(OpenAI.Response, url, headers, request) catch |err| {
-            log.err("Failed to send HAI request: {}", .{err});
+            log.err("[HAI] [SYNC] sendRequest failed: {}", .{err});
             return err;
         };
     }
 
     /// Send a streaming request to HAI Chat Completions API
     pub fn sendStreamingRequest(self: *HaiClient, request: OpenAI.Request) !*StreamingResult {
+        log.debug("[HAI] [STREAM] sendStreamingRequest - getting access token...", .{});
         // Get valid access token
         const access_token = try self.getAccessToken();
         defer self.allocator.free(access_token);
+        log.debug("[HAI] [STREAM] sendStreamingRequest - access token obtained", .{});
 
         // Build URL
         var url_buffer: [512]u8 = undefined;
         const url = try std.fmt.bufPrint(&url_buffer, "{s}{s}", .{ self.api_url, self.chat_completions_path });
+        log.debug("[HAI] [STREAM] sendStreamingRequest - URL: {s}", .{url});
 
         // Build headers
         var auth_buffer: [4096]u8 = undefined;
@@ -315,15 +351,21 @@ pub const HaiClient = struct {
         const headers = try self.buildHeaders(access_token, &auth_buffer, &headers_buf);
 
         // Make streaming POST request
-        const result = try self.client.postStreaming(SSEIterator, url, headers, request);
+        log.debug("[HAI] [STREAM] sendStreamingRequest - sending POST request...", .{});
+        const result = self.client.postStreaming(SSEIterator, url, headers, request) catch |err| {
+            log.err("[HAI] [STREAM] sendStreamingRequest - POST request failed: {}", .{err});
+            return err;
+        };
+        log.debug("[HAI] [STREAM] sendStreamingRequest - response status: {}", .{result.response.head.status});
 
         // Check status code
         if (result.response.head.status != .ok) {
             self.client.freeStreamingResult(SSEIterator, result);
-            log.err("HAI streaming request failed: HTTP {}", .{result.response.head.status});
+            log.err("[HAI] [STREAM] sendStreamingRequest failed: HTTP {}", .{result.response.head.status});
             return error.RequestFailed;
         }
 
+        log.debug("[HAI] [STREAM] sendStreamingRequest - stream established successfully", .{});
         return result;
     }
 

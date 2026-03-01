@@ -26,7 +26,6 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const HttpClient = @import("../client.zig").HttpClient;
 const app_cache = @import("../cache/app_cache.zig");
 const log = @import("../log.zig");
 
@@ -189,8 +188,14 @@ pub const OIDC = struct {
     /// Uses global app_cache for thread-safe caching
     /// Parses and stores config in self.config for current request lifetime
     ///
+    /// Parameters:
+    /// - client: HttpClient or CurlClient instance (anytype)
+    ///
     /// Returns pointer to config (valid until deinit)
-    pub fn discover(self: *OIDC, http_client: *HttpClient) !*const OIDCConfig {
+    pub fn discover(
+        self: *OIDC,
+        client: anytype,
+    ) !*const OIDCConfig {
         // If already discovered in this request, return cached
         if (self.config) |*config| {
             return config;
@@ -214,7 +219,7 @@ pub const OIDC = struct {
         const url = try std.fmt.allocPrint(self.allocator, "{s}{s}", .{ self.auth_domain, self.config_path });
         defer self.allocator.free(url);
 
-        var response = try http_client.get(url, &[_]std.http.Header{});
+        var response = try client.get(url, &[_]std.http.Header{});
         defer response.deinit();
 
         if (response.status != .ok) {

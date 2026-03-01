@@ -166,20 +166,21 @@ pub fn transformStreamLine(
     }
 
     const json_part = line["data: ".len..];
+    log.debug("[OpenAI] [STREAM] raw chunk: {s}", .{json_part});
 
     // Parse the JSON chunk
     const parsed = std.json.parseFromSlice(
         OpenAI.StreamChunk,
         allocator,
         json_part,
-        .{ .allocate = .alloc_always },
+        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
     ) catch |err| {
         // Failed to parse as stream chunk - try parsing as error response
         if (tryParseError(json_part, allocator)) |error_response| {
             log.warn("[OpenAI] [STREAM] Provider returned error: {s}", .{error_response.@"error".message});
             return .{ .@"error" = error_response };
         }
-        log.debug("[OpenAI] Failed to parse stream chunk: {}", .{err});
+        log.debug("[OpenAI] Failed to parse stream chunk: {} | raw: {s}", .{ err, json_part });
         return .{ .skip = {} };
     };
 
@@ -192,6 +193,8 @@ pub fn transformStreamLine(
         .model = original_model,
         .choices = parsed.value.choices,
         .usage = parsed.value.usage,
+        .system_fingerprint = parsed.value.system_fingerprint,
+        .service_tier = parsed.value.service_tier,
     };
 
     // Serialize to JSON
@@ -207,7 +210,7 @@ pub fn transformStreamLine(
         OpenAI.StreamChunk,
         allocator,
         buffer.items,
-        .{ .allocate = .alloc_always },
+        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
     ) catch {
         parsed.deinit();
         return .{ .skip = {} };
