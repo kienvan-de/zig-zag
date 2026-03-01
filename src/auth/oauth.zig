@@ -5,31 +5,31 @@
 //! - Authorization Code flow with PKCE
 //! - Refresh token flow
 //!
-//! Usage:
+//! Can be used as:
+//! 1. Standalone functions: `oauth.exchangeCode()`, `oauth.refreshToken()`
+//! 2. Member struct: `OAuth` for use as provider client component
+//!
+//! Usage as member:
 //! ```zig
-//! const oauth = @import("auth/oauth.zig");
+//! const HaiClient = struct {
+//!     http_client: HttpClient,
+//!     oidc: OIDC,
+//!     oauth: OAuth,
 //!
-//! // Exchange authorization code for tokens
-//! var tokens = try oauth.exchangeCode(allocator, &http_client, .{
-//!     .token_endpoint = "https://auth.example.com/token",
-//!     .code = "authorization_code",
-//!     .redirect_uri = "http://localhost:8335/callback",
-//!     .client_id = "my-client",
-//!     .code_verifier = "pkce_verifier",
-//! });
-//! defer tokens.deinit();
-//!
-//! // Refresh access token
-//! var new_tokens = try oauth.refreshToken(allocator, &http_client, .{
-//!     .token_endpoint = "https://auth.example.com/token",
-//!     .refresh_token = tokens.refresh_token.?,
-//!     .client_id = "my-client",
-//! });
+//!     pub fn init(allocator: Allocator, ...) HaiClient {
+//!         return .{
+//!             .http_client = HttpClient.init(allocator),
+//!             .oidc = OIDC.init(allocator, auth_domain, config_path),
+//!             .oauth = OAuth.init(allocator, "hai", client_id),
+//!         };
+//!     }
+//! };
 //! ```
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const HttpClient = @import("../client.zig").HttpClient;
+const token_cache = @import("../cache/token_cache.zig");
 const log = @import("../log.zig");
 
 // ============================================================================
@@ -78,6 +78,126 @@ pub const OAuthError = error{
     TokenExchangeFailed,
     TokenRefreshFailed,
     InvalidTokenResponse,
+};
+
+// ============================================================================
+// OAuth Struct (for use as provider client member)
+// ============================================================================
+
+/// OAuth helper - manages token exchange, refresh, and caching
+/// Designed to be a member of provider clients (like OIDC)
+/// Uses global token_cache for thread-safe token storage
+pub const OAuth = struct {
+    allocator: Allocator,
+    cache_key: []const u8,
+    client_id: []const u8,
+
+    const TOKEN_EXPIRY_BUFFER_SECONDS = 60;
+
+    /// Initialize OAuth helper
+    /// cache_key: unique key for token_cache (e.g., "hai")
+    /// client_id: OAuth client ID for token requests
+    pub fn init(allocator: Allocator, cache_key: []const u8, client_id: []const u8) OAuth {
+        return .{
+            .allocator = allocator,
+            .cache_key = cache_key,
+            .client_id = client_id,
+        };
+    }
+
+    /// Get valid access token from cache
+    /// Returns null if not found or expired
+    /// Caller owns returned token and must free it
+    pub fn getCachedToken(self: *OAuth) ?[]const u8 {
+        if (token_cache.get(self.allocator, self.cache_key, TOKEN_EXPIRY_BUFFER_SECONDS)) |result| {
+            // Free refresh_token copy since we only need access_token
+            if (result.refresh_token) |rt| self.allocator.free(rt);
+            return result.access_token;
+        }
+        return null;
+    }
+
+    /// Get refresh token from cache (even if access token expired)
+    /// Returns null if not found
+    /// Caller owns returned token and must free it
+    pub fn getCachedRefreshToken(self: *OAuth) ?[]const u8 {
+        return token_cache.getRefreshToken(self.allocator, self.cache_key);
+    }
+
+    /// Store tokens in cache
+    pub fn cacheTokens(self: *OAuth, access_token: []const u8, refresh_token: ?[]const u8, expires_in: i64) !void {
+        try token_cache.put(self.cache_key, access_token, refresh_token, expires_in);
+    }
+
+    /// Remove tokens from cache
+    pub fn clearCache(self: *OAuth) void {
+        token_cache.remove(self.cache_key);
+    }
+
+    /// Acquire fetch lock to prevent thundering herd
+    /// Returns handle that MUST be passed to releaseFetchLock
+    pub fn acquireFetchLock(self: *OAuth) !token_cache.FetchLockHandle {
+        return token_cache.acquireFetchLock(self.cache_key);
+    }
+
+    /// Release fetch lock
+    pub fn releaseFetchLock(_: *OAuth, handle: token_cache.FetchLockHandle) void {
+        token_cache.releaseFetchLock(handle);
+    }
+
+    /// Exchange authorization code for tokens
+    /// Stores tokens in cache on success
+    /// Returns access_token (caller owns and must free)
+    pub fn exchangeCodeAndCache(
+        self: *OAuth,
+        http_client: *HttpClient,
+        token_endpoint: []const u8,
+        code: []const u8,
+        redirect_uri: []const u8,
+        code_verifier: []const u8,
+    ) ![]const u8 {
+        var tokens = try exchangeCode(self.allocator, http_client, .{
+            .token_endpoint = token_endpoint,
+            .code = code,
+            .redirect_uri = redirect_uri,
+            .client_id = self.client_id,
+            .code_verifier = code_verifier,
+        });
+        defer tokens.deinit();
+
+        // Cache tokens
+        try self.cacheTokens(tokens.access_token, tokens.refresh_token, tokens.expires_in);
+
+        return self.allocator.dupe(u8, tokens.access_token);
+    }
+
+    /// Refresh access token using cached refresh_token
+    /// Stores new tokens in cache on success
+    /// Returns new access_token (caller owns and must free) or null if refresh not possible
+    pub fn refreshAndCache(
+        self: *OAuth,
+        http_client: *HttpClient,
+        token_endpoint: []const u8,
+    ) !?[]const u8 {
+        const refresh_tok = self.getCachedRefreshToken() orelse return null;
+        defer self.allocator.free(refresh_tok);
+
+        var tokens = refreshToken(self.allocator, http_client, .{
+            .token_endpoint = token_endpoint,
+            .refresh_token = refresh_tok,
+            .client_id = self.client_id,
+        }) catch |err| {
+            log.warn("OAuth: Token refresh failed: {}, clearing cache", .{err});
+            self.clearCache();
+            return null;
+        };
+        defer tokens.deinit();
+
+        // Cache new tokens
+        try self.cacheTokens(tokens.access_token, tokens.refresh_token, tokens.expires_in);
+
+        return self.allocator.dupe(u8, tokens.access_token);
+    }
 };
 
 // ============================================================================

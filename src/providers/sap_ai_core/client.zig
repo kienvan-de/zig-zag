@@ -148,8 +148,10 @@ pub const SapAiCoreClient = struct {
     /// Returns owned memory that the caller must free
     fn getAccessToken(self: *SapAiCoreClient) ![]const u8 {
         // Check global cache first
-        if (token_cache.get(self.allocator, self.oauth_domain, TOKEN_EXPIRY_BUFFER_SECONDS)) |cached_token| {
-            return cached_token;
+        if (token_cache.get(self.allocator, self.oauth_domain, TOKEN_EXPIRY_BUFFER_SECONDS)) |result| {
+            // SAP AI Core doesn't use refresh tokens, free if present
+            if (result.refresh_token) |rt| self.allocator.free(rt);
+            return result.access_token;
         }
 
         // Acquire fetch lock to prevent thundering herd
@@ -157,9 +159,10 @@ pub const SapAiCoreClient = struct {
         defer token_cache.releaseFetchLock(fetch_mutex);
 
         // Check cache again (another thread may have fetched while we waited)
-        if (token_cache.get(self.allocator, self.oauth_domain, TOKEN_EXPIRY_BUFFER_SECONDS)) |cached_token| {
+        if (token_cache.get(self.allocator, self.oauth_domain, TOKEN_EXPIRY_BUFFER_SECONDS)) |result| {
             log.debug("Token found in cache after acquiring lock for '{s}'", .{self.oauth_domain});
-            return cached_token;
+            if (result.refresh_token) |rt| self.allocator.free(rt);
+            return result.access_token;
         }
 
         // Fetch new token
@@ -167,11 +170,15 @@ pub const SapAiCoreClient = struct {
         const new_token = try self.fetchOAuthToken();
         defer self.allocator.free(new_token.access_token);
 
-        // Store in global cache
-        try token_cache.put(self.oauth_domain, new_token.access_token, new_token.expires_in);
+        // Store in global cache (no refresh_token for SAP AI Core)
+        try token_cache.put(self.oauth_domain, new_token.access_token, null, new_token.expires_in);
 
         // Return from cache (returns a copy that caller must free)
-        return token_cache.get(self.allocator, self.oauth_domain, TOKEN_EXPIRY_BUFFER_SECONDS) orelse error.TokenCacheError;
+        if (token_cache.get(self.allocator, self.oauth_domain, TOKEN_EXPIRY_BUFFER_SECONDS)) |result| {
+            if (result.refresh_token) |rt| self.allocator.free(rt);
+            return result.access_token;
+        }
+        return error.TokenCacheError;
     }
 
     /// Fetch OAuth token from the OAuth server

@@ -40,5 +40,6 @@ pub const AuthorizationUrl = oidc.AuthorizationUrl;
 pub const TokenResponse = oauth.TokenResponse;
 pub const ExchangeCodeParams = oauth.ExchangeCodeParams;
 pub const RefreshTokenParams = oauth.RefreshTokenParams;
+pub const OAuth = oauth.OAuth;
 pub const CallbackConfig = callback_server.CallbackConfig;
 pub const CallbackResult = callback_server.CallbackResult;
