@@ -3,7 +3,9 @@ const config = @import("config.zig");
 const server = @import("server.zig");
 const log = @import("log.zig");
 const token_cache = @import("cache/token_cache.zig");
+const app_cache = @import("cache/app_cache.zig");
 const worker_pool = @import("worker_pool.zig");
+const provider = @import("provider.zig");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -13,6 +15,10 @@ pub fn main() !void {
     // Load configuration from ~/.config/zig-zag/config.json
     var cfg = try config.Config.load(allocator);
     defer cfg.deinit();
+
+    // Initialize app cache (for OIDC discovery configs, etc.)
+    app_cache.init(allocator);
+    defer app_cache.deinit();
 
     // Initialize token cache
     token_cache.init(allocator);
@@ -33,6 +39,17 @@ pub fn main() !void {
         .output = cfg.log.output,
     }, allocator);
     defer log.deinit();
+
+    // Initialize providers (auth flows for HAI, SAP AI Core, etc.)
+    log.info("Initializing providers...", .{});
+    const init_result = provider.initProviders(allocator, &cfg);
+    log.info("Provider initialization complete: {d}/{d} succeeded", .{ init_result.succeeded, init_result.total });
+
+    // Exit if all providers failed (but allow starting with no providers configured)
+    if (init_result.succeeded == 0 and init_result.total > 0) {
+        log.err("All providers failed to initialize, exiting", .{});
+        return error.NoProvidersAvailable;
+    }
 
     // Start the HTTP server
     try server.start(allocator, &cfg);

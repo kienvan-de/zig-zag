@@ -115,11 +115,9 @@ const ERROR_HTML_TEMPLATE =
 pub fn waitForCallback(allocator: Allocator, config: CallbackConfig) !CallbackResult {
     log.info("Starting callback server on port {d}, path: {s}", .{ config.port, config.path });
 
-    // Create server address
+    // Create server address and listen
     const address = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, config.port);
-
-    // Create and bind server
-    var server = std.net.Server.init(address.stream, .{
+    var server = try address.listen(.{
         .reuse_address = true,
     });
     errdefer server.deinit();
@@ -142,7 +140,7 @@ pub fn waitForCallback(allocator: Allocator, config: CallbackConfig) !CallbackRe
         // Try to accept connection (non-blocking would be better, but this works)
         const conn = server.accept() catch |err| {
             if (err == error.WouldBlock) {
-                std.time.sleep(100 * std.time.ns_per_ms);
+                std.Thread.sleep(100 * std.time.ns_per_ms);
                 continue;
             }
             log.err("Server accept error: {}", .{err});
@@ -198,25 +196,45 @@ fn handleConnection(
     stream: std.net.Stream,
     config: CallbackConfig,
 ) !CallbackResult {
+    // Read HTTP request (simple parsing - just need the first line)
     var buf: [4096]u8 = undefined;
-    var server = std.http.Server.init(allocator, stream, &buf);
+    const n = stream.read(&buf) catch |err| {
+        log.debug("Failed to read HTTP request: {}", .{err});
+        return error.ServerError;
+    };
 
-    var request = server.receiveHead() catch |err| {
-        log.debug("Failed to receive HTTP head: {}", .{err});
+    if (n == 0) {
+        return error.ServerError;
+    }
+
+    const request_data = buf[0..n];
+
+    // Parse first line: "GET /path?query HTTP/1.1"
+    const first_line_end = std.mem.indexOf(u8, request_data, "\r\n") orelse std.mem.indexOf(u8, request_data, "\n") orelse {
+        try sendResponseRaw(stream, "400 Bad Request", "Bad Request");
+        return error.ServerError;
+    };
+
+    const first_line = request_data[0..first_line_end];
+
+    // Extract target (path + query)
+    var parts = std.mem.splitScalar(u8, first_line, ' ');
+    _ = parts.next(); // Skip method (GET)
+    const target = parts.next() orelse {
+        try sendResponseRaw(stream, "400 Bad Request", "Bad Request");
         return error.ServerError;
     };
 
     // Check if this is the expected path
-    const target = request.head.target;
     if (!std.mem.startsWith(u8, target, config.path)) {
         // Not our callback path, send 404
-        try sendResponse(&request, .not_found, "Not Found");
+        try sendResponseRaw(stream, "404 Not Found", "Not Found");
         return error.ServerError; // Will continue waiting
     }
 
     // Parse query parameters
     const query_start = std.mem.indexOf(u8, target, "?") orelse {
-        try sendErrorResponse(&request, "Missing query parameters");
+        try sendErrorResponseRaw(stream, "Missing query parameters");
         return error.MissingCode;
     };
 
@@ -235,24 +253,24 @@ fn handleConnection(
 
     // Validate required parameters
     if (code == null) {
-        try sendErrorResponse(&request, "Missing authorization code");
+        try sendErrorResponseRaw(stream, "Missing authorization code");
         return error.MissingCode;
     }
 
     if (state == null) {
-        try sendErrorResponse(&request, "Missing state parameter");
+        try sendErrorResponseRaw(stream, "Missing state parameter");
         return error.MissingState;
     }
 
     // Validate state matches
     if (!std.mem.eql(u8, state.?, config.expected_state)) {
         log.err("State mismatch: expected {s}, got {s}", .{ config.expected_state, state.? });
-        try sendErrorResponse(&request, "Invalid state parameter (possible CSRF attack)");
+        try sendErrorResponseRaw(stream, "Invalid state parameter (possible CSRF attack)");
         return error.StateMismatch;
     }
 
     // Success! Send success page
-    try sendResponse(&request, .ok, SUCCESS_HTML);
+    try sendResponseRaw(stream, "200 OK", SUCCESS_HTML);
 
     log.info("OAuth callback received successfully", .{});
 
@@ -263,26 +281,51 @@ fn handleConnection(
     };
 }
 
-/// Send HTTP response
-fn sendResponse(request: *std.http.Server.Request, status: std.http.Status, body: []const u8) !void {
-    request.respond(body, .{
-        .status = status,
-        .extra_headers = &[_]std.http.Header{
-            .{ .name = "Content-Type", .value = "text/html; charset=utf-8" },
-        },
-    }) catch |err| {
+/// Send HTTP response (raw)
+fn sendResponseRaw(stream: std.net.Stream, status: []const u8, body: []const u8) !void {
+    var response_buf: [8192]u8 = undefined;
+    const response = std.fmt.bufPrint(&response_buf, "HTTP/1.1 {s}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n{s}", .{ status, body.len, body }) catch {
+        log.err("Failed to format response", .{});
+        return error.ServerError;
+    };
+
+    _ = stream.writeAll(response) catch |err| {
         log.err("Failed to send response: {}", .{err});
         return error.ServerError;
     };
 }
 
-/// Send error response with HTML
-fn sendErrorResponse(request: *std.http.Server.Request, message: []const u8) !void {
-    var buf: [2048]u8 = undefined;
-    const html = std.fmt.bufPrint(&buf, ERROR_HTML_TEMPLATE, .{message}) catch {
-        return sendResponse(request, .bad_request, "Error");
-    };
-    try sendResponse(request, .bad_request, html);
+/// Send error response with HTML (raw)
+fn sendErrorResponseRaw(stream: std.net.Stream, message: []const u8) !void {
+    // Build error HTML manually to avoid format string issues
+    var html_buf: [4096]u8 = undefined;
+    const prefix =
+        \\<!DOCTYPE html>
+        \\<html>
+        \\<head>
+        \\  <title>Authentication Failed</title>
+        \\  <style>
+        \\    body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; text-align: center; padding: 50px; }
+        \\    h1 { color: #f44336; }
+        \\  </style>
+        \\</head>
+        \\<body>
+        \\  <h1>✗ Authentication Failed</h1>
+        \\  <p>
+    ;
+    const suffix =
+        \\</p>
+        \\</body>
+        \\</html>
+    ;
+
+    var fbs = std.io.fixedBufferStream(&html_buf);
+    const writer = fbs.writer();
+    writer.writeAll(prefix) catch return sendResponseRaw(stream, "400 Bad Request", "Error");
+    writer.writeAll(message) catch return sendResponseRaw(stream, "400 Bad Request", "Error");
+    writer.writeAll(suffix) catch return sendResponseRaw(stream, "400 Bad Request", "Error");
+
+    try sendResponseRaw(stream, "400 Bad Request", fbs.getWritten());
 }
 
 // ============================================================================

@@ -147,7 +147,7 @@ pub const SapAiCoreClient = struct {
 
     /// Get a valid OAuth access token, using global cache
     /// Returns owned memory that the caller must free
-    fn getAccessToken(self: *SapAiCoreClient) ![]const u8 {
+    pub fn getAccessToken(self: *SapAiCoreClient) ![]const u8 {
         // 1. Check if we have a valid cached token
         if (self.oauth.getCachedToken()) |token| {
             log.debug("SAP AI Core: Using cached access token", .{});

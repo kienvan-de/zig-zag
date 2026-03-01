@@ -64,6 +64,12 @@ const sap_ai_core = struct {
     const transformer = @import("../providers/sap_ai_core/transformer.zig");
 };
 
+const hai = struct {
+    const types = @import("../providers/openai/types.zig"); // HAI is OpenAI-compatible
+    const client = @import("../providers/hai/client.zig");
+    const transformer = @import("../providers/openai/transformer.zig"); // Reuse OpenAI transformer
+};
+
 /// Handle POST /v1/chat/completions requests
 pub fn handle(
     allocator: std.mem.Allocator,
@@ -193,6 +199,30 @@ pub fn handle(
                         sap_ai_core.client.SapAiCoreClient,
                         sap_ai_core.transformer,
                         sap_ai_core.types,
+                        allocator,
+                        connection,
+                        openai_request.value,
+                        model_info.model,
+                        provider_config,
+                    );
+                }
+            },
+            .hai => {
+                if (is_streaming) {
+                    try handleProviderStreaming(
+                        hai.client.HaiClient,
+                        hai.transformer,
+                        allocator,
+                        connection,
+                        openai_request.value,
+                        model_info.model,
+                        provider_config,
+                    );
+                } else {
+                    try handleProvider(
+                        hai.client.HaiClient,
+                        hai.transformer,
+                        hai.types,
                         allocator,
                         connection,
                         openai_request.value,

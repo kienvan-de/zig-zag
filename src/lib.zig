@@ -3,8 +3,10 @@ const config = @import("config.zig");
 const server = @import("server.zig");
 const log = @import("log.zig");
 const token_cache = @import("cache/token_cache.zig");
+const app_cache = @import("cache/app_cache.zig");
 const worker_pool = @import("worker_pool.zig");
 const metrics = @import("metrics.zig");
+const provider = @import("provider.zig");
 
 // ============================================================================
 // Global state
@@ -13,7 +15,7 @@ const metrics = @import("metrics.zig");
 
 const State = struct {
     gpa: std.heap.GeneralPurposeAllocator(.{}),
-    cfg: config.Config,
+    cfg: ?config.Config, // null until loaded in serverThreadFn
     thread: std.Thread,
     port: u16,
     start_timestamp: i64,
@@ -75,10 +77,39 @@ fn serverThreadFn(s: *State) void {
     const allocator = s.gpa.allocator();
 
     // Initialize subsystems in dependency order (same as main.zig).
+    // All initialization happens in this thread to avoid blocking UI.
+
+    // 1. Load config
+    const cfg = config.Config.load(allocator) catch {
+        server_status.store(.err, .release);
+        server_error_code.store(.config_load_failed, .release);
+        return;
+    };
+
+    // Store config in state (protected by the fact that we're the only writer)
+    state_mutex.lock();
+    s.cfg = cfg;
+    s.port = cfg.server.port;
+    state_mutex.unlock();
+
+    // Ensure config is cleaned up on any exit path
+    defer {
+        state_mutex.lock();
+        if (s.cfg) |*c| c.deinit();
+        s.cfg = null;
+        state_mutex.unlock();
+    }
+
+    // 2. Initialize app cache (for OIDC discovery configs, etc.)
+    app_cache.init(allocator);
+    defer app_cache.deinit();
+
+    // 3. Initialize token cache
     token_cache.init(allocator);
     defer token_cache.deinit();
 
-    const io_pool_size: usize = if (s.cfg.server.io_pool_size) |size|
+    // 4. Initialize worker pool
+    const io_pool_size: usize = if (cfg.server.io_pool_size) |size|
         @intCast(size)
     else
         4;
@@ -91,9 +122,10 @@ fn serverThreadFn(s: *State) void {
     };
     defer worker_pool.deinit();
 
+    // 5. Initialize logging
     log.init(.{
-        .level = s.cfg.log.level,
-        .path = s.cfg.log.path,
+        .level = cfg.log.level,
+        .path = cfg.log.path,
         .output = .file, // lib mode always writes to file
     }, allocator) catch |err| {
         log.err("Failed to init logging: {}", .{err});
@@ -103,12 +135,25 @@ fn serverThreadFn(s: *State) void {
     };
     defer log.deinit();
 
+    // 6. Initialize providers (auth flows for HAI, SAP AI Core, etc.)
+    log.info("Initializing providers...", .{});
+    const init_result = provider.initProviders(allocator, &cfg);
+    log.info("Provider initialization complete: {d}/{d} succeeded", .{ init_result.succeeded, init_result.total });
+
+    // Exit if all providers failed (but allow starting with no providers configured)
+    if (init_result.succeeded == 0 and init_result.total > 0) {
+        log.err("All providers failed to initialize", .{});
+        server_status.store(.err, .release);
+        server_error_code.store(.auth_failed, .release);
+        return;
+    }
+
     // All init successful - transition to running state
     server_status.store(.running, .release);
     server_error_code.store(.none, .release);
 
     // server.start() blocks until server.shutdown() closes the listener.
-    server.start(allocator, &s.cfg) catch |err| {
+    server.start(allocator, &cfg) catch |err| {
         log.err("Server error: {}", .{err});
         // Check if it's a port-in-use error
         if (err == error.AddressInUse) {
@@ -126,8 +171,9 @@ fn serverThreadFn(s: *State) void {
 // Public C API
 // ============================================================================
 
-/// Start the server. Returns true on success, false if already running or
-/// if startup fails.
+/// Start the server. Returns true on success, false if already running.
+/// This function returns immediately - all initialization happens in background thread.
+/// Check getServerStats().status for progress (starting → running or err).
 export fn startServer() bool {
     state_mutex.lock();
     defer state_mutex.unlock();
@@ -141,13 +187,7 @@ export fn startServer() bool {
     // Reset metrics for fresh start
     metrics.reset();
 
-    // We need a stable allocator before we can allocate State itself.
-    // Use the process allocator just for bootstrapping, then switch to GPA.
-    // Instead: allocate State on the heap using a temporary GPA on the stack,
-    // then transfer ownership.
-    //
-    // The trick: create State directly via std.heap.page_allocator for the
-    // outer shell, then the GPA inside State owns all subsequent allocations.
+    // Allocate State shell using page_allocator (stable address for GPA inside)
     const bootstrap = std.heap.page_allocator;
     const s = bootstrap.create(State) catch {
         server_status.store(.err, .release);
@@ -156,28 +196,17 @@ export fn startServer() bool {
     };
     errdefer bootstrap.destroy(s);
 
-    // Initialize GPA inside State (it lives at a stable address now).
-    s.gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = s.gpa.allocator();
-
-    // Load config using GPA.
-    s.cfg = config.Config.load(allocator) catch |err| {
-        log.err("Failed to load config: {}", .{err});
-        _ = s.gpa.deinit();
-        bootstrap.destroy(s);
-        server_status.store(.err, .release);
-        server_error_code.store(.config_load_failed, .release);
-        return false;
+    // Initialize GPA inside State
+    s.* = .{
+        .gpa = std.heap.GeneralPurposeAllocator(.{}){},
+        .cfg = null,
+        .thread = undefined,
+        .port = 0,
+        .start_timestamp = std.time.timestamp(),
     };
-    errdefer s.cfg.deinit();
 
-    s.port = s.cfg.server.port;
-    s.start_timestamp = std.time.timestamp();
-
-    // Spawn server thread.
-    s.thread = std.Thread.spawn(.{}, serverThreadFn, .{s}) catch |err| {
-        log.err("Failed to spawn server thread: {}", .{err});
-        s.cfg.deinit();
+    // Spawn server thread - all initialization happens there (non-blocking)
+    s.thread = std.Thread.spawn(.{}, serverThreadFn, .{s}) catch {
         _ = s.gpa.deinit();
         bootstrap.destroy(s);
         server_status.store(.err, .release);
@@ -210,8 +239,7 @@ export fn stopServer() void {
     // Wait for the server thread to finish all cleanup.
     s.thread.join();
 
-    // Tear down config and GPA.
-    s.cfg.deinit();
+    // Config is cleaned up in serverThreadFn via defer, so just clean up GPA and State
     _ = s.gpa.deinit();
 
     // Free the State shell using the same allocator we used to create it.
@@ -261,6 +289,9 @@ export fn getServerStats() CServerStats {
 
     const snap = metrics.snapshot();
 
+    // Config may be null if still loading
+    const provider_count: u32 = if (s.cfg) |cfg| @intCast(cfg.providers.count()) else 0;
+
     return CServerStats{
         .status = status,
         .error_code = error_code,
@@ -271,7 +302,7 @@ export fn getServerStats() CServerStats {
         .cpu_time_us = snap.cpu_time_us,
         .network_rx_bytes = snap.network_rx_bytes,
         .network_tx_bytes = snap.network_tx_bytes,
-        .llm_provider_count = @intCast(s.cfg.providers.count()),
+        .llm_provider_count = provider_count,
         .input_tokens = snap.input_tokens,
         .output_tokens = snap.output_tokens,
         .total_cost = snap.input_cost + snap.output_cost,
