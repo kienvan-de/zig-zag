@@ -31,7 +31,7 @@
 | Feature | Description |
 |---------|-------------|
 | **OpenAI-Compatible API** | Drop-in replacement for any OpenAI client |
-| **Multi-Provider** | OpenAI, Anthropic, SAP AI Core, and any compatible provider |
+| **Multi-Provider** | OpenAI, Anthropic, SAP AI Core, SAP HAI, and any compatible provider |
 | **Unified Namespace** | Access all models via `{provider}/{model}` format |
 | **Streaming** | Full SSE streaming with automatic protocol translation |
 | **Real-time Metrics** | CPU, memory, network I/O, token usage, and cost tracking |
@@ -43,7 +43,8 @@
 |----------|------|-------------|
 | `openai` | Native | OpenAI API (GPT-4, GPT-4o, etc.) |
 | `anthropic` | Native | Anthropic Messages API (Claude 3.5, Claude 4) |
-| `sap_ai_core` | Native | SAP AI Core with OAuth authentication |
+| `sap_ai_core` | Native | SAP AI Core with OAuth client credentials |
+| `hai` | Native | SAP HAI with OIDC browser auth + OAuth token refresh |
 | Any | Compatible | OpenAI/Anthropic-compatible APIs (Groq, Azure, Together, etc.) |
 
 ## Quick Start
@@ -187,6 +188,21 @@ open ui/macos/zig-zag/zig-zag.xcodeproj
 }
 ```
 
+#### SAP HAI
+
+```json
+{
+  "hai": {
+    "api_url": "https://your-hai-api-endpoint.com",
+    "oidc_url": "https://your-tenant.accounts400.ondemand.com",
+    "client_id": "your-client-id",
+    "client_secret": "your-client-secret"
+  }
+}
+```
+
+> **Note:** HAI uses OIDC browser-based authentication. On first use, a browser window opens for login. Tokens are cached and automatically refreshed.
+
 #### Compatible Providers (Groq, Azure, etc.)
 
 ```json
@@ -220,6 +236,7 @@ anthropic/claude-3-5-sonnet-latest
 openai/gpt-4o
 openai/gpt-4-turbo
 sap_ai_core/gpt-4o
+hai/anthropic--claude-4.5-opus
 groq/llama-3.1-70b-versatile
 ```
 
@@ -256,14 +273,25 @@ zig build test
 │   ├── lib.zig               # Library entry point (C API)
 │   ├── server.zig            # HTTP server
 │   ├── config.zig            # Configuration loader
+│   ├── client.zig            # HTTP client for upstream providers
+│   ├── curl.zig              # Curl-based HTTP client (for TLS-constrained servers)
 │   ├── metrics.zig           # Metrics tracking (CPU, memory, tokens, costs)
+│   ├── auth/                 # Authentication modules
+│   │   ├── oidc.zig          # OIDC discovery
+│   │   ├── oauth.zig         # OAuth token exchange & refresh
+│   │   ├── pkce.zig          # PKCE challenge generation
+│   │   └── callback_server.zig  # Local callback server for browser auth
+│   ├── cache/
+│   │   ├── token_cache.zig   # OAuth token caching
+│   │   └── app_cache.zig     # Application-level cache
 │   ├── handlers/
 │   │   ├── chat.zig          # Chat completions handler
 │   │   └── models.zig        # Models listing handler
 │   └── providers/
 │       ├── openai/           # OpenAI provider
 │       ├── anthropic/        # Anthropic provider
-│       └── sap_ai_core/      # SAP AI Core provider
+│       ├── sap_ai_core/      # SAP AI Core provider
+│       └── hai/              # SAP HAI provider
 ├── include/
 │   └── zig-zag.h             # C header for FFI
 ├── ui/
