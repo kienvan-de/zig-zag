@@ -26,7 +26,7 @@ Story 4 (Auth Server) ─────────────┘─────�
 | 2 | OIDC Discovery | Reusable OIDC in `src/oidc.zig` | ✅ Done |
 | 2.5 | Auth URL Builder | Build authorization URL with PKCE | 🔲 TODO |
 | 3 | Token Exchange | Token exchange & refresh via OAuth | ✅ Done |
-| 4 | Auth Callback Server | Reusable auth server in `src/auth_server.zig` | 🔲 TODO |
+| 4 | Auth Callback Server | Reusable callback server in `src/auth/callback_server.zig` | ✅ Done |
 | 5 | HAI Client | `src/providers/hai/client.zig`, types, transformer | 🔲 TODO |
 | 6 | Server Init & Integration | Init flow, provider enum, handlers integration | 🔲 TODO |
 | 7 | HAI Models Listing | Fetch models from HAI upstream | 🔲 TODO |
@@ -415,18 +415,22 @@ pub fn openBrowser(url: []const u8) !void
 
 ### Files
 
-- `src/auth_server.zig`
+- `src/auth/callback_server.zig` ✅
+
+### Acceptance Criteria
+
+- [x] Start HTTP server on configurable port (`redirect_port`)
+- [x] Listen for GET request on configurable path (`redirect_path`)
+- [x] Extract `code` and `state` query parameters
+- [x] Validate `state` matches expected value (CSRF protection)
+- [x] Return success HTML page to browser
+- [x] Auto-open browser for authorization URL (`openBrowser()`)
+- [x] Timeout after configurable duration
+- [x] Shutdown server after receiving callback or timeout
 
 ### Dependencies
 
-None (but discuss technical constraints before implementation)
-
-### ⚠️ Technical Discussion Needed
-
-- Port conflict handling
-- Timeout behavior
-- Threading model with worker-pool
-- Error reporting to UI
+None
 
 ---
 
