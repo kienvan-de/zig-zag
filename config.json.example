@@ -35,6 +35,17 @@
       "retry_count": 0,
       "retry_delay_ms": 1000
     },
+    "hai": {
+      "api_url": "https://api.hyperspace.tools.sap",
+      "client_id": "your-oidc-client-id",
+      "auth_domain": "https://your-tenant.accounts400.ondemand.com",
+      "oidc_config_path": "/.well-known/openid-configuration",
+      "workspace_id": "your-workspace-id",
+      "redirect_port": 8335,
+      "redirect_path": "/auth-code",
+      "models_path": "/models",
+      "chat_completions_path": "/v1/chat/completions"
+    },
     "groq": {
       "api_key": "gsk-your-groq-key-here",
       "api_url": "https://api.groq.com/openai",

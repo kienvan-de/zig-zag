@@ -8,10 +8,30 @@
 extern "C" {
 #endif
 
+/// Server lifecycle status
+typedef enum {
+    ServerStatusStopped = 0,   // Server is not running
+    ServerStatusStarting = 1,  // Server is initializing (loading config, auth flows, etc.)
+    ServerStatusRunning = 2,   // Server is running and accepting requests
+    ServerStatusError = 3      // Server encountered an error during startup
+} ServerStatus;
+
+/// Error codes for server startup failures
+typedef enum {
+    ServerErrorNone = 0,              // No error
+    ServerErrorConfigLoadFailed = 1,  // Failed to load/parse config.json
+    ServerErrorPortInUse = 2,         // Server port already in use
+    ServerErrorWorkerPoolInitFailed = 3, // Failed to initialize worker pool
+    ServerErrorLogInitFailed = 4,     // Failed to initialize logging
+    ServerErrorThreadSpawnFailed = 5, // Failed to spawn server thread
+    ServerErrorAuthFailed = 6         // Provider authentication failed
+} ServerErrorCode;
+
 /// Server statistics and metrics returned by getServerStats()
 typedef struct {
     // Server state
-    bool running;
+    ServerStatus status;       // Server lifecycle status
+    ServerErrorCode error_code; // Error code if status == ServerStatusError
     uint16_t port;
     
     // Performance metrics

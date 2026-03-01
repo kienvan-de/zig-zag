@@ -20,7 +20,8 @@ Story 4 (Auth Server) ─────────────┘─────�
 
 | # | Story | Description | Status |
 |---|-------|-------------|--------|
-| 0 | Config Design | HAI config structure, app_cache, initializing flag | 🔲 TODO |
+| 0 | Config Design | HAI config structure, app_cache, ServerStatus enum | ✅ Done |
+| 0.5 | Swift App Update | Update macOS app for ServerStatus enum | 🔲 TODO |
 | 1 | PKCE Module | Reusable PKCE in `src/pkce.zig` | 🔲 TODO |
 | 2 | OIDC Discovery | Reusable OIDC in `src/oidc.zig` | 🔲 TODO |
 | 3 | Token Exchange | Token exchange & refresh via OIDC | 🔲 TODO |
@@ -39,16 +40,18 @@ Story 4 (Auth Server) ─────────────┘─────�
 
 ### Acceptance Criteria
 
-- [ ] Define HAI config structure in `config.zig` (ALL fields required, NO hardcoded values):
+- [x] Define HAI config structure (ALL fields required, NO hardcoded values):
+  - HAI config works via existing `ProviderConfig` system (dynamic JSON parsing)
+  - Sample config added to `config.json.example`
   ```json
   {
     "providers": {
       "hai": {
         "api_url": "https://api.hyperspace.tools.sap",
-        "client_id": "4e49c43c-faa4-41f5-8332-a8b965bdfd1f",
-        "auth_domain": "https://ametqb0em.accounts400.ondemand.com",
+        "client_id": "your-oidc-client-id",
+        "auth_domain": "https://your-tenant.accounts400.ondemand.com",
         "oidc_config_path": "/.well-known/openid-configuration",
-        "workspace_id": "my-workspace-id",
+        "workspace_id": "your-workspace-id",
         "redirect_port": 8335,
         "redirect_path": "/auth-code",
         "models_path": "/models",
@@ -57,8 +60,10 @@ Story 4 (Auth Server) ─────────────┘─────�
     }
   }
   ```
-- [ ] Create `src/cache/app_cache.zig` for caching OIDC discovery configs
-- [ ] Add `initializing` flag to `CServerStats` struct for UI
+- [x] Create `src/cache/app_cache.zig` for caching OIDC discovery configs
+- [x] Add server lifecycle status to `CServerStats` struct for UI
+  - **Enhanced**: Replaced `bool initializing` with `ServerStatus` enum (Stopped/Starting/Running/Error)
+  - **Added**: `ServerErrorCode` enum for detailed error reporting to UI
 
 ### Config Fields (ALL REQUIRED)
 
@@ -76,14 +81,52 @@ Story 4 (Auth Server) ─────────────┘─────�
 
 ### Files
 
-- `src/config.zig`
-- `src/cache/app_cache.zig`
-- `include/zig-zag.h` (add `initializing` flag)
-- `src/lib.zig` (update `CServerStats`)
+- `src/cache/app_cache.zig` - NEW: Generic key-value cache
+- `include/zig-zag.h` - ServerStatus enum, ServerErrorCode enum, updated CServerStats
+- `src/lib.zig` - Matching enums, atomic status tracking
+- `config.json.example` - Added HAI provider sample
+- `build.zig` - Fixed task names (exec:dbg, lib:dbg)
 
 ### Dependencies
 
 None
+
+---
+
+## Story 0.5: Update macOS Swift App for ServerStatus
+
+**As a** user  
+**I want** the macOS menu bar app to show accurate server status  
+**So that** I can see if the server is starting, running, stopped, or in error state
+
+### Acceptance Criteria
+
+- [ ] Update Swift code to use `ServerStatus` enum instead of `bool running`
+- [ ] Handle `ServerErrorCode` and display appropriate error messages to user
+- [ ] Update UI to show different states:
+  - **Stopped**: Gray indicator, "Start" button enabled
+  - **Starting**: Yellow/orange indicator, "Starting..." label, buttons disabled
+  - **Running**: Green indicator, "Stop" button enabled
+  - **Error**: Red indicator, error message displayed, "Retry" or "Start" button
+
+### Error Messages for UI
+
+| Error Code | User-Friendly Message |
+|------------|----------------------|
+| `ConfigLoadFailed` | "Failed to load configuration. Check config.json" |
+| `PortInUse` | "Port {port} is already in use" |
+| `WorkerPoolInitFailed` | "Failed to initialize server threads" |
+| `LogInitFailed` | "Failed to initialize logging" |
+| `ThreadSpawnFailed` | "Failed to start server thread" |
+| `AuthFailed` | "Authentication failed. Please try again" |
+
+### Files
+
+- `ui/macos/zig-zag/` (Swift source files)
+
+### Dependencies
+
+- Story 0 (Config Design) - must complete first
 
 ---
 
