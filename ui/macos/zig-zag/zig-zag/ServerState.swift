@@ -23,7 +23,9 @@ class ServerState {
     func stop() {
         stopStatsPolling()
         stopServer()
-        stats = ServerStats()
+        // Refresh stats to get the stopped status from Zig
+        let cStats = getServerStats()
+        stats = ServerStats(cStats)
         lastCpuTimeUs = 0
     }
     
@@ -45,6 +47,11 @@ class ServerState {
         
         stats = ServerStats(cStats)
         stats.cpuPercent = cpuPercent
+        
+        // Stop polling if server is no longer running
+        if !stats.isRunning && !stats.isStarting {
+            stopStatsPolling()
+        }
     }
     
     private func startStatsPolling() {
