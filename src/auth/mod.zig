@@ -29,6 +29,7 @@
 pub const pkce = @import("pkce.zig");
 pub const oidc = @import("oidc.zig");
 pub const oauth = @import("oauth.zig");
+pub const callback_server = @import("callback_server.zig");
 
 // Re-export commonly used types
 pub const PKCE = pkce.PKCE;
@@ -39,3 +40,5 @@ pub const AuthorizationUrl = oidc.AuthorizationUrl;
 pub const TokenResponse = oauth.TokenResponse;
 pub const ExchangeCodeParams = oauth.ExchangeCodeParams;
 pub const RefreshTokenParams = oauth.RefreshTokenParams;
+pub const CallbackConfig = callback_server.CallbackConfig;
+pub const CallbackResult = callback_server.CallbackResult;
