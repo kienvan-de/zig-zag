@@ -23,7 +23,7 @@ Story 4 (Auth Server) ─────────────┘─────�
 | 0 | Config Design | HAI config structure, app_cache, ServerStatus enum | ✅ Done |
 | 0.5 | Swift App Update | Update macOS app for ServerStatus enum | ✅ Done |
 | 1 | PKCE Module | Reusable PKCE in `src/pkce.zig` | ✅ Done |
-| 2 | OIDC Discovery | Reusable OIDC in `src/oidc.zig` | 🔲 TODO |
+| 2 | OIDC Discovery | Reusable OIDC in `src/oidc.zig` | ✅ Done |
 | 3 | Token Exchange | Token exchange & refresh via OIDC | 🔲 TODO |
 | 4 | Auth Callback Server | Reusable auth server in `src/auth_server.zig` | 🔲 TODO |
 | 5 | HAI Client | `src/providers/hai/client.zig`, types, transformer | 🔲 TODO |
@@ -190,17 +190,28 @@ None
 
 ### Acceptance Criteria
 
-- [ ] Fetch `{auth_domain}{oidc_config_path}` from configured endpoint
-- [ ] Parse JSON response into `OIDCConfig` struct
-- [ ] Extract: `authorization_endpoint`, `token_endpoint`, `jwks_uri`, `end_session_endpoint`
-- [ ] Cache OIDC configs in `app_cache.zig`
-- [ ] Design with comptime for provider client integration
-- [ ] Each provider client inits OIDC helper with its own config
-- [ ] Place in `src/oidc.zig` for reuse
+- [x] Fetch `{auth_domain}{oidc_config_path}` from configured endpoint
+- [x] Parse JSON response into `OIDCConfig` struct
+- [x] Extract: `authorization_endpoint`, `token_endpoint`, `jwks_uri`, `end_session_endpoint`
+- [x] Cache OIDC configs in `app_cache.zig`
+- [x] Design as member/component for provider client integration
+- [x] Each provider client inits OIDC helper with its own config
+- [x] Place in `src/oidc.zig` for reuse
 
 ### Interface
 
 ```zig
+pub const OIDC = struct {
+    allocator: Allocator,
+    auth_domain: []const u8,
+    config_path: []const u8,
+    config: ?OIDCConfig,
+
+    pub fn init(allocator: Allocator, auth_domain: []const u8, config_path: []const u8) OIDC;
+    pub fn deinit(self: *OIDC) void;
+    pub fn discover(self: *OIDC, http_client: *HttpClient) !*const OIDCConfig;
+};
+
 pub const OIDCConfig = struct {
     issuer: []const u8,
     authorization_endpoint: []const u8,
@@ -208,18 +219,23 @@ pub const OIDCConfig = struct {
     jwks_uri: []const u8,
     end_session_endpoint: ?[]const u8,
 };
-
-pub fn fetchConfig(allocator: Allocator, auth_domain: []const u8, oidc_config_path: []const u8) !OIDCConfig
 ```
+
+### Caching Strategy
+
+Two-level caching:
+1. **Instance cache** (`self.config`) - fastest, no allocation
+2. **App cache** (`app_cache`) - shared across instances, key: `oidc:{auth_domain}`
+3. **HTTP fetch** - only on cache miss
 
 ### Files
 
-- `src/oidc.zig`
-- `src/cache/app_cache.zig` (extend from Story 0)
+- `src/oidc.zig` ✅
+- `src/cache/app_cache.zig` (existing, used for caching)
 
 ### Dependencies
 
-- Story 0 (Config Design)
+- Story 0 (Config Design) ✅ Complete
 
 ---
 
