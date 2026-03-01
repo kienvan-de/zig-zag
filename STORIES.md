@@ -24,12 +24,12 @@ Story 4 (Auth Server) ─────────────┘─────�
 | 0.5 | Swift App Update | Update macOS app for ServerStatus enum | ✅ Done |
 | 1 | PKCE Module | Reusable PKCE in `src/pkce.zig` | ✅ Done |
 | 2 | OIDC Discovery | Reusable OIDC in `src/oidc.zig` | ✅ Done |
-| 2.5 | Auth URL Builder | Build authorization URL with PKCE | 🔲 TODO |
+| 2.5 | Auth URL Builder | Build authorization URL with PKCE | ✅ Done |
 | 3 | Token Exchange | Token exchange & refresh via OAuth | ✅ Done |
 | 4 | Auth Callback Server | Reusable callback server in `src/auth/callback_server.zig` | ✅ Done |
 | 5 | HAI Client | `src/providers/hai/client.zig`, types, transformer | ✅ Done |
 | 6 | Server Init & Integration | Init flow, provider enum, handlers integration | 🔲 TODO |
-| 7 | HAI Models Listing | Fetch models from HAI upstream | 🔲 TODO |
+| 7 | HAI Models Listing | Fetch models from HAI upstream | ✅ Done |
 
 ---
 
@@ -248,10 +248,10 @@ Two-level caching:
 
 ### Acceptance Criteria
 
-- [ ] Build authorization URL with all required parameters
-- [ ] Generate random `state` parameter for CSRF protection
-- [ ] Include PKCE `code_challenge` and `code_challenge_method=S256`
-- [ ] URL-encode all parameters properly
+- [x] Build authorization URL with all required parameters
+- [x] Generate random `state` parameter for CSRF protection
+- [x] Include PKCE `code_challenge` and `code_challenge_method=S256`
+- [x] URL-encode all parameters properly
 
 ### Authorization URL Parameters
 
@@ -442,11 +442,13 @@ None
 
 ### Acceptance Criteria
 
-- [ ] Initialize client with config (api_url, client_id, auth_domain, workspace_id, etc.)
-- [ ] Add required headers: `Authorization`, `X-Hyperspace-Workspace`, `X-Include-Usage`
-- [ ] Route requests to configured `chat_completions_path`
-- [ ] Support both streaming and non-streaming requests
-- [ ] Transform requests for Anthropic models (reuse existing anthropic transformer if model starts with `claude-*`)
+- [x] Initialize client with config (api_url, client_id, auth_domain, workspace_id, etc.)
+- [x] Add required headers: `Authorization`, `X-Hyperspace-Workspace`, `X-Include-Usage`
+- [x] Route requests to configured `chat_completions_path`
+- [x] Support both streaming and non-streaming requests
+- [x] HAI is OpenAI-compatible (no transformation needed)
+- [x] OIDC and OAuth as member components using global caches
+- [x] Thread-safe token management with thundering herd protection
 
 ### API Request Headers
 
@@ -459,17 +461,18 @@ X-Include-Usage: true
 
 ### Files
 
-- `src/providers/hai/client.zig`
-- `src/providers/hai/types.zig`
-- `src/providers/hai/transformer.zig`
+- `src/providers/hai/client.zig` ✅
+- ~~`src/providers/hai/types.zig`~~ (reuses `openai/types.zig`)
+- ~~`src/providers/hai/transformer.zig`~~ (HAI is OpenAI-compatible, no transformation)
 
 ### Dependencies
 
-- Story 0 (Config Design)
-- Story 1 (PKCE Module)
-- Story 2 (OIDC Discovery)
-- Story 3 (Token Exchange)
-- Story 4 (Auth Callback Server)
+- Story 0 (Config Design) ✅
+- Story 1 (PKCE Module) ✅
+- Story 2 (OIDC Discovery) ✅
+- Story 2.5 (Auth URL Builder) ✅
+- Story 3 (Token Exchange) ✅
+- Story 4 (Auth Callback Server) ✅
 
 ---
 
@@ -537,16 +540,17 @@ X-Include-Usage: true
 
 ### Acceptance Criteria
 
-- [ ] Implement `listModels()` in HAI client
-- [ ] Fetch models from upstream: `{api_url}{models_path}`
-- [ ] Add required headers: `Authorization`, `X-Hyperspace-Workspace`
-- [ ] Parse response and transform to OpenAI models format
-- [ ] Handle errors (auth failure, network error, etc.)
+- [x] Implement `listModels()` in HAI client
+- [x] Fetch models from upstream: `{api_url}{models_path}`
+- [x] Add required headers: `Authorization`, `X-Hyperspace-Workspace`
+- [x] Parse response (OpenAI-compatible format)
+- [x] Handle errors (auth failure, network error, etc.)
+- [ ] Integrate with `handlers/models.zig` (Story 6)
 
 ### Files
 
-- `src/providers/hai/client.zig` (add `listModels`)
-- `src/handlers/models.zig` (integrate HAI)
+- `src/providers/hai/client.zig` ✅ (`listModels` implemented)
+- `src/handlers/models.zig` (integrate HAI - Story 6)
 
 ### Dependencies
 
