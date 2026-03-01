@@ -49,7 +49,6 @@ pub const HaiClient = struct {
 
     // Config values (extracted for convenience)
     api_url: []const u8,
-    workspace_id: []const u8,
     redirect_port: u16,
     redirect_path: []const u8,
     models_path: []const u8,
@@ -77,11 +76,6 @@ pub const HaiClient = struct {
 
         const oidc_config_path = provider_config.getString("oidc_config_path") orelse {
             log.err("HAI provider config missing 'oidc_config_path' field", .{});
-            return error.MissingConfig;
-        };
-
-        const workspace_id = provider_config.getString("workspace_id") orelse {
-            log.err("HAI provider config missing 'workspace_id' field", .{});
             return error.MissingConfig;
         };
 
@@ -122,7 +116,6 @@ pub const HaiClient = struct {
             .oidc = auth.OIDC.init(allocator, auth_domain, oidc_config_path),
             .oauth = auth.OAuth.init(allocator, "hai", client_id),
             .api_url = api_url,
-            .workspace_id = workspace_id,
             .redirect_port = redirect_port,
             .redirect_path = redirect_path,
             .models_path = models_path,
@@ -238,15 +231,13 @@ pub const HaiClient = struct {
     // ========================================================================
 
     /// Build authorization headers for HAI API
-    fn buildHeaders(self: *HaiClient, access_token: []const u8, auth_buffer: []u8, headers_buf: []std.http.Header) ![]std.http.Header {
+    fn buildHeaders(_: *HaiClient, access_token: []const u8, auth_buffer: []u8, headers_buf: []std.http.Header) ![]std.http.Header {
         const auth_value = try std.fmt.bufPrint(auth_buffer, "Bearer {s}", .{access_token});
 
         headers_buf[0] = .{ .name = "Authorization", .value = auth_value };
         headers_buf[1] = .{ .name = "Content-Type", .value = "application/json" };
-        headers_buf[2] = .{ .name = "X-Hyperspace-Workspace", .value = self.workspace_id };
-        headers_buf[3] = .{ .name = "X-Include-Usage", .value = "true" };
 
-        return headers_buf[0..4];
+        return headers_buf[0..2];
     }
 
     /// Fetch list of available models from HAI API
@@ -261,7 +252,7 @@ pub const HaiClient = struct {
 
         // Build headers
         var auth_buffer: [4096]u8 = undefined;
-        var headers_buf: [4]std.http.Header = undefined;
+        var headers_buf: [2]std.http.Header = undefined;
         const headers = try self.buildHeaders(access_token, &auth_buffer, &headers_buf);
 
         // Make GET request
@@ -298,7 +289,7 @@ pub const HaiClient = struct {
 
         // Build headers
         var auth_buffer: [4096]u8 = undefined;
-        var headers_buf: [4]std.http.Header = undefined;
+        var headers_buf: [2]std.http.Header = undefined;
         const headers = try self.buildHeaders(access_token, &auth_buffer, &headers_buf);
 
         // Make POST request with JSON body
@@ -320,7 +311,7 @@ pub const HaiClient = struct {
 
         // Build headers
         var auth_buffer: [4096]u8 = undefined;
-        var headers_buf: [4]std.http.Header = undefined;
+        var headers_buf: [2]std.http.Header = undefined;
         const headers = try self.buildHeaders(access_token, &auth_buffer, &headers_buf);
 
         // Make streaming POST request

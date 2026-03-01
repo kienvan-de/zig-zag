@@ -52,7 +52,6 @@ Story 4 (Auth Server) ─────────────┘─────�
         "client_id": "your-oidc-client-id",
         "auth_domain": "https://your-tenant.accounts400.ondemand.com",
         "oidc_config_path": "/.well-known/openid-configuration",
-        "workspace_id": "your-workspace-id",
         "redirect_port": 8335,
         "redirect_path": "/auth-code",
         "models_path": "/models",
@@ -74,7 +73,6 @@ Story 4 (Auth Server) ─────────────┘─────�
 | `client_id` | OIDC client ID |
 | `auth_domain` | OIDC authentication domain |
 | `oidc_config_path` | Path to OIDC discovery endpoint |
-| `workspace_id` | HAI workspace ID |
 | `redirect_port` | Local port for OAuth callback |
 | `redirect_path` | Path for OAuth callback |
 | `models_path` | Path to list models endpoint |
