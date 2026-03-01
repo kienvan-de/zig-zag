@@ -22,7 +22,7 @@ Story 4 (Auth Server) ─────────────┘─────�
 |---|-------|-------------|--------|
 | 0 | Config Design | HAI config structure, app_cache, ServerStatus enum | ✅ Done |
 | 0.5 | Swift App Update | Update macOS app for ServerStatus enum | ✅ Done |
-| 1 | PKCE Module | Reusable PKCE in `src/pkce.zig` | 🔲 TODO |
+| 1 | PKCE Module | Reusable PKCE in `src/pkce.zig` | ✅ Done |
 | 2 | OIDC Discovery | Reusable OIDC in `src/oidc.zig` | 🔲 TODO |
 | 3 | Token Exchange | Token exchange & refresh via OIDC | 🔲 TODO |
 | 4 | Auth Callback Server | Reusable auth server in `src/auth_server.zig` | 🔲 TODO |
@@ -140,18 +140,18 @@ None
 
 ### Acceptance Criteria
 
-- [ ] Generate cryptographically random 32-byte code verifier
-- [ ] Base64URL encode (no padding) the verifier
-- [ ] Generate SHA256 code challenge from verifier
-- [ ] Place in `src/pkce.zig` for reuse
+- [x] Generate cryptographically random 32-byte code verifier
+- [x] Base64URL encode (no padding) the verifier
+- [x] Generate SHA256 code challenge from verifier
+- [x] Place in `src/pkce.zig` for reuse
 
 ### Algorithm
 
 ```
 1. Generate 32 random bytes
-2. Base64URL encode (no padding) -> code_verifier
+2. Base64URL encode (no padding) -> code_verifier (43 chars)
 3. SHA256(code_verifier) -> hash
-4. Base64URL encode hash (no padding) -> code_challenge
+4. Base64URL encode hash (no padding) -> code_challenge (43 chars)
 ```
 
 ### Interface
@@ -168,7 +168,13 @@ pub fn deinit(self: *PKCE, allocator: Allocator) void
 
 ### Files
 
-- `src/pkce.zig`
+- `src/pkce.zig` ✅
+
+### Tests
+
+- `zig test src/pkce.zig` - 2 tests pass
+  - `generate produces valid PKCE pair` - verifies lengths and hash
+  - `generate produces unique values` - verifies randomness
 
 ### Dependencies
 
