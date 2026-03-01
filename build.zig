@@ -80,6 +80,20 @@ pub fn build(b: *std.Build) void {
     const run_integration_step = b.step("test", "Run full integration test suite");
     run_integration_step.dependOn(&run_integration_exe.step);
 
+    // Debug build of executable
+    const debug_exe = b.addExecutable(.{
+        .name = "zig-zag",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = .Debug,
+        }),
+    });
+
+    const debug_step = b.step("exec:dbg", "Build debug binary");
+    const install_debug = b.addInstallArtifact(debug_exe, .{});
+    debug_step.dependOn(&install_debug.step);
+
     // Release build of executable (smallest binary)
     const release_exe = b.addExecutable(.{
         .name = "zig-zag",
@@ -126,7 +140,7 @@ pub fn build(b: *std.Build) void {
     });
 
     const lib_install = b.addInstallArtifact(lib, .{});
-    const lib_step = b.step("lib", "Build shared library for platform UI integration");
+    const lib_step = b.step("lib:dbg", "Build debug shared library for platform UI integration");
     lib_step.dependOn(&lib_install.step);
 
     // Release shared library

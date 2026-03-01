@@ -22,12 +22,36 @@ const State = struct {
 var state: ?*State = null;
 var state_mutex: std.Thread.Mutex = .{};
 
+// Server lifecycle status - accessed atomically, no mutex needed
+var server_status: std.atomic.Value(ServerStatus) = std.atomic.Value(ServerStatus).init(.stopped);
+var server_error_code: std.atomic.Value(ServerErrorCode) = std.atomic.Value(ServerErrorCode).init(.none);
+
 // ============================================================================
 // C-compatible types (must match include/zig-zag.h)
 // ============================================================================
 
+/// Server lifecycle status
+pub const ServerStatus = enum(c_int) {
+    stopped = 0, // Server is not running
+    starting = 1, // Server is initializing (loading config, auth flows, etc.)
+    running = 2, // Server is running and accepting requests
+    err = 3, // Server encountered an error during startup
+};
+
+/// Error codes for server startup failures
+pub const ServerErrorCode = enum(c_int) {
+    none = 0, // No error
+    config_load_failed = 1, // Failed to load/parse config.json
+    port_in_use = 2, // Server port already in use
+    worker_pool_init_failed = 3, // Failed to initialize worker pool
+    log_init_failed = 4, // Failed to initialize logging
+    thread_spawn_failed = 5, // Failed to spawn server thread
+    auth_failed = 6, // Provider authentication failed
+};
+
 pub const CServerStats = extern struct {
-    running: bool,
+    status: ServerStatus,
+    error_code: ServerErrorCode,
     port: u16,
     uptime_seconds: u64,
     memory_bytes: u64,
@@ -61,6 +85,8 @@ fn serverThreadFn(s: *State) void {
 
     worker_pool.init(allocator, io_pool_size) catch |err| {
         log.err("Failed to init worker pool: {}", .{err});
+        server_status.store(.err, .release);
+        server_error_code.store(.worker_pool_init_failed, .release);
         return;
     };
     defer worker_pool.deinit();
@@ -71,13 +97,24 @@ fn serverThreadFn(s: *State) void {
         .output = .file, // lib mode always writes to file
     }, allocator) catch |err| {
         log.err("Failed to init logging: {}", .{err});
+        server_status.store(.err, .release);
+        server_error_code.store(.log_init_failed, .release);
         return;
     };
     defer log.deinit();
 
+    // All init successful - transition to running state
+    server_status.store(.running, .release);
+    server_error_code.store(.none, .release);
+
     // server.start() blocks until server.shutdown() closes the listener.
     server.start(allocator, &s.cfg) catch |err| {
         log.err("Server error: {}", .{err});
+        // Check if it's a port-in-use error
+        if (err == error.AddressInUse) {
+            server_status.store(.err, .release);
+            server_error_code.store(.port_in_use, .release);
+        }
     };
 }
 
@@ -97,6 +134,10 @@ export fn startServer() bool {
 
     if (state != null) return false; // already running
 
+    // Set status to starting immediately
+    server_status.store(.starting, .release);
+    server_error_code.store(.none, .release);
+
     // Reset metrics for fresh start
     metrics.reset();
 
@@ -108,7 +149,11 @@ export fn startServer() bool {
     // The trick: create State directly via std.heap.page_allocator for the
     // outer shell, then the GPA inside State owns all subsequent allocations.
     const bootstrap = std.heap.page_allocator;
-    const s = bootstrap.create(State) catch return false;
+    const s = bootstrap.create(State) catch {
+        server_status.store(.err, .release);
+        server_error_code.store(.config_load_failed, .release);
+        return false;
+    };
     errdefer bootstrap.destroy(s);
 
     // Initialize GPA inside State (it lives at a stable address now).
@@ -120,6 +165,8 @@ export fn startServer() bool {
         log.err("Failed to load config: {}", .{err});
         _ = s.gpa.deinit();
         bootstrap.destroy(s);
+        server_status.store(.err, .release);
+        server_error_code.store(.config_load_failed, .release);
         return false;
     };
     errdefer s.cfg.deinit();
@@ -133,6 +180,8 @@ export fn startServer() bool {
         s.cfg.deinit();
         _ = s.gpa.deinit();
         bootstrap.destroy(s);
+        server_status.store(.err, .release);
+        server_error_code.store(.thread_spawn_failed, .release);
         return false;
     };
 
@@ -150,7 +199,7 @@ export fn stopServer() void {
         return;
     };
     // Clear state pointer before unlocking so getServerStats() returns
-    // running=false immediately while we wait for the thread to join.
+    // status=stopped immediately while we wait for the thread to join.
     state = null;
     state_mutex.unlock();
 
@@ -167,18 +216,27 @@ export fn stopServer() void {
 
     // Free the State shell using the same allocator we used to create it.
     std.heap.page_allocator.destroy(s);
+
+    // Set status to stopped after cleanup
+    server_status.store(.stopped, .release);
+    server_error_code.store(.none, .release);
 }
 
 /// Get current server statistics and metrics.
 /// Returns zeroed struct if server is not running.
 export fn getServerStats() CServerStats {
+    // Read atomic status/error first (no lock needed)
+    const status = server_status.load(.acquire);
+    const error_code = server_error_code.load(.acquire);
+
     state_mutex.lock();
     defer state_mutex.unlock();
 
     const s = state orelse {
-        // Server not running - return zeroed stats
+        // Server not running - return stats with current status
         return CServerStats{
-            .running = false,
+            .status = status,
+            .error_code = error_code,
             .port = 0,
             .uptime_seconds = 0,
             .memory_bytes = 0,
@@ -204,7 +262,8 @@ export fn getServerStats() CServerStats {
     const snap = metrics.snapshot();
 
     return CServerStats{
-        .running = true,
+        .status = status,
+        .error_code = error_code,
         .port = s.port,
         .uptime_seconds = uptime,
         .memory_bytes = snap.rss_bytes,

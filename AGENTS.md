@@ -111,12 +111,12 @@ A native Swift menu bar application located in `ui/macos/zig-zag/`:
 ## Build Commands
 
 ```bash
-zig build              # Build everything
+zig build              # Build everything (default)
 zig build run          # Build and run CLI
 zig build exec:dbg     # Build debug executable
-zig build exec:rls     # Build release executable
-zig build lib:dbg      # Build debug library (for macOS app)
-zig build lib:rls      # Build release library
+zig build exec:rls     # Build release executable (smallest size)
+zig build lib:dbg      # Build debug shared library (for macOS app)
+zig build lib:rls      # Build release shared library
 zig build test         # Run integration tests
 ```
 
