@@ -28,7 +28,7 @@ Story 4 (Auth Server) ─────────────┘─────�
 | 3 | Token Exchange | Token exchange & refresh via OAuth | ✅ Done |
 | 4 | Auth Callback Server | Reusable callback server in `src/auth/callback_server.zig` | ✅ Done |
 | 5 | HAI Client | `src/providers/hai/client.zig`, types, transformer | ✅ Done |
-| 6 | Server Init & Integration | Init flow, provider enum, handlers integration | 🔲 TODO |
+| 6 | Server Init & Integration | Init flow, provider enum, handlers integration | ✅ Done |
 | 7 | HAI Models Listing | Fetch models from HAI upstream | ✅ Done |
 
 ---
@@ -484,16 +484,18 @@ X-Include-Usage: true
 
 ### Acceptance Criteria
 
-- [ ] Add server init flow using worker-pool threads
-- [ ] Initialize all configured providers before starting proxy server
-- [ ] Set `initializing` flag in `CServerStats` during init
-- [ ] Clear `initializing` flag when all providers ready
-- [ ] Add `hai` to `Provider` enum in `provider.zig`
-- [ ] Update `handlers/chat.zig` to handle hai provider
-- [ ] Update `handlers/models.zig` to list hai models
+- [x] Add `initProviders()` to `provider.zig` - loops through config, calls getAccessToken
+- [x] Initialize all configured providers before starting proxy server
+- [x] Status transitions: Starting → (init providers) → Running or Error
+- [x] If at least 1 provider succeeds → start server; if all fail → exit with error
+- [x] Add `hai` to `Provider` enum in `provider.zig`
+- [x] Update `handlers/chat.zig` to handle hai provider
+- [x] Update `handlers/models.zig` to list hai models
+- [x] Update `main.zig` with app_cache init and provider init
+- [x] Update `lib.zig` with app_cache init and provider init in serverThread
 - [ ] Integration test cases (TBD per human decision)
 
-### Auth Flow (on server init)
+### Auth Flow (on server startup)
 
 ```
 1. Check if valid access_token exists (not expired)
@@ -520,11 +522,13 @@ X-Include-Usage: true
 
 ### Files
 
-- `src/server.zig` (add init flow)
-- `src/lib.zig` (update stats)
-- `src/provider.zig`
-- `src/handlers/chat.zig`
-- `src/handlers/models.zig`
+- `src/provider.zig` ✅ (added `hai` to enum, added `initProviders()`)
+- `src/handlers/chat.zig` ✅ (added HAI provider handling)
+- `src/handlers/models.zig` ✅ (added HAI models listing)
+- `src/main.zig` ✅ (added app_cache init, provider init)
+- `src/lib.zig` ✅ (added app_cache init, provider init in serverThread)
+- `src/providers/sap_ai_core/client.zig` ✅ (made `getAccessToken` public)
+- `src/auth/callback_server.zig` ✅ (fixed Zig 0.15 API compatibility)
 
 ### Dependencies
 

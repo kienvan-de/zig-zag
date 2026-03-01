@@ -31,6 +31,11 @@ const sap_ai_core = struct {
     const transformer = @import("../providers/sap_ai_core/transformer.zig");
 };
 
+const hai = struct {
+    const client = @import("../providers/hai/client.zig");
+    const transformer = @import("../providers/openai/transformer.zig"); // HAI is OpenAI-compatible
+};
+
 /// Thread-safe allocator wrapper
 const ThreadSafeAllocator = struct {
     backing_allocator: std.mem.Allocator,
@@ -366,6 +371,13 @@ fn fetchModelsForProvider(
             .sap_ai_core => try fetchModels(
                 sap_ai_core.client.SapAiCoreClient,
                 sap_ai_core.transformer,
+                allocator,
+                provider_name,
+                provider_config,
+            ),
+            .hai => try fetchModels(
+                hai.client.HaiClient,
+                hai.transformer,
                 allocator,
                 provider_name,
                 provider_config,

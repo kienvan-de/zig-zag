@@ -223,7 +223,8 @@ pub const OAuth = struct {
         // Cache new tokens
         try self.cacheTokens(tokens.access_token, tokens.refresh_token, tokens.expires_in);
 
-        return self.allocator.dupe(u8, tokens.access_token);
+        const duped = try self.allocator.dupe(u8, tokens.access_token);
+        return duped;
     }
 };
 
