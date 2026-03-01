@@ -4,7 +4,8 @@ import SwiftUI
 
 struct ServerStats {
     // Server state
-    var running: Bool = false
+    var status: ServerStatus = ServerStatusStopped
+    var errorCode: ServerErrorCode = ServerErrorNone
     var port: UInt16 = 0
     
     // Performance metrics
@@ -27,7 +28,8 @@ struct ServerStats {
     
     // Initialize from C struct
     init(_ cStats: CServerStats) {
-        self.running = cStats.running
+        self.status = cStats.status
+        self.errorCode = cStats.error_code
         self.port = cStats.port
         self.uptimeSeconds = cStats.uptime_seconds
         self.memoryBytes = cStats.memory_bytes
@@ -45,6 +47,44 @@ struct ServerStats {
     
     // Default initializer
     init() {}
+    
+    // MARK: - Convenience Properties
+    
+    var isRunning: Bool {
+        status == ServerStatusRunning
+    }
+    
+    var isStarting: Bool {
+        status == ServerStatusStarting
+    }
+    
+    var isStopped: Bool {
+        status == ServerStatusStopped
+    }
+    
+    var hasError: Bool {
+        status == ServerStatusError
+    }
+    
+    var errorMessage: String? {
+        guard hasError else { return nil }
+        switch errorCode {
+        case ServerErrorConfigLoadFailed:
+            return "Config load failed"
+        case ServerErrorPortInUse:
+            return "Port in use"
+        case ServerErrorWorkerPoolInitFailed:
+            return "Worker pool init failed"
+        case ServerErrorLogInitFailed:
+            return "Log init failed"
+        case ServerErrorThreadSpawnFailed:
+            return "Thread spawn failed"
+        case ServerErrorAuthFailed:
+            return "Auth failed"
+        default:
+            return "Unknown error"
+        }
+    }
 }
 
 // MARK: - Formatting Helpers
@@ -135,7 +175,7 @@ struct ContentView: View {
                 .padding(.vertical, 4)
             
             // Stats Row (only when running)
-            if serverState.stats.running {
+            if serverState.stats.isRunning {
                 statsRow
                 
                 Divider()
@@ -161,20 +201,50 @@ struct ContentView: View {
     
     // MARK: - Status Row
     
+    private var statusGlobeColor: Color {
+        switch serverState.stats.status {
+        case ServerStatusRunning:
+            return .green
+        case ServerStatusStarting:
+            return .yellow
+        case ServerStatusError:
+            return .red
+        case ServerStatusStopped:
+            return .gray
+        default:
+            return .gray
+        }
+    }
+    
+    private var statusText: String {
+        switch serverState.stats.status {
+        case ServerStatusRunning:
+            return ":\(String(serverState.stats.port))"
+        case ServerStatusStarting:
+            return "Starting..."
+        case ServerStatusError:
+            return serverState.stats.errorMessage ?? "Error"
+        case ServerStatusStopped:
+            return "Stopped"
+        default:
+            return "Stopped"
+        }
+    }
+    
     private var statusRow: some View {
         HStack {
             HStack(spacing: 4) {
                 Image(systemName: "globe")
-                    .foregroundColor(serverState.stats.running ? .green : .red)
+                    .foregroundColor(statusGlobeColor)
                     .font(.system(size: 12))
                 
-                Text(serverState.stats.running ? ":\(String(serverState.stats.port))" : "Stopped")
+                Text(statusText)
                     .font(.system(size: 13, weight: .medium))
             }
             
             Spacer()
             
-            if serverState.stats.running {
+            if serverState.stats.isRunning {
                 HStack(spacing: 4) {
                     Image(systemName: "clock")
                         .foregroundColor(.secondary)
@@ -261,29 +331,39 @@ struct ContentView: View {
     
     // MARK: - Action Buttons Row
     
+    private var isStartButtonEnabled: Bool {
+        serverState.stats.isStopped || serverState.stats.hasError
+    }
+    
+    private var isStopButtonEnabled: Bool {
+        serverState.stats.isRunning
+    }
+    
     private var actionButtonsRow: some View {
         HStack(spacing: 0) {
             // Start/Stop Button
             Button(action: {
-                if serverState.stats.running {
+                if serverState.stats.isRunning {
                     serverState.stop()
                 } else {
                     serverState.start()
                 }
             }) {
                 HStack(spacing: 4) {
-                    Image(systemName: serverState.stats.running ? "stop.fill" : "play.fill")
+                    Image(systemName: serverState.stats.isRunning ? "stop.fill" : "play.fill")
                         .font(.system(size: 11))
-                    Text(serverState.stats.running ? "Stop" : "Start")
+                    Text(serverState.stats.isRunning ? "Stop" : "Start")
                         .font(.system(size: 13))
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 6)
+                .opacity(serverState.stats.isRunning ? (isStopButtonEnabled ? 1.0 : 0.5) : (isStartButtonEnabled ? 1.0 : 0.5))
             }
             .buttonStyle(.plain)
             .contentShape(Rectangle())
+            .disabled(serverState.stats.isRunning ? !isStopButtonEnabled : !isStartButtonEnabled)
             .onHover { hovering in
-                if hovering {
+                if hovering && (serverState.stats.isRunning ? isStopButtonEnabled : isStartButtonEnabled) {
                     NSCursor.pointingHand.push()
                 } else {
                     NSCursor.pop()
@@ -363,7 +443,8 @@ struct StatItem: View {
 extension ServerStats {
     static var mock: ServerStats {
         var stats = ServerStats()
-        stats.running = true
+        stats.status = ServerStatusRunning
+        stats.errorCode = ServerErrorNone
         stats.port = 8080
         stats.uptimeSeconds = 9252
         stats.memoryBytes = 134_217_728
@@ -376,6 +457,25 @@ extension ServerStats {
         stats.totalCost = 1.23
         stats.inputCost = 0.45
         stats.outputCost = 0.78
+        return stats
+    }
+    
+    static var mockStopped: ServerStats {
+        var stats = ServerStats()
+        stats.status = ServerStatusStopped
+        return stats
+    }
+    
+    static var mockStarting: ServerStats {
+        var stats = ServerStats()
+        stats.status = ServerStatusStarting
+        return stats
+    }
+    
+    static var mockError: ServerStats {
+        var stats = ServerStats()
+        stats.status = ServerStatusError
+        stats.errorCode = ServerErrorConfigLoadFailed
         return stats
     }
 }
