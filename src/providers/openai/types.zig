@@ -873,8 +873,8 @@ pub const Usage = struct {
 /// Non-streaming response
 pub const Response = struct {
     id: []const u8,
-    object: []const u8,
-    created: i64,
+    object: []const u8 = "chat.completion",
+    created: i64 = 0,
     model: []const u8,
     choices: []const ResponseChoice,
     usage: ?Usage = null,

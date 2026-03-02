@@ -445,7 +445,10 @@ pub const HttpClient = struct {
             self.allocator,
             response_body,
             .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
-        );
+        ) catch |err| {
+            log.err("[HTTP] Failed to parse response: {} | body: {s}", .{ err, response_body });
+            return err;
+        };
     }
 
     /// Send a POST request with JSON body for streaming response
