@@ -70,11 +70,9 @@ pub const CopilotClient = struct {
     user_agent: []const u8,
     api_version: []const u8,
 
-    // Dynamic state (protected by token_mutex)
-    api_base: ?[]const u8,
-    api_token: ?[]const u8,
-    token_expires_at: i64,
-    token_mutex: std.Thread.Mutex,
+    // Token management
+    oauth: auth.OAuth, // handles api_token caching via global token_cache
+    api_base: ?[]const u8, // restored from app_cache alongside token
 
     pub fn init(allocator: Allocator, provider_config: *const config_mod.ProviderConfig) !CopilotClient {
         const timeout_ms = provider_config.getInt("timeout_ms") orelse DEFAULT_TIMEOUT_MS;
@@ -94,10 +92,8 @@ pub const CopilotClient = struct {
             .editor_plugin_version = provider_config.getString("editor_plugin_version") orelse DEFAULT_EDITOR_PLUGIN_VERSION,
             .user_agent = provider_config.getString("user_agent") orelse DEFAULT_USER_AGENT,
             .api_version = provider_config.getString("api_version") orelse DEFAULT_API_VERSION,
+            .oauth = auth.OAuth.init(allocator, "copilot", provider_config.getString("client_id") orelse DEFAULT_CLIENT_ID),
             .api_base = null,
-            .api_token = null,
-            .token_expires_at = 0,
-            .token_mutex = .{},
         };
     }
 
@@ -158,17 +154,20 @@ pub const CopilotClient = struct {
         };
         defer parsed.deinit();
 
-        // Free old values
-        if (self.api_token) |old| self.allocator.free(old);
+        // Persist api_token to global token_cache (thread-safe, survives across request instances)
+        const now = std.time.timestamp();
+        const expires_in = parsed.value.expires_at - now;
+        try self.oauth.cacheTokens(parsed.value.token, null, expires_in);
+
+        // Persist api_base to app_cache
         if (self.api_base) |old| self.allocator.free(old);
-
-        // Store new values
-        self.api_token = try self.allocator.dupe(u8, parsed.value.token);
         self.api_base = try self.allocator.dupe(u8, parsed.value.endpoints.api);
-        self.token_expires_at = parsed.value.expires_at;
+        app_cache.put("copilot:api_base", self.api_base.?) catch |err| {
+            log.warn("[Copilot] Failed to persist api_base to app_cache: {}", .{err});
+        };
 
-        log.info("[Copilot] Got API token, expires_at={d}, api_base={s}", .{
-            self.token_expires_at,
+        log.info("[Copilot] Got API token, expires_in={d}s, api_base={s}", .{
+            expires_in,
             self.api_base.?,
         });
     }
@@ -436,63 +435,70 @@ pub const CopilotClient = struct {
     // Task 1.6: getAccessToken with Caching
     // ========================================================================
 
-    /// Check if cached Copilot API token is still valid
-    fn isTokenValid(self: *CopilotClient) bool {
-        if (self.api_token == null) return false;
-        const now = std.time.timestamp();
-        return now < self.token_expires_at - TOKEN_EXPIRY_BUFFER_SECONDS;
-    }
-
-    /// Get valid Copilot API token, refreshing if expired
+    /// Get valid Copilot API token, refreshing if expired.
+    /// Also restores api_base from app_cache on cache hit.
     /// Flow:
-    /// 1. Cached token valid? -> return it
-    /// 2. Lock mutex (double-check pattern)
-    /// 3. readGitHubToken() from apps.json; if not found -> deviceFlow()
-    /// 4. fetchCopilotToken() to exchange for API token
-    /// 5. Return api_token
+    /// 1. token_cache hit? -> restore api_base, return token
+    /// 2. Acquire fetch lock (thundering herd protection)
+    /// 3. Double-check token_cache after lock
+    /// 4. readGitHubToken() from apps.json; if not found -> deviceFlow()
+    /// 5. fetchCopilotToken() -> caches token + api_base
+    /// 6. Return api_token
     pub fn getAccessToken(self: *CopilotClient) ![]const u8 {
-        // Fast path: check without lock
-        if (self.isTokenValid()) {
+        // 1. Check token_cache (populated by a previous request/instance)
+        if (self.oauth.getCachedToken()) |token| {
             log.debug("[Copilot] Using cached API token", .{});
-            return self.allocator.dupe(u8, self.api_token.?);
+            // Restore api_base alongside the token
+            if (self.api_base == null) {
+                if (app_cache.get(self.allocator, "copilot:api_base")) |cached_base| {
+                    self.api_base = cached_base; // already duped by app_cache.get
+                }
+            }
+            return token;
         }
 
-        // Slow path: acquire mutex
-        self.token_mutex.lock();
-        defer self.token_mutex.unlock();
+        // 2. Acquire fetch lock to prevent thundering herd
+        const lock_handle = try self.oauth.acquireFetchLock();
+        defer self.oauth.releaseFetchLock(lock_handle);
 
-        // Double-check after acquiring lock
-        if (self.isTokenValid()) {
-            log.debug("[Copilot] Token valid after acquiring lock", .{});
-            return self.allocator.dupe(u8, self.api_token.?);
+        // 3. Double-check after acquiring lock
+        if (self.oauth.getCachedToken()) |token| {
+            log.debug("[Copilot] Token found in cache after acquiring lock", .{});
+            if (self.api_base == null) {
+                if (app_cache.get(self.allocator, "copilot:api_base")) |cached_base| {
+                    self.api_base = cached_base;
+                }
+            }
+            return token;
         }
 
-        // Get GitHub OAuth token
+        // 4. Fetch fresh — read GitHub OAuth token from apps.json
         const oauth_token = self.readGitHubToken() catch |err| {
             if (err == error.TokenFileNotFound or err == error.TokenNotFound) {
                 log.info("[Copilot] No saved token found, starting device flow...", .{});
-                const token = try self.deviceFlow();
-                defer self.allocator.free(token);
-                try self.fetchCopilotToken(token);
-                return self.allocator.dupe(u8, self.api_token.?);
+                const new_token = try self.deviceFlow();
+                defer self.allocator.free(new_token);
+                try self.fetchCopilotToken(new_token);
+                return self.oauth.getCachedToken() orelse error.TokenFetchFailed;
             }
             return err;
         };
         defer self.allocator.free(oauth_token);
 
-        // Exchange for Copilot API token
+        // 5. Exchange GitHub OAuth token for Copilot API token
         self.fetchCopilotToken(oauth_token) catch |err| {
             if (err == error.InvalidOAuthToken) {
                 log.warn("[Copilot] Saved OAuth token expired, starting device flow...", .{});
                 const new_token = try self.deviceFlow();
                 defer self.allocator.free(new_token);
                 try self.fetchCopilotToken(new_token);
-                return self.allocator.dupe(u8, self.api_token.?);
+                return self.oauth.getCachedToken() orelse error.TokenFetchFailed;
             }
             return err;
         };
 
-        return self.allocator.dupe(u8, self.api_token.?);
+        // 6. Return from cache
+        return self.oauth.getCachedToken() orelse error.TokenFetchFailed;
     }
 
     // ========================================================================
@@ -723,7 +729,6 @@ pub const CopilotClient = struct {
     }
 
     pub fn deinit(self: *CopilotClient) void {
-        if (self.api_token) |t| self.allocator.free(t);
         if (self.api_base) |b| self.allocator.free(b);
         self.client.deinit();
     }

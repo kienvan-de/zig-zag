@@ -149,7 +149,8 @@ fn initProvider(
             var client = try CopilotClient.init(allocator, provider_config);
             defer client.deinit();
 
-            // getAccessToken triggers device flow if needed
+            // getAccessToken validates the full token chain:
+            // apps.json → token endpoint → api_base
             const token = try client.getAccessToken();
             allocator.free(token);
 
