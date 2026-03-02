@@ -27,7 +27,7 @@ jobs:
   build:
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-14]
+        os: [ubuntu-latest, macos-26]
     
     runs-on: ${{ matrix.os }}
     
@@ -46,7 +46,7 @@ jobs:
         run: zig build exec:rls
 
   build-macos-app:
-    runs-on: macos-15
+    runs-on: macos-26
     
     steps:
       - uses: actions/checkout@v4

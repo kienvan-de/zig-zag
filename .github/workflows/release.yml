@@ -21,10 +21,10 @@ jobs:
           - os: ubuntu-latest
             target: aarch64-linux
             artifact: zig-zag-linux-aarch64
-          - os: macos-14
+          - os: macos-26
             target: aarch64-macos
             artifact: zig-zag-macos-aarch64
-          - os: macos-14
+          - os: macos-26-large
             target: x86_64-macos
             artifact: zig-zag-macos-x86_64
 
@@ -54,9 +54,9 @@ jobs:
           path: ${{ matrix.artifact }}.tar.gz
 
   # TODO: Build macOS app when GitHub runners have stable Xcode 26+
-  # The .icon bundle format requires Xcode 26+ which has toolchain issues on macos-15 runners
+  # TODO: Build macOS app
   # build-macos-app:
-  #   runs-on: macos-15
+  #   runs-on: macos-26
   #   ...
 
   # Create GitHub Release
