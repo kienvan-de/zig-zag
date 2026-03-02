@@ -53,15 +53,44 @@ jobs:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.artifact }}.tar.gz
 
-  # TODO: Build macOS app when GitHub runners have stable Xcode 26+
-  # TODO: Build macOS app
-  # build-macos-app:
-  #   runs-on: macos-26
-  #   ...
+  build-macos-app:
+    runs-on: macos-26
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Build Zig library (release)
+        run: zig build lib:rls
+
+      - name: Build macOS app (release)
+        run: |
+          xcodebuild -project ui/macos/zig-zag/zig-zag.xcodeproj \
+            -scheme zig-zag \
+            -configuration Release \
+            -derivedDataPath build \
+            -arch arm64 \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            ONLY_ACTIVE_ARCH=NO
+
+      - name: Create DMG
+        run: just dmg
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: zig-zag-macos-app
+          path: zig-zag-macos-app.dmg
 
   # Create GitHub Release
   release:
-    needs: [build-cli]
+    needs: [build-cli, build-macos-app]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -96,13 +125,14 @@ jobs:
             
             | Platform | Architecture | File |
             |----------|--------------|------|
+            | macOS App | Apple Silicon | `zig-zag-macos-app.dmg` |
             | macOS CLI | Apple Silicon | `zig-zag-macos-aarch64.tar.gz` |
             | macOS CLI | Intel | `zig-zag-macos-x86_64.tar.gz` |
             | Linux | x86_64 | `zig-zag-linux-x86_64.tar.gz` |
             | Linux | ARM64 | `zig-zag-linux-aarch64.tar.gz` |
             
             > **Note:** Windows is not currently supported due to POSIX-specific code.
-            > **Note:** macOS app DMG will be available when GitHub runners support stable Xcode 26+.
+            > **Note:** macOS app is unsigned — you may need to right-click → Open on first launch.
             
             ## Checksums
             
