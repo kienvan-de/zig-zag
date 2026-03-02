@@ -35,7 +35,7 @@
 | **Unified Namespace** | Access all models via `{provider}/{model}` format |
 | **Streaming** | Full SSE streaming with automatic protocol translation |
 | **Real-time Metrics** | CPU, memory, network I/O, token usage, and cost tracking |
-| **Cross-platform** | macOS (native app), Linux, Windows |
+| **Cross-platform** | macOS (native app), Linux |
 
 ## Supported Providers
 
