@@ -124,7 +124,7 @@ zig-zag comes with a native macOS menu bar app for easy server management.
 
 ```bash
 # Build the Zig library
-zig build lib:release
+zig build lib:rls
 
 # Open in Xcode and build
 open ui/macos/zig-zag/zig-zag.xcodeproj
@@ -144,12 +144,34 @@ open ui/macos/zig-zag/zig-zag.xcodeproj
 ```json
 {
   "server": {
-    "host": "127.0.0.1",
+    "host": "0.0.0.0",
     "port": 8080,
+    "http_pool_size": 8,
     "io_pool_size": 4
+  },
+  "logging": {
+    "level": "info",
+    "path": null,
+    "max_file_size_mb": 10,
+    "max_files": 5,
+    "buffer_size": 100,
+    "flush_interval_ms": 1000
   }
 }
 ```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `server.host` | string | `"0.0.0.0"` | Server bind address |
+| `server.port` | number | `8080` | Server port |
+| `server.http_pool_size` | number | auto | HTTP connection pool size |
+| `server.io_pool_size` | number | auto | I/O worker pool size |
+| `logging.level` | string | `"info"` | Log level: `debug`, `info`, `warn`, `err` |
+| `logging.path` | string | `null` | Log file path (null for OS default) |
+| `logging.max_file_size_mb` | number | `10` | Max log file size before rotation |
+| `logging.max_files` | number | `5` | Number of rotated log files to keep |
+| `logging.buffer_size` | number | `100` | Messages to buffer before flush |
+| `logging.flush_interval_ms` | number | `1000` | Auto-flush interval in ms |
 
 ### Provider Examples
 
@@ -193,10 +215,14 @@ open ui/macos/zig-zag/zig-zag.xcodeproj
 ```json
 {
   "hai": {
-    "api_url": "https://your-hai-api-endpoint.com",
-    "oidc_url": "https://your-tenant.accounts400.ondemand.com",
-    "client_id": "your-client-id",
-    "client_secret": "your-client-secret"
+    "api_url": "https://api.hyperspace.tools.sap",
+    "client_id": "your-oidc-client-id",
+    "auth_domain": "https://your-tenant.accounts400.ondemand.com",
+    "oidc_config_path": "/.well-known/openid-configuration",
+    "redirect_port": 8335,
+    "redirect_path": "/auth-code",
+    "models_path": "/v1/models",
+    "chat_completions_path": "/v1/chat/completions"
   }
 }
 ```
@@ -245,17 +271,20 @@ groq/llama-3.1-70b-versatile
 ### Build
 
 ```bash
-# Build debug executable
-zig build exec
+# Build and run (default)
+zig build run
 
-# Build release executable
-zig build exec:release
+# Build debug executable
+zig build exec:dbg
+
+# Build release executable (smallest size)
+zig build exec:rls
 
 # Build debug library (for macOS app development)
-zig build lib
+zig build lib:dbg
 
 # Build release library (for macOS app distribution)
-zig build lib:release
+zig build lib:rls
 ```
 
 ### Run Tests
@@ -270,32 +299,40 @@ zig build test
 ```
 ├── src/
 │   ├── main.zig              # CLI entry point
-│   ├── lib.zig               # Library entry point (C API)
+│   ├── lib.zig               # Library entry point (C API for macOS app)
 │   ├── server.zig            # HTTP server
+│   ├── router.zig            # Request routing
 │   ├── config.zig            # Configuration loader
 │   ├── client.zig            # HTTP client for upstream providers
 │   ├── curl.zig              # Curl-based HTTP client (for TLS-constrained servers)
+│   ├── http.zig              # HTTP utilities
 │   ├── metrics.zig           # Metrics tracking (CPU, memory, tokens, costs)
+│   ├── log.zig               # Logging system
+│   ├── errors.zig            # Error types
+│   ├── utils.zig             # Utilities
+│   ├── provider.zig          # Provider abstraction
+│   ├── worker_pool.zig       # Thread pool for concurrent requests
 │   ├── auth/                 # Authentication modules
+│   │   ├── mod.zig           # Auth module exports
 │   │   ├── oidc.zig          # OIDC discovery
 │   │   ├── oauth.zig         # OAuth token exchange & refresh
 │   │   ├── pkce.zig          # PKCE challenge generation
 │   │   └── callback_server.zig  # Local callback server for browser auth
 │   ├── cache/
 │   │   ├── token_cache.zig   # OAuth token caching
-│   │   └── app_cache.zig     # Application-level cache
+│   │   └── app_cache.zig     # Application-level cache (models, OIDC config)
 │   ├── handlers/
-│   │   ├── chat.zig          # Chat completions handler
-│   │   └── models.zig        # Models listing handler
+│   │   ├── chat.zig          # /v1/chat/completions handler
+│   │   └── models.zig        # /v1/models handler
 │   └── providers/
-│       ├── openai/           # OpenAI provider
-│       ├── anthropic/        # Anthropic provider
-│       ├── sap_ai_core/      # SAP AI Core provider
-│       └── hai/              # SAP HAI provider
+│       ├── openai/           # OpenAI provider (client, transformer, types)
+│       ├── anthropic/        # Anthropic provider (client, transformer, types)
+│       ├── sap_ai_core/      # SAP AI Core provider (client, transformer, types)
+│       └── hai/              # SAP HAI provider (client only, uses OpenAI types)
 ├── include/
 │   └── zig-zag.h             # C header for FFI
 ├── ui/
-│   └── macos/                # Native macOS app
+│   └── macos/                # Native macOS menu bar app (Swift)
 └── test/
     ├── cases/                # Integration test cases
     └── integration/          # Integration test framework

@@ -17,6 +17,7 @@ const Anthropic = @import("types.zig");
 const config_mod = @import("../../config.zig");
 const http_client = @import("../../client.zig");
 const log = @import("../../log.zig");
+const app_cache = @import("../../cache/app_cache.zig");
 
 /// Iterator for SSE streaming responses
 pub const SSEIterator = http_client.SSEIterator;
@@ -85,6 +86,27 @@ pub const AnthropicClient = struct {
 
     /// Fetch list of available models from Anthropic API
     pub fn listModels(self: *AnthropicClient) !std.json.Parsed(Anthropic.AnthropicModelsResponse) {
+        // Build cache key using provider name from config
+        var cache_key_buf: [128]u8 = undefined;
+        const cache_key = std.fmt.bufPrint(&cache_key_buf, "models:{s}", .{self.config.name}) catch "models:anthropic";
+
+        // Check cache
+        if (app_cache.get(self.allocator, cache_key)) |cached_body| {
+            defer self.allocator.free(cached_body);
+            log.debug("Models cache hit for '{s}'", .{self.config.name});
+
+            if (std.json.parseFromSlice(
+                Anthropic.AnthropicModelsResponse,
+                self.allocator,
+                cached_body,
+                .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+            )) |parsed| {
+                return parsed;
+            } else |_| {
+                log.warn("Failed to parse cached models for '{s}', fetching fresh", .{self.config.name});
+            }
+        }
+
         // Build URL
         var url_buffer: [512]u8 = undefined;
         const url = try std.fmt.bufPrint(&url_buffer, "{s}/v1/models", .{self.api_url});
@@ -101,6 +123,11 @@ pub const AnthropicClient = struct {
         if (response.status != .ok) {
             return self.handleErrorResponse(response.status);
         }
+
+        // Cache the response body (best-effort)
+        app_cache.put(cache_key, response.body) catch |err| {
+            log.warn("Failed to cache models for '{s}': {}", .{ self.config.name, err });
+        };
 
         // Parse response
         return std.json.parseFromSlice(
