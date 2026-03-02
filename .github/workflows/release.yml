@@ -1,0 +1,173 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  ZIG_VERSION: "0.15.0"
+
+jobs:
+  # Build CLI binaries for multiple platforms
+  build-cli:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-linux
+            artifact: zig-zag-linux-x86_64
+            ext: tar.gz
+          - os: ubuntu-latest
+            target: aarch64-linux
+            artifact: zig-zag-linux-aarch64
+            ext: tar.gz
+          - os: macos-14
+            target: aarch64-macos
+            artifact: zig-zag-macos-aarch64
+            ext: tar.gz
+          - os: macos-14
+            target: x86_64-macos
+            artifact: zig-zag-macos-x86_64
+            ext: tar.gz
+          - os: windows-latest
+            target: x86_64-windows
+            artifact: zig-zag-windows-x86_64
+            ext: zip
+
+    runs-on: ${{ matrix.os }}
+    
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v1
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Build release binary
+        run: zig build exec:rls -Dtarget=${{ matrix.target }}
+
+      - name: Prepare artifact (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p dist
+          cp zig-out/bin/zig-zag dist/
+          cd dist && tar -czvf ../${{ matrix.artifact }}.tar.gz zig-zag
+
+      - name: Prepare artifact (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist
+          Copy-Item zig-out\bin\zig-zag.exe dist\
+          Compress-Archive -Path dist\zig-zag.exe -DestinationPath ${{ matrix.artifact }}.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}.${{ matrix.ext }}
+
+  # Build macOS app (unsigned)
+  build-macos-app:
+    runs-on: macos-14
+    
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v1
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Build Zig library (release)
+        run: zig build lib:rls
+
+      - name: Build macOS app
+        run: |
+          xcodebuild -project ui/macos/zig-zag/zig-zag.xcodeproj \
+            -scheme zig-zag \
+            -configuration Release \
+            -derivedDataPath build \
+            -arch arm64 \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            ONLY_ACTIVE_ARCH=NO
+
+      - name: Create DMG
+        run: |
+          # Create a temporary directory for DMG contents
+          mkdir -p dmg-contents
+          cp -R "build/Build/Products/Release/zig-zag.app" dmg-contents/
+          
+          # Create DMG
+          hdiutil create -volname "zig-zag" \
+            -srcfolder dmg-contents \
+            -ov -format UDZO \
+            zig-zag-macos-app.dmg
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: zig-zag-macos-app
+          path: zig-zag-macos-app.dmg
+
+  # Create GitHub Release
+  release:
+    needs: [build-cli, build-macos-app]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release
+          find artifacts -type f \( -name "*.tar.gz" -o -name "*.zip" -o -name "*.dmg" \) -exec cp {} release/ \;
+          ls -la release/
+
+      - name: Generate checksums
+        run: |
+          cd release
+          sha256sum * > checksums.txt
+          cat checksums.txt
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            release/*
+          body: |
+            ## Downloads
+            
+            | Platform | Architecture | File |
+            |----------|--------------|------|
+            | macOS App | Apple Silicon (M1/M2/M3) | `zig-zag-macos-app.dmg` |
+            | macOS CLI | Apple Silicon | `zig-zag-macos-aarch64.tar.gz` |
+            | macOS CLI | Intel | `zig-zag-macos-x86_64.tar.gz` |
+            | Linux | x86_64 | `zig-zag-linux-x86_64.tar.gz` |
+            | Linux | ARM64 | `zig-zag-linux-aarch64.tar.gz` |
+            | Windows | x86_64 | `zig-zag-windows-x86_64.zip` |
+            
+            ## macOS App Note
+            
+            The macOS app is **unsigned**. To open it:
+            1. Download and mount the DMG
+            2. Drag `zig-zag.app` to Applications
+            3. Right-click the app → **Open** (first time only)
+            4. Click **Open** in the security dialog
+            
+            ## Checksums
+            
+            See `checksums.txt` for SHA256 checksums of all files.
+          draft: false
+          prerelease: false
