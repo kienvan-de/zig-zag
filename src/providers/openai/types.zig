@@ -724,7 +724,7 @@ pub const StreamChoice = struct {
 /// Streaming chunk response
 pub const StreamChunk = struct {
     id: []const u8,
-    object: []const u8,
+    object: []const u8 = "chat.completion.chunk",
     created: i64,
     model: []const u8,
     choices: []const StreamChoice,
