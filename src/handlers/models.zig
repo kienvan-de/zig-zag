@@ -325,8 +325,19 @@ fn sendModelsResponse(
     connection: std.net.Server.Connection,
     models: []const OpenAI.Model,
 ) !void {
+    // Sort models by id alphabetically
+    const sorted_models = try allocator.alloc(OpenAI.Model, models.len);
+    defer allocator.free(sorted_models);
+    @memcpy(sorted_models, models);
+
+    std.mem.sort(OpenAI.Model, sorted_models, {}, struct {
+        fn lessThan(_: void, a: OpenAI.Model, b: OpenAI.Model) bool {
+            return std.mem.order(u8, a.id, b.id) == .lt;
+        }
+    }.lessThan);
+
     const response = OpenAI.ModelsResponse{
-        .data = models,
+        .data = sorted_models,
     };
 
     var json_buf = std.ArrayList(u8){};
