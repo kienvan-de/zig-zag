@@ -21,6 +21,7 @@ const LogOutput = log_mod.LogOutput;
 /// Wraps a parsed JSON object and provides type-safe accessors
 pub const ProviderConfig = struct {
     allocator: std.mem.Allocator,
+    name: []const u8, // Provider name from config key (e.g., "openai", "groq")
     raw: std.json.Value,
 
     /// Get string value from config
@@ -280,6 +281,7 @@ pub const Config = struct {
             // Create a wrapper that references the value in the root parsed object
             const provider_config = ProviderConfig{
                 .allocator = allocator,
+                .name = provider_name,
                 .raw = provider_value_ptr.*,
             };
 

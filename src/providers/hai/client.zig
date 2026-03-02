@@ -44,6 +44,7 @@ const http_client = @import("../../client.zig");
 const curl = @import("../../curl.zig");
 const log = @import("../../log.zig");
 const auth = @import("../../auth/mod.zig");
+const app_cache = @import("../../cache/app_cache.zig");
 
 /// Iterator for SSE streaming responses
 pub const SSEIterator = http_client.SSEIterator;
@@ -277,6 +278,27 @@ pub const HaiClient = struct {
 
     /// Fetch list of available models from HAI API
     pub fn listModels(self: *HaiClient) !std.json.Parsed(OpenAI.ModelsResponse) {
+        // Build cache key using provider name from config
+        var cache_key_buf: [128]u8 = undefined;
+        const cache_key = std.fmt.bufPrint(&cache_key_buf, "models:{s}", .{self.config.name}) catch "models:hai";
+
+        // Check cache
+        if (app_cache.get(self.allocator, cache_key)) |cached_body| {
+            defer self.allocator.free(cached_body);
+            log.debug("[HAI] Models cache hit for '{s}'", .{self.config.name});
+
+            if (std.json.parseFromSlice(
+                OpenAI.ModelsResponse,
+                self.allocator,
+                cached_body,
+                .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+            )) |parsed| {
+                return parsed;
+            } else |_| {
+                log.warn("[HAI] Failed to parse cached models for '{s}', fetching fresh", .{self.config.name});
+            }
+        }
+
         log.debug("[HAI] listModels - getting access token...", .{});
         // Get valid access token
         const access_token = try self.getAccessToken();
@@ -307,6 +329,11 @@ pub const HaiClient = struct {
             log.err("[HAI] listModels failed: HTTP {} | body: {s}", .{ response.status, response.body });
             return error.RequestFailed;
         }
+
+        // Cache the response body (best-effort)
+        app_cache.put(cache_key, response.body) catch |err| {
+            log.warn("[HAI] Failed to cache models for '{s}': {}", .{ self.config.name, err });
+        };
 
         // Parse response
         return std.json.parseFromSlice(

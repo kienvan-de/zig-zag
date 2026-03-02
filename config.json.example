@@ -43,7 +43,7 @@
       "workspace_id": "your-workspace-id",
       "redirect_port": 8335,
       "redirect_path": "/auth-code",
-      "models_path": "/models",
+      "models_path": "/v1/models",
       "chat_completions_path": "/v1/chat/completions"
     },
     "groq": {
