@@ -198,18 +198,34 @@ pub const HttpClient = struct {
         self.client.deinit();
     }
 
-    /// Send a GET request
-    /// Returns HttpResponse with status and body. Caller must call response.deinit() when done.
+    /// Options for GET requests
+    pub const GetOptions = struct {
+        /// Override Accept-Encoding. Null = default (gzip, deflate, zstd).
+        /// Set to "identity" for servers whose responses Zig cannot auto-decompress
+        /// (e.g. GitHub API with the low-level request/receiveHead path).
+        accept_encoding: ?[]const u8 = null,
+    };
+
+    /// Generic GET request — full control via GetOptions.
+    /// Returns HttpResponse. Caller must call response.deinit() when done.
     pub fn get(
         self: *HttpClient,
         url: []const u8,
         extra_headers: []const std.http.Header,
+        options: GetOptions,
     ) !HttpResponse {
         const uri = try std.Uri.parse(url);
 
         log.debug("HTTP GET: {s}", .{url});
+
+        const req_headers: std.http.Client.Request.Headers = if (options.accept_encoding) |enc|
+            .{ .accept_encoding = .{ .override = enc } }
+        else
+            .{};
+
         var req = self.client.request(.GET, uri, .{
             .extra_headers = extra_headers,
+            .headers = req_headers,
         }) catch |err| {
             log.err("HTTP GET request creation failed: {} for URL: {s}", .{ err, url });
             return err;
@@ -217,12 +233,10 @@ pub const HttpClient = struct {
         defer req.deinit();
         log.debug("HTTP GET: request created successfully", .{});
 
-        // Apply socket timeout
         if (req.connection) |conn| {
             setSocketTimeout(conn.stream_reader.getStream().handle, self.timeout_ms);
         }
 
-        // Send request (no body for GET)
         log.debug("HTTP GET: sending request...", .{});
         req.sendBodiless() catch |err| {
             log.err("HTTP GET sendBodiless failed: {} for URL: {s}", .{ err, url });
@@ -230,7 +244,6 @@ pub const HttpClient = struct {
         };
         log.debug("HTTP GET: request sent, waiting for response...", .{});
 
-        // Wait for response
         const redirect_buffer: [0]u8 = undefined;
         var response = req.receiveHead(&redirect_buffer) catch |err| {
             log.err("HTTP GET receiveHead failed: {} for URL: {s}", .{ err, url });
@@ -238,7 +251,6 @@ pub const HttpClient = struct {
         };
         log.debug("HTTP GET: response received, status: {}", .{response.head.status});
 
-        // Read response body
         var transfer_buf: [4096]u8 = undefined;
         const reader = response.reader(&transfer_buf);
         const body = try reader.allocRemaining(self.allocator, std.io.Limit.limited(self.max_response_size));
@@ -250,19 +262,55 @@ pub const HttpClient = struct {
         };
     }
 
-    /// Send a POST request with raw body
-    /// Returns HttpResponse with status and body. Caller must call response.deinit() when done.
+    /// GET with default options (allows gzip/deflate compression).
+    /// Use for most providers.
+    pub fn getJson(
+        self: *HttpClient,
+        url: []const u8,
+        extra_headers: []const std.http.Header,
+    ) !HttpResponse {
+        return self.get(url, extra_headers, .{});
+    }
+
+    /// GET with Accept-Encoding: identity (no compression).
+    /// Use when the server may return compressed responses that Zig cannot auto-decompress
+    /// (e.g. GitHub API via the low-level request/receiveHead path).
+    pub fn getUncompressed(
+        self: *HttpClient,
+        url: []const u8,
+        extra_headers: []const std.http.Header,
+    ) !HttpResponse {
+        return self.get(url, extra_headers, .{ .accept_encoding = "identity" });
+    }
+
+    /// Options for POST requests
+    pub const PostOptions = struct {
+        /// Override Accept-Encoding. Null = default (gzip, deflate, zstd).
+        /// Set to "identity" for servers whose responses Zig cannot auto-decompress.
+        accept_encoding: ?[]const u8 = null,
+    };
+
+    /// Generic POST request with raw body — full control via PostOptions.
+    /// Returns HttpResponse. Caller must call response.deinit() when done.
     pub fn post(
         self: *HttpClient,
         url: []const u8,
         extra_headers: []const std.http.Header,
         request_body: []const u8,
+        options: PostOptions,
     ) !HttpResponse {
         const uri = try std.Uri.parse(url);
 
         log.debug("HTTP POST: {s}", .{url});
+
+        const req_headers: std.http.Client.Request.Headers = if (options.accept_encoding) |enc|
+            .{ .accept_encoding = .{ .override = enc } }
+        else
+            .{};
+
         var req = self.client.request(.POST, uri, .{
             .extra_headers = extra_headers,
+            .headers = req_headers,
         }) catch |err| {
             log.err("HTTP POST request creation failed: {} for URL: {s}", .{ err, url });
             return err;
@@ -315,6 +363,29 @@ pub const HttpClient = struct {
             .body = body,
             .allocator = self.allocator,
         };
+    }
+
+    /// POST with default options (allows gzip/deflate compression).
+    /// Use for most providers.
+    pub fn postForm(
+        self: *HttpClient,
+        url: []const u8,
+        extra_headers: []const std.http.Header,
+        request_body: []const u8,
+    ) !HttpResponse {
+        return self.post(url, extra_headers, request_body, .{});
+    }
+
+    /// POST with Accept-Encoding: identity (no compression).
+    /// Use when the server may return compressed responses that Zig cannot auto-decompress
+    /// (e.g. GitHub API device flow endpoints).
+    pub fn postFormUncompressed(
+        self: *HttpClient,
+        url: []const u8,
+        extra_headers: []const std.http.Header,
+        request_body: []const u8,
+    ) !HttpResponse {
+        return self.post(url, extra_headers, request_body, .{ .accept_encoding = "identity" });
     }
 
     /// Send a POST request with JSON body and parse JSON response

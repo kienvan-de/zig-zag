@@ -124,7 +124,7 @@ pub const OpenAIClient = struct {
         const headers = try self.buildHeaders(&auth_buffer, &headers_buf);
 
         // Make GET request
-        var response = try self.client.get(url, headers);
+        var response = try self.client.getJson(url, headers);
         defer response.deinit();
 
         // Check status code

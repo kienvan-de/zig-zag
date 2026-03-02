@@ -233,7 +233,7 @@ pub const OIDC = struct {
         const url = try std.fmt.allocPrint(self.allocator, "{s}{s}", .{ self.auth_domain, self.config_path });
         defer self.allocator.free(url);
 
-        var response = try client.get(url, &[_]std.http.Header{});
+        var response = try client.getJson(url, &[_]std.http.Header{});
         defer response.deinit();
 
         if (response.status != .ok) {

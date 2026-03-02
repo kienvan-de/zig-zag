@@ -64,13 +64,59 @@ pub const CurlClient = struct {
         self: *CurlClient,
         url: []const u8,
         extra_headers: []const std.http.Header,
+        options: anytype,
     ) CurlError!CurlResponse {
+        _ = options;
+        return self.request("GET", url, null, extra_headers);
+    }
+
+    /// Perform a GET request using curl (default options, allows compression)
+    /// Interface mirrors HttpClient.getJson()
+    pub fn getJson(
+        self: *CurlClient,
+        url: []const u8,
+        extra_headers: []const std.http.Header,
+    ) CurlError!CurlResponse {
+        return self.request("GET", url, null, extra_headers);
+    }
+
+    /// Perform a GET request using curl with no compression
+    /// Interface mirrors HttpClient.getUncompressed()
+    pub fn getUncompressed(
+        self: *CurlClient,
+        url: []const u8,
+        extra_headers: []const std.http.Header,
+    ) CurlError!CurlResponse {
+        // curl handles decompression natively, so identity encoding is not needed
         return self.request("GET", url, null, extra_headers);
     }
 
     /// Perform a POST request using curl with raw body
     /// Interface mirrors HttpClient.post()
     pub fn post(
+        self: *CurlClient,
+        url: []const u8,
+        extra_headers: []const std.http.Header,
+        request_body: []const u8,
+        options: anytype,
+    ) CurlError!CurlResponse {
+        _ = options;
+        return self.request("POST", url, request_body, extra_headers);
+    }
+
+    /// POST with default options — mirrors HttpClient.postForm()
+    pub fn postForm(
+        self: *CurlClient,
+        url: []const u8,
+        extra_headers: []const std.http.Header,
+        request_body: []const u8,
+    ) CurlError!CurlResponse {
+        return self.request("POST", url, request_body, extra_headers);
+    }
+
+    /// POST with no compression — mirrors HttpClient.postFormUncompressed()
+    /// curl handles decompression natively, so this is identical to postForm
+    pub fn postFormUncompressed(
         self: *CurlClient,
         url: []const u8,
         extra_headers: []const std.http.Header,
@@ -208,7 +254,7 @@ test "CurlClient GET request" {
     var client = CurlClient.init(allocator);
     defer client.deinit();
 
-    var response = try client.get("https://httpbin.org/get", &[_]std.http.Header{});
+    var response = try client.getJson("https://httpbin.org/get", &[_]std.http.Header{});
     defer response.deinit();
 
     try std.testing.expectEqual(std.http.Status.ok, response.status);
@@ -221,7 +267,7 @@ test "CurlClient POST request" {
     var client = CurlClient.init(allocator);
     defer client.deinit();
 
-    var response = try client.post(
+    var response = try client.postForm(
         "https://httpbin.org/post",
         &[_]std.http.Header{
             .{ .name = "Content-Type", .value = "application/x-www-form-urlencoded" },

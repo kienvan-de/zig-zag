@@ -361,7 +361,7 @@ pub fn exchangeCode(
     defer allocator.free(body);
 
     // POST to token endpoint
-    var response = try client.post(
+    var response = try client.postForm(
         params.token_endpoint,
         &[_]std.http.Header{
             .{ .name = "Content-Type", .value = "application/x-www-form-urlencoded" },
@@ -400,7 +400,7 @@ pub fn refreshToken(
     defer allocator.free(body);
 
     // POST to token endpoint
-    var response = try client.post(
+    var response = try client.postForm(
         params.token_endpoint,
         &[_]std.http.Header{
             .{ .name = "Content-Type", .value = "application/x-www-form-urlencoded" },
@@ -451,7 +451,7 @@ pub fn fetchClientCredentials(
     const request_body = "grant_type=client_credentials";
 
     // POST to token endpoint
-    var response = try client.post(
+    var response = try client.postForm(
         params.token_endpoint,
         &[_]std.http.Header{
             .{ .name = "Authorization", .value = auth_value },
@@ -468,6 +468,184 @@ pub fn fetchClientCredentials(
 
     log.info("Client credentials token fetch successful", .{});
     return parseTokenResponse(allocator, response.body);
+}
+
+// ============================================================================
+// Device Flow (RFC 8628)
+// ============================================================================
+
+/// Parameters for device authorization flow
+pub const DeviceFlowParams = struct {
+    device_code_url: []const u8,
+    token_url: []const u8,
+    client_id: []const u8,
+    scope: []const u8,
+};
+
+/// Result of device code request (step 1)
+pub const DeviceCodeResponse = struct {
+    allocator: Allocator,
+    device_code: []const u8,
+    user_code: []const u8,
+    verification_uri: []const u8,
+    expires_in: i64,
+    interval: i64,
+
+    pub fn deinit(self: *DeviceCodeResponse) void {
+        self.allocator.free(self.device_code);
+        self.allocator.free(self.user_code);
+        self.allocator.free(self.verification_uri);
+        self.* = undefined;
+    }
+};
+
+pub const DeviceFlowError = error{
+    DeviceCodeRequestFailed,
+    DeviceCodeExpired,
+    DeviceFlowDenied,
+    InvalidDeviceCodeResponse,
+};
+
+/// Request a device code from the OAuth provider (step 1)
+/// POST <device_code_url> with client_id and scope
+pub fn requestDeviceCode(
+    allocator: Allocator,
+    client: anytype,
+    params: DeviceFlowParams,
+) !DeviceCodeResponse {
+    log.info("Requesting device code from {s}", .{params.device_code_url});
+
+    const body = try buildFormBody(allocator, .{
+        .client_id = params.client_id,
+        .scope = params.scope,
+    });
+    defer allocator.free(body);
+
+    var response = try client.postFormUncompressed(
+        params.device_code_url,
+        &[_]std.http.Header{
+            .{ .name = "Content-Type", .value = "application/x-www-form-urlencoded" },
+            .{ .name = "Accept", .value = "application/json" },
+        },
+        body,
+    );
+    defer response.deinit();
+
+    if (response.status != .ok) {
+        log.err("Device code request failed: HTTP {} - {s}", .{ response.status, response.body });
+        return error.DeviceCodeRequestFailed;
+    }
+
+    const parsed = std.json.parseFromSlice(
+        struct {
+            device_code: []const u8,
+            user_code: []const u8,
+            verification_uri: []const u8,
+            expires_in: i64 = 900,
+            interval: i64 = 5,
+        },
+        allocator,
+        response.body,
+        .{ .ignore_unknown_fields = true },
+    ) catch |err| {
+        log.err("Failed to parse device code response: {} | body: {s}", .{ err, response.body });
+        return error.InvalidDeviceCodeResponse;
+    };
+    defer parsed.deinit();
+
+    return DeviceCodeResponse{
+        .allocator = allocator,
+        .device_code = try allocator.dupe(u8, parsed.value.device_code),
+        .user_code = try allocator.dupe(u8, parsed.value.user_code),
+        .verification_uri = try allocator.dupe(u8, parsed.value.verification_uri),
+        .expires_in = parsed.value.expires_in,
+        .interval = parsed.value.interval,
+    };
+}
+
+/// Poll for access token after user authorizes (step 2)
+/// POST <token_url> with device_code, polls until success/timeout
+/// Handles: authorization_pending, slow_down, expired_token, access_denied
+pub fn pollDeviceToken(
+    allocator: Allocator,
+    client: anytype,
+    params: DeviceFlowParams,
+    device_code: []const u8,
+    initial_interval: i64,
+    expires_in: i64,
+) !TokenResponse {
+    log.info("Polling for device token at {s}", .{params.token_url});
+
+    var interval: u64 = @intCast(@max(initial_interval, 5));
+    const deadline = std.time.timestamp() + expires_in;
+
+    while (std.time.timestamp() < deadline) {
+        std.Thread.sleep(interval * std.time.ns_per_s);
+
+        const body = try buildFormBody(allocator, .{
+            .client_id = params.client_id,
+            .device_code = device_code,
+            .grant_type = "urn:ietf:params:oauth:grant-type:device_code",
+        });
+        defer allocator.free(body);
+
+        var response = try client.postFormUncompressed(
+            params.token_url,
+            &[_]std.http.Header{
+                .{ .name = "Content-Type", .value = "application/x-www-form-urlencoded" },
+                .{ .name = "Accept", .value = "application/json" },
+            },
+            body,
+        );
+        defer response.deinit();
+
+        // Try to parse as error response first
+        if (std.json.parseFromSlice(
+            struct {
+                @"error": ?[]const u8 = null,
+                access_token: ?[]const u8 = null,
+            },
+            allocator,
+            response.body,
+            .{ .ignore_unknown_fields = true },
+        )) |check| {
+            defer check.deinit();
+
+            if (check.value.@"error") |err_code| {
+                if (std.mem.eql(u8, err_code, "authorization_pending")) {
+                    log.debug("Device flow: authorization pending, retrying in {d}s...", .{interval});
+                    continue;
+                }
+                if (std.mem.eql(u8, err_code, "slow_down")) {
+                    interval += 5;
+                    log.debug("Device flow: slow_down, new interval={d}s", .{interval});
+                    continue;
+                }
+                if (std.mem.eql(u8, err_code, "expired_token")) {
+                    log.err("Device flow: device code expired", .{});
+                    return error.DeviceCodeExpired;
+                }
+                if (std.mem.eql(u8, err_code, "access_denied")) {
+                    log.err("Device flow: access denied by user", .{});
+                    return error.DeviceFlowDenied;
+                }
+                log.err("Device flow: unknown error: {s}", .{err_code});
+                return error.TokenExchangeFailed;
+            }
+
+            // No error field and we have access_token — success!
+            if (check.value.access_token != null) {
+                log.info("Device flow: token obtained successfully", .{});
+                return parseTokenResponse(allocator, response.body);
+            }
+        } else |_| {}
+
+        log.err("Device flow: unexpected response: {s}", .{response.body});
+        return error.InvalidTokenResponse;
+    }
+
+    log.err("Device flow: timed out waiting for authorization", .{});
+    return error.DeviceCodeExpired;
 }
 
 // ============================================================================

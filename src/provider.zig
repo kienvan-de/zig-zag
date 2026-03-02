@@ -20,6 +20,7 @@ const log = @import("log.zig");
 // Provider clients
 const HaiClient = @import("providers/hai/client.zig").HaiClient;
 const SapAiCoreClient = @import("providers/sap_ai_core/client.zig").SapAiCoreClient;
+const CopilotClient = @import("providers/copilot/client.zig").CopilotClient;
 
 /// Supported provider types
 pub const Provider = enum {
@@ -27,6 +28,7 @@ pub const Provider = enum {
     openai,
     sap_ai_core,
     hai,
+    copilot,
 
     /// Parse provider name from string (case-insensitive)
     pub fn fromString(name: []const u8) !Provider {
@@ -39,6 +41,7 @@ pub const Provider = enum {
         if (std.mem.eql(u8, lower, "openai")) return .openai;
         if (std.mem.eql(u8, lower, "sap_ai_core")) return .sap_ai_core;
         if (std.mem.eql(u8, lower, "hai")) return .hai;
+        if (std.mem.eql(u8, lower, "copilot")) return .copilot;
         
         return error.UnsupportedProvider;
     }
@@ -57,6 +60,7 @@ pub fn isSupported(p: Provider) bool {
         .openai => true,
         .sap_ai_core => true,
         .hai => true,
+        .copilot => true,
     };
 }
 
@@ -139,6 +143,17 @@ fn initProvider(
         },
         .openai => {
             log.info("Provider 'openai' - no init required (API key auth)", .{});
+        },
+        .copilot => {
+            log.info("Initializing provider 'copilot' (GitHub OAuth + token exchange)...", .{});
+            var client = try CopilotClient.init(allocator, provider_config);
+            defer client.deinit();
+
+            // getAccessToken triggers device flow if needed
+            const token = try client.getAccessToken();
+            allocator.free(token);
+
+            log.info("Provider 'copilot' initialized successfully", .{});
         },
         .anthropic => {
             log.info("Provider 'anthropic' - no init required (API key auth)", .{});

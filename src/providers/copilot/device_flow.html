@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GitHub Copilot — Authorize zig-zag</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+           background: #0d1117; color: #e6edf3; display: flex;
+           align-items: center; justify-content: center; min-height: 100vh; }
+    .card { background: #161b22; border: 1px solid #30363d; border-radius: 12px;
+            padding: 40px; max-width: 480px; width: 100%; text-align: center; }
+    .logo { margin-bottom: 16px; }
+    .logo img { width: 64px; height: 64px; border-radius: 14px; }
+    h1 { font-size: 22px; font-weight: 600; margin-bottom: 8px; }
+    p { color: #8b949e; margin-bottom: 28px; font-size: 14px; }
+    .code-box { background: #0d1117; border: 2px solid #388bfd;
+                border-radius: 8px; padding: 20px; margin-bottom: 24px;
+                position: relative; }
+    .code { font-family: "SF Mono", "Fira Code", monospace;
+            font-size: 36px; font-weight: 700; letter-spacing: 6px;
+            color: #58a6ff; user-select: all; }
+    .copy-btn { position: absolute; top: 8px; right: 8px;
+                background: #21262d; border: 1px solid #30363d;
+                color: #8b949e; border-radius: 6px; padding: 4px 10px;
+                font-size: 12px; cursor: pointer; }
+    .copy-btn:hover { background: #30363d; color: #e6edf3; }
+    .open-btn { display: inline-block; background: #238636; color: #fff;
+                border-radius: 6px; padding: 12px 28px; font-size: 15px;
+                font-weight: 600; text-decoration: none; border: none;
+                cursor: pointer; transition: background 0.2s; }
+    .open-btn:hover { background: #2ea043; }
+    .hint { margin-top: 20px; font-size: 12px; color: #6e7681; }
+    .copied { color: #3fb950 !important; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo"><img src="data:image/png;base64,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" alt="zig-zag"></div>
+    <h1>Authorize zig-zag</h1>
+    <p>Copy the one-time code below, then click the button<br>to authorize on GitHub.</p>
+    <div class="code-box">
+      <div class="code" id="code">{{USER_CODE}}</div>
+      <button class="copy-btn" onclick="copyCode()" id="copy-btn">Copy</button>
+    </div>
+    <a class="open-btn" href="{{VERIFICATION_URI}}" target="_blank" onclick="copyCode()">
+      Open GitHub &amp; Authorize
+    </a>
+    <p class="hint">The button will also copy the code automatically.</p>
+  </div>
+  <script>
+    function copyCode() {
+      const code = document.getElementById('code').innerText;
+      navigator.clipboard.writeText(code).then(() => {
+        const btn = document.getElementById('copy-btn');
+        btn.textContent = 'Copied!';
+        btn.classList.add('copied');
+        setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 2000);
+      });
+    }
+    // Auto-copy on page load
+    window.addEventListener('load', () => {
+      navigator.clipboard.writeText('{{USER_CODE}}').catch(() => {});
+    });
+  </script>
+</body>
+</html>

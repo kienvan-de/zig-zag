@@ -57,3 +57,5 @@ pub const RefreshTokenParams = oauth.RefreshTokenParams;
 pub const OAuth = oauth.OAuth;
 pub const CallbackConfig = callback_server.CallbackConfig;
 pub const CallbackResult = callback_server.CallbackResult;
+pub const DeviceFlowParams = oauth.DeviceFlowParams;
+pub const DeviceCodeResponse = oauth.DeviceCodeResponse;

@@ -161,7 +161,7 @@ pub const SapAiCoreClient = struct {
         const headers = try self.buildHeaders(&auth_buffer, &headers_buf, access_token);
 
         // Make GET request
-        var response = try self.client.get(url, headers);
+        var response = try self.client.getJson(url, headers);
         defer response.deinit();
 
         // Check status code
@@ -290,7 +290,7 @@ pub const SapAiCoreClient = struct {
         try request_body.writer(self.allocator).print("{f}", .{std.json.fmt(request, .{})});
 
         // Make POST request
-        var response = try self.client.post(url, headers, request_body.items);
+        var response = try self.client.postForm(url, headers, request_body.items);
         defer response.deinit();
 
         // Log request for debugging

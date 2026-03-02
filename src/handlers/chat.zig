@@ -84,6 +84,12 @@ const hai = struct {
     const transformer = @import("../providers/openai/transformer.zig"); // Reuse OpenAI transformer
 };
 
+const copilot = struct {
+    const types = @import("../providers/openai/types.zig"); // Copilot is OpenAI-compatible
+    const client = @import("../providers/copilot/client.zig");
+    const transformer = @import("../providers/openai/transformer.zig"); // Reuse OpenAI transformer
+};
+
 /// Handle POST /v1/chat/completions requests
 pub fn handle(
     allocator: std.mem.Allocator,
@@ -237,6 +243,30 @@ pub fn handle(
                         hai.client.HaiClient,
                         hai.transformer,
                         hai.types,
+                        allocator,
+                        connection,
+                        openai_request.value,
+                        model_info.model,
+                        provider_config,
+                    );
+                }
+            },
+            .copilot => {
+                if (is_streaming) {
+                    try handleProviderStreaming(
+                        copilot.client.CopilotClient,
+                        copilot.transformer,
+                        allocator,
+                        connection,
+                        openai_request.value,
+                        model_info.model,
+                        provider_config,
+                    );
+                } else {
+                    try handleProvider(
+                        copilot.client.CopilotClient,
+                        copilot.transformer,
+                        copilot.types,
                         allocator,
                         connection,
                         openai_request.value,

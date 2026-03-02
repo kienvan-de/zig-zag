@@ -317,7 +317,7 @@ pub const HaiClient = struct {
 
         // Make GET request
         log.debug("[HAI] listModels - sending GET request...", .{});
-        var response = self.client.get(url, headers) catch |err| {
+        var response = self.client.getJson(url, headers) catch |err| {
             log.err("[HAI] listModels - GET request failed: {}", .{err});
             return err;
         };

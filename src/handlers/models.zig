@@ -50,6 +50,11 @@ const hai = struct {
     const transformer = @import("../providers/openai/transformer.zig"); // HAI is OpenAI-compatible
 };
 
+const copilot = struct {
+    const client = @import("../providers/copilot/client.zig");
+    const transformer = @import("../providers/openai/transformer.zig"); // Copilot is OpenAI-compatible
+};
+
 /// Thread-safe allocator wrapper
 const ThreadSafeAllocator = struct {
     backing_allocator: std.mem.Allocator,
@@ -403,6 +408,13 @@ fn fetchModelsForProvider(
             .hai => try fetchModels(
                 hai.client.HaiClient,
                 hai.transformer,
+                allocator,
+                provider_name,
+                provider_config,
+            ),
+            .copilot => try fetchModels(
+                copilot.client.CopilotClient,
+                copilot.transformer,
                 allocator,
                 provider_name,
                 provider_config,

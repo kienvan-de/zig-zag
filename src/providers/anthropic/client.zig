@@ -116,7 +116,7 @@ pub const AnthropicClient = struct {
         const headers = self.buildHeaders(&headers_buf);
 
         // Make GET request
-        var response = try self.client.get(url, headers);
+        var response = try self.client.getJson(url, headers);
         defer response.deinit();
 
         // Check status code
