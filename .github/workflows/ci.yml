@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  ZIG_VERSION: "0.15.0"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v1
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Run integration tests
+        run: zig build test
+
+  build:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-14, windows-latest]
+    
+    runs-on: ${{ matrix.os }}
+    
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v1
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Build debug
+        run: zig build exec:dbg
+
+      - name: Build release
+        run: zig build exec:rls
+
+  build-macos-app:
+    runs-on: macos-14
+    
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v1
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Build Zig library
+        run: zig build lib:dbg
+
+      - name: Build macOS app
+        run: |
+          xcodebuild -project ui/macos/zig-zag/zig-zag.xcodeproj \
+            -scheme zig-zag \
+            -configuration Debug \
+            -derivedDataPath build \
+            -arch arm64 \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            ONLY_ACTIVE_ARCH=NO
