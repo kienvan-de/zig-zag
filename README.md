@@ -45,6 +45,7 @@
 | `anthropic` | Native | Anthropic Messages API (Claude 3.5, Claude 4) |
 | `sap_ai_core` | Native | SAP AI Core with OAuth client credentials |
 | `hai` | Native | SAP HAI with OIDC browser auth + OAuth token refresh |
+| `copilot` | Native | GitHub Copilot with OAuth device flow + automatic token exchange |
 | Any | Compatible | OpenAI/Anthropic-compatible APIs (Groq, Azure, Together, etc.) |
 
 ## Quick Start
@@ -229,6 +230,32 @@ open ui/macos/zig-zag/zig-zag.xcodeproj
 
 > **Note:** HAI uses OIDC browser-based authentication. On first use, a browser window opens for login. Tokens are cached and automatically refreshed.
 
+#### GitHub Copilot
+
+```json
+{
+  "copilot": {}
+}
+```
+
+No configuration needed! zig-zag reads your existing GitHub Copilot token from `~/.config/github-copilot/apps.json` (installed by VS Code, JetBrains, etc.). If no token is found, a browser-based device flow is initiated automatically.
+
+> **Note:** Requires an active GitHub Copilot subscription. The Copilot API token is short-lived (~30 min) and automatically refreshed via the OAuth token. `api_base` is dynamic — returned by the token exchange endpoint.
+
+Optional overrides:
+
+```json
+{
+  "copilot": {
+    "client_id": "Iv1.b507a08c87ecfe98",
+    "editor_version": "vscode/1.95.0",
+    "editor_plugin_version": "copilot-chat/0.26.7",
+    "user_agent": "GitHubCopilotChat/0.26.7",
+    "api_version": "2025-04-01"
+  }
+}
+```
+
 #### Compatible Providers (Groq, Azure, etc.)
 
 ```json
@@ -263,6 +290,8 @@ openai/gpt-4o
 openai/gpt-4-turbo
 sap_ai_core/gpt-4o
 hai/anthropic--claude-4.5-opus
+copilot/gpt-4o
+copilot/claude-sonnet-4.5
 groq/llama-3.1-70b-versatile
 ```
 
@@ -328,7 +357,8 @@ zig build test
 │       ├── openai/           # OpenAI provider (client, transformer, types)
 │       ├── anthropic/        # Anthropic provider (client, transformer, types)
 │       ├── sap_ai_core/      # SAP AI Core provider (client, transformer, types)
-│       └── hai/              # SAP HAI provider (client only, uses OpenAI types)
+│       ├── hai/              # SAP HAI provider (client only, uses OpenAI types)
+│       └── copilot/          # GitHub Copilot provider (client + device flow HTML)
 ├── include/
 │   └── zig-zag.h             # C header for FFI
 ├── ui/

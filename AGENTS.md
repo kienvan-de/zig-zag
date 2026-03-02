@@ -2,7 +2,7 @@
 
 ## Overview
 
-**zig-zag** is a blazing-fast LLM (Large Language Model) proxy written in **Zig**. It provides a unified OpenAI-compatible API that routes requests to multiple LLM providers (OpenAI, Anthropic, SAP AI Core, SAP HAI, and any compatible provider).
+**zig-zag** is a blazing-fast LLM (Large Language Model) proxy written in **Zig**. It provides a unified OpenAI-compatible API that routes requests to multiple LLM providers (OpenAI, Anthropic, SAP AI Core, SAP HAI, GitHub Copilot, and any compatible provider).
 
 | Aspect | Details |
 |--------|---------|
@@ -59,8 +59,11 @@ zig-zag/
 │   │   │   ├── client.zig       # Client with OAuth (334 LOC)
 │   │   │   ├── transformer.zig  # Transformation (347 LOC)
 │   │   │   └── types.zig        # Types (203 LOC)
-│   │   └── hai/                 # SAP HAI provider
-│   │       └── client.zig       # Client with OIDC + browser auth (378 LOC)
+│   │   ├── hai/                 # SAP HAI provider
+│   │   │   └── client.zig       # Client with OIDC + browser auth (378 LOC)
+│   │   └── copilot/             # GitHub Copilot provider
+│   │       ├── client.zig       # Client with GitHub OAuth + token exchange + device flow
+│   │       └── device_flow.html # Browser auth page (embedded at compile time)
 ├── include/
 │   └── zig-zag.h                # C header for FFI
 ├── ui/
@@ -109,6 +112,7 @@ zig-zag/
 | **Anthropic** | API Key | Protocol translation (Messages API to OpenAI format) |
 | **SAP AI Core** | OAuth 2.0 Client Credentials | Token caching, automatic refresh |
 | **HAI** | OIDC + Browser Auth | Browser login, token refresh, uses curl for auth (TLS compat) |
+| **Copilot** | GitHub OAuth + Token Exchange | Reads `~/.config/github-copilot/apps.json`, device flow fallback, dynamic `api_base` |
 | **Compatible** | API Key | Any OpenAI/Anthropic-compatible API |
 
 ---
@@ -190,7 +194,7 @@ Each provider in `src/providers/` follows the same pattern:
 - `transformer.zig` - Converts between OpenAI format and provider's native format
 - `types.zig` - Zig structs for JSON serialization/deserialization
 
-> **Note:** HAI provider reuses OpenAI types and transformer since the HAI API is OpenAI-compatible. It only has `client.zig` for the OIDC/OAuth auth flow.
+> **Note:** HAI and Copilot providers reuse OpenAI types and transformer since their APIs are OpenAI-compatible. They only have `client.zig` (plus `device_flow.html` for Copilot) for the auth flow.
 
 ### Request Flow
 1. Request arrives at `server.zig`
