@@ -204,15 +204,15 @@ pub const Message = struct {
 
     pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
         const json_value = try std.json.innerParse(std.json.Value, allocator, source, options);
-        
+
         if (json_value != .object) return error.UnexpectedToken;
         const obj = json_value.object;
-        
+
         const role_value = obj.get("role") orelse return error.MissingField;
         const role = try std.json.innerParseFromValue(Role, allocator, role_value, options);
-        
+
         const content_value = obj.get("content") orelse return error.MissingField;
-        
+
         const ContentUnion = @TypeOf(@as(@This(), undefined).content);
         const content: ContentUnion = switch (content_value) {
             .string => |s| .{ .text = s },
@@ -225,7 +225,7 @@ pub const Message = struct {
             },
             else => return error.UnexpectedToken,
         };
-        
+
         return .{
             .role = role,
             .content = content,
@@ -235,12 +235,12 @@ pub const Message = struct {
     pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, options: std.json.ParseOptions) !@This() {
         if (source != .object) return error.UnexpectedToken;
         const obj = source.object;
-        
+
         const role_value = obj.get("role") orelse return error.MissingField;
         const role = try std.json.innerParseFromValue(Role, allocator, role_value, options);
-        
+
         const content_value = obj.get("content") orelse return error.MissingField;
-        
+
         const ContentUnion = @TypeOf(@as(@This(), undefined).content);
         const content: ContentUnion = switch (content_value) {
             .string => |s| .{ .text = s },
@@ -253,7 +253,7 @@ pub const Message = struct {
             },
             else => return error.UnexpectedToken,
         };
-        
+
         return .{
             .role = role,
             .content = content,

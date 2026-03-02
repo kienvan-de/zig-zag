@@ -415,5 +415,3 @@ pub const HaiClient = struct {
         self.client.freeStreamingResult(SSEIterator, result);
     }
 };
-
-

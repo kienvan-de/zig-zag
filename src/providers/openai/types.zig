@@ -776,40 +776,40 @@ pub const ResponseMessage = struct {
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         try jw.beginObject();
-        
+
         try jw.objectField("role");
         try jw.write(@tagName(self.role));
-        
+
         if (self.content) |c| {
             try jw.objectField("content");
             try jw.write(c);
         }
-        
+
         if (self.refusal) |r| {
             try jw.objectField("refusal");
             try jw.write(r);
         }
-        
+
         if (self.tool_calls) |tc| {
             try jw.objectField("tool_calls");
             try jw.write(tc);
         }
-        
+
         if (self.function_call) |fc| {
             try jw.objectField("function_call");
             try jw.write(fc);
         }
-        
+
         if (self.annotations) |a| {
             try jw.objectField("annotations");
             try jw.write(a);
         }
-        
+
         if (self.audio) |au| {
             try jw.objectField("audio");
             try jw.write(au);
         }
-        
+
         try jw.endObject();
     }
 };
@@ -823,21 +823,21 @@ pub const ResponseChoice = struct {
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         try jw.beginObject();
-        
+
         try jw.objectField("index");
         try jw.write(self.index);
-        
+
         try jw.objectField("message");
         try self.message.jsonStringify(jw);
-        
+
         if (self.logprobs) |lp| {
             try jw.objectField("logprobs");
             try jw.write(lp);
         }
-        
+
         try jw.objectField("finish_reason");
         try jw.write(self.finish_reason);
-        
+
         try jw.endObject();
     }
 };
@@ -883,41 +883,41 @@ pub const Response = struct {
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         try jw.beginObject();
-        
+
         try jw.objectField("id");
         try jw.write(self.id);
-        
+
         try jw.objectField("object");
         try jw.write(self.object);
-        
+
         try jw.objectField("created");
         try jw.write(self.created);
-        
+
         try jw.objectField("model");
         try jw.write(self.model);
-        
+
         try jw.objectField("choices");
         try jw.beginArray();
         for (self.choices) |choice| {
             try choice.jsonStringify(jw);
         }
         try jw.endArray();
-        
+
         if (self.usage) |u| {
             try jw.objectField("usage");
             try Usage.jsonStringify(u, jw);
         }
-        
+
         if (self.system_fingerprint) |sf| {
             try jw.objectField("system_fingerprint");
             try jw.write(sf);
         }
-        
+
         if (self.service_tier) |st| {
             try jw.objectField("service_tier");
             try jw.write(st);
         }
-        
+
         try jw.endObject();
     }
 };
@@ -929,7 +929,7 @@ pub const Response = struct {
 /// OpenAI error details
 pub const ErrorDetails = struct {
     message: []const u8,
-    @"type": []const u8, // e.g., "invalid_request_error", "server_error"
+    type: []const u8, // e.g., "invalid_request_error", "server_error"
     param: ?[]const u8 = null,
     code: ?[]const u8 = null, // e.g., "content_filter", "rate_limit_exceeded"
 
@@ -938,7 +938,7 @@ pub const ErrorDetails = struct {
         try jw.objectField("message");
         try jw.write(self.message);
         try jw.objectField("type");
-        try jw.write(self.@"type");
+        try jw.write(self.type);
         try jw.objectField("param");
         try jw.write(self.param);
         try jw.objectField("code");
@@ -965,4 +965,3 @@ pub const StreamLineResult = union(enum) {
     @"error": ErrorResponse,
     skip: void, // For non-data lines or empty chunks
 };
-

@@ -34,15 +34,15 @@ pub const Provider = enum {
     pub fn fromString(name: []const u8) !Provider {
         var buf: [64]u8 = undefined;
         if (name.len > buf.len) return error.InvalidProvider;
-        
+
         const lower = std.ascii.lowerString(&buf, name);
-        
+
         if (std.mem.eql(u8, lower, "anthropic")) return .anthropic;
         if (std.mem.eql(u8, lower, "openai")) return .openai;
         if (std.mem.eql(u8, lower, "sap_ai_core")) return .sap_ai_core;
         if (std.mem.eql(u8, lower, "hai")) return .hai;
         if (std.mem.eql(u8, lower, "copilot")) return .copilot;
-        
+
         return error.UnsupportedProvider;
     }
 };

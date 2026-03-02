@@ -272,7 +272,7 @@ pub fn transformErrorResponse(sap_error: SapAiCore.ErrorDetails) OpenAI.ErrorRes
     return OpenAI.ErrorResponse{
         .@"error" = OpenAI.ErrorDetails{
             .message = sap_error.message orelse "Unknown error from SAP AI Core",
-            .@"type" = error_type,
+            .type = error_type,
             .param = null,
             .code = code,
         },

@@ -105,7 +105,7 @@ pub fn transformErrorResponse(anthro_error: Anthropic.ErrorResponse) OpenAI.Erro
     return OpenAI.ErrorResponse{
         .@"error" = OpenAI.ErrorDetails{
             .message = anthro_error.@"error".message,
-            .@"type" = error_type,
+            .type = error_type,
             .param = null,
             .code = anthro_error.@"error".type,
         },

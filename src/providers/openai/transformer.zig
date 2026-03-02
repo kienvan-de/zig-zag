@@ -70,7 +70,7 @@ pub fn transform(
     allocator: std.mem.Allocator,
 ) !OpenAI.Request {
     _ = allocator; // No allocation needed for pass-through
-    
+
     // Create a copy with the correct model name (without provider prefix)
     return OpenAI.Request{
         .model = model,
@@ -107,7 +107,7 @@ pub fn transformResponse(
 ) !OpenAI.Response {
     // Allocate model string to return original_model (e.g., "groq/llama-3.1-70b")
     const model_str = try allocator.dupe(u8, original_model);
-    
+
     return OpenAI.Response{
         .id = response.id,
         .object = response.object,
@@ -156,7 +156,7 @@ fn tryParseError(json_part: []const u8, allocator: std.mem.Allocator) ?OpenAI.Er
     return OpenAI.ErrorResponse{
         .@"error" = OpenAI.ErrorDetails{
             .message = parsed.value.@"error".message,
-            .@"type" = parsed.value.@"error".@"type",
+            .type = parsed.value.@"error".type,
             .param = parsed.value.@"error".param,
             .code = parsed.value.@"error".code,
         },
@@ -239,4 +239,3 @@ pub fn transformStreamLine(
 // ============================================================================
 // Unit Tests
 // ============================================================================
-

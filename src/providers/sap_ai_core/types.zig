@@ -214,4 +214,3 @@ pub const SapModelsResponse = struct {
     count: u64 = 0,
     resources: []const SapModel = &.{},
 };
-

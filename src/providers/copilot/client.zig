@@ -526,27 +526,26 @@ pub const CopilotClient = struct {
         // Set version (4) and variant bits
         uuid_bytes[6] = (uuid_bytes[6] & 0x0f) | 0x40;
         uuid_bytes[8] = (uuid_bytes[8] & 0x3f) | 0x80;
-        const request_id = try std.fmt.bufPrint(uuid_buf,
+        const request_id = try std.fmt.bufPrint(
+            uuid_buf,
             "{x:0>2}{x:0>2}{x:0>2}{x:0>2}-{x:0>2}{x:0>2}-{x:0>2}{x:0>2}-{x:0>2}{x:0>2}-{x:0>2}{x:0>2}{x:0>2}{x:0>2}{x:0>2}{x:0>2}",
             .{
                 uuid_bytes[0],  uuid_bytes[1],  uuid_bytes[2],  uuid_bytes[3],
-                uuid_bytes[4],  uuid_bytes[5],
-                uuid_bytes[6],  uuid_bytes[7],
-                uuid_bytes[8],  uuid_bytes[9],
-                uuid_bytes[10], uuid_bytes[11], uuid_bytes[12],
-                uuid_bytes[13], uuid_bytes[14], uuid_bytes[15],
+                uuid_bytes[4],  uuid_bytes[5],  uuid_bytes[6],  uuid_bytes[7],
+                uuid_bytes[8],  uuid_bytes[9],  uuid_bytes[10], uuid_bytes[11],
+                uuid_bytes[12], uuid_bytes[13], uuid_bytes[14], uuid_bytes[15],
             },
         );
 
-        headers_buf[0] = .{ .name = "Authorization",           .value = auth_value };
-        headers_buf[1] = .{ .name = "Content-Type",            .value = "application/json" };
-        headers_buf[2] = .{ .name = "copilot-integration-id",  .value = "vscode-chat" };
-        headers_buf[3] = .{ .name = "editor-version",          .value = self.editor_version };
-        headers_buf[4] = .{ .name = "editor-plugin-version",   .value = self.editor_plugin_version };
-        headers_buf[5] = .{ .name = "User-Agent",              .value = self.user_agent };
-        headers_buf[6] = .{ .name = "openai-intent",           .value = "conversation-panel" };
-        headers_buf[7] = .{ .name = "x-github-api-version",    .value = self.api_version };
-        headers_buf[8] = .{ .name = "x-request-id",            .value = request_id };
+        headers_buf[0] = .{ .name = "Authorization", .value = auth_value };
+        headers_buf[1] = .{ .name = "Content-Type", .value = "application/json" };
+        headers_buf[2] = .{ .name = "copilot-integration-id", .value = "vscode-chat" };
+        headers_buf[3] = .{ .name = "editor-version", .value = self.editor_version };
+        headers_buf[4] = .{ .name = "editor-plugin-version", .value = self.editor_plugin_version };
+        headers_buf[5] = .{ .name = "User-Agent", .value = self.user_agent };
+        headers_buf[6] = .{ .name = "openai-intent", .value = "conversation-panel" };
+        headers_buf[7] = .{ .name = "x-github-api-version", .value = self.api_version };
+        headers_buf[8] = .{ .name = "x-request-id", .value = request_id };
 
         return headers_buf[0..9];
     }
@@ -567,26 +566,25 @@ pub const CopilotClient = struct {
         std.crypto.random.bytes(&uuid_bytes);
         uuid_bytes[6] = (uuid_bytes[6] & 0x0f) | 0x40;
         uuid_bytes[8] = (uuid_bytes[8] & 0x3f) | 0x80;
-        const request_id = try std.fmt.bufPrint(uuid_buf,
+        const request_id = try std.fmt.bufPrint(
+            uuid_buf,
             "{x:0>2}{x:0>2}{x:0>2}{x:0>2}-{x:0>2}{x:0>2}-{x:0>2}{x:0>2}-{x:0>2}{x:0>2}-{x:0>2}{x:0>2}{x:0>2}{x:0>2}{x:0>2}{x:0>2}",
             .{
                 uuid_bytes[0],  uuid_bytes[1],  uuid_bytes[2],  uuid_bytes[3],
-                uuid_bytes[4],  uuid_bytes[5],
-                uuid_bytes[6],  uuid_bytes[7],
-                uuid_bytes[8],  uuid_bytes[9],
-                uuid_bytes[10], uuid_bytes[11], uuid_bytes[12],
-                uuid_bytes[13], uuid_bytes[14], uuid_bytes[15],
+                uuid_bytes[4],  uuid_bytes[5],  uuid_bytes[6],  uuid_bytes[7],
+                uuid_bytes[8],  uuid_bytes[9],  uuid_bytes[10], uuid_bytes[11],
+                uuid_bytes[12], uuid_bytes[13], uuid_bytes[14], uuid_bytes[15],
             },
         );
 
-        headers_buf[0] = .{ .name = "Authorization",           .value = auth_value };
-        headers_buf[1] = .{ .name = "copilot-integration-id",  .value = "vscode-chat" };
-        headers_buf[2] = .{ .name = "editor-version",          .value = self.editor_version };
-        headers_buf[3] = .{ .name = "editor-plugin-version",   .value = self.editor_plugin_version };
-        headers_buf[4] = .{ .name = "User-Agent",              .value = self.user_agent };
-        headers_buf[5] = .{ .name = "openai-intent",           .value = "conversation-panel" };
-        headers_buf[6] = .{ .name = "x-github-api-version",    .value = self.api_version };
-        headers_buf[7] = .{ .name = "x-request-id",            .value = request_id };
+        headers_buf[0] = .{ .name = "Authorization", .value = auth_value };
+        headers_buf[1] = .{ .name = "copilot-integration-id", .value = "vscode-chat" };
+        headers_buf[2] = .{ .name = "editor-version", .value = self.editor_version };
+        headers_buf[3] = .{ .name = "editor-plugin-version", .value = self.editor_plugin_version };
+        headers_buf[4] = .{ .name = "User-Agent", .value = self.user_agent };
+        headers_buf[5] = .{ .name = "openai-intent", .value = "conversation-panel" };
+        headers_buf[6] = .{ .name = "x-github-api-version", .value = self.api_version };
+        headers_buf[7] = .{ .name = "x-request-id", .value = request_id };
 
         return headers_buf[0..8];
     }
