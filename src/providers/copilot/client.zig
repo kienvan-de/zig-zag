@@ -28,6 +28,7 @@ const config_mod = @import("../../config.zig");
 const http_client = @import("../../client.zig");
 const log = @import("../../log.zig");
 const auth = @import("../../auth/mod.zig");
+const app_cache = @import("../../cache/app_cache.zig");
 
 /// Iterator for SSE streaming responses
 pub const SSEIterator = http_client.SSEIterator;
@@ -544,6 +545,46 @@ pub const CopilotClient = struct {
         return headers_buf[0..9];
     }
 
+    /// Build GET headers (8 headers — no Content-Type)
+    fn buildGetHeaders(
+        self: *CopilotClient,
+        access_token: []const u8,
+        auth_buf: []u8,
+        uuid_buf: []u8,
+        headers_buf: []std.http.Header,
+    ) ![]std.http.Header {
+        // Authorization: Bearer <copilot_api_token>
+        const auth_value = try std.fmt.bufPrint(auth_buf, "Bearer {s}", .{access_token});
+
+        // x-request-id: random UUIDv4
+        var uuid_bytes: [16]u8 = undefined;
+        std.crypto.random.bytes(&uuid_bytes);
+        uuid_bytes[6] = (uuid_bytes[6] & 0x0f) | 0x40;
+        uuid_bytes[8] = (uuid_bytes[8] & 0x3f) | 0x80;
+        const request_id = try std.fmt.bufPrint(uuid_buf,
+            "{x:0>2}{x:0>2}{x:0>2}{x:0>2}-{x:0>2}{x:0>2}-{x:0>2}{x:0>2}-{x:0>2}{x:0>2}-{x:0>2}{x:0>2}{x:0>2}{x:0>2}{x:0>2}{x:0>2}",
+            .{
+                uuid_bytes[0],  uuid_bytes[1],  uuid_bytes[2],  uuid_bytes[3],
+                uuid_bytes[4],  uuid_bytes[5],
+                uuid_bytes[6],  uuid_bytes[7],
+                uuid_bytes[8],  uuid_bytes[9],
+                uuid_bytes[10], uuid_bytes[11], uuid_bytes[12],
+                uuid_bytes[13], uuid_bytes[14], uuid_bytes[15],
+            },
+        );
+
+        headers_buf[0] = .{ .name = "Authorization",           .value = auth_value };
+        headers_buf[1] = .{ .name = "copilot-integration-id",  .value = "vscode-chat" };
+        headers_buf[2] = .{ .name = "editor-version",          .value = self.editor_version };
+        headers_buf[3] = .{ .name = "editor-plugin-version",   .value = self.editor_plugin_version };
+        headers_buf[4] = .{ .name = "User-Agent",              .value = self.user_agent };
+        headers_buf[5] = .{ .name = "openai-intent",           .value = "conversation-panel" };
+        headers_buf[6] = .{ .name = "x-github-api-version",    .value = self.api_version };
+        headers_buf[7] = .{ .name = "x-request-id",            .value = request_id };
+
+        return headers_buf[0..8];
+    }
+
     /// Send a non-streaming request to Copilot Chat Completions API
     pub fn sendRequest(self: *CopilotClient, request: OpenAI.Request) !std.json.Parsed(OpenAI.Response) {
         log.debug("[Copilot] [SYNC] sendRequest - getting access token...", .{});
@@ -568,11 +609,37 @@ pub const CopilotClient = struct {
     }
 
     /// Send a streaming request to Copilot Chat Completions API
-    /// TODO: Story 3
     pub fn sendStreamingRequest(self: *CopilotClient, request: OpenAI.Request) !*StreamingResult {
-        _ = self;
-        _ = request;
-        return error.NotImplemented;
+        log.debug("[Copilot] [STREAM] sendStreamingRequest - getting access token...", .{});
+        const access_token = try self.getAccessToken();
+        defer self.allocator.free(access_token);
+
+        const api_base = self.api_base orelse return error.ApiBaseNotSet;
+
+        var url_buf: [512]u8 = undefined;
+        const url = try std.fmt.bufPrint(&url_buf, "{s}/chat/completions", .{api_base});
+        log.debug("[Copilot] [STREAM] sendStreamingRequest - URL: {s}", .{url});
+
+        var auth_buf: [512]u8 = undefined;
+        var uuid_buf: [37]u8 = undefined;
+        var headers_buf: [9]std.http.Header = undefined;
+        const headers = try self.buildHeaders(access_token, &auth_buf, &uuid_buf, &headers_buf);
+
+        log.debug("[Copilot] [STREAM] sendStreamingRequest - sending POST request...", .{});
+        const result = self.client.postStreaming(SSEIterator, url, headers, request) catch |err| {
+            log.err("[Copilot] [STREAM] sendStreamingRequest - POST request failed: {}", .{err});
+            return err;
+        };
+        log.debug("[Copilot] [STREAM] sendStreamingRequest - response status: {}", .{result.response.head.status});
+
+        if (result.response.head.status != .ok) {
+            self.client.freeStreamingResult(SSEIterator, result);
+            log.err("[Copilot] [STREAM] sendStreamingRequest failed: HTTP {}", .{result.response.head.status});
+            return error.RequestFailed;
+        }
+
+        log.debug("[Copilot] [STREAM] sendStreamingRequest - stream established successfully", .{});
+        return result;
     }
 
     /// Free a streaming result allocated by sendStreamingRequest
@@ -580,11 +647,79 @@ pub const CopilotClient = struct {
         self.client.freeStreamingResult(SSEIterator, result);
     }
 
-    /// Fetch list of available models from Copilot API
-    /// TODO: Story 4
+    /// Fetch list of available models from Copilot API.
+    /// Results are cached via app_cache. Models are prefixed with "copilot/".
     pub fn listModels(self: *CopilotClient) !std.json.Parsed(OpenAI.ModelsResponse) {
-        _ = self;
-        return error.NotImplemented;
+        // Build cache key
+        var cache_key_buf: [128]u8 = undefined;
+        const cache_key = std.fmt.bufPrint(&cache_key_buf, "models:{s}", .{self.config.name}) catch "models:copilot";
+
+        // Check cache
+        if (app_cache.get(self.allocator, cache_key)) |cached_body| {
+            defer self.allocator.free(cached_body);
+            log.debug("[Copilot] Models cache hit for '{s}'", .{self.config.name});
+
+            if (std.json.parseFromSlice(
+                OpenAI.ModelsResponse,
+                self.allocator,
+                cached_body,
+                .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+            )) |parsed| {
+                return parsed;
+            } else |_| {
+                log.warn("[Copilot] Failed to parse cached models for '{s}', fetching fresh", .{self.config.name});
+            }
+        }
+
+        log.debug("[Copilot] listModels - getting access token...", .{});
+        const access_token = try self.getAccessToken();
+        defer self.allocator.free(access_token);
+        log.debug("[Copilot] listModels - access token obtained", .{});
+
+        const api_base = self.api_base orelse return error.ApiBaseNotSet;
+
+        // Build URL
+        var url_buf: [512]u8 = undefined;
+        const url = try std.fmt.bufPrint(&url_buf, "{s}/models", .{api_base});
+        log.debug("[Copilot] listModels - URL: {s}", .{url});
+
+        // Build GET headers (8, no Content-Type)
+        var auth_buf: [512]u8 = undefined;
+        var uuid_buf: [37]u8 = undefined;
+        var headers_buf: [8]std.http.Header = undefined;
+        const headers = try self.buildGetHeaders(access_token, &auth_buf, &uuid_buf, &headers_buf);
+
+        // GET request — use getUncompressed (same gzip concern as token endpoint)
+        log.debug("[Copilot] listModels - sending GET request...", .{});
+        var response = self.client.getUncompressed(url, headers) catch |err| {
+            log.err("[Copilot] listModels - GET request failed: {}", .{err});
+            return err;
+        };
+        defer response.deinit();
+        log.debug("[Copilot] listModels - response status: {}, body length: {d}", .{ response.status, response.body.len });
+
+        if (response.status != .ok) {
+            log.err("[Copilot] listModels failed: HTTP {} | body: {s}", .{ response.status, response.body });
+            return error.RequestFailed;
+        }
+
+        // Cache the response body (best-effort)
+        app_cache.put(cache_key, response.body) catch |err| {
+            log.warn("[Copilot] Failed to cache models for '{s}': {}", .{ self.config.name, err });
+        };
+
+        // Parse response
+        const parsed = std.json.parseFromSlice(
+            OpenAI.ModelsResponse,
+            self.allocator,
+            response.body,
+            .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+        ) catch |err| {
+            log.err("[Copilot] Failed to parse models response: {} | body: {s}", .{ err, response.body });
+            return error.InvalidResponse;
+        };
+
+        return parsed;
     }
 
     pub fn deinit(self: *CopilotClient) void {
