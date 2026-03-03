@@ -207,6 +207,7 @@ pub const ToolFunction = struct {
     name: []const u8,
     description: ?[]const u8 = null,
     parameters: ?std.json.Value = null, // JSON schema
+    strict: ?bool = null, // Whether to enable strict mode for structured outputs
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         try jw.beginObject();
@@ -215,6 +216,10 @@ pub const ToolFunction = struct {
         if (self.description) |d| {
             try jw.objectField("description");
             try jw.write(d);
+        }
+        if (self.strict) |s| {
+            try jw.objectField("strict");
+            try jw.write(s);
         }
         if (self.parameters) |p| {
             try jw.objectField("parameters");
@@ -249,6 +254,11 @@ pub const Function = struct {
 /// Response format
 pub const ResponseFormat = struct {
     type: []const u8, // "text" or "json_object"
+};
+
+/// Stream options
+pub const StreamOptions = struct {
+    include_usage: ?bool = null, // If true, sends a final chunk with usage stats
 };
 
 /// Content union type for messages
@@ -378,6 +388,7 @@ pub const Request = struct {
     model: []const u8,
     messages: []const Message,
     stream: ?bool = null,
+    stream_options: ?StreamOptions = null,
     temperature: ?f32 = null,
     max_tokens: ?u32 = null,
     max_completion_tokens: ?u32 = null,
@@ -413,6 +424,10 @@ pub const Request = struct {
 
         if (self.stream) |v| {
             try jw.objectField("stream");
+            try jw.write(v);
+        }
+        if (self.stream_options) |v| {
+            try jw.objectField("stream_options");
             try jw.write(v);
         }
         if (self.temperature) |v| {
@@ -528,6 +543,11 @@ pub const Request = struct {
                 .bool => |b| b,
                 else => null,
             };
+        }
+        if (obj.get("stream_options")) |v| {
+            if (v == .object) {
+                result.stream_options = try std.json.parseFromValueLeaky(StreamOptions, allocator, v, .{});
+            }
         }
         if (obj.get("temperature")) |v| {
             result.temperature = switch (v) {

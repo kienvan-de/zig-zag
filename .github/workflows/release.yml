@@ -79,14 +79,16 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             ONLY_ACTIVE_ARCH=NO
 
-      - name: Create DMG
-        run: just dmg
+      - name: Compress app bundle
+        run: |
+          APP_PATH="build/Build/Products/Release/zig-zag.app"
+          tar -czvf zig-zag-macos-app.tar.gz -C "$(dirname "$APP_PATH")" "$(basename "$APP_PATH")"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: zig-zag-macos-app
-          path: zig-zag-macos-app.dmg
+          path: zig-zag-macos-app.tar.gz
 
   # Create GitHub Release
   release:
@@ -106,7 +108,7 @@ jobs:
       - name: Prepare release assets
         run: |
           mkdir -p release
-          find artifacts -type f \( -name "*.tar.gz" -o -name "*.dmg" \) -exec cp {} release/ \;
+          find artifacts -type f -name "*.tar.gz" -exec cp {} release/ \;
           ls -la release/
 
       - name: Generate checksums
@@ -125,7 +127,7 @@ jobs:
             
             | Platform | Architecture | File |
             |----------|--------------|------|
-            | macOS App | Apple Silicon | `zig-zag-macos-app.dmg` |
+            | macOS App | Apple Silicon | `zig-zag-macos-app.tar.gz` |
             | macOS CLI | Apple Silicon | `zig-zag-macos-aarch64.tar.gz` |
             | macOS CLI | Intel | `zig-zag-macos-x86_64.tar.gz` |
             | Linux | x86_64 | `zig-zag-linux-x86_64.tar.gz` |

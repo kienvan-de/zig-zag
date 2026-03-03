@@ -105,6 +105,7 @@ pub fn handle(
         .{},
     ) catch |err| {
         log.err("JSON parse error: {}", .{err});
+        log.err("Raw request payload:\n{s}", .{body});
         const error_json = try errors.createErrorResponse(
             allocator,
             "Invalid JSON in request body",
