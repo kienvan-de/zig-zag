@@ -271,6 +271,7 @@ struct ContentView: View {
     // MARK: - Status Row
     
     private var statusGlobeColor: Color {
+        if serverState.isStopping { return .orange }
         switch serverState.stats.status {
         case ServerStatusRunning:
             return .green
@@ -286,6 +287,7 @@ struct ContentView: View {
     }
     
     private var statusText: String {
+        if serverState.isStopping { return "Stopping..." }
         switch serverState.stats.status {
         case ServerStatusRunning:
             return ":\(String(serverState.stats.port))"
@@ -430,11 +432,11 @@ struct ContentView: View {
     // MARK: - Action Buttons Row
     
     private var isStartButtonEnabled: Bool {
-        serverState.stats.isStopped || serverState.stats.hasError
+        !serverState.isStopping && (serverState.stats.isStopped || serverState.stats.hasError)
     }
     
     private var isStopButtonEnabled: Bool {
-        serverState.stats.isRunning
+        !serverState.isStopping && serverState.stats.isRunning
     }
     
     private var actionButtonsRow: some View {

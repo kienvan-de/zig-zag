@@ -18,6 +18,7 @@ import Observation
 @Observable
 class ServerState {
     var stats: ServerStats = ServerStats()
+    var isStopping: Bool = false
     
     private var statsTimer: Timer?
     private var lastCpuTimeUs: UInt64 = 0
@@ -36,11 +37,20 @@ class ServerState {
     
     func stop() {
         stopStatsPolling()
-        stopServer()
-        // Refresh stats to get the stopped status from Zig
-        let cStats = getServerStats()
-        stats = ServerStats(cStats)
-        lastCpuTimeUs = 0
+        isStopping = true
+        
+        // Run blocking stopServer() on background thread to keep UI responsive
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            stopServer()
+            
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                let cStats = getServerStats()
+                self.stats = ServerStats(cStats)
+                self.lastCpuTimeUs = 0
+                self.isStopping = false
+            }
+        }
     }
     
     func refresh() {
