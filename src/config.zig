@@ -93,12 +93,28 @@ pub const LogConfig = struct {
     output: LogOutput = .stderr, // output destination: "file" or "stderr"
 };
 
+/// Statistics display configuration
+pub const StatisticsConfig = struct {
+    show_performance: bool = true,
+    show_llm: bool = true,
+    show_cost: bool = true,
+};
+
+/// Cost controls configuration
+pub const CostControlsConfig = struct {
+    enabled: bool = false,
+    budget: f32 = 0.0,
+    days_duration: u32 = 0, // 0 = no reset (lifetime budget)
+};
+
 /// Main application configuration
 pub const Config = struct {
     allocator: std.mem.Allocator,
     providers: std.StringHashMap(ProviderConfig),
     server: ServerConfig,
     log: LogConfig,
+    statistics: StatisticsConfig,
+    cost_controls: CostControlsConfig,
     _parsed: std.json.Parsed(std.json.Value), // Keep root parsed alive
 
     /// Load configuration from ZIG_ZAG_CONFIG env var or ~/.config/zig-zag/config.json
@@ -243,6 +259,54 @@ pub const Config = struct {
             }
         }
 
+        // Parse statistics config (optional, with defaults)
+        var statistics_config = StatisticsConfig{};
+        if (root_obj.get("statistics")) |stats_value| {
+            if (stats_value == .object) {
+                const stats_obj = stats_value.object;
+                if (stats_obj.get("show_performance")) |v| {
+                    if (v == .bool) {
+                        statistics_config.show_performance = v.bool;
+                    }
+                }
+                if (stats_obj.get("show_llm")) |v| {
+                    if (v == .bool) {
+                        statistics_config.show_llm = v.bool;
+                    }
+                }
+                if (stats_obj.get("show_cost")) |v| {
+                    if (v == .bool) {
+                        statistics_config.show_cost = v.bool;
+                    }
+                }
+            }
+        }
+
+        // Parse cost controls config (optional, with defaults)
+        var cost_controls_config = CostControlsConfig{};
+        if (root_obj.get("cost_controls")) |cost_value| {
+            if (cost_value == .object) {
+                const cost_obj = cost_value.object;
+                if (cost_obj.get("enabled")) |v| {
+                    if (v == .bool) {
+                        cost_controls_config.enabled = v.bool;
+                    }
+                }
+                if (cost_obj.get("budget")) |v| {
+                    if (v == .float) {
+                        cost_controls_config.budget = @floatCast(v.float);
+                    } else if (v == .integer) {
+                        cost_controls_config.budget = @floatFromInt(v.integer);
+                    }
+                }
+                if (cost_obj.get("days_duration")) |v| {
+                    if (v == .integer and v.integer >= 0) {
+                        cost_controls_config.days_duration = @intCast(v.integer);
+                    }
+                }
+            }
+        }
+
         // Get providers object
         const providers_value = root_obj.get("providers") orelse {
             parsed.deinit();
@@ -294,6 +358,8 @@ pub const Config = struct {
             .providers = providers,
             .server = server_config,
             .log = log_config,
+            .statistics = statistics_config,
+            .cost_controls = cost_controls_config,
             ._parsed = parsed,
         };
     }

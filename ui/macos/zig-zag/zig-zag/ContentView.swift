@@ -36,10 +36,19 @@ struct ServerStats {
     var inputTokens: UInt64 = 0
     var outputTokens: UInt64 = 0
     
-    // Cost metrics (placeholder)
+    // Cost metrics
     var totalCost: Float = 0.0
     var inputCost: Float = 0.0
     var outputCost: Float = 0.0
+    
+    // Statistics display options
+    var showPerformance: Bool = true
+    var showLLM: Bool = true
+    var showCost: Bool = true
+    
+    // Cost controls
+    var costControlsEnabled: Bool = false
+    var costBudget: Float = 0.0
     
     // Initialize from C struct
     init(_ cStats: CServerStats) {
@@ -59,6 +68,11 @@ struct ServerStats {
         self.totalCost = cStats.total_cost
         self.inputCost = cStats.input_cost
         self.outputCost = cStats.output_cost
+        self.showPerformance = cStats.show_performance
+        self.showLLM = cStats.show_llm
+        self.showCost = cStats.show_cost
+        self.costControlsEnabled = cStats.cost_controls_enabled
+        self.costBudget = cStats.cost_budget
     }
     
     // Default initializer
@@ -100,6 +114,40 @@ struct ServerStats {
         default:
             return "Unknown error"
         }
+    }
+    
+    /// Whether the cost row should be visible
+    var shouldShowCostRow: Bool {
+        costControlsEnabled || showCost
+    }
+    
+    /// Cost display value: remaining budget or total spent
+    var formattedCostDisplay: String {
+        if costControlsEnabled {
+            let remaining = costBudget - totalCost
+            return formatCost(remaining) + " left"
+        }
+        return formattedTotalCost
+    }
+    
+    /// Cost icon: gauge for budget mode, dollar sign for normal
+    var costIcon: String {
+        costControlsEnabled ? "gauge.with.needle" : "dollarsign.circle"
+    }
+    
+    /// Cost icon color based on budget remaining
+    var costIconColor: Color {
+        guard costControlsEnabled, costBudget > 0 else { return .secondary }
+        let remaining = costBudget - totalCost
+        let ratio = remaining / costBudget
+        if ratio <= 0 { return .red }
+        if ratio <= 0.2 { return .orange }
+        return .secondary
+    }
+    
+    /// Cost tooltip based on mode
+    var costTooltip: String {
+        costControlsEnabled ? "Budget remaining" : "Total cost"
     }
 }
 
@@ -184,31 +232,36 @@ struct ContentView: View {
     
     var body: some View {
         VStack(alignment: .center, spacing: 0) {
-            // Status Row
+            // Row 1: Status (always visible)
             statusRow
             
-            Divider()
-                .padding(.vertical, 4)
-            
-            // Stats Row (only when running)
+            // Rows 2-4 only when running
             if serverState.stats.isRunning {
-                statsRow
+                // Row 2: Performance (RAM, CPU, Network)
+                if serverState.stats.showPerformance {
+                    Divider()
+                        .padding(.vertical, 4)
+                    statsRow
+                }
                 
-                Divider()
-                    .padding(.vertical, 4)
+                // Row 3: LLM (Providers, Tokens)
+                if serverState.stats.showLLM {
+                    Divider()
+                        .padding(.vertical, 4)
+                    llmRow
+                }
                 
-                llmRow
-                
-                Divider()
-                    .padding(.vertical, 4)
-                
-                costRow
-                
-                Divider()
-                    .padding(.vertical, 4)
+                // Row 4: Cost
+                if serverState.stats.shouldShowCostRow {
+                    Divider()
+                        .padding(.vertical, 4)
+                    costRow
+                }
             }
             
-            // Action Buttons Row
+            // Row 5: Action buttons (always visible)
+            Divider()
+                .padding(.vertical, 4)
             actionButtonsRow
         }
         .padding(.vertical, 8)
@@ -264,6 +317,7 @@ struct ContentView: View {
                 Text(statusText)
                     .font(.system(size: 13, weight: .medium))
             }
+            .help("Server port")
             
             Spacer()
             
@@ -277,6 +331,7 @@ struct ContentView: View {
                         .font(.system(size: 12, weight: .medium, design: .monospaced))
                         .foregroundColor(.primary)
                 }
+                .help("Server uptime")
                 
                 Spacer()
             }
@@ -290,6 +345,7 @@ struct ContentView: View {
                     .font(.system(size: 12, weight: .medium, design: .monospaced))
                     .foregroundColor(.primary)
             }
+            .help("Core version")
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
@@ -299,15 +355,15 @@ struct ContentView: View {
     
     private var statsRow: some View {
         HStack {
-            StatItem(icon: "memorychip", value: serverState.stats.formattedMemory)
+            StatItem(icon: "memorychip", value: serverState.stats.formattedMemory, tooltip: "Memory usage")
             
             Spacer()
             
-            StatItem(icon: "bolt.fill", value: serverState.stats.formattedCPU)
+            StatItem(icon: "bolt.fill", value: serverState.stats.formattedCPU, tooltip: "CPU usage")
             
             Spacer()
             
-            StatItem(icon: "arrow.up.arrow.down", value: serverState.stats.formattedNetworkTotal)
+            StatItem(icon: "arrow.up.arrow.down", value: serverState.stats.formattedNetworkTotal, tooltip: "Network I/O")
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
@@ -320,19 +376,22 @@ struct ContentView: View {
             StatItem(
                 icon: "cpu",
                 label: "providers",
-                value: "\(serverState.stats.llmProviderActive)/\(serverState.stats.llmProviderConfigured)"
+                value: "\(serverState.stats.llmProviderActive)/\(serverState.stats.llmProviderConfigured)",
+                tooltip: "Active / configured"
             )
             
             Spacer()
             
             StatItem(
                 icon: "arrow.down.circle",
-                value: serverState.stats.formattedInputTokens
+                value: serverState.stats.formattedInputTokens,
+                tooltip: "Input tokens"
             )
             
             StatItem(
                 icon: "arrow.up.circle",
-                value: serverState.stats.formattedOutputTokens
+                value: serverState.stats.formattedOutputTokens,
+                tooltip: "Output tokens"
             )
         }
         .padding(.horizontal, 8)
@@ -344,20 +403,24 @@ struct ContentView: View {
     private var costRow: some View {
         HStack {
             StatItem(
-                icon: "dollarsign.circle",
-                value: serverState.stats.formattedTotalCost
+                icon: serverState.stats.costIcon,
+                value: serverState.stats.formattedCostDisplay,
+                tooltip: serverState.stats.costTooltip,
+                iconColor: serverState.stats.costIconColor
             )
             
             Spacer()
             
             StatItem(
                 icon: "arrow.down.circle",
-                value: serverState.stats.formattedInputCost
+                value: serverState.stats.formattedInputCost,
+                tooltip: "Input cost"
             )
             
             StatItem(
                 icon: "arrow.up.circle",
-                value: serverState.stats.formattedOutputCost
+                value: serverState.stats.formattedOutputCost,
+                tooltip: "Output cost"
             )
         }
         .padding(.horizontal, 8)
@@ -390,12 +453,11 @@ struct ContentView: View {
                     Text(serverState.stats.isRunning ? "Stop" : "Start")
                         .font(.system(size: 13))
                 }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 6)
+                .frame(maxWidth: .infinity, minHeight: 28)
+                .contentShape(Rectangle())
                 .opacity(serverState.stats.isRunning ? (isStopButtonEnabled ? 1.0 : 0.5) : (isStartButtonEnabled ? 1.0 : 0.5))
             }
             .buttonStyle(.plain)
-            .contentShape(Rectangle())
             .disabled(serverState.stats.isRunning ? !isStopButtonEnabled : !isStartButtonEnabled)
             .onHover { hovering in
                 if hovering && (serverState.stats.isRunning ? isStopButtonEnabled : isStartButtonEnabled) {
@@ -419,11 +481,10 @@ struct ContentView: View {
                     Text("Quit")
                         .font(.system(size: 13))
                 }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 6)
+                .frame(maxWidth: .infinity, minHeight: 28)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .contentShape(Rectangle())
             .keyboardShortcut("q", modifiers: .command)
             .onHover { hovering in
                 if hovering {
@@ -443,11 +504,13 @@ struct StatItem: View {
     let icon: String
     var label: String? = nil
     let value: String
+    var tooltip: String? = nil
+    var iconColor: Color = .secondary
     
     var body: some View {
         HStack(spacing: 4) {
             Image(systemName: icon)
-                .foregroundColor(.secondary)
+                .foregroundColor(iconColor)
                 .font(.system(size: 11))
             
             if let label = label {
@@ -460,6 +523,7 @@ struct StatItem: View {
                     .foregroundColor(.primary)
             }
         }
+        .help(tooltip ?? "")
     }
 }
 
@@ -493,6 +557,11 @@ extension ServerStats {
         stats.totalCost = 1.23
         stats.inputCost = 0.45
         stats.outputCost = 0.78
+        stats.showPerformance = true
+        stats.showLLM = true
+        stats.showCost = true
+        stats.costControlsEnabled = false
+        stats.costBudget = 0.0
         return stats
     }
     

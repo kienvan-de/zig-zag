@@ -67,6 +67,15 @@ typedef struct {
     float total_cost;
     float input_cost;
     float output_cost;
+    
+    // Statistics display options
+    bool show_performance;      // Show RAM, CPU, Network row
+    bool show_llm;              // Show Providers, Tokens row
+    bool show_cost;             // Show Cost row (overridden by cost_controls)
+    
+    // Cost controls
+    bool cost_controls_enabled; // Budget mode active
+    float cost_budget;          // Budget limit (0.0 if not enabled)
 } CServerStats;
 
 /// Start the server.

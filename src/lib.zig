@@ -88,6 +88,13 @@ pub const CServerStats = extern struct {
     total_cost: f32,
     input_cost: f32,
     output_cost: f32,
+    // Statistics display options
+    show_performance: bool,
+    show_llm: bool,
+    show_cost: bool,
+    // Cost controls
+    cost_controls_enabled: bool,
+    cost_budget: f32,
 };
 
 // ============================================================================
@@ -304,6 +311,11 @@ export fn getServerStats() CServerStats {
             .total_cost = 0.0,
             .input_cost = 0.0,
             .output_cost = 0.0,
+            .show_performance = true,
+            .show_llm = true,
+            .show_cost = true,
+            .cost_controls_enabled = false,
+            .cost_budget = 0.0,
         };
     };
 
@@ -318,6 +330,10 @@ export fn getServerStats() CServerStats {
     // Config may be null if still loading
     const configured: u32 = if (s.cfg) |cfg| @intCast(cfg.providers.count()) else 0;
     const active: u32 = active_provider_count.load(.acquire);
+
+    // Read display config (defaults if config not loaded yet)
+    const stats_cfg = if (s.cfg) |cfg| cfg.statistics else config.StatisticsConfig{};
+    const cost_cfg = if (s.cfg) |cfg| cfg.cost_controls else config.CostControlsConfig{};
 
     return CServerStats{
         .status = status,
@@ -336,6 +352,11 @@ export fn getServerStats() CServerStats {
         .total_cost = snap.input_cost + snap.output_cost,
         .input_cost = snap.input_cost,
         .output_cost = snap.output_cost,
+        .show_performance = stats_cfg.show_performance,
+        .show_llm = stats_cfg.show_llm,
+        .show_cost = stats_cfg.show_cost,
+        .cost_controls_enabled = cost_cfg.enabled,
+        .cost_budget = cost_cfg.budget,
     };
 }
 
