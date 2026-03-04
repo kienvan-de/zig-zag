@@ -45,6 +45,9 @@ var state_mutex: std.Thread.Mutex = .{};
 var server_status: std.atomic.Value(ServerStatus) = std.atomic.Value(ServerStatus).init(.stopped);
 var server_error_code: std.atomic.Value(ServerErrorCode) = std.atomic.Value(ServerErrorCode).init(.none);
 
+// Provider init results - written once by server thread, read by stats polling
+var active_provider_count: std.atomic.Value(u32) = std.atomic.Value(u32).init(0);
+
 // ============================================================================
 // C-compatible types (must match include/zig-zag.h)
 // ============================================================================
@@ -78,7 +81,8 @@ pub const CServerStats = extern struct {
     cpu_time_us: u64,
     network_rx_bytes: u64,
     network_tx_bytes: u64,
-    llm_provider_count: u32,
+    llm_provider_configured: u32,
+    llm_provider_active: u32,
     input_tokens: u64,
     output_tokens: u64,
     total_cost: f32,
@@ -156,6 +160,9 @@ fn serverThreadFn(s: *State) void {
     log.info("Initializing providers...", .{});
     const init_result = provider.initProviders(allocator, &cfg);
     log.info("Provider initialization complete: {d}/{d} succeeded", .{ init_result.succeeded, init_result.total });
+
+    // Store active provider count for stats
+    active_provider_count.store(init_result.succeeded, .release);
 
     // Exit if all providers failed (but allow starting with no providers configured)
     if (init_result.succeeded == 0 and init_result.total > 0) {
@@ -265,6 +272,7 @@ export fn stopServer() void {
     // Set status to stopped after cleanup
     server_status.store(.stopped, .release);
     server_error_code.store(.none, .release);
+    active_provider_count.store(0, .release);
 }
 
 /// Get current server statistics and metrics.
@@ -289,7 +297,8 @@ export fn getServerStats() CServerStats {
             .cpu_time_us = 0,
             .network_rx_bytes = 0,
             .network_tx_bytes = 0,
-            .llm_provider_count = 0,
+            .llm_provider_configured = 0,
+            .llm_provider_active = 0,
             .input_tokens = 0,
             .output_tokens = 0,
             .total_cost = 0.0,
@@ -307,7 +316,8 @@ export fn getServerStats() CServerStats {
     const snap = metrics.snapshot();
 
     // Config may be null if still loading
-    const provider_count: u32 = if (s.cfg) |cfg| @intCast(cfg.providers.count()) else 0;
+    const configured: u32 = if (s.cfg) |cfg| @intCast(cfg.providers.count()) else 0;
+    const active: u32 = active_provider_count.load(.acquire);
 
     return CServerStats{
         .status = status,
@@ -319,7 +329,8 @@ export fn getServerStats() CServerStats {
         .cpu_time_us = snap.cpu_time_us,
         .network_rx_bytes = snap.network_rx_bytes,
         .network_tx_bytes = snap.network_tx_bytes,
-        .llm_provider_count = provider_count,
+        .llm_provider_configured = configured,
+        .llm_provider_active = active,
         .input_tokens = snap.input_tokens,
         .output_tokens = snap.output_tokens,
         .total_cost = snap.input_cost + snap.output_cost,

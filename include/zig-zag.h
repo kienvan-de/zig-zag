@@ -58,7 +58,8 @@ typedef struct {
     uint64_t network_tx_bytes;
     
     // LLM metrics
-    uint32_t llm_provider_count;
+    uint32_t llm_provider_configured; // Total providers in config
+    uint32_t llm_provider_active;     // Providers that initialized successfully
     uint64_t input_tokens;      // Accumulated input/prompt tokens
     uint64_t output_tokens;     // Accumulated output/completion tokens
     
