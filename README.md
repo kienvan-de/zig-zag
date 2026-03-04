@@ -113,12 +113,15 @@ zig-zag comes with a native macOS menu bar app for easy server management.
 
 **Features:**
 - One-click start/stop server
+- Configurable statistics display
 - Real-time statistics:
   - 💾 Memory usage (actual footprint, like `top`)
   - ⚡ CPU usage (calculated per-second)
   - 📊 Network I/O (rx/tx bytes)
+  - 🔌 Provider status (active/configured)
   - 🔢 Token usage (input/output separately)
-  - 💰 Cost tracking (input/output separately)
+  - 💰 Cost tracking or budget remaining
+- Tooltips on all metrics
 - Keyboard shortcuts (⌘Q to quit)
 
 ### Build the macOS App
@@ -173,6 +176,50 @@ open ui/macos/zig-zag/zig-zag.xcodeproj
 | `logging.max_files` | number | `5` | Number of rotated log files to keep |
 | `logging.buffer_size` | number | `100` | Messages to buffer before flush |
 | `logging.flush_interval_ms` | number | `1000` | Auto-flush interval in ms |
+
+### Statistics Display
+
+Control which stats rows appear in the macOS menu bar app:
+
+```json
+{
+  "statistics": {
+    "show_performance": true,
+    "show_llm": true,
+    "show_cost": true
+  }
+}
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `show_performance` | bool | `true` | Show RAM, CPU, Network row |
+| `show_llm` | bool | `true` | Show Providers, Tokens row |
+| `show_cost` | bool | `true` | Show Cost row |
+
+### Cost Controls
+
+Set a budget limit to track spending:
+
+```json
+{
+  "cost_controls": {
+    "enabled": true,
+    "budget": 10.00,
+    "days_duration": 30
+  }
+}
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable budget mode |
+| `budget` | number | `0.0` | Budget limit in USD |
+| `days_duration` | number | `0` | Budget reset period in days (0 = lifetime) |
+
+When enabled, the cost row always shows and displays **remaining budget** instead of total spent. The icon changes color as budget depletes (gray → orange at 20% → red at 0%).
+
+> **Note:** Budget enforcement (rejecting requests when budget is exceeded) is planned for a future release. Currently display-only.
 
 ### Provider Examples
 

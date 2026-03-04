@@ -137,7 +137,20 @@ Auth functions in `auth/oidc.zig` and `auth/oauth.zig` use `anytype` parameters 
 A native Swift menu bar application located in `ui/macos/zig-zag/`:
 - Starts/stops the Zig server via C FFI
 - Displays real-time metrics (memory, CPU, network I/O, tokens, costs)
+- Configurable stats rows via `statistics` config section
+- Budget mode with remaining budget display via `cost_controls` config
+- Tooltips on all stat items
 - Communicates with Zig code via `include/zig-zag.h` header
+
+### UI Rows
+
+| Row | Content | Visibility |
+|-----|---------|------------|
+| Status | Port, Uptime, Version | Always |
+| Performance | RAM, CPU, Network | `statistics.show_performance` |
+| LLM | Providers (active/configured), Input/Output tokens | `statistics.show_llm` |
+| Cost | Total cost or remaining budget, Input/Output cost | `statistics.show_cost` or `cost_controls.enabled` |
+| Actions | Start/Stop, Quit | Always |
 
 ---
 
@@ -213,6 +226,19 @@ Location: `~/.config/zig-zag/config.json`
     "port": 8080,
     "io_pool_size": 4
   },
+  "logging": {
+    "level": "info"
+  },
+  "statistics": {
+    "show_performance": true,
+    "show_llm": true,
+    "show_cost": true
+  },
+  "cost_controls": {
+    "enabled": false,
+    "budget": 10.00,
+    "days_duration": 30
+  },
   "providers": {
     "openai": { "api_key": "sk-..." },
     "anthropic": { "api_key": "sk-ant-..." },
@@ -232,6 +258,34 @@ Location: `~/.config/zig-zag/config.json`
   }
 }
 ```
+
+### Config Sections
+
+| Section | Purpose |
+|---------|---------|
+| `server` | Server bind address, port, pool sizes |
+| `logging` | Log level, file path, rotation |
+| `statistics` | Toggle display of stats rows in macOS app |
+| `cost_controls` | Budget limits and duration (future: server-side enforcement) |
+| `providers` | LLM provider configurations |
+
+### Statistics Display Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `show_performance` | bool | `true` | Show RAM, CPU, Network row |
+| `show_llm` | bool | `true` | Show Providers, Tokens row |
+| `show_cost` | bool | `true` | Show Cost row (overridden if `cost_controls.enabled`) |
+
+### Cost Controls
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable budget mode |
+| `budget` | number | `0.0` | Budget limit in USD |
+| `days_duration` | number | `0` | Budget reset period in days (0 = lifetime, 1 = daily, 30 = monthly) |
+
+When `cost_controls.enabled = true`, the cost row always shows regardless of `show_cost`, and displays remaining budget instead of total spent.
 
 ---
 
