@@ -18,7 +18,8 @@
 
 ```
 zig-zag/
-├── build.zig                    # Zig build configuration
+├── version.txt                  # Single source of truth for version (semver)
+├── build.zig                    # Zig build configuration (reads version.txt)
 ├── src/
 │   ├── main.zig                 # CLI entry point (56 LOC)
 │   ├── lib.zig                  # C FFI library for macOS app (312 LOC)
@@ -73,7 +74,8 @@ zig-zag/
 │   ├── integration/             # Integration test framework
 │   └── cases/                   # Integration test cases
 ├── README.md                    # Main documentation
-└── AGENTS.md                    # This file
+├── AGENTS.md                    # This file
+└── justfile                     # Development tasks (build, test, release)
 ```
 
 ---
@@ -136,6 +138,53 @@ A native Swift menu bar application located in `ui/macos/zig-zag/`:
 - Starts/stops the Zig server via C FFI
 - Displays real-time metrics (memory, CPU, network I/O, tokens, costs)
 - Communicates with Zig code via `include/zig-zag.h` header
+
+---
+
+## Versioning
+
+Single source of truth: **`version.txt`** at the project root (semver format, e.g. `0.3.2`).
+
+### How It Works
+
+```
+version.txt ──@embedFile──> build.zig ──build options──> main.zig (CLI: --version)
+                                                          lib.zig  (C API: getVersion())
+```
+
+- `build.zig` reads `version.txt` via `@embedFile` and injects it as a compile-time build option into all executable and library targets.
+- `src/main.zig` supports `--version` / `-v` flag and logs the version on startup.
+- `src/lib.zig` exports `getVersion()` via C FFI so the macOS Swift app can display it.
+- The macOS Xcode project has its own `MARKETING_VERSION` in `project.pbxproj` — kept in sync by the release recipe.
+
+### Bumping Version
+
+```bash
+just release patch   # 0.3.1 → 0.3.2
+just release minor   # 0.3.2 → 0.4.0
+just release major   # 0.4.0 → 1.0.0
+```
+
+This single command:
+1. Reads current version from `version.txt`
+2. Bumps it according to semver
+3. Updates `version.txt`
+4. Updates Xcode `MARKETING_VERSION` in `project.pbxproj`
+5. Commits all changes
+6. Creates a git tag `vX.Y.Z`
+
+Then push with:
+
+```bash
+just push-release    # pushes main + tag → triggers GitHub Actions Release workflow
+```
+
+### Checking Version
+
+```bash
+just current-version          # reads from version.txt
+./zig-out/bin/zig-zag --version  # prints "zig-zag X.Y.Z"
+```
 
 ---
 

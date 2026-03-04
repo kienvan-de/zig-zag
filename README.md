@@ -323,11 +323,36 @@ zig build lib:rls
 zig build test
 ```
 
+### Version
+
+The version is defined in `version.txt` at the project root (single source of truth). It is embedded at compile time into both the CLI binary and the shared library.
+
+```bash
+# Check current version
+just current-version
+
+# Check version from built binary
+./zig-out/bin/zig-zag --version
+```
+
+### Releasing
+
+```bash
+# Bump version (updates version.txt + Xcode project, commits, tags)
+just release patch   # 0.3.1 → 0.3.2
+just release minor   # 0.3.2 → 0.4.0
+just release major   # 0.4.0 → 1.0.0
+
+# Push to trigger GitHub Actions release
+just push-release
+```
+
 ### Project Structure
 
 ```
+├── version.txt               # Version (single source of truth)
 ├── src/
-│   ├── main.zig              # CLI entry point
+│   ├── main.zig              # CLI entry point (--version flag)
 │   ├── lib.zig               # Library entry point (C API for macOS app)
 │   ├── server.zig            # HTTP server
 │   ├── router.zig            # Request routing
