@@ -22,6 +22,7 @@ const app_cache = @import("cache/app_cache.zig");
 const worker_pool = @import("worker_pool.zig");
 const metrics = @import("metrics.zig");
 const provider = @import("provider.zig");
+const pricing = @import("pricing.zig");
 
 const version = build_options.version;
 
@@ -165,6 +166,22 @@ fn serverThreadFn(s: *State) void {
 
     // 6. Initialize providers (auth flows for HAI, SAP AI Core, etc.)
     log.info("Initializing providers...", .{});
+
+    // 6a. Initialize pricing engine (load cost CSVs for configured providers)
+    var provider_names_buf: [32][]const u8 = undefined;
+    var provider_name_count: usize = 0;
+    {
+        var piter = cfg.providers.keyIterator();
+        while (piter.next()) |key_ptr| {
+            if (provider_name_count < provider_names_buf.len) {
+                provider_names_buf[provider_name_count] = key_ptr.*;
+                provider_name_count += 1;
+            }
+        }
+    }
+    pricing.init(allocator, provider_names_buf[0..provider_name_count]);
+    defer pricing.deinit();
+
     const init_result = provider.initProviders(allocator, &cfg);
     log.info("Provider initialization complete: {d}/{d} succeeded", .{ init_result.succeeded, init_result.total });
 
