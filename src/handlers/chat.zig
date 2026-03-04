@@ -58,6 +58,7 @@ const utils = @import("../utils.zig");
 const provider = @import("../provider.zig");
 const log = @import("../log.zig");
 const metrics = @import("../metrics.zig");
+const pricing = @import("../pricing.zig");
 
 // Provider modules
 const anthropic = struct {
@@ -165,6 +166,7 @@ pub fn handle(
                         connection,
                         openai_request.value,
                         model_info.model,
+                        model_info.provider,
                         provider_config,
                     );
                 } else {
@@ -176,6 +178,7 @@ pub fn handle(
                         connection,
                         openai_request.value,
                         model_info.model,
+                        model_info.provider,
                         provider_config,
                     );
                 }
@@ -189,6 +192,7 @@ pub fn handle(
                         connection,
                         openai_request.value,
                         model_info.model,
+                        model_info.provider,
                         provider_config,
                     );
                 } else {
@@ -200,6 +204,7 @@ pub fn handle(
                         connection,
                         openai_request.value,
                         model_info.model,
+                        model_info.provider,
                         provider_config,
                     );
                 }
@@ -213,6 +218,7 @@ pub fn handle(
                         connection,
                         openai_request.value,
                         model_info.model,
+                        model_info.provider,
                         provider_config,
                     );
                 } else {
@@ -224,6 +230,7 @@ pub fn handle(
                         connection,
                         openai_request.value,
                         model_info.model,
+                        model_info.provider,
                         provider_config,
                     );
                 }
@@ -237,6 +244,7 @@ pub fn handle(
                         connection,
                         openai_request.value,
                         model_info.model,
+                        model_info.provider,
                         provider_config,
                     );
                 } else {
@@ -248,6 +256,7 @@ pub fn handle(
                         connection,
                         openai_request.value,
                         model_info.model,
+                        model_info.provider,
                         provider_config,
                     );
                 }
@@ -261,6 +270,7 @@ pub fn handle(
                         connection,
                         openai_request.value,
                         model_info.model,
+                        model_info.provider,
                         provider_config,
                     );
                 } else {
@@ -272,6 +282,7 @@ pub fn handle(
                         connection,
                         openai_request.value,
                         model_info.model,
+                        model_info.provider,
                         provider_config,
                     );
                 }
@@ -302,6 +313,7 @@ pub fn handle(
                     connection,
                     openai_request.value,
                     model_info.model,
+                    model_info.provider,
                     provider_config,
                 );
             } else {
@@ -313,6 +325,7 @@ pub fn handle(
                     connection,
                     openai_request.value,
                     model_info.model,
+                    model_info.provider,
                     provider_config,
                 );
             }
@@ -325,6 +338,7 @@ pub fn handle(
                     connection,
                     openai_request.value,
                     model_info.model,
+                    model_info.provider,
                     provider_config,
                 );
             } else {
@@ -336,6 +350,7 @@ pub fn handle(
                     connection,
                     openai_request.value,
                     model_info.model,
+                    model_info.provider,
                     provider_config,
                 );
             }
@@ -362,6 +377,7 @@ fn handleProviderStreaming(
     connection: std.net.Server.Connection,
     openai_request: OpenAI.Request,
     model: []const u8,
+    provider_name: []const u8,
     provider_config: *const @import("../config.zig").ProviderConfig,
 ) !void {
     const start_time = std.time.milliTimestamp();
@@ -456,10 +472,19 @@ fn handleProviderStreaming(
                 }
                 chunk_count += 1;
 
-                // Track tokens from usage (usually in final chunk)
+                // Track tokens and costs from usage (usually in final chunk)
                 if (chunk.value.usage) |usage| {
-                    metrics.addInputTokens(@intCast(usage.prompt_tokens));
-                    metrics.addOutputTokens(@intCast(usage.completion_tokens));
+                    const in_tokens: u64 = @intCast(usage.prompt_tokens);
+                    const out_tokens: u64 = @intCast(usage.completion_tokens);
+                    metrics.addInputTokens(in_tokens);
+                    metrics.addOutputTokens(out_tokens);
+
+                    // Calculate and track costs
+                    if (pricing.getCost(provider_name, model)) |cost_entry| {
+                        const cost = pricing.calculateCost(cost_entry, in_tokens, out_tokens);
+                        metrics.addInputCost(@floatCast(cost.input_cost));
+                        metrics.addOutputCost(@floatCast(cost.output_cost));
+                    }
                 }
 
                 // Serialize chunk to SSE format
@@ -579,6 +604,7 @@ fn handleProvider(
     connection: std.net.Server.Connection,
     openai_request: OpenAI.Request,
     model: []const u8,
+    provider_name: []const u8,
     provider_config: *const @import("../config.zig").ProviderConfig,
 ) !void {
     const start_time = std.time.milliTimestamp();
@@ -652,10 +678,19 @@ fn handleProvider(
     const transform_response_time = std.time.milliTimestamp() - transform_response_start;
     log.debug("[SYNC] Transform response completed in {d}ms", .{transform_response_time});
 
-    // Track tokens from the response
+    // Track tokens and costs from the response
     if (openai_response.usage) |usage| {
-        metrics.addInputTokens(@intCast(usage.prompt_tokens));
-        metrics.addOutputTokens(@intCast(usage.completion_tokens));
+        const in_tokens: u64 = @intCast(usage.prompt_tokens);
+        const out_tokens: u64 = @intCast(usage.completion_tokens);
+        metrics.addInputTokens(in_tokens);
+        metrics.addOutputTokens(out_tokens);
+
+        // Calculate and track costs
+        if (pricing.getCost(provider_name, model)) |cost_entry| {
+            const cost = pricing.calculateCost(cost_entry, in_tokens, out_tokens);
+            metrics.addInputCost(@floatCast(cost.input_cost));
+            metrics.addOutputCost(@floatCast(cost.output_cost));
+        }
     }
 
     // Serialize OpenAI response
