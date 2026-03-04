@@ -46,7 +46,8 @@ app: lib
         -scheme zig-zag \
         -configuration Debug \
         -derivedDataPath build \
-        -arch arm64
+        -arch arm64 \
+        clean build
 
 # Build macOS app (release)
 app-release: lib-release
@@ -57,7 +58,8 @@ app-release: lib-release
         -arch arm64 \
         CODE_SIGN_IDENTITY="-" \
         CODE_SIGNING_REQUIRED=NO \
-        CODE_SIGNING_ALLOWED=NO
+        CODE_SIGNING_ALLOWED=NO \
+        clean build
     codesign --force --deep --sign - "build/Build/Products/Release/zig-zag.app"
 
 # Install macOS app to /Applications
