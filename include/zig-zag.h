@@ -80,6 +80,10 @@ void stopServer(void);
 /// @return CServerStats struct with current values (zeroed if server not running)
 CServerStats getServerStats(void);
 
+/// Get the zig-zag core version string.
+/// @return Null-terminated version string (e.g. "0.3.1"). Static lifetime.
+const char* getVersion(void);
+
 #ifdef __cplusplus
 }
 #endif

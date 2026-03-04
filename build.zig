@@ -19,6 +19,16 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // Read version from version.txt (single source of truth)
+    const version = b.option([]const u8, "version", "Override version string") orelse
+        @embedFile("version.txt");
+    // Trim trailing newline
+    const version_trimmed = std.mem.trimRight(u8, version, "\n\r ");
+
+    // Build options module to inject version into Zig source code
+    const build_options = b.addOptions();
+    build_options.addOption([]const u8, "version", version_trimmed);
+
     const exe = b.addExecutable(.{
         .name = "zig-zag",
         .root_module = b.createModule(.{
@@ -27,6 +37,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    exe.root_module.addOptions("build_options", build_options);
 
     b.installArtifact(exe);
 
@@ -104,6 +115,7 @@ pub fn build(b: *std.Build) void {
             .optimize = .Debug,
         }),
     });
+    debug_exe.root_module.addOptions("build_options", build_options);
 
     const debug_step = b.step("exec:dbg", "Build debug binary");
     const install_debug = b.addInstallArtifact(debug_exe, .{});
@@ -119,6 +131,7 @@ pub fn build(b: *std.Build) void {
             .strip = true,
         }),
     });
+    release_exe.root_module.addOptions("build_options", build_options);
 
     const release_step = b.step("exec:rls", "Build release binary (smallest size)");
     const install_release = b.addInstallArtifact(release_exe, .{});
@@ -153,6 +166,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    lib.root_module.addOptions("build_options", build_options);
 
     const lib_install = b.addInstallArtifact(lib, .{});
     const lib_step = b.step("lib:dbg", "Build debug shared library for platform UI integration");
@@ -169,6 +183,7 @@ pub fn build(b: *std.Build) void {
             .strip = true,
         }),
     });
+    lib_release.root_module.addOptions("build_options", build_options);
 
     const lib_release_install = b.addInstallArtifact(lib_release, .{});
     const lib_release_step = b.step("lib:rls", "Build release shared library for platform UI integration");

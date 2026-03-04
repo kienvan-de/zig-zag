@@ -13,6 +13,7 @@
 // limitations under the License.
 
 const std = @import("std");
+const build_options = @import("build_options");
 const config = @import("config.zig");
 const server = @import("server.zig");
 const log = @import("log.zig");
@@ -21,7 +22,19 @@ const app_cache = @import("cache/app_cache.zig");
 const worker_pool = @import("worker_pool.zig");
 const provider = @import("provider.zig");
 
+const version = build_options.version;
+
 pub fn main() !void {
+    // Handle --version / -v flag
+    var args = std.process.args();
+    _ = args.next(); // skip program name
+    if (args.next()) |arg| {
+        if (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-v")) {
+            _ = std.posix.write(std.posix.STDOUT_FILENO, "zig-zag " ++ version ++ "\n") catch {};
+            return;
+        }
+    }
+
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
@@ -55,6 +68,7 @@ pub fn main() !void {
     defer log.deinit();
 
     // Initialize providers (auth flows for HAI, SAP AI Core, etc.)
+    log.info("zig-zag v{s}", .{version});
     log.info("Initializing providers...", .{});
     const init_result = provider.initProviders(allocator, &cfg);
     log.info("Provider initialization complete: {d}/{d} succeeded", .{ init_result.succeeded, init_result.total });

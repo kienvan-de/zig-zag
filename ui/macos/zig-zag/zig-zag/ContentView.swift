@@ -245,6 +245,13 @@ struct ContentView: View {
         }
     }
     
+    private var coreVersion: String {
+        if let ptr = getVersion() {
+            return String(cString: ptr)
+        }
+        return "?"
+    }
+    
     private var statusRow: some View {
         HStack {
             HStack(spacing: 4) {
@@ -268,6 +275,18 @@ struct ContentView: View {
                         .font(.system(size: 12, weight: .medium, design: .monospaced))
                         .foregroundColor(.primary)
                 }
+                
+                Spacer()
+            }
+            
+            HStack(spacing: 4) {
+                Image(systemName: "tag")
+                    .foregroundColor(.secondary)
+                    .font(.system(size: 11))
+                
+                Text(coreVersion)
+                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                    .foregroundColor(.primary)
             }
         }
         .padding(.horizontal, 8)

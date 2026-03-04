@@ -85,9 +85,9 @@ clean-xcode:
 
 # === Release ===
 
-# Get current version from Xcode project
+# Get current version from version.txt (single source of truth)
 @current-version:
-    grep -m1 'MARKETING_VERSION' ui/macos/zig-zag/zig-zag.xcodeproj/project.pbxproj | sed 's/.*= //' | sed 's/;.*//'
+    cat version.txt | tr -d '\n'
 
 # Prepare release: bump version and create tag (bump: major, minor, patch)
 release bump:
@@ -123,6 +123,9 @@ release bump:
     
     new_version="${major}.${minor}.${patch}"
     echo "New version: $new_version"
+    
+    # Update version.txt (single source of truth)
+    echo "$new_version" > version.txt
     
     # Update Xcode project (both Debug and Release configs)
     sed -i '' "s/MARKETING_VERSION = $current;/MARKETING_VERSION = $new_version;/g" \

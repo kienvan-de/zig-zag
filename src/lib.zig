@@ -13,6 +13,7 @@
 // limitations under the License.
 
 const std = @import("std");
+const build_options = @import("build_options");
 const config = @import("config.zig");
 const server = @import("server.zig");
 const log = @import("log.zig");
@@ -21,6 +22,8 @@ const app_cache = @import("cache/app_cache.zig");
 const worker_pool = @import("worker_pool.zig");
 const metrics = @import("metrics.zig");
 const provider = @import("provider.zig");
+
+const version = build_options.version;
 
 // ============================================================================
 // Global state
@@ -323,4 +326,10 @@ export fn getServerStats() CServerStats {
         .input_cost = snap.input_cost,
         .output_cost = snap.output_cost,
     };
+}
+
+/// Get the zig-zag core version string.
+/// Returns a null-terminated string pointer (static lifetime, never freed).
+export fn getVersion() [*:0]const u8 {
+    return version.ptr[0..version.len :0];
 }

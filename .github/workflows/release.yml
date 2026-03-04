@@ -24,7 +24,7 @@ jobs:
           - os: macos-26
             target: aarch64-macos
             artifact: zig-zag-macos-aarch64
-          - os: macos-26-large
+          - os: macos-26
             target: x86_64-macos
             artifact: zig-zag-macos-x86_64
 
