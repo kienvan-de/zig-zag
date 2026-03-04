@@ -17,3 +17,6 @@ ui/macos/zig-zag/DerivedData/
 # Auto-copied by zig build lib (regenerated, don't commit)
 ui/macos/zig-zag/zig-zag/libzig-zag.dylib
 ui/macos/zig-zag/zig-zag/zig-zag.h
+
+# Planning docs (local only)
+.plan/
