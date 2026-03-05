@@ -113,12 +113,8 @@ pub const TokenResponse = struct {
 // Errors
 // ============================================================================
 
-pub const OAuthError = error{
-    TokenExchangeFailed,
-    TokenRefreshFailed,
-    ClientCredentialsFailed,
-    InvalidTokenResponse,
-};
+/// OAuth token exchange/refresh errors — defined in errors.zig
+pub const OAuthError = @import("../errors.zig").OAuthError;
 
 // ============================================================================
 // OAuth Struct (for use as provider client member)
@@ -499,12 +495,8 @@ pub const DeviceCodeResponse = struct {
     }
 };
 
-pub const DeviceFlowError = error{
-    DeviceCodeRequestFailed,
-    DeviceCodeExpired,
-    DeviceFlowDenied,
-    InvalidDeviceCodeResponse,
-};
+/// Device flow authentication errors — defined in errors.zig
+pub const DeviceFlowError = @import("../errors.zig").DeviceFlowError;
 
 /// Request a device code from the OAuth provider (step 1)
 /// POST <device_code_url> with client_id and scope

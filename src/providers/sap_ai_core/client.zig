@@ -317,7 +317,9 @@ pub const SapAiCoreClient = struct {
         };
     }
 
-    fn handleErrorResponse(self: *SapAiCoreClient, status: std.http.Status) error{ AuthenticationError, RateLimitError, ServerError, InvalidStatusCode } {
+    const HttpError = @import("../../errors.zig").HttpError;
+
+    fn handleErrorResponse(self: *SapAiCoreClient, status: std.http.Status) HttpError {
         _ = self;
         log.debug("SAP AI Core response status: {} ({})", .{ @intFromEnum(status), status });
         return switch (status) {

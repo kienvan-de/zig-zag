@@ -47,11 +47,8 @@ pub const Provider = enum {
     }
 };
 
-/// Provider-related errors
-pub const ProviderError = error{
-    UnsupportedProvider,
-    InvalidProvider,
-};
+/// Provider-related errors — defined in errors.zig
+pub const ProviderError = @import("errors.zig").ProviderError;
 
 /// Check if provider is currently supported
 pub fn isSupported(p: Provider) bool {

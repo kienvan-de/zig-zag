@@ -20,13 +20,8 @@ pub const ModelInfo = struct {
     model: []const u8,
 };
 
-/// Model parsing errors
-pub const ModelParseError = error{
-    InvalidModelFormat,
-    EmptyProvider,
-    EmptyModel,
-    OutOfMemory,
-};
+/// Model parsing errors — defined in errors.zig
+pub const ModelParseError = @import("errors.zig").ModelParseError;
 
 /// Parse model string in format "provider/model-name"
 /// Examples:

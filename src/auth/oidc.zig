@@ -95,10 +95,8 @@ pub const AuthorizationUrl = struct {
 // Errors
 // ============================================================================
 
-pub const OIDCError = error{
-    OIDCDiscoveryFailed,
-    OIDCNotDiscovered,
-};
+/// OIDC discovery errors — defined in errors.zig
+pub const OIDCError = @import("../errors.zig").OIDCError;
 
 // ============================================================================
 // Private Helpers
