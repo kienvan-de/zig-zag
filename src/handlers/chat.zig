@@ -95,9 +95,13 @@ const copilot = struct {
 pub fn handle(
     allocator: std.mem.Allocator,
     connection: std.net.Server.Connection,
+    method: []const u8,
+    path: []const u8,
     body: []const u8,
     config: *const @import("../config.zig").Config,
 ) !void {
+    _ = method;
+    _ = path;
     // Parse OpenAI request
     const openai_request = std.json.parseFromSlice(
         OpenAI.Request,

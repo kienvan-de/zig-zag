@@ -52,6 +52,7 @@ pub fn sendJsonResponse(
     const status_line = switch (status) {
         .ok => "HTTP/1.1 200 OK\r\n",
         .bad_request => "HTTP/1.1 400 Bad Request\r\n",
+        .not_found => "HTTP/1.1 404 Not Found\r\n",
         .too_many_requests => "HTTP/1.1 429 Too Many Requests\r\n",
         .internal_server_error => "HTTP/1.1 500 Internal Server Error\r\n",
         .bad_gateway => "HTTP/1.1 502 Bad Gateway\r\n",
@@ -67,6 +68,20 @@ pub fn sendJsonResponse(
     _ = try connection.stream.writeAll(headers);
     _ = try connection.stream.writeAll(json_body);
     metrics.addNetworkTx(headers.len + json_body.len);
+}
+
+// ============================================================================
+// Convenience response helpers
+// ============================================================================
+
+/// Send a 404 Not Found JSON response
+pub fn sendNotFound(connection: std.net.Server.Connection) !void {
+    try sendJsonResponse(connection, .not_found, "{\"error\":\"Not Found\"}");
+}
+
+/// Send a 500 Internal Server Error JSON response
+pub fn sendInternalError(connection: std.net.Server.Connection) !void {
+    try sendJsonResponse(connection, .internal_server_error, "{\"error\":\"Internal Server Error\"}");
 }
 
 // ============================================================================

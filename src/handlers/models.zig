@@ -124,9 +124,13 @@ const FetchContext = struct {
 pub fn handle(
     allocator: std.mem.Allocator,
     connection: std.net.Server.Connection,
+    method: []const u8,
+    path: []const u8,
     body: []const u8,
     cfg: *const config_mod.Config,
 ) !void {
+    _ = method;
+    _ = path;
     _ = body; // GET request, no body needed
 
     const start_time = std.time.milliTimestamp();

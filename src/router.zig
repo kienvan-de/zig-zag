@@ -15,6 +15,8 @@
 const std = @import("std");
 const chat_handler = @import("handlers/chat.zig");
 const models_handler = @import("handlers/models.zig");
+const template_handler = @import("handlers/template.zig");
+const config_handler = @import("handlers/config.zig");
 const config_mod = @import("config.zig");
 
 /// Route definition
@@ -24,13 +26,16 @@ pub const Route = struct {
     handler: *const fn (
         allocator: std.mem.Allocator,
         connection: std.net.Server.Connection,
+        method: []const u8,
+        path: []const u8,
         body: []const u8,
         config: *const config_mod.Config,
     ) anyerror!void,
 };
 
-/// Match incoming HTTP request to a route
-/// Returns null if no route matches
+/// Match incoming HTTP request to a route.
+/// Exact matches are checked first, then prefix matches.
+/// Returns null if no route matches.
 pub fn match(request_data: []const u8) ?Route {
     if (request_data.len == 0) return null;
 
@@ -38,25 +43,27 @@ pub fn match(request_data: []const u8) ?Route {
     const method = extractMethod(request_data) orelse return null;
     const path = extractPath(request_data) orelse return null;
 
-    // Match routes
+    // ── Exact matches ────────────────────────────────────────────────────────
+
     if (std.mem.eql(u8, method, "POST") and std.mem.eql(u8, path, "/v1/chat/completions")) {
-        return Route{
-            .method = "POST",
-            .path = "/v1/chat/completions",
-            .handler = chat_handler.handle,
-        };
+        return Route{ .method = method, .path = path, .handler = chat_handler.handle };
     }
 
     if (std.mem.eql(u8, method, "GET") and std.mem.eql(u8, path, "/v1/models")) {
-        return Route{
-            .method = "GET",
-            .path = "/v1/models",
-            .handler = models_handler.handle,
-        };
+        return Route{ .method = method, .path = path, .handler = models_handler.handle };
     }
 
-    // Future routes:
-    // if (std.mem.eql(u8, method, "POST") and std.mem.eql(u8, path, "/v1/embeddings")) { ... }
+    // ── Prefix matches ───────────────────────────────────────────────────────
+
+    // GET /v1/html/* → template handler (serves embedded HTML pages)
+    if (std.mem.eql(u8, method, "GET") and std.mem.startsWith(u8, path, "/v1/html/")) {
+        return Route{ .method = method, .path = path, .handler = template_handler.handle };
+    }
+
+    // * /v1/config/* → config REST handler (GET, POST, DELETE)
+    if (std.mem.startsWith(u8, path, "/v1/config/")) {
+        return Route{ .method = method, .path = path, .handler = config_handler.handle };
+    }
 
     return null;
 }

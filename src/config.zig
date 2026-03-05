@@ -391,5 +391,69 @@ pub const Config = struct {
 pub const ConfigError = @import("errors.zig").ConfigError;
 
 // ============================================================================
+// Raw Config File Access
+// ============================================================================
+
+/// Resolve the config file path (same logic as Config.load)
+fn resolveConfigPath(buf: []u8) ![]const u8 {
+    if (std.posix.getenv("ZIG_ZAG_CONFIG")) |config_path| {
+        return config_path;
+    }
+    const home = std.posix.getenv("HOME") orelse return error.HomeNotFound;
+    return try std.fmt.bufPrint(buf, "{s}/.config/zig-zag/config.json", .{home});
+}
+
+/// Read the raw config file bytes.
+/// Caller owns the returned slice and must free it.
+pub fn readRaw(allocator: std.mem.Allocator) ![]const u8 {
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const config_path = try resolveConfigPath(&path_buf);
+
+    const file = std.fs.cwd().openFile(config_path, .{}) catch |err| {
+        log_mod.err("readRaw: failed to open config file: {s}", .{config_path});
+        return err;
+    };
+    defer file.close();
+
+    return file.readToEndAlloc(allocator, 1024 * 1024); // 1MB max
+}
+
+/// Write raw JSON bytes to the config file atomically.
+/// Validates that `json` is valid JSON before writing.
+/// Uses a .tmp file + rename to avoid partial writes on crash.
+pub fn writeRaw(allocator: std.mem.Allocator, json: []const u8) !void {
+    // Validate JSON first — refuse to write garbage
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, json, .{}) catch {
+        return error.InvalidConfigFormat;
+    };
+    parsed.deinit();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const config_path = try resolveConfigPath(&path_buf);
+
+    // Build .tmp path
+    var tmp_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp_path = try std.fmt.bufPrint(&tmp_buf, "{s}.tmp", .{config_path});
+
+    // Write to .tmp
+    const tmp_file = std.fs.cwd().createFile(tmp_path, .{ .truncate = true }) catch |err| {
+        log_mod.err("writeRaw: failed to create tmp file: {s}", .{tmp_path});
+        return err;
+    };
+    errdefer std.fs.cwd().deleteFile(tmp_path) catch {};
+
+    try tmp_file.writeAll(json);
+    tmp_file.close();
+
+    // Atomic rename .tmp → config file
+    std.fs.cwd().rename(tmp_path, config_path) catch |err| {
+        log_mod.err("writeRaw: failed to rename {s} → {s}", .{ tmp_path, config_path });
+        return err;
+    };
+
+    log_mod.info("Config written to {s} ({d} bytes)", .{ config_path, json.len });
+}
+
+// ============================================================================
 // Unit Tests
 // ============================================================================
