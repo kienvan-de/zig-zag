@@ -192,7 +192,7 @@ fn getProcessStats() struct { rss_bytes: u64, cpu_time_us: u64 } {
                 _ = iter.next(); // skip size
                 if (iter.next()) |rss_pages_str| {
                     if (std.fmt.parseInt(u64, rss_pages_str, 10)) |rss_pages| {
-                        rss_bytes = rss_pages * std.mem.page_size;
+                        rss_bytes = rss_pages * std.heap.pageSize();
                     } else |_| {}
                 }
             } else |_| {}
