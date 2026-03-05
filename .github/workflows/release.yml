@@ -105,10 +105,18 @@ jobs:
         with:
           path: artifacts
 
+      - name: Pack pricing archive
+        run: |
+          cd pricing
+          sha256sum *.csv > checksum.sha256
+          cat checksum.sha256
+          tar -czf ../pricing.tar.gz *.csv checksum.sha256
+
       - name: Prepare release assets
         run: |
           mkdir -p release
           find artifacts -type f -name "*.tar.gz" -exec cp {} release/ \;
+          cp pricing.tar.gz release/
           ls -la release/
 
       - name: Generate checksums
@@ -132,9 +140,11 @@ jobs:
             | macOS CLI | Intel | `zig-zag-macos-x86_64.tar.gz` |
             | Linux | x86_64 | `zig-zag-linux-x86_64.tar.gz` |
             | Linux | ARM64 | `zig-zag-linux-aarch64.tar.gz` |
+            | Pricing | All | `pricing.tar.gz` |
             
             > **Note:** Windows is not currently supported due to POSIX-specific code.
             > **Note:** macOS app is unsigned — you may need to right-click → Open on first launch.
+            > **Note:** Pricing data auto-updates on startup (macOS/Linux). Manual: extract `pricing.tar.gz` to `~/.config/zig-zag/pricing/`.
             
             ## Checksums
             

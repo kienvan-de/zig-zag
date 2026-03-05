@@ -39,7 +39,7 @@ pub const CachedToken = struct {
 /// Global token cache
 var cache: ?std.StringHashMap(CachedToken) = null;
 var cache_allocator: ?std.mem.Allocator = null;
-var mutex: std.Thread.Mutex = .{};
+var rwlock: std.Thread.RwLock = .{};
 
 /// Fetch mutexes per domain to prevent thundering herd
 var fetch_mutexes: ?std.StringHashMap(*std.Thread.Mutex) = null;
@@ -47,8 +47,8 @@ var fetch_mutex_lock: std.Thread.Mutex = .{};
 
 /// Initialize the global token cache
 pub fn init(allocator: std.mem.Allocator) void {
-    mutex.lock();
-    defer mutex.unlock();
+    rwlock.lock();
+    defer rwlock.unlock();
 
     if (cache == null) {
         cache = std.StringHashMap(CachedToken).init(allocator);
@@ -60,17 +60,17 @@ pub fn init(allocator: std.mem.Allocator) void {
 
 /// Deinitialize the global token cache
 pub fn deinit() void {
-    mutex.lock();
-    defer mutex.unlock();
+    rwlock.lock();
+    defer rwlock.unlock();
 
     if (cache) |*c| {
         // Free all cached tokens and keys
         var iter = c.iterator();
         while (iter.next()) |entry| {
-            if (cache_allocator) |alloc| {
-                alloc.free(entry.key_ptr.*);
-                alloc.free(entry.value_ptr.access_token);
-                if (entry.value_ptr.refresh_token) |rt| alloc.free(rt);
+            if (cache_allocator) |a| {
+                a.free(entry.key_ptr.*);
+                a.free(entry.value_ptr.access_token);
+                if (entry.value_ptr.refresh_token) |rt| a.free(rt);
             }
         }
         c.deinit();
@@ -81,9 +81,9 @@ pub fn deinit() void {
     if (fetch_mutexes) |*fm| {
         var iter = fm.iterator();
         while (iter.next()) |entry| {
-            if (cache_allocator) |alloc| {
-                alloc.free(entry.key_ptr.*);
-                alloc.destroy(entry.value_ptr.*);
+            if (cache_allocator) |a| {
+                a.free(entry.key_ptr.*);
+                a.destroy(entry.value_ptr.*);
             }
         }
         fm.deinit();
@@ -108,16 +108,16 @@ pub const GetResult = struct {
 
 /// Get a cached token if valid
 /// Returns duplicated tokens that the caller must free, or null if not found/expired
-/// This prevents use-after-free if another thread refreshes the token concurrently
+/// Uses shared lock — multiple readers can access concurrently
 pub fn get(allocator: std.mem.Allocator, key: []const u8, expiry_buffer_seconds: i64) ?GetResult {
-    mutex.lock();
-    defer mutex.unlock();
+    rwlock.lockShared();
+    defer rwlock.unlockShared();
 
     if (cache) |c| {
         if (c.get(key)) |token| {
             if (token.isValid(expiry_buffer_seconds)) {
                 log.debug("Token cache hit for '{s}'", .{key});
-                // Return copies to avoid use-after-free if token is refreshed concurrently
+                // Return copies so caller is safe after lock release
                 const access_token = allocator.dupe(u8, token.access_token) catch return null;
                 const refresh_token = if (token.refresh_token) |rt|
                     allocator.dupe(u8, rt) catch {
@@ -140,9 +140,10 @@ pub fn get(allocator: std.mem.Allocator, key: []const u8, expiry_buffer_seconds:
 
 /// Get refresh token even if access token is expired
 /// Used for token refresh flow
+/// Uses shared lock — multiple readers can access concurrently
 pub fn getRefreshToken(allocator: std.mem.Allocator, key: []const u8) ?[]const u8 {
-    mutex.lock();
-    defer mutex.unlock();
+    rwlock.lockShared();
+    defer rwlock.unlockShared();
 
     if (cache) |c| {
         if (c.get(key)) |token| {
@@ -194,12 +195,12 @@ pub fn releaseFetchLock(handle: FetchLockHandle) void {
 }
 
 /// Store a token in the cache
-/// The tokens and key are duplicated, caller retains ownership of originals
+/// Uses exclusive lock — blocks all readers and other writers
 pub fn put(key: []const u8, access_token: []const u8, refresh_token: ?[]const u8, expires_in_seconds: i64) !void {
-    mutex.lock();
-    defer mutex.unlock();
+    rwlock.lock();
+    defer rwlock.unlock();
 
-    const alloc = cache_allocator orelse return error.CacheNotInitialized;
+    const a = cache_allocator orelse return error.CacheNotInitialized;
     var c = &(cache orelse return error.CacheNotInitialized);
 
     const now = @divTrunc(std.time.milliTimestamp(), 1000);
@@ -208,22 +209,22 @@ pub fn put(key: []const u8, access_token: []const u8, refresh_token: ?[]const u8
     // Check if key already exists
     if (c.getPtr(key)) |existing| {
         // Free old tokens and update
-        alloc.free(existing.access_token);
-        if (existing.refresh_token) |rt| alloc.free(rt);
+        a.free(existing.access_token);
+        if (existing.refresh_token) |rt| a.free(rt);
 
-        existing.access_token = try alloc.dupe(u8, access_token);
-        existing.refresh_token = if (refresh_token) |rt| try alloc.dupe(u8, rt) else null;
+        existing.access_token = try a.dupe(u8, access_token);
+        existing.refresh_token = if (refresh_token) |rt| try a.dupe(u8, rt) else null;
         existing.expires_at = expires_at;
         log.debug("Token cache updated for '{s}', expires in {d}s", .{ key, expires_in_seconds });
     } else {
         // New entry - duplicate key and tokens
-        const key_copy = try alloc.dupe(u8, key);
-        errdefer alloc.free(key_copy);
+        const key_copy = try a.dupe(u8, key);
+        errdefer a.free(key_copy);
 
-        const access_token_copy = try alloc.dupe(u8, access_token);
-        errdefer alloc.free(access_token_copy);
+        const access_token_copy = try a.dupe(u8, access_token);
+        errdefer a.free(access_token_copy);
 
-        const refresh_token_copy = if (refresh_token) |rt| try alloc.dupe(u8, rt) else null;
+        const refresh_token_copy = if (refresh_token) |rt| try a.dupe(u8, rt) else null;
 
         try c.put(key_copy, .{
             .access_token = access_token_copy,
@@ -235,16 +236,17 @@ pub fn put(key: []const u8, access_token: []const u8, refresh_token: ?[]const u8
 }
 
 /// Remove a token from the cache
+/// Uses exclusive lock — blocks all readers and other writers
 pub fn remove(key: []const u8) void {
-    mutex.lock();
-    defer mutex.unlock();
+    rwlock.lock();
+    defer rwlock.unlock();
 
     if (cache) |*c| {
         if (c.fetchRemove(key)) |entry| {
-            if (cache_allocator) |alloc| {
-                alloc.free(entry.key);
-                alloc.free(entry.value.access_token);
-                if (entry.value.refresh_token) |rt| alloc.free(rt);
+            if (cache_allocator) |a| {
+                a.free(entry.key);
+                a.free(entry.value.access_token);
+                if (entry.value.refresh_token) |rt| a.free(rt);
             }
             log.debug("Token cache removed for '{s}'", .{key});
         }

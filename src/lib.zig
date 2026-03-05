@@ -181,6 +181,7 @@ fn serverThreadFn(s: *State) void {
     }
     pricing.init(allocator, provider_names_buf[0..provider_name_count]);
     defer pricing.deinit();
+    pricing.scheduleAutoUpdate();
 
     const init_result = provider.initProviders(allocator, &cfg);
     log.info("Provider initialization complete: {d}/{d} succeeded", .{ init_result.succeeded, init_result.total });
