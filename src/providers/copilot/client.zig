@@ -258,9 +258,9 @@ pub const CopilotClient = struct {
     // Task 1.5: Device Flow + Save Token
     // ========================================================================
 
-    /// HTML template embedded at compile time — baked into the binary via @embedFile.
+    /// HTML template embedded at compile time via the templates package.
     /// Placeholders: {{USER_CODE}}, {{VERIFICATION_URI}}
-    const device_flow_html = @embedFile("device_flow.html");
+    const device_flow_html = @import("../../templates/mod.zig").device_flow;
 
     /// Write the device flow HTML page to /tmp and open it in the default browser.
     /// The template is embedded in the binary at compile time (no runtime file dependency).

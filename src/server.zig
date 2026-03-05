@@ -263,7 +263,7 @@ fn handleConnection(allocator: std.mem.Allocator, connection: std.net.Server.Con
 
     if (router.match(request_data)) |route| {
         const body = extractRequestBody(request_data) orelse blk: {
-            if (std.mem.eql(u8, route.method, "GET")) {
+            if (std.mem.eql(u8, route.method, "GET") or std.mem.eql(u8, route.method, "DELETE")) {
                 break :blk "";
             } else {
                 const error_json = try errors.createErrorResponse(
@@ -277,7 +277,7 @@ fn handleConnection(allocator: std.mem.Allocator, connection: std.net.Server.Con
             }
         };
 
-        try route.handler(request_allocator, connection, body, cfg);
+        try route.handler(request_allocator, connection, route.method, route.path, body, cfg);
     } else {
         _ = try connection.stream.writeAll(NOT_FOUND_RESPONSE);
     }
