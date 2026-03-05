@@ -206,7 +206,9 @@ pub const OpenAIClient = struct {
         };
     }
 
-    fn handleErrorResponse(self: *OpenAIClient, status: std.http.Status) error{ AuthenticationError, RateLimitError, ServerError, InvalidStatusCode } {
+    const HttpError = @import("../../errors.zig").HttpError;
+
+    fn handleErrorResponse(self: *OpenAIClient, status: std.http.Status) HttpError {
         _ = self;
         return switch (status) {
             .unauthorized => error.AuthenticationError,

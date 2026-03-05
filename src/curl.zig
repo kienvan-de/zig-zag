@@ -26,11 +26,8 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const log = @import("log.zig");
 
-pub const CurlError = error{
-    CurlNotFound,
-    CurlFailed,
-    OutOfMemory,
-};
+/// Curl client errors — defined in errors.zig
+pub const CurlError = @import("errors.zig").CurlError;
 
 /// Response from curl requests - mirrors HttpResponse interface
 pub const CurlResponse = struct {

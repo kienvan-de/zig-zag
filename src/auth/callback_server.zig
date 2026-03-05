@@ -73,14 +73,8 @@ pub const CallbackResult = struct {
 // Errors
 // ============================================================================
 
-pub const CallbackError = error{
-    Timeout,
-    StateMismatch,
-    MissingCode,
-    MissingState,
-    ServerError,
-    BrowserOpenFailed,
-};
+/// Callback server errors — defined in errors.zig
+pub const CallbackError = @import("../errors.zig").CallbackError;
 
 // ============================================================================
 // Constants

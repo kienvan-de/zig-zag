@@ -387,16 +387,8 @@ pub const Config = struct {
     }
 };
 
-/// Configuration errors
-pub const ConfigError = error{
-    HomeNotFound,
-    FileNotFound,
-    InvalidConfigFormat,
-    InvalidProvider,
-    InvalidProviderConfig,
-    MissingApiKey,
-    OutOfMemory,
-};
+/// Configuration errors — defined in errors.zig
+pub const ConfigError = @import("errors.zig").ConfigError;
 
 // ============================================================================
 // Unit Tests

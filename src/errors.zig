@@ -14,6 +14,87 @@
 
 const std = @import("std");
 
+// ============================================================================
+// Error Sets
+// ============================================================================
+
+/// Configuration errors (config.zig)
+pub const ConfigError = error{
+    HomeNotFound,
+    FileNotFound,
+    InvalidConfigFormat,
+    InvalidProvider,
+    InvalidProviderConfig,
+    MissingApiKey,
+    OutOfMemory,
+};
+
+/// Curl client errors (curl.zig)
+pub const CurlError = error{
+    CurlNotFound,
+    CurlFailed,
+    OutOfMemory,
+};
+
+/// OIDC discovery errors (auth/oidc.zig)
+pub const OIDCError = error{
+    OIDCDiscoveryFailed,
+    OIDCNotDiscovered,
+};
+
+/// OAuth token exchange/refresh errors (auth/oauth.zig)
+pub const OAuthError = error{
+    TokenExchangeFailed,
+    TokenRefreshFailed,
+    ClientCredentialsFailed,
+    InvalidTokenResponse,
+};
+
+/// Device flow authentication errors (auth/oauth.zig)
+pub const DeviceFlowError = error{
+    DeviceCodeRequestFailed,
+    DeviceCodeExpired,
+    DeviceFlowDenied,
+    InvalidDeviceCodeResponse,
+};
+
+/// Callback server errors for browser auth (auth/callback_server.zig)
+pub const CallbackError = error{
+    Timeout,
+    StateMismatch,
+    MissingCode,
+    MissingState,
+    ServerError,
+    BrowserOpenFailed,
+};
+
+/// Provider resolution errors (provider.zig)
+pub const ProviderError = error{
+    UnsupportedProvider,
+    InvalidProvider,
+};
+
+/// Model string parsing errors (utils.zig)
+pub const ModelParseError = error{
+    InvalidModelFormat,
+    EmptyProvider,
+    EmptyModel,
+    OutOfMemory,
+};
+
+/// HTTP upstream errors — shared by all provider clients
+pub const HttpError = error{
+    AuthenticationError,
+    RateLimitError,
+    ServerError,
+    InvalidStatusCode,
+    MissingApiKey,
+};
+
+// ============================================================================
+// OpenAI-compatible Error Response
+// ============================================================================
+
 /// OpenAI-compatible error response structure
 pub const ErrorResponse = struct {
     @"error": ErrorDetail,
