@@ -125,7 +125,7 @@ struct ServerStats {
     var formattedCostDisplay: String {
         if costControlsEnabled {
             let remaining = costBudget - totalCost
-            return formatCost(remaining) + " left"
+            return formatCost(remaining)
         }
         return formattedTotalCost
     }
