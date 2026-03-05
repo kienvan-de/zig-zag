@@ -323,7 +323,7 @@ struct ContentView: View {
             
             Spacer()
             
-            if serverState.stats.isRunning {
+            if serverState.stats.isRunning && !serverState.isStopping {
                 HStack(spacing: 4) {
                     Image(systemName: "clock")
                         .foregroundColor(.secondary)
