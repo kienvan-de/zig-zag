@@ -453,7 +453,41 @@ fn handleProviderStreaming(
     var chunk_count: u32 = 0;
     var first_chunk_time: ?i64 = null;
     var had_error = false;
-    while (try stream_result.iterator.next()) |line| {
+    while (true) {
+        const maybe_line = stream_result.iterator.next() catch |err| {
+            // Upstream read failure — the provider connection broke mid-stream.
+            // This wraps the real socket error (ConnectionResetByPeer, ConnectionTimedOut, etc.)
+            // inside error.ReadFailed via the Zig Io.Reader adapter layer.
+            had_error = true;
+
+            // Try to get the underlying HTTP-level error for diagnostics
+            const body_err = stream_result.response.bodyErr();
+            if (body_err) |underlying| {
+                log.err("[STREAM] Upstream read failed for model '{s}': {} (underlying: {})", .{ openai_request.model, err, underlying });
+            } else {
+                log.err("[STREAM] Upstream read failed for model '{s}': {} (after {d} chunks)", .{ openai_request.model, err, chunk_count });
+            }
+
+            // Send an SSE error event to the client so it knows what happened
+            const error_response = errors.createErrorResponse(
+                allocator,
+                "Upstream connection lost while streaming response",
+                .server_error,
+                null,
+            ) catch break;
+            defer allocator.free(error_response);
+
+            var buffer = std.ArrayList(u8){};
+            defer buffer.deinit(allocator);
+            buffer.writer(allocator).print("data: {{\"error\":{{\"message\":\"Upstream connection lost while streaming response\",\"type\":\"server_error\",\"code\":null}}}}\n\n", .{}) catch break;
+
+            metrics.addNetworkTx(buffer.items.len);
+            _ = connection.stream.writeAll(buffer.items) catch {};
+            break;
+        };
+
+        const line = maybe_line orelse break; // null = stream complete
+
         // Check for [DONE] marker (OpenAI format) - skip it, we send our own at the end
         if (std.mem.startsWith(u8, line, "data: [DONE]")) {
             break;
