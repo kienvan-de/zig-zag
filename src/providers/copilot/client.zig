@@ -505,14 +505,28 @@ pub const CopilotClient = struct {
     // API Methods (OpenAI-compatible) — Stories 2, 3, 4
     // ========================================================================
 
+    /// Determine X-Initiator value based on the last message role.
+    /// - "agent" if last message is from assistant or tool (autonomous follow-up, free)
+    /// - "user" otherwise (user-initiated, consumes premium request)
+    /// See: https://docs.github.com/en/copilot/concepts/billing/copilot-requests
+    fn determineInitiator(request: OpenAI.Request) []const u8 {
+        if (request.messages.len == 0) return "user";
+        const last_role = request.messages[request.messages.len - 1].role;
+        return switch (last_role) {
+            .assistant, .tool => "agent",
+            else => "user",
+        };
+    }
+
     /// Build the required Copilot API headers into caller-provided buffers.
     /// - auth_buf: must be >= 512 bytes (holds "Bearer <token>")
     /// - uuid_buf: must be >= 37 bytes (holds "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx")
-    /// - headers_buf: must hold at least 9 entries
+    /// - headers_buf: must hold at least 10 entries
     /// Returns slice of populated headers.
     fn buildHeaders(
         self: *CopilotClient,
         access_token: []const u8,
+        request: OpenAI.Request,
         auth_buf: []u8,
         uuid_buf: []u8,
         headers_buf: []std.http.Header,
@@ -537,6 +551,10 @@ pub const CopilotClient = struct {
             },
         );
 
+        // Determine X-Initiator based on last message role
+        const initiator = determineInitiator(request);
+        log.debug("[Copilot] X-Initiator: {s}", .{initiator});
+
         headers_buf[0] = .{ .name = "Authorization", .value = auth_value };
         headers_buf[1] = .{ .name = "Content-Type", .value = "application/json" };
         headers_buf[2] = .{ .name = "copilot-integration-id", .value = "vscode-chat" };
@@ -546,8 +564,9 @@ pub const CopilotClient = struct {
         headers_buf[6] = .{ .name = "openai-intent", .value = "conversation-panel" };
         headers_buf[7] = .{ .name = "x-github-api-version", .value = self.api_version };
         headers_buf[8] = .{ .name = "x-request-id", .value = request_id };
+        headers_buf[9] = .{ .name = "x-initiator", .value = initiator };
 
-        return headers_buf[0..9];
+        return headers_buf[0..10];
     }
 
     /// Build GET headers (8 headers — no Content-Type)
@@ -603,8 +622,8 @@ pub const CopilotClient = struct {
 
         var auth_buf: [512]u8 = undefined;
         var uuid_buf: [37]u8 = undefined;
-        var headers_buf: [9]std.http.Header = undefined;
-        const headers = try self.buildHeaders(access_token, &auth_buf, &uuid_buf, &headers_buf);
+        var headers_buf: [10]std.http.Header = undefined;
+        const headers = try self.buildHeaders(access_token, request, &auth_buf, &uuid_buf, &headers_buf);
 
         return self.client.postJson(OpenAI.Response, url, headers, request) catch |err| {
             log.err("[Copilot] [SYNC] sendRequest failed: {}", .{err});
@@ -626,8 +645,8 @@ pub const CopilotClient = struct {
 
         var auth_buf: [512]u8 = undefined;
         var uuid_buf: [37]u8 = undefined;
-        var headers_buf: [9]std.http.Header = undefined;
-        const headers = try self.buildHeaders(access_token, &auth_buf, &uuid_buf, &headers_buf);
+        var headers_buf: [10]std.http.Header = undefined;
+        const headers = try self.buildHeaders(access_token, request, &auth_buf, &uuid_buf, &headers_buf);
 
         log.debug("[Copilot] [STREAM] sendStreamingRequest - sending POST request...", .{});
         const result = self.client.postStreaming(SSEIterator, url, headers, request) catch |err| {
