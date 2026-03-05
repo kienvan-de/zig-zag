@@ -17,6 +17,11 @@ import AppKit
 class AppDelegate: NSObject, NSApplicationDelegate {
     var serverState: ServerState?
 
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // Reduce tooltip delay from default ~1.5s to 0.3s
+        UserDefaults.standard.set(300, forKey: "NSInitialToolTipDelay")
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         serverState?.stop()
     }

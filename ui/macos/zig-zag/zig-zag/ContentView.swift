@@ -319,7 +319,7 @@ struct ContentView: View {
                 Text(statusText)
                     .font(.system(size: 13, weight: .medium))
             }
-            .help("Server port")
+            .toolTip("Server port")
             
             Spacer()
             
@@ -333,7 +333,7 @@ struct ContentView: View {
                         .font(.system(size: 12, weight: .medium, design: .monospaced))
                         .foregroundColor(.primary)
                 }
-                .help("Server uptime")
+                .toolTip("Server uptime")
                 
                 Spacer()
             }
@@ -347,7 +347,7 @@ struct ContentView: View {
                     .font(.system(size: 12, weight: .medium, design: .monospaced))
                     .foregroundColor(.primary)
             }
-            .help("Core version")
+            .toolTip("Core version")
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
@@ -525,7 +525,35 @@ struct StatItem: View {
                     .foregroundColor(.primary)
             }
         }
-        .help(tooltip ?? "")
+        .toolTip(tooltip)
+    }
+}
+
+// MARK: - Native Tooltip Support
+// SwiftUI's .help() does not work inside MenuBarExtra(.window).
+// This bridges to AppKit's native NSView.toolTip which works everywhere.
+
+struct TooltipView: NSViewRepresentable {
+    let tooltip: String
+    
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        view.toolTip = tooltip
+        return view
+    }
+    
+    func updateNSView(_ nsView: NSView, context: Context) {
+        nsView.toolTip = tooltip
+    }
+}
+
+extension View {
+    func toolTip(_ tip: String?) -> some View {
+        overlay(Group {
+            if let tip = tip, !tip.isEmpty {
+                TooltipView(tooltip: tip)
+            }
+        })
     }
 }
 
