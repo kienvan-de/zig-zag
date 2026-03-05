@@ -74,13 +74,13 @@ pub fn addOutputTokens(tokens: u64) void {
 }
 
 /// Add input cost (in dollars, converted to micro-dollars internally)
-pub fn addInputCost(dollars: f32) void {
+pub fn addInputCost(dollars: f64) void {
     const micros: u64 = @intFromFloat(dollars * 1_000_000.0);
     _ = input_cost_micros.fetchAdd(micros, .monotonic);
 }
 
 /// Add output cost (in dollars, converted to micro-dollars internally)
-pub fn addOutputCost(dollars: f32) void {
+pub fn addOutputCost(dollars: f64) void {
     const micros: u64 = @intFromFloat(dollars * 1_000_000.0);
     _ = output_cost_micros.fetchAdd(micros, .monotonic);
 }
@@ -241,8 +241,8 @@ pub const Snapshot = struct {
     // LLM metrics
     input_tokens: u64,
     output_tokens: u64,
-    input_cost: f32,
-    output_cost: f32,
+    input_cost: f64,
+    output_cost: f64,
 };
 
 /// Get a consistent snapshot of all metrics including process stats
@@ -255,7 +255,7 @@ pub fn snapshot() Snapshot {
         .network_tx_bytes = network_tx_bytes.load(.monotonic),
         .input_tokens = input_tokens.load(.monotonic),
         .output_tokens = output_tokens.load(.monotonic),
-        .input_cost = @as(f32, @floatFromInt(input_cost_micros.load(.monotonic))) / 1_000_000.0,
-        .output_cost = @as(f32, @floatFromInt(output_cost_micros.load(.monotonic))) / 1_000_000.0,
+        .input_cost = @as(f64, @floatFromInt(input_cost_micros.load(.monotonic))) / 1_000_000.0,
+        .output_cost = @as(f64, @floatFromInt(output_cost_micros.load(.monotonic))) / 1_000_000.0,
     };
 }

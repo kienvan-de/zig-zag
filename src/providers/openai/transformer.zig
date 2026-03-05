@@ -63,7 +63,9 @@ pub fn transformModelsResponse(
 }
 
 /// Transform OpenAI request to OpenAI format (pass-through)
-/// Since the input is already in OpenAI format, we just return it as-is
+/// Since the input is already in OpenAI format, we just return it as-is.
+/// For streaming requests, always injects `stream_options: { include_usage: true }`
+/// so the upstream returns usage data in the final chunk — required for token/cost tracking.
 pub fn transform(
     request: OpenAI.Request,
     model: []const u8,
@@ -76,6 +78,10 @@ pub fn transform(
         .model = model,
         .messages = request.messages,
         .stream = request.stream,
+        .stream_options = if (request.stream orelse false)
+            OpenAI.StreamOptions{ .include_usage = true }
+        else
+            request.stream_options,
         .temperature = request.temperature,
         .max_tokens = request.max_tokens,
         .max_completion_tokens = request.max_completion_tokens,

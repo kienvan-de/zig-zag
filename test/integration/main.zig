@@ -488,7 +488,11 @@ fn runCase(allocator: std.mem.Allocator, cases_root: []const u8, case_name: []co
         const response = try ctx.client.sendCaseRequest(cases_root);
         defer allocator.free(response);
 
-        try assertCaseFileEqual(allocator, cases_root, case_name, "upstream_req.json", "expected_upstream_req.json");
+        // Only assert upstream request if expected file exists
+        // (proxy-rejected requests like budget exceeded never reach upstream)
+        if (caseFileExists(allocator, cases_root, case_name, "expected_upstream_req.json")) {
+            try assertCaseFileEqual(allocator, cases_root, case_name, "upstream_req.json", "expected_upstream_req.json");
+        }
 
         // Check if this is a streaming case (expected_agent_res.txt vs .json)
         if (caseFileExists(allocator, cases_root, case_name, "expected_agent_res.txt")) {

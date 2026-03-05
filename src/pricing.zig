@@ -104,6 +104,8 @@ pub fn deinit() void {
 
 /// Look up cost entry for a provider/model combination.
 /// Lookup order: provider CSV → default.csv → null
+/// Each table is searched: exact match first, then contains-based fallback
+/// (longest CSV key that is a substring of model_name wins).
 /// Thread-safe: uses shared read lock.
 pub fn getCost(provider_name: []const u8, model_name: []const u8) ?CostEntry {
     if (!initialized) return null;
@@ -113,19 +115,44 @@ pub fn getCost(provider_name: []const u8, model_name: []const u8) ?CostEntry {
 
     // 1. Try provider-specific table
     if (provider_tables.get(provider_name)) |table| {
-        if (table.get(model_name)) |entry| {
+        if (tableLookup(table, model_name)) |entry| {
             return entry;
         }
     }
 
     // 2. Fall back to default table
     if (default_table) |table| {
-        if (table.get(model_name)) |entry| {
+        if (tableLookup(table, model_name)) |entry| {
             return entry;
         }
     }
 
     return null;
+}
+
+/// Look up a model in a pricing table.
+/// 1. Exact match (fast HashMap lookup)
+/// 2. Contains fallback: find the longest key that is a substring of model_name
+///    e.g. key "gpt-4o" matches model "gpt-4o-2024-11-20",
+///         key "gpt-4o-mini" matches model "gpt-4o-mini-2024-07-18" (longer wins)
+fn tableLookup(table: PricingTable, model_name: []const u8) ?CostEntry {
+    // Fast path: exact match
+    if (table.get(model_name)) |entry| return entry;
+
+    // Slow path: contains-based fallback (longest match wins)
+    var best_entry: ?CostEntry = null;
+    var best_len: usize = 0;
+
+    var it = table.iterator();
+    while (it.next()) |kv| {
+        const key = kv.key_ptr.*;
+        if (key.len > best_len and std.mem.indexOf(u8, model_name, key) != null) {
+            best_len = key.len;
+            best_entry = kv.value_ptr.*;
+        }
+    }
+
+    return best_entry;
 }
 
 /// Calculate cost for a request given a cost entry and token counts.

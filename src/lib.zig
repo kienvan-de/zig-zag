@@ -367,14 +367,14 @@ export fn getServerStats() CServerStats {
         .llm_provider_active = active,
         .input_tokens = snap.input_tokens,
         .output_tokens = snap.output_tokens,
-        .total_cost = snap.input_cost + snap.output_cost,
-        .input_cost = snap.input_cost,
-        .output_cost = snap.output_cost,
+        .total_cost = @floatCast(snap.input_cost + snap.output_cost),
+        .input_cost = @floatCast(snap.input_cost),
+        .output_cost = @floatCast(snap.output_cost),
         .show_performance = stats_cfg.show_performance,
         .show_llm = stats_cfg.show_llm,
         .show_cost = stats_cfg.show_cost,
         .cost_controls_enabled = cost_cfg.enabled,
-        .cost_budget = cost_cfg.budget,
+        .cost_budget = @floatCast(cost_cfg.budget),
     };
 }
 

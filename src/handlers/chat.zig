@@ -153,6 +153,24 @@ pub fn handle(
         return;
     };
 
+    // Budget enforcement: reject request if cost controls enabled and budget exceeded
+    if (config.cost_controls.enabled) {
+        const snap = metrics.snapshot();
+        const total_cost = snap.input_cost + snap.output_cost;
+        if (total_cost >= config.cost_controls.budget) {
+            log.warn("Budget exceeded: ${d:.6} >= ${d:.6}, rejecting request", .{ total_cost, config.cost_controls.budget });
+            const error_json = try errors.createErrorResponse(
+                allocator,
+                "Budget exceeded. Cost controls are enabled and the budget limit has been reached.",
+                .rate_limit_error,
+                "budget_exceeded",
+            );
+            defer allocator.free(error_json);
+            try http.sendJsonResponse(connection, .too_many_requests, error_json);
+            return;
+        }
+    }
+
     // Check if this is a native provider
     if (provider.Provider.fromString(model_info.provider)) |native_provider| {
         // Native provider - route based on enum
@@ -516,8 +534,8 @@ fn handleProviderStreaming(
                     // Calculate and track costs
                     if (pricing.getCost(provider_name, model)) |cost_entry| {
                         const cost = pricing.calculateCost(cost_entry, in_tokens, out_tokens);
-                        metrics.addInputCost(@floatCast(cost.input_cost));
-                        metrics.addOutputCost(@floatCast(cost.output_cost));
+                        metrics.addInputCost(cost.input_cost);
+                        metrics.addOutputCost(cost.output_cost);
                     }
                 }
 
@@ -722,8 +740,8 @@ fn handleProvider(
         // Calculate and track costs
         if (pricing.getCost(provider_name, model)) |cost_entry| {
             const cost = pricing.calculateCost(cost_entry, in_tokens, out_tokens);
-            metrics.addInputCost(@floatCast(cost.input_cost));
-            metrics.addOutputCost(@floatCast(cost.output_cost));
+            metrics.addInputCost(cost.input_cost);
+            metrics.addOutputCost(cost.output_cost);
         }
     }
 

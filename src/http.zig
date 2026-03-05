@@ -52,6 +52,7 @@ pub fn sendJsonResponse(
     const status_line = switch (status) {
         .ok => "HTTP/1.1 200 OK\r\n",
         .bad_request => "HTTP/1.1 400 Bad Request\r\n",
+        .too_many_requests => "HTTP/1.1 429 Too Many Requests\r\n",
         .internal_server_error => "HTTP/1.1 500 Internal Server Error\r\n",
         .bad_gateway => "HTTP/1.1 502 Bad Gateway\r\n",
         else => "HTTP/1.1 500 Internal Server Error\r\n",

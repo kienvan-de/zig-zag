@@ -84,5 +84,6 @@
   "stop": ["\n\n", "END"],
   "seed": 12345,
   "user": "test-user-123",
-  "stream": true
+  "stream": true,
+  "stream_options": {"include_usage": true}
 }

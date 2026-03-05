@@ -103,7 +103,7 @@ pub const StatisticsConfig = struct {
 /// Cost controls configuration
 pub const CostControlsConfig = struct {
     enabled: bool = false,
-    budget: f32 = 0.0,
+    budget: f64 = 0.0,
     days_duration: u32 = 0, // 0 = no reset (lifetime budget)
 };
 
@@ -294,7 +294,7 @@ pub const Config = struct {
                 }
                 if (cost_obj.get("budget")) |v| {
                     if (v == .float) {
-                        cost_controls_config.budget = @floatCast(v.float);
+                        cost_controls_config.budget = v.float;
                     } else if (v == .integer) {
                         cost_controls_config.budget = @floatFromInt(v.integer);
                     }
