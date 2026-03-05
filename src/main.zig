@@ -20,6 +20,7 @@ const log = @import("log.zig");
 const token_cache = @import("cache/token_cache.zig");
 const app_cache = @import("cache/app_cache.zig");
 const worker_pool = @import("worker_pool.zig");
+const metrics = @import("metrics.zig");
 const provider = @import("provider.zig");
 const pricing = @import("pricing.zig");
 
@@ -67,6 +68,10 @@ pub fn main() !void {
         .output = cfg.log.output,
     }, allocator);
     defer log.deinit();
+
+    // Load persisted metrics (tokens, costs, period_start) from previous session
+    metrics.load();
+    defer metrics.persist();
 
     // Initialize providers (auth flows for HAI, SAP AI Core, etc.)
     log.info("zig-zag v{s}", .{version});

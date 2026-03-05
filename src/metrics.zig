@@ -26,6 +26,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const log = @import("log.zig");
 
 // ============================================================================
 // Atomic Counters
@@ -48,6 +49,9 @@ var input_cost_micros: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
 
 /// Total output cost in micro-dollars (1/1,000,000 of a dollar)
 var output_cost_micros: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
+
+/// Budget period start timestamp (seconds since epoch). 0 = not set (uses server start time).
+var period_start: std.atomic.Value(i64) = std.atomic.Value(i64).init(0);
 
 // ============================================================================
 // Public API - Counters
@@ -93,6 +97,21 @@ pub fn reset() void {
     output_tokens.store(0, .monotonic);
     input_cost_micros.store(0, .monotonic);
     output_cost_micros.store(0, .monotonic);
+    period_start.store(0, .monotonic);
+}
+
+/// Reset only cost counters and update period start timestamp.
+/// Used when budget period expires (days_duration).
+pub fn resetCosts() void {
+    input_cost_micros.store(0, .monotonic);
+    output_cost_micros.store(0, .monotonic);
+    period_start.store(std.time.timestamp(), .monotonic);
+}
+
+/// Get the budget period start timestamp.
+/// Returns 0 if not set (caller should treat as "now").
+pub fn getPeriodStart() i64 {
+    return period_start.load(.monotonic);
 }
 
 // ============================================================================
@@ -259,3 +278,118 @@ pub fn snapshot() Snapshot {
         .output_cost = @as(f64, @floatFromInt(output_cost_micros.load(.monotonic))) / 1_000_000.0,
     };
 }
+
+// ============================================================================
+// Persistence — load/save accumulated metrics to ~/.config/zig-zag/metrics.json
+// ============================================================================
+
+const METRICS_FILENAME = "metrics.json";
+
+/// JSON structure for persisted metrics
+const PersistedMetrics = struct {
+    input_tokens: u64 = 0,
+    output_tokens: u64 = 0,
+    input_cost_micros: u64 = 0,
+    output_cost_micros: u64 = 0,
+    period_start: i64 = 0,
+};
+
+/// Get the metrics file path: ~/.config/zig-zag/metrics.json
+fn getMetricsPath(buf: []u8) ?[]const u8 {
+    const home = std.posix.getenv("HOME") orelse return null;
+    return std.fmt.bufPrint(buf, "{s}/.config/zig-zag/{s}", .{ home, METRICS_FILENAME }) catch null;
+}
+
+/// Load persisted metrics from disk and restore atomic counters.
+/// Called once at startup before the server accepts requests.
+/// If the file doesn't exist or is malformed, counters start at zero (no error).
+pub fn load() void {
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = getMetricsPath(&path_buf) orelse return;
+
+    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+        switch (err) {
+            error.FileNotFound => log.debug("No persisted metrics file, starting fresh", .{}),
+            else => log.warn("Failed to open metrics file: {}", .{err}),
+        }
+        return;
+    };
+    defer file.close();
+
+    var buf: [4096]u8 = undefined;
+    const bytes_read = file.readAll(&buf) catch |err| {
+        log.warn("Failed to read metrics file: {}", .{err});
+        return;
+    };
+
+    const parsed = std.json.parseFromSlice(PersistedMetrics, std.heap.page_allocator, buf[0..bytes_read], .{
+        .ignore_unknown_fields = true,
+    }) catch |err| {
+        log.warn("Failed to parse metrics file: {}", .{err});
+        return;
+    };
+    defer parsed.deinit();
+
+    const data = parsed.value;
+    input_tokens.store(data.input_tokens, .monotonic);
+    output_tokens.store(data.output_tokens, .monotonic);
+    input_cost_micros.store(data.input_cost_micros, .monotonic);
+    output_cost_micros.store(data.output_cost_micros, .monotonic);
+    period_start.store(data.period_start, .monotonic);
+
+    log.info("Loaded persisted metrics: in_tokens={d}, out_tokens={d}, in_cost=${d:.6}, out_cost=${d:.6}, period_start={d}", .{
+        data.input_tokens,
+        data.output_tokens,
+        @as(f64, @floatFromInt(data.input_cost_micros)) / 1_000_000.0,
+        @as(f64, @floatFromInt(data.output_cost_micros)) / 1_000_000.0,
+        data.period_start,
+    });
+}
+
+/// Persist current metrics to disk.
+/// Called after each request that updates costs, and on shutdown.
+pub fn persist() void {
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = getMetricsPath(&path_buf) orelse return;
+
+    const data = PersistedMetrics{
+        .input_tokens = input_tokens.load(.monotonic),
+        .output_tokens = output_tokens.load(.monotonic),
+        .input_cost_micros = input_cost_micros.load(.monotonic),
+        .output_cost_micros = output_cost_micros.load(.monotonic),
+        .period_start = period_start.load(.monotonic),
+    };
+
+    var buf: [4096]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    fbs.writer().print("{f}", .{std.json.fmt(data, .{ .whitespace = .indent_2 })}) catch |err| {
+        log.warn("Failed to serialize metrics: {}", .{err});
+        return;
+    };
+    const json_bytes = fbs.getWritten();
+
+    // Atomic write: write to temp file then rename
+    var tmp_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp_path = std.fmt.bufPrint(&tmp_path_buf, "{s}.tmp", .{path}) catch return;
+
+    const file = std.fs.cwd().createFile(tmp_path, .{}) catch |err| {
+        log.warn("Failed to create metrics temp file: {}", .{err});
+        return;
+    };
+
+    file.writeAll(json_bytes) catch |err| {
+        file.close();
+        std.fs.cwd().deleteFile(tmp_path) catch {};
+        log.warn("Failed to write metrics temp file: {}", .{err});
+        return;
+    };
+    file.close();
+
+    std.fs.cwd().rename(tmp_path, path) catch |err| {
+        log.warn("Failed to rename metrics temp file: {}", .{err});
+        std.fs.cwd().deleteFile(tmp_path) catch {};
+        return;
+    };
+}
+
+

@@ -155,6 +155,24 @@ pub fn handle(
 
     // Budget enforcement: reject request if cost controls enabled and budget exceeded
     if (config.cost_controls.enabled) {
+        // Check if budget period has expired and reset if needed
+        if (config.cost_controls.days_duration > 0) {
+            const ps = metrics.getPeriodStart();
+            const now = std.time.timestamp();
+            // If period_start is 0 (never set), initialize it now
+            if (ps == 0) {
+                metrics.resetCosts();
+                log.info("Budget period initialized (duration: {d} days)", .{config.cost_controls.days_duration});
+            } else {
+                const elapsed_seconds = now - ps;
+                const duration_seconds: i64 = @as(i64, @intCast(config.cost_controls.days_duration)) * 86400;
+                if (elapsed_seconds >= duration_seconds) {
+                    metrics.resetCosts();
+                    log.info("Budget period expired, costs reset (duration: {d} days)", .{config.cost_controls.days_duration});
+                }
+            }
+        }
+
         const snap = metrics.snapshot();
         const total_cost = snap.input_cost + snap.output_cost;
         if (total_cost >= config.cost_controls.budget) {

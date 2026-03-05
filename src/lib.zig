@@ -233,8 +233,8 @@ export fn startServer() bool {
     server_status.store(.starting, .release);
     server_error_code.store(.none, .release);
 
-    // Reset metrics for fresh start
-    metrics.reset();
+    // Load persisted metrics (tokens, costs, period_start) from previous session
+    metrics.load();
 
     // Allocate State shell using page_allocator (stable address for GPA inside)
     const bootstrap = std.heap.page_allocator;
@@ -280,6 +280,9 @@ export fn stopServer() void {
     // status=stopped immediately while we wait for the thread to join.
     state = null;
     state_mutex.unlock();
+
+    // Persist metrics before shutdown
+    metrics.persist();
 
     // Signal server.zig to close the listener socket.
     // This unblocks all accept() calls and lets worker threads exit.
