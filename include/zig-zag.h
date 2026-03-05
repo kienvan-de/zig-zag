@@ -39,7 +39,6 @@ typedef enum {
     ServerErrorWorkerPoolInitFailed = 3, // Failed to initialize worker pool
     ServerErrorLogInitFailed = 4,     // Failed to initialize logging
     ServerErrorThreadSpawnFailed = 5, // Failed to spawn server thread
-    ServerErrorAuthFailed = 6         // Provider authentication failed
 } ServerErrorCode;
 
 /// Server statistics and metrics returned by getServerStats()
@@ -59,7 +58,6 @@ typedef struct {
     
     // LLM metrics
     uint32_t llm_provider_configured; // Total providers in config
-    uint32_t llm_provider_active;     // Providers that initialized successfully
     uint64_t input_tokens;      // Accumulated input/prompt tokens
     uint64_t output_tokens;     // Accumulated output/completion tokens
     

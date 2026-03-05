@@ -46,8 +46,7 @@ var state_mutex: std.Thread.Mutex = .{};
 var server_status: std.atomic.Value(ServerStatus) = std.atomic.Value(ServerStatus).init(.stopped);
 var server_error_code: std.atomic.Value(ServerErrorCode) = std.atomic.Value(ServerErrorCode).init(.none);
 
-// Provider init results - written once by server thread, read by stats polling
-var active_provider_count: std.atomic.Value(u32) = std.atomic.Value(u32).init(0);
+
 
 // ============================================================================
 // C-compatible types (must match include/zig-zag.h)
@@ -69,7 +68,6 @@ pub const ServerErrorCode = enum(c_int) {
     worker_pool_init_failed = 3, // Failed to initialize worker pool
     log_init_failed = 4, // Failed to initialize logging
     thread_spawn_failed = 5, // Failed to spawn server thread
-    auth_failed = 6, // Provider authentication failed
 };
 
 pub const CServerStats = extern struct {
@@ -83,7 +81,6 @@ pub const CServerStats = extern struct {
     network_rx_bytes: u64,
     network_tx_bytes: u64,
     llm_provider_configured: u32,
-    llm_provider_active: u32,
     input_tokens: u64,
     output_tokens: u64,
     total_cost: f32,
@@ -164,10 +161,10 @@ fn serverThreadFn(s: *State) void {
     };
     defer log.deinit();
 
-    // 6. Initialize providers (auth flows for HAI, SAP AI Core, etc.)
-    log.info("Initializing providers...", .{});
+    // 6. Log configured providers (auth is lazy, on first request)
+    provider.logConfiguredProviders(&cfg);
 
-    // 6a. Initialize pricing engine (load cost CSVs for configured providers)
+    // 7. Initialize pricing engine (load cost CSVs for configured providers)
     var provider_names_buf: [32][]const u8 = undefined;
     var provider_name_count: usize = 0;
     {
@@ -182,20 +179,6 @@ fn serverThreadFn(s: *State) void {
     pricing.init(allocator, provider_names_buf[0..provider_name_count]);
     defer pricing.deinit();
     pricing.scheduleAutoUpdate();
-
-    const init_result = provider.initProviders(allocator, &cfg);
-    log.info("Provider initialization complete: {d}/{d} succeeded", .{ init_result.succeeded, init_result.total });
-
-    // Store active provider count for stats
-    active_provider_count.store(init_result.succeeded, .release);
-
-    // Exit if all providers failed (but allow starting with no providers configured)
-    if (init_result.succeeded == 0 and init_result.total > 0) {
-        log.err("All providers failed to initialize", .{});
-        server_status.store(.err, .release);
-        server_error_code.store(.auth_failed, .release);
-        return;
-    }
 
     // All init successful - transition to running state
     server_status.store(.running, .release);
@@ -300,7 +283,6 @@ export fn stopServer() void {
     // Set status to stopped after cleanup
     server_status.store(.stopped, .release);
     server_error_code.store(.none, .release);
-    active_provider_count.store(0, .release);
 }
 
 /// Get current server statistics and metrics.
@@ -326,7 +308,6 @@ export fn getServerStats() CServerStats {
             .network_rx_bytes = 0,
             .network_tx_bytes = 0,
             .llm_provider_configured = 0,
-            .llm_provider_active = 0,
             .input_tokens = 0,
             .output_tokens = 0,
             .total_cost = 0.0,
@@ -350,7 +331,6 @@ export fn getServerStats() CServerStats {
 
     // Config may be null if still loading
     const configured: u32 = if (s.cfg) |cfg| @intCast(cfg.providers.count()) else 0;
-    const active: u32 = active_provider_count.load(.acquire);
 
     // Read display config (defaults if config not loaded yet)
     const stats_cfg = if (s.cfg) |cfg| cfg.statistics else config.StatisticsConfig{};
@@ -367,7 +347,6 @@ export fn getServerStats() CServerStats {
         .network_rx_bytes = snap.network_rx_bytes,
         .network_tx_bytes = snap.network_tx_bytes,
         .llm_provider_configured = configured,
-        .llm_provider_active = active,
         .input_tokens = snap.input_tokens,
         .output_tokens = snap.output_tokens,
         .total_cost = @floatCast(snap.input_cost + snap.output_cost),
