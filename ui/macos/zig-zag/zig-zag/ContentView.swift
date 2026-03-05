@@ -32,7 +32,6 @@ struct ServerStats {
     
     // LLM metrics
     var llmProviderConfigured: UInt32 = 0
-    var llmProviderActive: UInt32 = 0
     var inputTokens: UInt64 = 0
     var outputTokens: UInt64 = 0
     
@@ -62,7 +61,6 @@ struct ServerStats {
         self.networkRxBytes = cStats.network_rx_bytes
         self.networkTxBytes = cStats.network_tx_bytes
         self.llmProviderConfigured = cStats.llm_provider_configured
-        self.llmProviderActive = cStats.llm_provider_active
         self.inputTokens = cStats.input_tokens
         self.outputTokens = cStats.output_tokens
         self.totalCost = cStats.total_cost
@@ -109,8 +107,6 @@ struct ServerStats {
             return "Log init failed"
         case ServerErrorThreadSpawnFailed:
             return "Thread spawn failed"
-        case ServerErrorAuthFailed:
-            return "Auth failed"
         default:
             return "Unknown error"
         }
@@ -378,8 +374,8 @@ struct ContentView: View {
             StatItem(
                 icon: "cpu",
                 label: "providers",
-                value: "\(serverState.stats.llmProviderActive)/\(serverState.stats.llmProviderConfigured)",
-                tooltip: "Active / configured"
+                value: "\(serverState.stats.llmProviderConfigured)",
+                tooltip: "Configured providers"
             )
             
             Spacer()
@@ -581,7 +577,6 @@ extension ServerStats {
         stats.networkRxBytes = 48_000_000
         stats.networkTxBytes = 2_200_000
         stats.llmProviderConfigured = 3
-        stats.llmProviderActive = 2
         stats.inputTokens = 987_654
         stats.outputTokens = 246_913
         stats.totalCost = 1.23

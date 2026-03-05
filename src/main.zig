@@ -73,9 +73,10 @@ pub fn main() !void {
     metrics.load();
     defer metrics.persist();
 
-    // Initialize providers (auth flows for HAI, SAP AI Core, etc.)
     log.info("zig-zag v{s}", .{version});
-    log.info("Initializing providers...", .{});
+
+    // Log configured providers (auth is lazy, on first request)
+    provider.logConfiguredProviders(&cfg);
 
     // Initialize pricing engine (load cost CSVs for configured providers)
     var provider_names_buf: [32][]const u8 = undefined;
@@ -92,15 +93,6 @@ pub fn main() !void {
     pricing.init(allocator, provider_names_buf[0..provider_name_count]);
     defer pricing.deinit();
     pricing.scheduleAutoUpdate();
-
-    const init_result = provider.initProviders(allocator, &cfg);
-    log.info("Provider initialization complete: {d}/{d} succeeded", .{ init_result.succeeded, init_result.total });
-
-    // Exit if all providers failed (but allow starting with no providers configured)
-    if (init_result.succeeded == 0 and init_result.total > 0) {
-        log.err("All providers failed to initialize, exiting", .{});
-        return error.NoProvidersAvailable;
-    }
 
     // Start the HTTP server
     try server.start(allocator, &cfg);
