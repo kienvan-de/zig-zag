@@ -99,6 +99,8 @@ jobs:
     
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for changelog generation
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -125,29 +127,48 @@ jobs:
           sha256sum * > checksums.txt
           cat checksums.txt
 
+      - name: Generate release notes
+        run: |
+          CURRENT_TAG="${GITHUB_REF#refs/tags/}"
+          PREVIOUS_TAG=$(git tag --sort=-version:refname | grep -v "^${CURRENT_TAG}$" | head -1)
+          echo "Current: $CURRENT_TAG, Previous: ${PREVIOUS_TAG:-none}"
+          if [ -n "$PREVIOUS_TAG" ]; then
+            COMMITS=$(git log --pretty=format:"- %s (%h)" "${PREVIOUS_TAG}..${CURRENT_TAG}^" | grep -v "^- chore: bump version" || true)
+          else
+            COMMITS=$(git log --pretty=format:"- %s (%h)" | grep -v "^- chore: bump version" || true)
+          fi
+          {
+            echo "## What's Changed"
+            echo ""
+            echo "${COMMITS:-_No changes_}"
+            echo ""
+            echo "## Downloads"
+            echo ""
+            echo "| Platform | Architecture | File |"
+            echo "|----------|--------------|------|"
+            echo "| macOS App | Apple Silicon | \`zig-zag-macos-app.tar.gz\` |"
+            echo "| macOS CLI | Apple Silicon | \`zig-zag-macos-aarch64.tar.gz\` |"
+            echo "| macOS CLI | Intel | \`zig-zag-macos-x86_64.tar.gz\` |"
+            echo "| Linux | x86_64 | \`zig-zag-linux-x86_64.tar.gz\` |"
+            echo "| Linux | ARM64 | \`zig-zag-linux-aarch64.tar.gz\` |"
+            echo "| Pricing | All | \`pricing.tar.gz\` |"
+            echo ""
+            echo "> **Note:** Windows is not currently supported due to POSIX-specific code."
+            echo "> **Note:** macOS app is unsigned — you may need to right-click → Open on first launch."
+            echo "> **Note:** Pricing data auto-updates on startup (macOS/Linux). Manual: extract \`pricing.tar.gz\` to \`~/.config/zig-zag/pricing/\`."
+            echo ""
+            echo "## Checksums"
+            echo ""
+            echo "See \`checksums.txt\` for SHA256 checksums of all files."
+          } > RELEASE_NOTES.md
+          echo "--- Release notes ---"
+          cat RELEASE_NOTES.md
+
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
           files: |
             release/*
-          body: |
-            ## Downloads
-            
-            | Platform | Architecture | File |
-            |----------|--------------|------|
-            | macOS App | Apple Silicon | `zig-zag-macos-app.tar.gz` |
-            | macOS CLI | Apple Silicon | `zig-zag-macos-aarch64.tar.gz` |
-            | macOS CLI | Intel | `zig-zag-macos-x86_64.tar.gz` |
-            | Linux | x86_64 | `zig-zag-linux-x86_64.tar.gz` |
-            | Linux | ARM64 | `zig-zag-linux-aarch64.tar.gz` |
-            | Pricing | All | `pricing.tar.gz` |
-            
-            > **Note:** Windows is not currently supported due to POSIX-specific code.
-            > **Note:** macOS app is unsigned — you may need to right-click → Open on first launch.
-            > **Note:** Pricing data auto-updates on startup (macOS/Linux). Manual: extract `pricing.tar.gz` to `~/.config/zig-zag/pricing/`.
-            
-            ## Checksums
-            
-            See `checksums.txt` for SHA256 checksums of all files.
+          body_path: RELEASE_NOTES.md
           draft: false
           prerelease: false
