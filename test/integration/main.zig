@@ -447,6 +447,17 @@ test "Error handling - invalid model" {
     _ = messages;
 }
 
+/// Returns true if the case's agent_req.json is an HTTP endpoint request
+/// (has a "path" key but no "model" key — i.e. {"method":"GET","path":"/v1/..."})
+fn isEndpointCase(allocator: std.mem.Allocator, cases_root: []const u8, case_name: []const u8) bool {
+    const content = recorder.readCaseFile(allocator, cases_root, case_name, "agent_req.json", 1024 * 1024) catch return false;
+    defer allocator.free(content);
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, content, .{}) catch return false;
+    defer parsed.deinit();
+    if (parsed.value != .object) return false;
+    return parsed.value.object.get("path") != null and parsed.value.object.get("model") == null;
+}
+
 /// Run a single test case
 fn runCase(allocator: std.mem.Allocator, cases_root: []const u8, case_name: []const u8) !void {
     std.log.info("[Test] {s}", .{case_name});
@@ -464,11 +475,46 @@ fn runCase(allocator: std.mem.Allocator, cases_root: []const u8, case_name: []co
     try ctx.startProxy();
     defer ctx.stopProxy() catch {};
 
-    // Detect test type: models test (no agent_req.json) vs chat completion test
-    const is_models_test = !caseFileExists(allocator, cases_root, case_name, "agent_req.json") and
+    // Detect test type:
+    //   endpoint test  — agent_req.json has {"method":...,"path":...} (no "model" key)
+    //   models test    — no agent_req.json, expected_agent_res.json exists
+    //   chat test      — agent_req.json has "model" key
+    const is_endpoint_test = caseFileExists(allocator, cases_root, case_name, "agent_req.json") and
+        isEndpointCase(allocator, cases_root, case_name);
+
+    const is_models_test = !is_endpoint_test and
+        !caseFileExists(allocator, cases_root, case_name, "agent_req.json") and
         caseFileExists(allocator, cases_root, case_name, "expected_agent_res.json");
 
-    if (is_models_test) {
+    if (is_endpoint_test) {
+        // HTTP endpoint test — GET/POST to /v1/config/* or /v1/html/*
+        const response = try ctx.client.sendEndpointRequest(cases_root);
+        defer allocator.free(response);
+
+        // Determine response file suffix from expected file
+        const res_filename: []const u8 = if (caseFileExists(allocator, cases_root, case_name, "expected_agent_res.html"))
+            "agent_res.html"
+        else
+            "agent_res.json";
+
+        try recorder.writeCaseFile(allocator, cases_root, case_name, res_filename, response);
+
+        const expected_filename: []const u8 = if (caseFileExists(allocator, cases_root, case_name, "expected_agent_res.html"))
+            "expected_agent_res.html"
+        else
+            "expected_agent_res.json";
+
+        // For HTML responses compare as raw string, for JSON compare structurally
+        if (std.mem.endsWith(u8, expected_filename, ".html")) {
+            const actual = try recorder.readCaseFile(allocator, cases_root, case_name, res_filename, 10 * 1024 * 1024);
+            defer allocator.free(actual);
+            const expected = try recorder.readCaseFile(allocator, cases_root, case_name, expected_filename, 10 * 1024 * 1024);
+            defer allocator.free(expected);
+            if (!std.mem.eql(u8, actual, expected)) return error.CaseAssertionFailed;
+        } else {
+            try assertCaseFileEqual(allocator, cases_root, case_name, res_filename, expected_filename);
+        }
+    } else if (is_models_test) {
         // Models test - use sendModelsRequest
         const response = try ctx.client.sendModelsRequest();
         defer allocator.free(response);

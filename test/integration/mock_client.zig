@@ -175,6 +175,66 @@ pub const MockClient = struct {
         return response_body;
     }
 
+    /// Send a raw GET request to any path, returning the response body
+    pub fn sendGetRequest(self: *MockClient, path: []const u8) ![]u8 {
+        var url_buffer: [256]u8 = undefined;
+        const url = try std.fmt.bufPrint(&url_buffer, "{s}{s}", .{ self.proxy_url, path });
+        const uri = try std.Uri.parse(url);
+
+        var req = try self.http_client.request(.GET, uri, .{});
+        defer req.deinit();
+        try req.sendBodiless();
+
+        const redirect_buffer: [0]u8 = undefined;
+        var response = try req.receiveHead(&redirect_buffer);
+
+        var transfer_buf: [4096]u8 = undefined;
+        const reader = response.reader(&transfer_buf);
+        return reader.allocRemaining(self.allocator, std.io.Limit.limited(10 * 1024 * 1024));
+    }
+
+    /// Send an HTTP endpoint test case:
+    /// Reads agent_req.json as {"method":"GET"|"POST","path":"...","body":"..."(opt)}
+    /// Returns the raw response body (may be JSON or HTML).
+    pub fn sendEndpointRequest(self: *MockClient, cases_root: []const u8) ![]u8 {
+        const req_data = try recorder.readCaseFile(
+            self.allocator,
+            cases_root,
+            self.case_name,
+            "agent_req.json",
+            1024 * 1024,
+        );
+        defer self.allocator.free(req_data);
+
+        const parsed = try std.json.parseFromSlice(std.json.Value, self.allocator, req_data, .{});
+        defer parsed.deinit();
+
+        const method_str = if (parsed.value.object.get("method")) |m|
+            if (m == .string) m.string else "GET"
+        else
+            "GET";
+
+        const path_str = if (parsed.value.object.get("path")) |p|
+            if (p == .string) p.string else "/v1/config/data"
+        else
+            "/v1/config/data";
+
+        const body_str: []const u8 = if (parsed.value.object.get("body")) |b|
+            if (b == .string) b.string else ""
+        else
+            "";
+
+        const method: std.http.Method = if (std.mem.eql(u8, method_str, "POST")) .POST
+        else if (std.mem.eql(u8, method_str, "DELETE")) .DELETE
+        else .GET;
+
+        if (method == .GET) {
+            return self.sendGetRequest(path_str);
+        } else {
+            return self.sendRaw(method, path_str, body_str);
+        }
+    }
+
     /// Send a raw request with custom body
     pub fn sendRaw(
         self: *MockClient,
