@@ -1,5 +1,1394 @@
 <!DOCTYPE html>
 <html lang="en">
-<head><meta charset="UTF-8"><title>zig-zag config</title></head>
-<body><p>Config UI — coming soon.</p></body>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>zig-zag config</title>
+<style>
+/* ── Reset ──────────────────────────────────────────── */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+
+/* ── Colour tokens ──────────────────────────────────── */
+:root{
+  --bg:          #0e0e10;
+  --surface:     #1a1a1f;
+  --surface-alt: #222228;
+  --border:      #2e2e35;
+  --border-hover:#44444d;
+  --accent:      #6c8aff;
+  --accent-hover:#8aa2ff;
+  --text:        #e4e4e7;
+  --text-muted:  #8e8e96;
+  --danger:      #f05252;
+  --danger-hover:#f27272;
+  --success:     #34d399;
+  --warning:     #fbbf24;
+  --radius:      6px;
+  --radius-lg:   10px;
+  --font:        -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  --mono:        "SF Mono",SFMono-Regular,ui-monospace,Menlo,Consolas,monospace;
+  --sidebar-w:   240px;
+  --transition:  .15s ease;
+}
+
+body{
+  font-family:var(--font);
+  font-size:14px;
+  line-height:1.5;
+  color:var(--text);
+  background:var(--bg);
+  min-height:100vh;
+}
+
+/* ── Unsaved banner ─────────────────────────────────── */
+.unsaved-banner{
+  display:none;
+  align-items:center;
+  justify-content:space-between;
+  padding:8px 16px;
+  background:#2d2418;
+  border-bottom:1px solid #5c4a1e;
+  color:var(--warning);
+  font-size:13px;
+  font-weight:500;
+}
+.unsaved-banner.visible{display:flex}
+.unsaved-banner .save-btn{
+  background:var(--accent);
+  color:#fff;
+  border:none;
+  padding:5px 14px;
+  border-radius:var(--radius);
+  cursor:pointer;
+  font-size:13px;
+  font-weight:500;
+  transition:background var(--transition);
+}
+.unsaved-banner .save-btn:hover{background:var(--accent-hover)}
+
+/* ── Top bar ────────────────────────────────────────── */
+.topbar{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  padding:10px 20px;
+  background:var(--surface);
+  border-bottom:1px solid var(--border);
+}
+.topbar-title{
+  font-size:15px;
+  font-weight:600;
+  letter-spacing:.3px;
+  color:var(--text);
+}
+.topbar-title span{color:var(--accent)}
+
+/* ── Layout ─────────────────────────────────────────── */
+.layout{
+  display:flex;
+  height:calc(100vh - 41px); /* topbar height */
+}
+.unsaved-banner.visible ~ .layout{
+  height:calc(100vh - 41px - 37px);
+}
+
+/* ── Sidebar ────────────────────────────────────────── */
+.sidebar{
+  width:var(--sidebar-w);
+  min-width:var(--sidebar-w);
+  background:var(--surface);
+  border-right:1px solid var(--border);
+  overflow-y:auto;
+  padding:12px 0;
+  display:flex;
+  flex-direction:column;
+  gap:4px;
+}
+
+.sidebar-section{padding:0 12px;margin-bottom:4px}
+.section-title{
+  font-size:11px;
+  font-weight:600;
+  text-transform:uppercase;
+  letter-spacing:.8px;
+  color:var(--text-muted);
+  padding:8px 8px 6px;
+}
+
+.nav-item{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  padding:8px 12px;
+  margin:1px 8px;
+  border-radius:var(--radius);
+  cursor:pointer;
+  color:var(--text);
+  font-size:13px;
+  transition:background var(--transition);
+  user-select:none;
+}
+.nav-item:hover{background:var(--surface-alt)}
+.nav-item.active{background:var(--accent);color:#fff}
+.nav-item.active .badge{background:rgba(255,255,255,.2);color:#fff}
+.nav-item.active .nav-delete{color:rgba(255,255,255,.6)}
+.nav-item.active .nav-delete:hover{color:#fff}
+
+.nav-item-content{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  min-width:0;
+}
+.nav-item-label{
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+
+.badge{
+  font-size:10px;
+  font-weight:600;
+  padding:2px 6px;
+  border-radius:4px;
+  background:var(--surface-alt);
+  color:var(--text-muted);
+  text-transform:uppercase;
+  letter-spacing:.3px;
+  flex-shrink:0;
+}
+
+.nav-delete{
+  background:none;
+  border:none;
+  color:var(--text-muted);
+  cursor:pointer;
+  font-size:14px;
+  padding:0 2px;
+  line-height:1;
+  opacity:0;
+  transition:opacity var(--transition),color var(--transition);
+  flex-shrink:0;
+}
+.nav-item:hover .nav-delete{opacity:1}
+.nav-delete:hover{color:var(--danger)}
+
+.nav-add{
+  display:flex;
+  align-items:center;
+  gap:6px;
+  padding:8px 12px;
+  margin:4px 8px 0;
+  border-radius:var(--radius);
+  cursor:pointer;
+  color:var(--accent);
+  font-size:13px;
+  font-weight:500;
+  border:1px dashed var(--border);
+  background:none;
+  width:calc(100% - 16px);
+  transition:border-color var(--transition),color var(--transition);
+}
+.nav-add:hover{border-color:var(--accent);color:var(--accent-hover)}
+
+.sidebar-divider{
+  height:1px;
+  background:var(--border);
+  margin:8px 20px;
+}
+
+/* ── Main panel ─────────────────────────────────────── */
+.main-panel{
+  flex:1;
+  overflow-y:auto;
+  padding:24px 32px;
+  background:var(--bg);
+}
+
+.panel{
+  max-width:640px;
+}
+
+.panel-header{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  margin-bottom:20px;
+  padding-bottom:14px;
+  border-bottom:1px solid var(--border);
+}
+.panel-title{
+  font-size:18px;
+  font-weight:600;
+}
+.panel-subtitle{
+  font-size:12px;
+  color:var(--text-muted);
+  margin-top:2px;
+}
+
+.panel-body{
+  display:flex;
+  flex-direction:column;
+  gap:16px;
+}
+
+.panel-placeholder{
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  height:100%;
+  color:var(--text-muted);
+  font-size:15px;
+}
+
+/* ── Form primitives ────────────────────────────────── */
+.form-group{
+  display:flex;
+  flex-direction:column;
+  gap:5px;
+}
+
+.form-group label{
+  font-size:12px;
+  font-weight:500;
+  color:var(--text-muted);
+  letter-spacing:.2px;
+}
+.form-group .required::after{
+  content:" *";
+  color:var(--danger);
+}
+
+.form-group input[type="text"],
+.form-group input[type="number"],
+.form-group input[type="password"],
+.form-group select,
+.form-group textarea{
+  width:100%;
+  padding:8px 10px;
+  font-size:13px;
+  font-family:var(--mono);
+  color:var(--text);
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:var(--radius);
+  outline:none;
+  transition:border-color var(--transition);
+}
+.form-group input:focus,
+.form-group select:focus,
+.form-group textarea:focus{
+  border-color:var(--accent);
+}
+.form-group input::placeholder,
+.form-group textarea::placeholder{
+  color:var(--text-muted);
+  opacity:.6;
+}
+.form-group input.invalid,
+.form-group select.invalid{
+  border-color:var(--danger);
+}
+
+.form-group select{
+  appearance:none;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%238e8e96'%3E%3Cpath d='M2 4l4 4 4-4'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;
+  background-position:right 10px center;
+  padding-right:28px;
+  cursor:pointer;
+}
+.form-group select option{
+  background:var(--surface);
+  color:var(--text);
+}
+
+.form-group textarea{
+  resize:vertical;
+  min-height:60px;
+}
+
+/* Secret field wrapper */
+.secret-field{
+  position:relative;
+  display:flex;
+  align-items:center;
+}
+.secret-field input{
+  padding-right:36px;
+}
+.secret-toggle{
+  position:absolute;
+  right:8px;
+  background:none;
+  border:none;
+  color:var(--text-muted);
+  cursor:pointer;
+  font-size:14px;
+  padding:2px;
+  line-height:1;
+  transition:color var(--transition);
+}
+.secret-toggle:hover{color:var(--text)}
+
+/* Toggle / pill switch */
+.toggle-group{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+}
+.toggle-group label{
+  font-size:13px;
+  color:var(--text);
+}
+.toggle{
+  position:relative;
+  width:40px;
+  height:22px;
+  flex-shrink:0;
+}
+.toggle input{
+  opacity:0;
+  width:0;
+  height:0;
+  position:absolute;
+}
+.toggle-slider{
+  position:absolute;
+  inset:0;
+  background:var(--surface-alt);
+  border:1px solid var(--border);
+  border-radius:11px;
+  cursor:pointer;
+  transition:background var(--transition),border-color var(--transition);
+}
+.toggle-slider::before{
+  content:"";
+  position:absolute;
+  width:16px;
+  height:16px;
+  left:2px;
+  top:2px;
+  background:var(--text-muted);
+  border-radius:50%;
+  transition:transform var(--transition),background var(--transition);
+}
+.toggle input:checked + .toggle-slider{
+  background:var(--accent);
+  border-color:var(--accent);
+}
+.toggle input:checked + .toggle-slider::before{
+  transform:translateX(18px);
+  background:#fff;
+}
+
+/* ── Buttons ────────────────────────────────────────── */
+.btn{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  gap:6px;
+  padding:8px 16px;
+  font-size:13px;
+  font-weight:500;
+  font-family:var(--font);
+  border:1px solid var(--border);
+  border-radius:var(--radius);
+  cursor:pointer;
+  background:var(--surface);
+  color:var(--text);
+  transition:background var(--transition),border-color var(--transition),color var(--transition);
+  user-select:none;
+}
+.btn:hover{background:var(--surface-alt);border-color:var(--border-hover)}
+
+.btn-primary{
+  background:var(--accent);
+  border-color:var(--accent);
+  color:#fff;
+}
+.btn-primary:hover{background:var(--accent-hover);border-color:var(--accent-hover)}
+
+.btn-danger{
+  background:transparent;
+  border-color:var(--danger);
+  color:var(--danger);
+}
+.btn-danger:hover{background:var(--danger);color:#fff}
+
+.btn-ghost{
+  background:transparent;
+  border-color:transparent;
+  color:var(--text-muted);
+}
+.btn-ghost:hover{background:var(--surface-alt);color:var(--text)}
+
+/* ── Toast container ────────────────────────────────── */
+.toast-container{
+  position:fixed;
+  bottom:20px;
+  right:20px;
+  display:flex;
+  flex-direction:column;
+  gap:8px;
+  z-index:1000;
+  pointer-events:none;
+}
+.toast{
+  pointer-events:auto;
+  padding:10px 16px;
+  border-radius:var(--radius);
+  font-size:13px;
+  font-weight:500;
+  color:#fff;
+  background:var(--surface);
+  border:1px solid var(--border);
+  box-shadow:0 4px 16px rgba(0,0,0,.4);
+  animation:toast-in .25s ease;
+  max-width:340px;
+}
+.toast.success{border-color:var(--success);color:var(--success)}
+.toast.error{border-color:var(--danger);color:var(--danger)}
+.toast.info{border-color:var(--accent);color:var(--accent)}
+.toast.fade-out{animation:toast-out .2s ease forwards}
+
+@keyframes toast-in{
+  from{opacity:0;transform:translateY(10px)}
+  to{opacity:1;transform:translateY(0)}
+}
+@keyframes toast-out{
+  from{opacity:1;transform:translateY(0)}
+  to{opacity:0;transform:translateY(10px)}
+}
+
+/* ── Collapsible section ────────────────────────────── */
+.collapsible-header{
+  display:flex;
+  align-items:center;
+  gap:6px;
+  cursor:pointer;
+  font-size:13px;
+  font-weight:500;
+  color:var(--text-muted);
+  padding:8px 0;
+  user-select:none;
+  transition:color var(--transition);
+}
+.collapsible-header:hover{color:var(--text)}
+.collapsible-header .arrow{
+  font-size:10px;
+  transition:transform var(--transition);
+}
+.collapsible-header.open .arrow{transform:rotate(90deg)}
+.collapsible-body{
+  display:none;
+  flex-direction:column;
+  gap:16px;
+  padding:8px 0 0;
+}
+.collapsible-body.open{display:flex}
+
+/* ── Status badge ───────────────────────────────────── */
+.status-badge{
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  padding:4px 10px;
+  border-radius:var(--radius);
+  font-size:12px;
+  font-weight:500;
+}
+.status-badge.authenticated{background:rgba(52,211,153,.12);color:var(--success)}
+.status-badge.configured{background:rgba(52,211,153,.08);color:var(--success)}
+.status-badge.unauthenticated{background:rgba(251,191,36,.1);color:var(--warning)}
+
+/* ── Spinner ────────────────────────────────────────── */
+.spinner{
+  display:inline-block;
+  width:14px;
+  height:14px;
+  border:2px solid var(--border);
+  border-top-color:var(--accent);
+  border-radius:50%;
+  animation:spin .6s linear infinite;
+}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* ── Responsive: sidebar collapses to top nav ───────── */
+@media(max-width:700px){
+  .layout{flex-direction:column;height:auto;min-height:calc(100vh - 41px)}
+  .sidebar{
+    width:100%;
+    min-width:100%;
+    flex-direction:row;
+    overflow-x:auto;
+    overflow-y:hidden;
+    border-right:none;
+    border-bottom:1px solid var(--border);
+    padding:8px 12px;
+    gap:6px;
+  }
+  .sidebar-section{
+    display:flex;
+    gap:6px;
+    padding:0;
+    margin:0;
+  }
+  .section-title{display:none}
+  .sidebar-divider{
+    width:1px;
+    height:auto;
+    margin:0 4px;
+    min-height:28px;
+  }
+  .nav-item{
+    white-space:nowrap;
+    margin:0;
+    padding:6px 10px;
+  }
+  .nav-add{
+    white-space:nowrap;
+    width:auto;
+    margin:0;
+    padding:6px 10px;
+  }
+  .main-panel{padding:16px}
+}
+</style>
+</head>
+<body>
+
+<!-- Unsaved changes banner -->
+<div class="unsaved-banner" id="unsaved-banner">
+  <span>⚠ You have unsaved changes</span>
+  <button class="save-btn" id="save-btn-banner">Save</button>
+</div>
+
+<!-- Top bar -->
+<div class="topbar">
+  <div class="topbar-title"><span>zig-zag</span> config</div>
+  <button class="btn btn-primary" id="save-btn">Save</button>
+</div>
+
+<!-- Two-column layout -->
+<div class="layout">
+  <!-- Sidebar -->
+  <nav class="sidebar" id="sidebar">
+    <!-- Providers section -->
+    <div class="sidebar-section" id="sidebar-providers">
+      <div class="section-title">Providers</div>
+      <!-- nav-items rendered by JS -->
+    </div>
+    <div class="sidebar-section">
+      <button class="nav-add" id="add-provider-btn">+ Add provider</button>
+    </div>
+
+    <div class="sidebar-divider"></div>
+
+    <!-- Settings section -->
+    <div class="sidebar-section" id="sidebar-settings">
+      <div class="section-title">Settings</div>
+      <div class="nav-item" data-type="settings" data-key="server">
+        <div class="nav-item-content"><span class="nav-item-label">Server</span></div>
+      </div>
+      <div class="nav-item" data-type="settings" data-key="logging">
+        <div class="nav-item-content"><span class="nav-item-label">Logging</span></div>
+      </div>
+      <div class="nav-item" data-type="settings" data-key="statistics">
+        <div class="nav-item-content"><span class="nav-item-label">Statistics</span></div>
+      </div>
+      <div class="nav-item" data-type="settings" data-key="cost_controls">
+        <div class="nav-item-content"><span class="nav-item-label">Cost Controls</span></div>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Main content panel -->
+  <main class="main-panel" id="main-panel">
+    <div class="panel-placeholder">Select an item from the sidebar</div>
+  </main>
+</div>
+
+<!-- Toast container -->
+<div class="toast-container" id="toast-container"></div>
+
+<script>
+/* ── State model ────────────────────────────────────── */
+const state = {
+  config: {},        // last-saved config from GET /v1/config/data
+  dirty: {},         // in-memory edits (deep clone, then mutated)
+  hasUnsaved: false, // true when dirty !== config
+  activeType: null,  // 'provider' | 'settings' | 'add-provider'
+  activeKey: null,   // provider key or settings section name
+};
+
+/* ── Deep clone / deep equal helpers ────────────────── */
+function deepClone(obj) { return JSON.parse(JSON.stringify(obj)); }
+
+function deepEqual(a, b) {
+  if (a === b) return true;
+  if (a == null || b == null) return a === b;
+  if (typeof a !== typeof b) return false;
+  if (typeof a !== 'object') return false;
+  const ka = Object.keys(a), kb = Object.keys(b);
+  if (ka.length !== kb.length) return false;
+  for (const k of ka) { if (!deepEqual(a[k], b[k])) return false; }
+  return true;
+}
+
+/* ── DOM refs ───────────────────────────────────────── */
+const $banner     = document.getElementById('unsaved-banner');
+const $saveBanner = document.getElementById('save-btn-banner');
+const $saveBtn    = document.getElementById('save-btn');
+const $sidebar    = document.getElementById('sidebar');
+const $providers  = document.getElementById('sidebar-providers');
+const $settings   = document.getElementById('sidebar-settings');
+const $mainPanel  = document.getElementById('main-panel');
+const $toasts     = document.getElementById('toast-container');
+const $addBtn     = document.getElementById('add-provider-btn');
+
+/* ── Config load / save ─────────────────────────────── */
+async function loadConfig() {
+  try {
+    const res = await fetch('/v1/config/data');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    state.config = await res.json();
+    state.dirty = deepClone(state.config);
+    state.hasUnsaved = false;
+    updateBanner();
+    renderSidebar();
+  } catch (e) {
+    showToast('Failed to load config: ' + e.message, 'error');
+  }
+}
+
+async function saveConfig() {
+  try {
+    const res = await fetch('/v1/config/data', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(state.dirty),
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(body || 'HTTP ' + res.status);
+    }
+    state.config = deepClone(state.dirty);
+    state.hasUnsaved = false;
+    updateBanner();
+    showToast('Config saved. Restart the server for changes to take effect.', 'success');
+  } catch (e) {
+    showToast('Failed to save: ' + e.message, 'error');
+  }
+}
+
+/* ── Dirty tracking ─────────────────────────────────── */
+function markDirty() {
+  state.hasUnsaved = !deepEqual(state.config, state.dirty);
+  updateBanner();
+}
+
+function updateBanner() {
+  $banner.classList.toggle('visible', state.hasUnsaved);
+}
+
+/* ── Toast ──────────────────────────────────────────── */
+function showToast(msg, type) {
+  type = type || 'info';
+  const el = document.createElement('div');
+  el.className = 'toast ' + type;
+  el.textContent = msg;
+  $toasts.appendChild(el);
+  setTimeout(function () {
+    el.classList.add('fade-out');
+    el.addEventListener('animationend', function () { el.remove(); });
+  }, 3000);
+}
+
+/* ── Provider type detection ────────────────────────── */
+function detectProviderType(key, obj) {
+  if (!obj || typeof obj !== 'object') return 'unknown';
+  if (key === 'openai') return 'openai';
+  if (key === 'anthropic') return 'anthropic';
+  if (key === 'sap_ai_core') return 'sap_ai_core';
+  if (key === 'hai') return 'hai';
+  if (key === 'copilot') return 'copilot';
+  if ('compatible' in obj) return 'compatible';
+  if ('oauth_client_secret' in obj || 'oauth_domain' in obj) return 'sap_ai_core';
+  if ('auth_domain' in obj || 'oidc_config_path' in obj) return 'hai';
+  if ('api_version' in obj && !('api_key' in obj)) return 'copilot';
+  if ('api_key' in obj && 'api_version' in obj) return 'anthropic';
+  if ('api_key' in obj) return 'openai';
+  return 'unknown';
+}
+
+/* ── Sidebar rendering ──────────────────────────────── */
+function renderSidebar() {
+  // Clear existing provider nav items (keep the section title)
+  var existing = $providers.querySelectorAll('.nav-item');
+  existing.forEach(function (el) { el.remove(); });
+
+  // Build provider cards
+  var providers = (state.dirty && state.dirty.providers) || {};
+  Object.keys(providers).forEach(function (key) {
+    var obj = providers[key];
+    var type = detectProviderType(key, obj);
+
+    var item = document.createElement('div');
+    item.className = 'nav-item';
+    item.dataset.type = 'provider';
+    item.dataset.key = key;
+    if (state.activeType === 'provider' && state.activeKey === key) {
+      item.classList.add('active');
+    }
+
+    var content = document.createElement('div');
+    content.className = 'nav-item-content';
+
+    var label = document.createElement('span');
+    label.className = 'nav-item-label';
+    label.textContent = key;
+    content.appendChild(label);
+
+    var badge = document.createElement('span');
+    badge.className = 'badge';
+    badge.textContent = type === 'compatible' ? (obj.compatible || 'compat') : type;
+    content.appendChild(badge);
+
+    item.appendChild(content);
+
+    var del = document.createElement('button');
+    del.className = 'nav-delete';
+    del.textContent = '\u2715';
+    del.title = 'Remove ' + key;
+    del.addEventListener('click', function (e) {
+      e.stopPropagation();
+      deleteProvider(key);
+    });
+    item.appendChild(del);
+
+    item.addEventListener('click', function () {
+      selectItem('provider', key);
+    });
+
+    $providers.appendChild(item);
+  });
+
+  // Re-highlight active if it's a settings item
+  if (state.activeType === 'settings') {
+    $settings.querySelectorAll('.nav-item').forEach(function (el) {
+      el.classList.toggle('active', el.dataset.key === state.activeKey);
+    });
+  }
+}
+
+/* ── Delete provider ────────────────────────────────── */
+function deleteProvider(key) {
+  if (!state.dirty.providers) return;
+  delete state.dirty.providers[key];
+  markDirty();
+  renderSidebar();
+  // If the deleted provider was active, clear the panel
+  if (state.activeType === 'provider' && state.activeKey === key) {
+    state.activeType = null;
+    state.activeKey = null;
+    $mainPanel.innerHTML = '<div class="panel-placeholder">Select an item from the sidebar</div>';
+  }
+}
+
+/* ── Add provider ───────────────────────────────────── */
+$addBtn.addEventListener('click', function () {
+  selectItem('add-provider', null);
+});
+
+/* ── Provider field schemas ─────────────────────────── */
+var PROVIDER_SCHEMAS = {
+  openai: [
+    { name: 'api_key',              label: 'API Key',              type: 'text', required: true },
+    { name: 'api_url',              label: 'API URL',              type: 'text', placeholder: 'https://api.openai.com' },
+    { name: 'organization',         label: 'Organization',         type: 'text' },
+    { name: 'timeout_ms',           label: 'Timeout (ms)',         type: 'number', placeholder: '60000' },
+    { name: 'max_response_size_mb', label: 'Max Response Size (MB)', type: 'number', placeholder: '10' },
+    { name: 'retry_count',          label: 'Retry Count',          type: 'number', placeholder: '0' },
+    { name: 'retry_delay_ms',       label: 'Retry Delay (ms)',     type: 'number', placeholder: '1000' },
+  ],
+  anthropic: [
+    { name: 'api_key',              label: 'API Key',              type: 'text', required: true },
+    { name: 'api_url',              label: 'API URL',              type: 'text', placeholder: 'https://api.anthropic.com' },
+    { name: 'api_version',          label: 'API Version',          type: 'text', placeholder: '2023-06-01' },
+    { name: 'timeout_ms',           label: 'Timeout (ms)',         type: 'number', placeholder: '60000' },
+    { name: 'max_response_size_mb', label: 'Max Response Size (MB)', type: 'number', placeholder: '10' },
+    { name: 'retry_count',          label: 'Retry Count',          type: 'number', placeholder: '0' },
+    { name: 'retry_delay_ms',       label: 'Retry Delay (ms)',     type: 'number', placeholder: '1000' },
+  ],
+  sap_ai_core: [
+    { name: 'api_domain',           label: 'API Domain',           type: 'text', required: true },
+    { name: 'deployment_id',        label: 'Deployment ID',        type: 'text', required: true },
+    { name: 'resource_group',       label: 'Resource Group',       type: 'text', required: true },
+    { name: 'oauth_domain',         label: 'OAuth Domain',         type: 'text', required: true },
+    { name: 'oauth_client_id',      label: 'OAuth Client ID',      type: 'text', required: true },
+    { name: 'oauth_client_secret',  label: 'OAuth Client Secret',  type: 'text', required: true },
+    { name: 'timeout_ms',           label: 'Timeout (ms)',         type: 'number', placeholder: '60000' },
+    { name: 'max_response_size_mb', label: 'Max Response Size (MB)', type: 'number', placeholder: '10' },
+    { name: 'retry_count',          label: 'Retry Count',          type: 'number', placeholder: '0' },
+    { name: 'retry_delay_ms',       label: 'Retry Delay (ms)',     type: 'number', placeholder: '1000' },
+  ],
+  hai: [
+    { name: 'api_url',              label: 'API URL',              type: 'text', required: true },
+    { name: 'client_id',            label: 'Client ID',            type: 'text', required: true },
+    { name: 'auth_domain',          label: 'Auth Domain',          type: 'text', required: true },
+    { name: 'oidc_config_path',     label: 'OIDC Config Path',     type: 'text', required: true },
+    { name: 'redirect_port',        label: 'Redirect Port',        type: 'number', required: true },
+    { name: 'redirect_path',        label: 'Redirect Path',        type: 'text', required: true },
+    { name: 'models_path',          label: 'Models Path',          type: 'text', required: true },
+    { name: 'chat_completions_path',label: 'Chat Completions Path',type: 'text', required: true },
+    { name: 'timeout_ms',           label: 'Timeout (ms)',         type: 'number', placeholder: '60000' },
+    { name: 'max_response_size_mb', label: 'Max Response Size (MB)', type: 'number', placeholder: '10' },
+  ],
+  copilot: [
+    { name: 'client_id',            label: 'Client ID',            type: 'text', placeholder: 'Iv1.b507a08c87ecfe98' },
+    { name: 'editor_version',       label: 'Editor Version',       type: 'text', placeholder: 'vscode/1.85.0' },
+    { name: 'editor_plugin_version',label: 'Editor Plugin Version',type: 'text', placeholder: 'copilot/1.155.0' },
+    { name: 'user_agent',           label: 'User Agent',           type: 'text', placeholder: 'GithubCopilot/1.155.0' },
+    { name: 'api_version',          label: 'API Version',          type: 'text', placeholder: '2024-07-01' },
+    { name: 'timeout_ms',           label: 'Timeout (ms)',         type: 'number', placeholder: '60000' },
+    { name: 'max_response_size_mb', label: 'Max Response Size (MB)', type: 'number', placeholder: '10' },
+  ],
+  compatible: [
+    { name: 'api_key',              label: 'API Key',              type: 'text', required: true },
+    { name: 'api_url',              label: 'API URL',              type: 'text', required: true },
+    { name: 'timeout_ms',           label: 'Timeout (ms)',         type: 'number', placeholder: '60000' },
+    { name: 'max_response_size_mb', label: 'Max Response Size (MB)', type: 'number', placeholder: '10' },
+    { name: 'retry_count',          label: 'Retry Count',          type: 'number', placeholder: '0' },
+    { name: 'retry_delay_ms',       label: 'Retry Delay (ms)',     type: 'number', placeholder: '1000' },
+  ],
+};
+
+/* ── Helpers for form rendering ─────────────────────── */
+function isSensitive(name) {
+  return /key|secret|password/i.test(name);
+}
+
+function escHtml(s) {
+  if (s == null) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function providerDisplayName(type) {
+  var names = {
+    openai: 'OpenAI', anthropic: 'Anthropic', sap_ai_core: 'SAP AI Core',
+    hai: 'HAI', copilot: 'Copilot', compatible: 'Compatible',
+  };
+  return names[type] || type;
+}
+
+/* ── Render a single form field HTML ────────────────── */
+function renderFieldHtml(providerKey, field, value) {
+  var id = 'field-' + providerKey + '-' + field.name;
+  var val = (value != null) ? value : '';
+  var labelClass = field.required ? 'required' : '';
+  var ph = field.placeholder ? ' placeholder="' + escHtml(field.placeholder) + '"' : '';
+  var html = '<div class="form-group">';
+  html += '<label class="' + labelClass + '">' + escHtml(field.label) + '</label>';
+
+  if (isSensitive(field.name)) {
+    html += '<div class="secret-field">';
+    html += '<input type="password" id="' + id + '" data-provider="' + escHtml(providerKey) +
+      '" data-field="' + escHtml(field.name) + '" value="' + escHtml(val) + '"' + ph + '>';
+    html += '<button type="button" class="secret-toggle" data-target="' + id + '" title="Toggle visibility">\u{1F441}</button>';
+    html += '</div>';
+  } else if (field.type === 'number') {
+    html += '<input type="number" id="' + id + '" data-provider="' + escHtml(providerKey) +
+      '" data-field="' + escHtml(field.name) + '" value="' + escHtml(val) + '"' + ph + '>';
+  } else {
+    html += '<input type="text" id="' + id + '" data-provider="' + escHtml(providerKey) +
+      '" data-field="' + escHtml(field.name) + '" value="' + escHtml(val) + '"' + ph + '>';
+  }
+
+  html += '</div>';
+  return html;
+}
+
+/* ── Render provider form ───────────────────────────── */
+function renderProviderForm(key) {
+  var obj = state.dirty.providers[key] || {};
+  var type = detectProviderType(key, obj);
+  var schema = PROVIDER_SCHEMAS[type];
+
+  if (!schema) {
+    $mainPanel.innerHTML = '<div class="panel-placeholder">Unknown provider type</div>';
+    return;
+  }
+
+  var displayType = providerDisplayName(type);
+  var subtitle = type;
+  if (type === 'compatible') {
+    subtitle = 'compatible (' + (obj.compatible || 'openai') + ')';
+  }
+
+  var html = '<div class="panel"><div class="panel-header"><div>' +
+    '<div class="panel-title">' + escHtml(key) + '</div>' +
+    '<div class="panel-subtitle">' + escHtml(subtitle) + '</div>' +
+    '</div></div><div class="panel-body">';
+
+  // For copilot, add auth status placeholder (TASK-6E will replace this)
+  if (type === 'copilot') {
+    html += '<div id="copilot-auth-section">' +
+      '<div class="status-badge unauthenticated" id="copilot-status-badge">' +
+      '\u26A0\uFE0F Status: loading\u2026</div>' +
+      '<div id="copilot-device-flow" style="display:none;margin-top:12px;padding:12px;' +
+      'background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg)">' +
+      '<p style="margin-bottom:8px;font-size:13px">Visit <a id="copilot-verify-link" href="#" ' +
+      'target="_blank" style="color:var(--accent)">github.com/login/device</a> and enter code:</p>' +
+      '<div id="copilot-user-code" style="font-family:var(--mono);font-size:22px;font-weight:700;' +
+      'letter-spacing:2px;color:var(--accent);margin:8px 0"></div>' +
+      '<div style="display:flex;align-items:center;gap:8px;color:var(--text-muted);font-size:12px">' +
+      '<span class="spinner"></span> Waiting for authorization\u2026</div></div>' +
+      '<div style="display:flex;gap:8px;margin-top:10px">' +
+      '<button class="btn" id="copilot-auth-btn" style="display:none">' +
+      '\uD83D\uDD11 Authenticate with GitHub</button>' +
+      '<button class="btn btn-danger" id="copilot-revoke-btn" style="display:none">' +
+      '\uD83D\uDDD1 Revoke</button></div></div>';
+    // Copilot fields go into a collapsible advanced section
+    html += '<div class="collapsible-header" id="copilot-advanced-toggle">' +
+      '<span class="arrow">\u25B8</span> Advanced (optional)</div>';
+    html += '<div class="collapsible-body" id="copilot-advanced-body">';
+    for (var i = 0; i < schema.length; i++) {
+      html += renderFieldHtml(key, schema[i], obj[schema[i].name]);
+    }
+    html += '</div>';
+  } else {
+    // For compatible, show the compatible-type as a read-only badge
+    if (type === 'compatible') {
+      html += '<div class="form-group"><label>Compatible Type</label>' +
+        '<input type="text" value="' + escHtml(obj.compatible || 'openai') + '" disabled ' +
+        'style="opacity:.6;cursor:not-allowed"></div>';
+    }
+    for (var i = 0; i < schema.length; i++) {
+      html += renderFieldHtml(key, schema[i], obj[schema[i].name]);
+    }
+  }
+
+  html += '</div></div>';
+  $mainPanel.innerHTML = html;
+
+  // Wire up input handlers
+  $mainPanel.querySelectorAll('input[data-provider]').forEach(function (input) {
+    input.addEventListener('input', function () {
+      var pk = input.dataset.provider;
+      var fn = input.dataset.field;
+      var val = input.value;
+      if (input.type === 'number') {
+        val = val === '' ? undefined : Number(val);
+      }
+      if (!state.dirty.providers[pk]) state.dirty.providers[pk] = {};
+      if (val === undefined || val === '') {
+        delete state.dirty.providers[pk][fn];
+      } else {
+        state.dirty.providers[pk][fn] = val;
+      }
+      markDirty();
+    });
+  });
+
+  // Wire up secret toggles
+  $mainPanel.querySelectorAll('.secret-toggle').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var target = document.getElementById(btn.dataset.target);
+      if (target) {
+        var isPassword = target.type === 'password';
+        target.type = isPassword ? 'text' : 'password';
+        btn.textContent = isPassword ? '\uD83D\uDE48' : '\uD83D\uDC41';
+      }
+    });
+  });
+
+  // Wire up copilot advanced collapsible
+  if (type === 'copilot') {
+    var toggle = document.getElementById('copilot-advanced-toggle');
+    var body = document.getElementById('copilot-advanced-body');
+    if (toggle && body) {
+      toggle.addEventListener('click', function () {
+        toggle.classList.toggle('open');
+        body.classList.toggle('open');
+      });
+    }
+    // Wire copilot auth + revoke buttons
+    var authBtn = document.getElementById('copilot-auth-btn');
+    var revokeBtn = document.getElementById('copilot-revoke-btn');
+    if (authBtn) {
+      authBtn.addEventListener('click', function () { startCopilotAuth(); });
+    }
+    if (revokeBtn) {
+      revokeBtn.addEventListener('click', function () { revokeCopilotAuth(); });
+    }
+    // Load copilot auth status
+    loadCopilotAuthStatus();
+  }
+}
+
+/* ── Copilot auth ───────────────────────────────────── */
+var copilotPollTimer = null;
+
+function updateCopilotBadge(status) {
+  var badge = document.getElementById('copilot-status-badge');
+  if (!badge) return;
+  var icon = status === 'unauthenticated' ? '\u26A0\uFE0F' : '\u2705';
+  var label = status === 'authenticated' ? 'Authenticated' :
+              status === 'configured' ? 'Configured (token on disk)' : 'Not authenticated';
+  badge.className = 'status-badge ' + status;
+  badge.textContent = icon + ' ' + label;
+
+  var authBtn = document.getElementById('copilot-auth-btn');
+  var revokeBtn = document.getElementById('copilot-revoke-btn');
+  var deviceFlow = document.getElementById('copilot-device-flow');
+  if (authBtn) authBtn.style.display = (status === 'unauthenticated') ? '' : 'none';
+  if (revokeBtn) revokeBtn.style.display = (status !== 'unauthenticated') ? '' : 'none';
+  // Hide device flow panel once authenticated/configured
+  if (deviceFlow && status !== 'unauthenticated') deviceFlow.style.display = 'none';
+}
+
+function loadCopilotAuthStatus() {
+  fetch('/v1/config/copilot/auth/status').then(function (res) {
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return res.json();
+  }).then(function (data) {
+    updateCopilotBadge(data.status || 'unauthenticated');
+  }).catch(function () {
+    updateCopilotBadge('unauthenticated');
+  });
+}
+
+function startCopilotAuth() {
+  var authBtn = document.getElementById('copilot-auth-btn');
+  if (authBtn) { authBtn.disabled = true; authBtn.textContent = 'Starting\u2026'; }
+
+  fetch('/v1/config/copilot/auth', { method: 'POST' }).then(function (res) {
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return res.json();
+  }).then(function (data) {
+    var userCode = data.user_code || '';
+    var verifyUri = data.verification_uri || 'https://github.com/login/device';
+
+    // Show device flow panel
+    var deviceFlow = document.getElementById('copilot-device-flow');
+    var codeEl = document.getElementById('copilot-user-code');
+    var linkEl = document.getElementById('copilot-verify-link');
+    if (deviceFlow) deviceFlow.style.display = '';
+    if (codeEl) codeEl.textContent = userCode;
+    if (linkEl) { linkEl.href = verifyUri; linkEl.textContent = verifyUri.replace(/^https?:\/\//, ''); }
+    if (authBtn) authBtn.style.display = 'none';
+
+    // Start polling for auth completion
+    stopCopilotPoll();
+    copilotPollTimer = setInterval(function () {
+      fetch('/v1/config/copilot/auth/status').then(function (res) {
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        return res.json();
+      }).then(function (d) {
+        if (d.status === 'authenticated' || d.status === 'configured') {
+          stopCopilotPoll();
+          updateCopilotBadge(d.status);
+          showToast('Copilot authenticated successfully!', 'success');
+        }
+      }).catch(function () { /* keep polling */ });
+    }, 3000);
+  }).catch(function (e) {
+    showToast('Failed to start device flow: ' + e.message, 'error');
+    if (authBtn) { authBtn.disabled = false; authBtn.textContent = '\uD83D\uDD11 Authenticate with GitHub'; }
+  });
+}
+
+function stopCopilotPoll() {
+  if (copilotPollTimer) { clearInterval(copilotPollTimer); copilotPollTimer = null; }
+}
+
+function revokeCopilotAuth() {
+  fetch('/v1/config/copilot/auth', { method: 'DELETE' }).then(function (res) {
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    stopCopilotPoll();
+    updateCopilotBadge('unauthenticated');
+    showToast('Copilot token revoked', 'info');
+  }).catch(function (e) {
+    showToast('Failed to revoke: ' + e.message, 'error');
+  });
+}
+
+/* ── Panel rendering ────────────────────────────────── */
+function renderPanel(type, key) {
+  if (type === 'add-provider') {
+    renderAddProviderPanel();
+    return;
+  }
+  if (type === 'provider') {
+    renderProviderForm(key);
+    return;
+  }
+  if (type === 'settings') {
+    renderSettingsPanel(key);
+    return;
+  }
+  $mainPanel.innerHTML = '<div class="panel-placeholder">Select an item from the sidebar</div>';
+}
+
+/* ── Settings field schemas ─────────────────────────── */
+var SETTINGS_SCHEMAS = {
+  server: {
+    title: 'Server',
+    subtitle: 'HTTP server configuration',
+    section: 'server',
+    fields: [
+      { name: 'host',            label: 'Host',              type: 'text',   placeholder: '0.0.0.0' },
+      { name: 'port',            label: 'Port',              type: 'number', placeholder: '8080' },
+      { name: 'http_pool_size',  label: 'HTTP Pool Size',    type: 'number' },
+      { name: 'io_pool_size',    label: 'I/O Pool Size',     type: 'number', placeholder: '4' },
+      { name: 'max_header_size', label: 'Max Header Size',   type: 'number', placeholder: '32768' },
+      { name: 'max_body_size',   label: 'Max Body Size',     type: 'number', placeholder: '10485760' },
+      { name: 'read_timeout_ms', label: 'Read Timeout (ms)', type: 'number', placeholder: '30000' },
+    ],
+  },
+  logging: {
+    title: 'Logging',
+    subtitle: 'Log output and rotation settings',
+    section: 'logging',
+    fields: [
+      { name: 'level',            label: 'Level',              type: 'select', options: ['debug','info','warn','err'], placeholder: 'info' },
+      { name: 'output',           label: 'Output',             type: 'select', options: ['stderr','file'], placeholder: 'stderr' },
+      { name: 'path',             label: 'File Path',          type: 'text' },
+      { name: 'max_file_size_mb', label: 'Max File Size (MB)', type: 'number', placeholder: '10' },
+      { name: 'max_files',        label: 'Max Files',          type: 'number', placeholder: '5' },
+      { name: 'buffer_size',      label: 'Buffer Size',        type: 'number', placeholder: '100' },
+      { name: 'flush_interval_ms',label: 'Flush Interval (ms)',type: 'number', placeholder: '1000' },
+    ],
+  },
+  statistics: {
+    title: 'Statistics',
+    subtitle: 'Toggle stat rows in macOS menu bar',
+    section: 'statistics',
+    fields: [
+      { name: 'show_performance', label: 'Show Performance', type: 'toggle' },
+      { name: 'show_llm',        label: 'Show LLM',         type: 'toggle' },
+      { name: 'show_cost',       label: 'Show Cost',        type: 'toggle' },
+    ],
+  },
+  cost_controls: {
+    title: 'Cost Controls',
+    subtitle: 'Budget limits and reset period',
+    section: 'cost_controls',
+    fields: [
+      { name: 'enabled',       label: 'Enabled',             type: 'toggle' },
+      { name: 'budget',        label: 'Budget (USD)',         type: 'number', placeholder: '0.00' },
+      { name: 'days_duration', label: 'Days Duration',        type: 'number', placeholder: '0' },
+    ],
+  },
+};
+
+/* ── Render a settings field HTML ───────────────────── */
+function renderSettingsFieldHtml(section, field, value) {
+  var id = 'settings-' + section + '-' + field.name;
+
+  if (field.type === 'toggle') {
+    var checked = value ? ' checked' : '';
+    return '<div class="toggle-group">' +
+      '<label>' + escHtml(field.label) + '</label>' +
+      '<label class="toggle">' +
+      '<input type="checkbox" id="' + id + '" data-section="' + escHtml(section) +
+      '" data-field="' + escHtml(field.name) + '"' + checked + '>' +
+      '<span class="toggle-slider"></span></label></div>';
+  }
+
+  if (field.type === 'select') {
+    var html = '<div class="form-group"><label>' + escHtml(field.label) + '</label>' +
+      '<select id="' + id + '" data-section="' + escHtml(section) +
+      '" data-field="' + escHtml(field.name) + '">';
+    var opts = field.options || [];
+    for (var i = 0; i < opts.length; i++) {
+      var sel = (String(value) === opts[i] || (!value && opts[i] === field.placeholder)) ? ' selected' : '';
+      html += '<option value="' + escHtml(opts[i]) + '"' + sel + '>' + escHtml(opts[i]) + '</option>';
+    }
+    html += '</select></div>';
+    return html;
+  }
+
+  // text or number
+  var ph = field.placeholder ? ' placeholder="' + escHtml(field.placeholder) + '"' : '';
+  var val = (value != null) ? value : '';
+  var inputType = field.type === 'number' ? 'number' : 'text';
+  return '<div class="form-group"><label>' + escHtml(field.label) + '</label>' +
+    '<input type="' + inputType + '" id="' + id + '" data-section="' + escHtml(section) +
+    '" data-field="' + escHtml(field.name) + '" value="' + escHtml(val) + '"' + ph + '></div>';
+}
+
+/* ── Render settings panel ──────────────────────────── */
+function renderSettingsPanel(key) {
+  var schema = SETTINGS_SCHEMAS[key];
+  if (!schema) {
+    $mainPanel.innerHTML = '<div class="panel-placeholder">Unknown settings section</div>';
+    return;
+  }
+
+  var section = schema.section;
+  var data = (state.dirty && state.dirty[section]) || {};
+
+  var html = '<div class="panel"><div class="panel-header"><div>' +
+    '<div class="panel-title">' + escHtml(schema.title) + '</div>' +
+    '<div class="panel-subtitle">' + escHtml(schema.subtitle) + '</div>' +
+    '</div></div><div class="panel-body">';
+
+  for (var i = 0; i < schema.fields.length; i++) {
+    var f = schema.fields[i];
+    html += renderSettingsFieldHtml(section, f, data[f.name]);
+  }
+
+  html += '</div></div>';
+  $mainPanel.innerHTML = html;
+
+  // Wire up text/number input handlers
+  $mainPanel.querySelectorAll('input[type="text"][data-section], input[type="number"][data-section]').forEach(function (input) {
+    input.addEventListener('input', function () {
+      var sec = input.dataset.section;
+      var fn = input.dataset.field;
+      var val = input.value;
+      if (input.type === 'number') {
+        val = val === '' ? undefined : Number(val);
+      }
+      if (!state.dirty[sec]) state.dirty[sec] = {};
+      if (val === undefined || val === '') {
+        delete state.dirty[sec][fn];
+      } else {
+        state.dirty[sec][fn] = val;
+      }
+      markDirty();
+    });
+  });
+
+  // Wire up select handlers
+  $mainPanel.querySelectorAll('select[data-section]').forEach(function (sel) {
+    sel.addEventListener('change', function () {
+      var sec = sel.dataset.section;
+      var fn = sel.dataset.field;
+      if (!state.dirty[sec]) state.dirty[sec] = {};
+      state.dirty[sec][fn] = sel.value;
+      markDirty();
+    });
+  });
+
+  // Wire up toggle handlers
+  $mainPanel.querySelectorAll('input[type="checkbox"][data-section]').forEach(function (cb) {
+    cb.addEventListener('change', function () {
+      var sec = cb.dataset.section;
+      var fn = cb.dataset.field;
+      if (!state.dirty[sec]) state.dirty[sec] = {};
+      state.dirty[sec][fn] = cb.checked;
+      markDirty();
+    });
+  });
+}
+
+/* ── Add-provider panel ─────────────────────────────── */
+function renderAddProviderPanel() {
+  var html = '<div class="panel"><div class="panel-header"><div>' +
+    '<div class="panel-title">Add Provider</div>' +
+    '<div class="panel-subtitle">Choose a provider type to configure</div>' +
+    '</div></div><div class="panel-body">' +
+    '<div class="form-group"><label>Provider type</label>' +
+    '<select id="new-provider-type">' +
+    '<option value="">Select…</option>' +
+    '<option value="openai">OpenAI</option>' +
+    '<option value="anthropic">Anthropic</option>' +
+    '<option value="sap_ai_core">SAP AI Core</option>' +
+    '<option value="hai">HAI</option>' +
+    '<option value="copilot">Copilot</option>' +
+    '<option value="compatible-openai">Compatible (OpenAI)</option>' +
+    '<option value="compatible-anthropic">Compatible (Anthropic)</option>' +
+    '</select></div>' +
+    '<div class="form-group" id="new-provider-name-group" style="display:none">' +
+    '<label class="required">Provider name (config key)</label>' +
+    '<input type="text" id="new-provider-name" placeholder="e.g. my-local-llm">' +
+    '</div>' +
+    '<button class="btn btn-primary" id="new-provider-create" style="display:none">Create</button>' +
+    '</div></div>';
+  $mainPanel.innerHTML = html;
+
+  var $type = document.getElementById('new-provider-type');
+  var $nameGroup = document.getElementById('new-provider-name-group');
+  var $name = document.getElementById('new-provider-name');
+  var $create = document.getElementById('new-provider-create');
+
+  $type.addEventListener('change', function () {
+    var v = $type.value;
+    if (!v) {
+      $nameGroup.style.display = 'none';
+      $create.style.display = 'none';
+      return;
+    }
+    // Native providers have fixed keys; compatible needs a custom name
+    var isNative = ['openai','anthropic','sap_ai_core','hai','copilot'].indexOf(v) !== -1;
+    if (isNative) {
+      $nameGroup.style.display = 'none';
+      $name.value = v;
+    } else {
+      $nameGroup.style.display = '';
+      $name.value = '';
+      $name.focus();
+    }
+    $create.style.display = '';
+  });
+
+  $create.addEventListener('click', function () {
+    var v = $type.value;
+    if (!v) return;
+    var isNative = ['openai','anthropic','sap_ai_core','hai','copilot'].indexOf(v) !== -1;
+    var key = isNative ? v : $name.value.trim();
+    if (!key) {
+      $name.classList.add('invalid');
+      showToast('Provider name is required', 'error');
+      return;
+    }
+    if (!state.dirty.providers) state.dirty.providers = {};
+    if (state.dirty.providers[key]) {
+      showToast('Provider "' + key + '" already exists', 'error');
+      return;
+    }
+    // Create empty provider config
+    var obj = {};
+    if (v === 'compatible-openai') obj.compatible = 'openai';
+    else if (v === 'compatible-anthropic') obj.compatible = 'anthropic';
+    state.dirty.providers[key] = obj;
+    markDirty();
+    renderSidebar();
+    selectItem('provider', key);
+  });
+}
+
+/* ── Item selection ─────────────────────────────────── */
+function selectItem(type, key) {
+  state.activeType = type;
+  state.activeKey = key;
+  // highlight active nav item
+  document.querySelectorAll('.nav-item').forEach(function (el) {
+    el.classList.toggle('active',
+      el.dataset.type === type && el.dataset.key === key);
+  });
+  renderPanel(type, key);
+}
+
+/* ── Event listeners ────────────────────────────────── */
+$saveBtn.addEventListener('click', saveConfig);
+$saveBanner.addEventListener('click', saveConfig);
+
+// Settings nav items (static)
+$settings.querySelectorAll('.nav-item').forEach(function (el) {
+  el.addEventListener('click', function () {
+    selectItem(el.dataset.type, el.dataset.key);
+  });
+});
+
+/* ── Init ───────────────────────────────────────────── */
+document.addEventListener('DOMContentLoaded', function () {
+  loadConfig();
+});
+</script>
+</body>
 </html>

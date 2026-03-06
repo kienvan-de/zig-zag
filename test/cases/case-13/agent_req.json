@@ -1,0 +1,1 @@
+{"method":"POST","path":"/v1/config/data","body":"{\"server\":{\"host\":\"127.0.0.1\",\"port\":8080},\"providers\":{}}"}

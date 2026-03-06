@@ -468,6 +468,33 @@ struct ContentView: View {
             Divider()
                 .frame(height: 20)
             
+            // Config Button — icon-only gear circle
+            Button(action: {
+                let port = serverState.stats.port
+                if let url = URL(string: "http://127.0.0.1:\(port)/v1/html/config") {
+                    NSWorkspace.shared.open(url)
+                }
+            }) {
+                Image(systemName: "gearshape.circle")
+                    .font(.system(size: 16))
+                    .frame(width: 36, minHeight: 28)
+                    .contentShape(Rectangle())
+                    .opacity(serverState.stats.isRunning ? 1.0 : 0.35)
+            }
+            .buttonStyle(.plain)
+            .disabled(!serverState.stats.isRunning)
+            .help(serverState.stats.isRunning ? "Open config in browser" : "Start the server first")
+            .onHover { hovering in
+                if hovering && serverState.stats.isRunning {
+                    NSCursor.pointingHand.push()
+                } else {
+                    NSCursor.pop()
+                }
+            }
+            
+            Divider()
+                .frame(height: 20)
+            
             // Quit Button
             Button(action: {
                 serverState.stop()
