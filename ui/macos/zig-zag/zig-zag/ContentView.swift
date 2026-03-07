@@ -477,7 +477,7 @@ struct ContentView: View {
             }) {
                 Image(systemName: "gearshape.circle")
                     .font(.system(size: 16))
-                    .frame(width: 36, minHeight: 28)
+                    .frame(width: 36, height: 28)
                     .contentShape(Rectangle())
                     .opacity(serverState.stats.isRunning ? 1.0 : 0.35)
             }

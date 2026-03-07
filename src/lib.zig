@@ -130,6 +130,11 @@ fn serverThreadFn(s: *State) void {
     app_cache.init(allocator);
     defer app_cache.deinit();
 
+    // Store server port in app cache so providers can build server URLs
+    var port_buf: [8]u8 = undefined;
+    const port_str = std.fmt.bufPrint(&port_buf, "{d}", .{cfg.server.port}) catch "8080";
+    app_cache.put("server_port", port_str) catch {};
+
     // 3. Initialize token cache
     token_cache.init(allocator);
     defer token_cache.deinit();
