@@ -17,30 +17,26 @@
 //! Handles all requests to /v1/config/* routes.
 //! Dispatches internally by method + path:
 //!
-//!   GET    /v1/config/data                  → handleGet
-//!   POST   /v1/config/data                  → handlePost
-//!   GET    /v1/config/{provider}/auth        → provider auth status
-//!   POST   /v1/config/{provider}/auth        → start provider auth flow
-//!   DELETE /v1/config/{provider}/auth        → revoke provider auth
+//!   GET    /v1/config/data                  -> handleGet
+//!   POST   /v1/config/data                  -> handlePost
+//!   GET    /v1/config/{provider}/auth        -> provider auth status
+//!   POST   /v1/config/{provider}/auth        -> start provider auth flow
+//!   DELETE /v1/config/{provider}/auth        -> revoke provider auth
 
 const std = @import("std");
 const http = @import("../http.zig");
 const errors = @import("../errors.zig");
 const config_mod = @import("../config.zig");
 const log = @import("../log.zig");
-const token_cache = @import("../cache/token_cache.zig");
-const http_client = @import("../client.zig");
-const auth = @import("../auth/mod.zig");
+
+const worker_pool = @import("../worker_pool.zig");
+const copilot_mod = @import("../providers/copilot/client.zig");
+const CopilotClient = copilot_mod.CopilotClient;
 const SapAiCoreClient = @import("../providers/sap_ai_core/client.zig").SapAiCoreClient;
 const HaiClient = @import("../providers/hai/client.zig").HaiClient;
 
-const COPILOT_CACHE_KEY = "copilot";
-const COPILOT_DEFAULT_CLIENT_ID = "Iv1.b507a08c87ecfe98";
-const GITHUB_DEVICE_CODE_URL = "https://github.com/login/device/code";
-const GITHUB_ACCESS_TOKEN_URL = "https://github.com/login/oauth/access_token";
-
 // ============================================================================
-// Device Flow State — module-level, single Copilot instance
+// Device Flow State -- module-level, single Copilot instance
 // ============================================================================
 
 const DeviceFlowStatus = enum(u8) { idle, pending, authenticated, failed };
@@ -106,9 +102,9 @@ fn dispatchProviderAuth(
     const eql = std.mem.eql;
 
     if (eql(u8, provider_name, "copilot")) {
-        if (eql(u8, method, "GET")) return handleCopilotAuthStatus(allocator, connection);
-        if (eql(u8, method, "POST")) return handleCopilotAuth(allocator, connection);
-        if (eql(u8, method, "DELETE")) return handleCopilotAuthRevoke(allocator, connection);
+        if (eql(u8, method, "GET")) return handleCopilotAuthStatus(allocator, connection, provider_name, cfg);
+        if (eql(u8, method, "POST")) return handleCopilotAuth(allocator, connection, provider_name, cfg);
+        if (eql(u8, method, "DELETE")) return handleCopilotAuthRevoke(allocator, connection, provider_name, cfg);
     }
 
     if (eql(u8, provider_name, "sap_ai_core")) {
@@ -128,7 +124,7 @@ fn dispatchProviderAuth(
 }
 
 // ============================================================================
-// Config data — GET / POST
+// Config data -- GET / POST
 // ============================================================================
 
 fn handleGet(allocator: std.mem.Allocator, connection: std.net.Server.Connection) !void {
@@ -155,120 +151,81 @@ fn handlePost(allocator: std.mem.Allocator, connection: std.net.Server.Connectio
 }
 
 // ============================================================================
-// Copilot auth — status
+// Copilot auth -- GET / POST / DELETE
 // ============================================================================
 
-fn handleCopilotAuthStatus(allocator: std.mem.Allocator, connection: std.net.Server.Connection) !void {
-    // 1. In-memory token cache hit → "authenticated"
-    if (token_cache.get(allocator, COPILOT_CACHE_KEY, 0)) |result| {
-        allocator.free(result.access_token);
-        if (result.refresh_token) |rt| allocator.free(rt);
-        log.debug("[config/copilot] auth status: authenticated (token_cache hit)", .{});
-        return http.sendJsonResponse(connection, .ok, "{\"status\":\"authenticated\"}");
-    }
-
-    // 2. apps.json exists with a valid entry → "configured"
-    if (appsJsonHasEntry(allocator, COPILOT_DEFAULT_CLIENT_ID)) {
-        log.debug("[config/copilot] auth status: configured (apps.json entry)", .{});
-        return http.sendJsonResponse(connection, .ok, "{\"status\":\"configured\"}");
-    }
-
-    // 3. Neither → "unauthenticated"
-    log.debug("[config/copilot] auth status: unauthenticated", .{});
-    try http.sendJsonResponse(connection, .ok, "{\"status\":\"unauthenticated\"}");
-}
-
-/// Returns true if ~/.config/github-copilot/apps.json exists and contains
-/// an entry for "github.com:<client_id>".
-fn appsJsonHasEntry(allocator: std.mem.Allocator, client_id: []const u8) bool {
-    const home = std.posix.getenv("HOME") orelse return false;
-
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const apps_path = std.fmt.bufPrint(
-        &path_buf,
-        "{s}/.config/github-copilot/apps.json",
-        .{home},
-    ) catch return false;
-
-    const file = std.fs.cwd().openFile(apps_path, .{}) catch return false;
-    defer file.close();
-
-    const content = file.readToEndAlloc(allocator, 1024 * 1024) catch return false;
-    defer allocator.free(content);
-
-    const parsed = std.json.parseFromSlice(std.json.Value, allocator, content, .{}) catch return false;
-    defer parsed.deinit();
-
-    if (parsed.value != .object) return false;
-
-    var key_buf: [256]u8 = undefined;
-    const lookup_key = std.fmt.bufPrint(&key_buf, "github.com:{s}", .{client_id}) catch return false;
-
-    const entry = parsed.value.object.get(lookup_key) orelse return false;
-    if (entry != .object) return false;
-    return entry.object.get("oauth_token") != null;
-}
-
-// ============================================================================
-// Copilot auth — start device flow (POST)
-// ============================================================================
-
-const DeviceFlowThreadArgs = struct {
+fn handleCopilotAuthStatus(
     allocator: std.mem.Allocator,
-    device_code: []const u8,
-    interval: i64,
-    expires_in: i64,
-    client_id: []const u8,
-};
-
-fn deviceFlowPollThread(args_ptr: *DeviceFlowThreadArgs) void {
-    const args = args_ptr.*;
-    defer {
-        args.allocator.free(args.device_code);
-        args.allocator.free(args.client_id);
-        args.allocator.destroy(args_ptr);
-    }
-
-    const params = auth.DeviceFlowParams{
-        .device_code_url = GITHUB_DEVICE_CODE_URL,
-        .token_url = GITHUB_ACCESS_TOKEN_URL,
-        .client_id = args.client_id,
-        .scope = "",
+    connection: std.net.Server.Connection,
+    provider_name: []const u8,
+    cfg: *const config_mod.Config,
+) !void {
+    const provider_config = cfg.providers.getPtr(provider_name) orelse {
+        log.debug("[config/copilot] provider not configured, reporting unauthenticated", .{});
+        return http.sendJsonResponse(connection, .ok, "{\"status\":\"unauthenticated\"}");
     };
 
-    var client = http_client.HttpClient.initWithOptions(args.allocator, 60000, 10 * 1024 * 1024, null);
+    var client = CopilotClient.init(allocator, provider_config) catch |err| {
+        log.err("[config/copilot] failed to init client: {}", .{err});
+        return http.sendJsonResponse(connection, .ok, "{\"status\":\"unauthenticated\"}");
+    };
     defer client.deinit();
 
-    var token = auth.oauth.pollDeviceToken(
-        args.allocator,
-        &client,
-        params,
-        args.device_code,
-        args.interval,
-        args.expires_in,
-    ) catch |err| {
-        log.err("[config/copilot] device flow poll failed: {}", .{err});
+    const status = client.authStatus();
+    const json = switch (status) {
+        .authenticated => "{\"status\":\"authenticated\"}",
+        .configured => "{\"status\":\"configured\"}",
+        .unauthenticated => "{\"status\":\"unauthenticated\"}",
+    };
+    try http.sendJsonResponse(connection, .ok, json);
+}
+
+/// Thread args for background device flow polling.
+/// Uses fixed-size buffers so it can be allocated with page_allocator
+/// (survives after the request's arena allocator is freed).
+const DeviceFlowThreadArgs = struct {
+    provider_config: *const config_mod.ProviderConfig,
+    device_code: [256]u8,
+    device_code_len: usize,
+    interval: i64,
+    expires_in: i64,
+};
+
+fn deviceFlowPollTask(ctx: *anyopaque) void {
+    const args_ptr: *DeviceFlowThreadArgs = @ptrCast(@alignCast(ctx));
+    const args = args_ptr.*;
+    defer std.heap.page_allocator.destroy(args_ptr);
+
+    // Create a dedicated GPA for the poll thread (outlives the request)
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const thread_allocator = gpa.allocator();
+
+    var client = CopilotClient.init(thread_allocator, args.provider_config) catch |err| {
+        log.err("[config/copilot] poll thread: failed to init client: {}", .{err});
         device_flow_state.status.store(.failed, .release);
         return;
     };
-    defer token.deinit();
+    defer client.deinit();
 
-    // Save token to apps.json (best-effort)
-    saveTokenToAppsJson(args.allocator, token.access_token, args.client_id) catch |err| {
-        log.warn("[config/copilot] failed to save token to apps.json: {}", .{err});
-    };
+    const device_code = args.device_code[0..args.device_code_len];
 
-    // Cache the token (expires_in from token response, default 8h for Copilot if zero)
-    const expires_in_secs: i64 = if (token.expires_in > 0) token.expires_in else 28800;
-    token_cache.put(COPILOT_CACHE_KEY, token.access_token, token.refresh_token, expires_in_secs) catch |err| {
-        log.warn("[config/copilot] failed to cache token: {}", .{err});
+    client.completeDeviceFlow(device_code, args.interval, args.expires_in) catch |err| {
+        log.err("[config/copilot] device flow poll failed: {}", .{err});
+        device_flow_state.status.store(.failed, .release);
+        return;
     };
 
     device_flow_state.status.store(.authenticated, .release);
     log.info("[config/copilot] device flow completed — authenticated", .{});
 }
 
-fn handleCopilotAuth(allocator: std.mem.Allocator, connection: std.net.Server.Connection) !void {
+fn handleCopilotAuth(
+    allocator: std.mem.Allocator,
+    connection: std.net.Server.Connection,
+    provider_name: []const u8,
+    cfg: *const config_mod.Config,
+) !void {
     // Only allow one flow at a time
     const current = device_flow_state.status.load(.acquire);
     if (current == .pending) {
@@ -283,75 +240,87 @@ fn handleCopilotAuth(allocator: std.mem.Allocator, connection: std.net.Server.Co
         return http.sendJsonResponse(connection, .ok, resp);
     }
 
-    const client_id = COPILOT_DEFAULT_CLIENT_ID;
-    const params = auth.DeviceFlowParams{
-        .device_code_url = GITHUB_DEVICE_CODE_URL,
-        .token_url = GITHUB_ACCESS_TOKEN_URL,
-        .client_id = client_id,
-        .scope = "",
+    const provider_config = cfg.providers.getPtr(provider_name) orelse {
+        log.err("[config/copilot] provider '{s}' not found in config", .{provider_name});
+        return http.sendJsonResponse(connection, .bad_request, "{\"status\":\"error\",\"message\":\"Provider not configured\"}");
     };
 
-    var client = http_client.HttpClient.initWithOptions(allocator, 30000, 1 * 1024 * 1024, null);
-    defer client.deinit();
-
-    var device_code = auth.oauth.requestDeviceCode(allocator, &client, params) catch |err| {
-        log.err("[config/copilot] requestDeviceCode failed: {}", .{err});
+    var client = CopilotClient.init(allocator, provider_config) catch |err| {
+        log.err("[config/copilot] failed to init client: {}", .{err});
         return http.sendInternalError(connection);
     };
-    defer device_code.deinit();
+    defer client.deinit();
+
+    var result = client.startDeviceFlow() catch |err| {
+        log.err("[config/copilot] startDeviceFlow failed: {}", .{err});
+        return http.sendInternalError(connection);
+    };
+    defer result.deinit();
 
     // Store in module-level state for subsequent status polls
-    const uc_len = @min(device_code.user_code.len, device_flow_state.user_code.len);
-    @memcpy(device_flow_state.user_code[0..uc_len], device_code.user_code[0..uc_len]);
+    const uc_len = @min(result.user_code.len, device_flow_state.user_code.len);
+    @memcpy(device_flow_state.user_code[0..uc_len], result.user_code[0..uc_len]);
     device_flow_state.user_code_len = uc_len;
 
-    const uri_len = @min(device_code.verification_uri.len, device_flow_state.verification_uri.len);
-    @memcpy(device_flow_state.verification_uri[0..uri_len], device_code.verification_uri[0..uri_len]);
+    const uri_len = @min(result.verification_uri.len, device_flow_state.verification_uri.len);
+    @memcpy(device_flow_state.verification_uri[0..uri_len], result.verification_uri[0..uri_len]);
     device_flow_state.verification_uri_len = uri_len;
 
     device_flow_state.status.store(.pending, .release);
 
-    // Spawn background thread to poll for token
-    const thread_args = try allocator.create(DeviceFlowThreadArgs);
-    thread_args.* = .{
-        .allocator = allocator,
-        .device_code = try allocator.dupe(u8, device_code.device_code),
-        .interval = device_code.interval,
-        .expires_in = device_code.expires_in,
-        .client_id = try allocator.dupe(u8, client_id),
-    };
-    const thread = std.Thread.spawn(.{}, deviceFlowPollThread, .{thread_args}) catch |err| {
-        log.err("[config/copilot] failed to spawn poll thread: {}", .{err});
-        allocator.free(thread_args.device_code);
-        allocator.free(thread_args.client_id);
-        allocator.destroy(thread_args);
+    // Spawn background thread to poll for token.
+    // Allocate args with page_allocator so they survive after request arena is freed.
+    const thread_args = std.heap.page_allocator.create(DeviceFlowThreadArgs) catch |err| {
+        log.err("[config/copilot] failed to alloc thread args: {}", .{err});
         device_flow_state.status.store(.failed, .release);
         return http.sendInternalError(connection);
     };
-    thread.detach();
+
+    // Copy device_code into fixed-size buffer
+    const dc_len = @min(result.device_code.len, thread_args.device_code.len);
+    @memcpy(thread_args.device_code[0..dc_len], result.device_code[0..dc_len]);
+    thread_args.* = .{
+        .provider_config = provider_config,
+        .device_code = thread_args.device_code,
+        .device_code_len = dc_len,
+        .interval = result.interval,
+        .expires_in = result.expires_in,
+    };
+
+    worker_pool.submit(deviceFlowPollTask, @ptrCast(thread_args)) catch |err| {
+        log.err("[config/copilot] failed to submit poll task to worker pool: {}", .{err});
+        std.heap.page_allocator.destroy(thread_args);
+        device_flow_state.status.store(.failed, .release);
+        return http.sendInternalError(connection);
+    };
 
     // Respond immediately with the user code
     const resp = try std.fmt.allocPrint(allocator,
         "{{\"user_code\":\"{s}\",\"verification_uri\":\"{s}\"}}",
-        .{ device_code.user_code, device_code.verification_uri },
+        .{ result.user_code, result.verification_uri },
     );
     defer allocator.free(resp);
     try http.sendJsonResponse(connection, .ok, resp);
 }
 
-// ============================================================================
-// Copilot auth — revoke (DELETE)
-// ============================================================================
-
-fn handleCopilotAuthRevoke(allocator: std.mem.Allocator, connection: std.net.Server.Connection) !void {
-    // Clear in-memory token cache
-    token_cache.remove(COPILOT_CACHE_KEY);
-    log.info("[config/copilot] cleared token_cache for '{s}'", .{COPILOT_CACHE_KEY});
-
-    // Remove apps.json entry (best-effort)
-    removeAppsJsonEntry(allocator, COPILOT_DEFAULT_CLIENT_ID) catch |err| {
-        log.warn("[config/copilot] failed to remove apps.json entry: {}", .{err});
+fn handleCopilotAuthRevoke(
+    allocator: std.mem.Allocator,
+    connection: std.net.Server.Connection,
+    provider_name: []const u8,
+    cfg: *const config_mod.Config,
+) !void {
+    const provider_config = cfg.providers.getPtr(provider_name) orelse {
+        log.debug("[config/copilot] provider not configured, nothing to revoke", .{});
+        return http.sendJsonResponse(connection, .ok, "{\"ok\":true}");
     };
+
+    var client = CopilotClient.init(allocator, provider_config) catch |err| {
+        log.err("[config/copilot] failed to init client for revoke: {}", .{err});
+        return http.sendInternalError(connection);
+    };
+    defer client.deinit();
+
+    client.revokeAuth();
 
     // Reset device flow state
     device_flow_state.status.store(.idle, .release);
@@ -363,31 +332,29 @@ fn handleCopilotAuthRevoke(allocator: std.mem.Allocator, connection: std.net.Ser
 // SAP AI Core auth — GET / POST / DELETE
 // ============================================================================
 
-fn getSapAiCoreCacheKey(provider_name: []const u8, cfg: *const config_mod.Config) ?[]const u8 {
-    const provider_config = cfg.providers.get(provider_name) orelse return null;
-    return provider_config.getString("oauth_domain");
-}
-
 fn handleSapAiCoreAuthStatus(
     allocator: std.mem.Allocator,
     connection: std.net.Server.Connection,
     provider_name: []const u8,
     cfg: *const config_mod.Config,
 ) !void {
-    const cache_key = getSapAiCoreCacheKey(provider_name, cfg) orelse {
+    const provider_config = cfg.providers.getPtr(provider_name) orelse {
         log.warn("[config/sap_ai_core] provider '{s}' not found in config", .{provider_name});
         return http.sendJsonResponse(connection, .ok, "{\"status\":\"unauthenticated\"}");
     };
 
-    if (token_cache.get(allocator, cache_key, 0)) |result| {
-        allocator.free(result.access_token);
-        if (result.refresh_token) |rt| allocator.free(rt);
-        log.debug("[config/sap_ai_core] auth status: authenticated (token_cache hit)", .{});
-        return http.sendJsonResponse(connection, .ok, "{\"status\":\"authenticated\"}");
-    }
+    var client = SapAiCoreClient.init(allocator, provider_config) catch |err| {
+        log.err("[config/sap_ai_core] failed to init client: {}", .{err});
+        return http.sendJsonResponse(connection, .ok, "{\"status\":\"unauthenticated\"}");
+    };
+    defer client.deinit();
 
-    log.debug("[config/sap_ai_core] auth status: unauthenticated", .{});
-    try http.sendJsonResponse(connection, .ok, "{\"status\":\"unauthenticated\"}");
+    const status = client.authStatus();
+    const json = switch (status) {
+        .authenticated => "{\"status\":\"authenticated\"}",
+        .unauthenticated => "{\"status\":\"unauthenticated\"}",
+    };
+    try http.sendJsonResponse(connection, .ok, json);
 }
 
 fn handleSapAiCoreAuth(
@@ -433,11 +400,18 @@ fn handleSapAiCoreAuthRevoke(
     provider_name: []const u8,
     cfg: *const config_mod.Config,
 ) !void {
-    _ = allocator;
-    if (getSapAiCoreCacheKey(provider_name, cfg)) |cache_key| {
-        token_cache.remove(cache_key);
-        log.info("[config/sap_ai_core] cleared token_cache for '{s}'", .{cache_key});
-    }
+    const provider_config = cfg.providers.getPtr(provider_name) orelse {
+        log.debug("[config/sap_ai_core] provider not configured, nothing to revoke", .{});
+        return http.sendJsonResponse(connection, .ok, "{\"ok\":true}");
+    };
+
+    var client = SapAiCoreClient.init(allocator, provider_config) catch |err| {
+        log.err("[config/sap_ai_core] failed to init client for revoke: {}", .{err});
+        return http.sendInternalError(connection);
+    };
+    defer client.deinit();
+
+    client.revokeAuth();
     try http.sendJsonResponse(connection, .ok, "{\"ok\":true}");
 }
 
@@ -445,26 +419,29 @@ fn handleSapAiCoreAuthRevoke(
 // HAI auth — GET / POST / DELETE
 // ============================================================================
 
-const HAI_CACHE_KEY = "hai";
-
 fn handleHaiAuthStatus(
     allocator: std.mem.Allocator,
     connection: std.net.Server.Connection,
     provider_name: []const u8,
     cfg: *const config_mod.Config,
 ) !void {
-    _ = provider_name;
-    _ = cfg;
+    const provider_config = cfg.providers.getPtr(provider_name) orelse {
+        log.warn("[config/hai] provider '{s}' not found in config", .{provider_name});
+        return http.sendJsonResponse(connection, .ok, "{\"status\":\"unauthenticated\"}");
+    };
 
-    if (token_cache.get(allocator, HAI_CACHE_KEY, 0)) |result| {
-        allocator.free(result.access_token);
-        if (result.refresh_token) |rt| allocator.free(rt);
-        log.debug("[config/hai] auth status: authenticated (token_cache hit)", .{});
-        return http.sendJsonResponse(connection, .ok, "{\"status\":\"authenticated\"}");
-    }
+    var client = HaiClient.init(allocator, provider_config) catch |err| {
+        log.err("[config/hai] failed to init client: {}", .{err});
+        return http.sendJsonResponse(connection, .ok, "{\"status\":\"unauthenticated\"}");
+    };
+    defer client.deinit();
 
-    log.debug("[config/hai] auth status: unauthenticated", .{});
-    try http.sendJsonResponse(connection, .ok, "{\"status\":\"unauthenticated\"}");
+    const status = client.authStatus();
+    const json = switch (status) {
+        .authenticated => "{\"status\":\"authenticated\"}",
+        .unauthenticated => "{\"status\":\"unauthenticated\"}",
+    };
+    try http.sendJsonResponse(connection, .ok, json);
 }
 
 fn handleHaiAuth(
@@ -511,121 +488,17 @@ fn handleHaiAuthRevoke(
     provider_name: []const u8,
     cfg: *const config_mod.Config,
 ) !void {
-    _ = allocator;
-    _ = provider_name;
-    _ = cfg;
+    const provider_config = cfg.providers.getPtr(provider_name) orelse {
+        log.debug("[config/hai] provider not configured, nothing to revoke", .{});
+        return http.sendJsonResponse(connection, .ok, "{\"ok\":true}");
+    };
 
-    token_cache.remove(HAI_CACHE_KEY);
-    log.info("[config/hai] cleared token_cache for '{s}'", .{HAI_CACHE_KEY});
+    var client = HaiClient.init(allocator, provider_config) catch |err| {
+        log.err("[config/hai] failed to init client for revoke: {}", .{err});
+        return http.sendInternalError(connection);
+    };
+    defer client.deinit();
+
+    client.revokeAuth();
     try http.sendJsonResponse(connection, .ok, "{\"ok\":true}");
-}
-
-// ============================================================================
-// Helpers — apps.json read / write
-// ============================================================================
-
-fn appsJsonPath(buf: []u8) ![]const u8 {
-    const home = std.posix.getenv("HOME") orelse return error.HomeNotFound;
-    return std.fmt.bufPrint(buf, "{s}/.config/github-copilot/apps.json", .{home});
-}
-
-fn saveTokenToAppsJson(allocator: std.mem.Allocator, access_token: []const u8, client_id: []const u8) !void {
-    const home = std.posix.getenv("HOME") orelse return error.HomeNotFound;
-
-    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = std.fmt.bufPrint(&dir_buf, "{s}/.config/github-copilot", .{home}) catch return error.PathTooLong;
-
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const apps_path = try appsJsonPath(&path_buf);
-
-    std.fs.cwd().makePath(dir_path) catch {};
-
-    // Read existing or start fresh
-    var root_obj = std.json.ObjectMap.init(allocator);
-    defer root_obj.deinit();
-    var parsed_holder: ?std.json.Parsed(std.json.Value) = null;
-    defer if (parsed_holder) |*p| p.deinit();
-
-    if (std.fs.cwd().openFile(apps_path, .{})) |file| {
-        defer file.close();
-        if (file.readToEndAlloc(allocator, 1024 * 1024)) |content| {
-            defer allocator.free(content);
-            if (std.json.parseFromSlice(std.json.Value, allocator, content, .{})) |p| {
-                parsed_holder = p;
-                if (p.value == .object) {
-                    // Copy existing keys
-                    var it = p.value.object.iterator();
-                    while (it.next()) |kv| {
-                        try root_obj.put(kv.key_ptr.*, kv.value_ptr.*);
-                    }
-                }
-            } else |_| {}
-        } else |_| {}
-    } else |_| {}
-
-    var key_buf: [256]u8 = undefined;
-    const lookup_key = std.fmt.bufPrint(&key_buf, "github.com:{s}", .{client_id}) catch return error.PathTooLong;
-    const key_dupe = try allocator.dupe(u8, lookup_key);
-    errdefer allocator.free(key_dupe);
-
-    var entry_obj = std.json.ObjectMap.init(allocator);
-    try entry_obj.put("oauth_token", .{ .string = access_token });
-    try entry_obj.put("githubAppId", .{ .string = client_id });
-    try root_obj.put(key_dupe, .{ .object = entry_obj });
-
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(allocator);
-    const root_val = std.json.Value{ .object = root_obj };
-    buf.writer(allocator).print("{f}", .{std.json.fmt(root_val, .{ .whitespace = .indent_2 })}) catch |err| {
-        log.err("[config/copilot] failed to serialize apps.json: {}", .{err});
-        return error.FileWriteError;
-    };
-
-    const out = try std.fs.cwd().createFile(apps_path, .{ .truncate = true });
-    defer out.close();
-    try out.writeAll(buf.items);
-
-    log.info("[config/copilot] saved OAuth token to {s}", .{apps_path});
-}
-
-fn removeAppsJsonEntry(allocator: std.mem.Allocator, client_id: []const u8) !void {
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const apps_path = try appsJsonPath(&path_buf);
-
-    const file = std.fs.cwd().openFile(apps_path, .{}) catch return; // not an error if missing
-    const content = file.readToEndAlloc(allocator, 1024 * 1024) catch { file.close(); return; };
-    file.close();
-    defer allocator.free(content);
-
-    const parsed = std.json.parseFromSlice(std.json.Value, allocator, content, .{}) catch return;
-    defer parsed.deinit();
-
-    if (parsed.value != .object) return;
-
-    var key_buf: [256]u8 = undefined;
-    const lookup_key = std.fmt.bufPrint(&key_buf, "github.com:{s}", .{client_id}) catch return;
-
-    // Rebuild object without the entry
-    var new_obj = std.json.ObjectMap.init(allocator);
-    defer new_obj.deinit();
-    var it = parsed.value.object.iterator();
-    while (it.next()) |kv| {
-        if (!std.mem.eql(u8, kv.key_ptr.*, lookup_key)) {
-            try new_obj.put(kv.key_ptr.*, kv.value_ptr.*);
-        }
-    }
-
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(allocator);
-    const new_val = std.json.Value{ .object = new_obj };
-    buf.writer(allocator).print("{f}", .{std.json.fmt(new_val, .{ .whitespace = .indent_2 })}) catch |err| {
-        log.err("[config/copilot] failed to serialize apps.json: {}", .{err});
-        return;
-    };
-
-    const out = try std.fs.cwd().createFile(apps_path, .{ .truncate = true });
-    defer out.close();
-    try out.writeAll(buf.items);
-
-    log.info("[config/copilot] removed apps.json entry for '{s}'", .{lookup_key});
 }

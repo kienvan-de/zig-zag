@@ -49,6 +49,8 @@ const app_cache = @import("../../cache/app_cache.zig");
 /// Iterator for SSE streaming responses
 pub const SSEIterator = http_client.SSEIterator;
 
+pub const AuthStatus = enum { authenticated, unauthenticated };
+
 /// Result of starting a streaming request
 pub const StreamingResult = http_client.SSEResult;
 
@@ -144,6 +146,29 @@ pub const HaiClient = struct {
     pub fn deinit(self: *HaiClient) void {
         self.oidc.deinit();
         self.client.deinit();
+    }
+
+    // ========================================================================
+    // Auth Status & Revoke
+    // ========================================================================
+
+    /// Check authentication status without making API calls.
+    /// - authenticated: valid token in cache
+    /// - unauthenticated: no token
+    pub fn authStatus(self: *HaiClient) AuthStatus {
+        if (self.oauth.getCachedToken()) |token| {
+            self.allocator.free(token);
+            log.debug("HAI: authStatus: authenticated (token_cache hit)", .{});
+            return .authenticated;
+        }
+        log.debug("HAI: authStatus: unauthenticated", .{});
+        return .unauthenticated;
+    }
+
+    /// Revoke authentication: clear token cache.
+    pub fn revokeAuth(self: *HaiClient) void {
+        self.oauth.clearCache();
+        log.info("HAI: revokeAuth: cleared token_cache", .{});
     }
 
     // ========================================================================

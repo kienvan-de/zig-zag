@@ -26,6 +26,8 @@ pub const SSEIterator = http_client.SSEIterator;
 /// Result of starting a streaming request
 pub const StreamingResult = http_client.SSEResult;
 
+pub const AuthStatus = enum { authenticated, unauthenticated };
+
 pub const SapAiCoreClient = struct {
     allocator: std.mem.Allocator,
     api_domain: []const u8,
@@ -294,6 +296,29 @@ pub const SapAiCoreClient = struct {
                 return error.InvalidStatusCode;
             },
         };
+    }
+
+    // ========================================================================
+    // Auth Status & Revoke
+    // ========================================================================
+
+    /// Check authentication status without making API calls.
+    /// - authenticated: valid token in cache
+    /// - unauthenticated: no token
+    pub fn authStatus(self: *SapAiCoreClient) AuthStatus {
+        if (self.oauth.getCachedToken()) |token| {
+            self.allocator.free(token);
+            log.debug("SAP AI Core: authStatus: authenticated (token_cache hit)", .{});
+            return .authenticated;
+        }
+        log.debug("SAP AI Core: authStatus: unauthenticated", .{});
+        return .unauthenticated;
+    }
+
+    /// Revoke authentication: clear token cache.
+    pub fn revokeAuth(self: *SapAiCoreClient) void {
+        self.oauth.clearCache();
+        log.info("SAP AI Core: revokeAuth: cleared token_cache", .{});
     }
 
     /// Send a streaming request to SAP AI Core Orchestration API
