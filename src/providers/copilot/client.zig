@@ -56,6 +56,27 @@ const DEFAULT_TIMEOUT_MS = 60000;
 const DEFAULT_MAX_RESPONSE_SIZE_MB = 10;
 
 // ============================================================================
+// Public Types
+// ============================================================================
+
+pub const AuthStatus = enum { authenticated, configured, unauthenticated };
+
+pub const StartDeviceFlowResult = struct {
+    user_code: []const u8,
+    verification_uri: []const u8,
+    device_code: []const u8,
+    interval: i64,
+    expires_in: i64,
+    allocator: std.mem.Allocator,
+
+    pub fn deinit(self: *StartDeviceFlowResult) void {
+        self.allocator.free(self.user_code);
+        self.allocator.free(self.verification_uri);
+        self.allocator.free(self.device_code);
+    }
+};
+
+// ============================================================================
 // Copilot Client
 // ============================================================================
 
@@ -295,14 +316,12 @@ pub const CopilotClient = struct {
         }
     }
 
-    /// GitHub Device Flow — terminal-based authentication
-    /// 1. Request device code
-    /// 2. Print instructions to stderr
-    /// 3. Poll for token
-    /// 4. Save token to apps.json
-    /// Returns duplicated access_token (caller must free)
-    fn deviceFlow(self: *CopilotClient) ![]const u8 {
-        log.info("[Copilot] Starting device flow authentication...", .{});
+    /// Start GitHub Device Flow — request device code from GitHub.
+    /// Returns device code info that the caller can use to show UI
+    /// and later call completeDeviceFlow().
+    /// Caller owns the result and must call deinit().
+    pub fn startDeviceFlow(self: *CopilotClient) !StartDeviceFlowResult {
+        log.info("[Copilot] Starting device flow — requesting device code...", .{});
 
         const params = auth.DeviceFlowParams{
             .device_code_url = GITHUB_DEVICE_CODE_URL,
@@ -311,40 +330,88 @@ pub const CopilotClient = struct {
             .scope = "",
         };
 
-        // Step 1: Request device code
         var device_code = try auth.oauth.requestDeviceCode(self.allocator, &self.client, params);
         defer device_code.deinit();
 
-        // Step 2: Write HTML page with the one-time code and open it in the browser
-        self.showDeviceFlowPage(device_code.user_code, device_code.verification_uri) catch |err| {
-            // Non-fatal: fall back to stderr output
-            log.warn("[Copilot] Failed to open browser page: {}, falling back to stderr", .{err});
-            var msg_buf: [1024]u8 = undefined;
-            if (std.fmt.bufPrint(&msg_buf, "\n! First copy your one-time code: {s}\n- Open {s} in your browser\n- Paste the code and authorize\n\n", .{ device_code.user_code, device_code.verification_uri })) |msg| {
-                _ = std.posix.write(std.posix.STDERR_FILENO, msg) catch {};
-            } else |_| {}
+        // Dupe all strings so the result is self-contained
+        const user_code = try self.allocator.dupe(u8, device_code.user_code);
+        errdefer self.allocator.free(user_code);
+        const verification_uri = try self.allocator.dupe(u8, device_code.verification_uri);
+        errdefer self.allocator.free(verification_uri);
+        const dc = try self.allocator.dupe(u8, device_code.device_code);
+
+        return StartDeviceFlowResult{
+            .allocator = self.allocator,
+            .user_code = user_code,
+            .verification_uri = verification_uri,
+            .device_code = dc,
+            .interval = device_code.interval,
+            .expires_in = device_code.expires_in,
+        };
+    }
+
+    /// Complete GitHub Device Flow — poll for token, save to apps.json, cache.
+    /// This is the blocking part that should run in a background thread when
+    /// called from the config handler.
+    pub fn completeDeviceFlow(
+        self: *CopilotClient,
+        device_code: []const u8,
+        interval: i64,
+        expires_in: i64,
+    ) !void {
+        const params = auth.DeviceFlowParams{
+            .device_code_url = GITHUB_DEVICE_CODE_URL,
+            .token_url = GITHUB_ACCESS_TOKEN_URL,
+            .client_id = self.client_id,
+            .scope = "",
         };
 
-        // Step 3: Poll for token
         var token_response = try auth.oauth.pollDeviceToken(
             self.allocator,
             &self.client,
             params,
-            device_code.device_code,
-            device_code.interval,
-            device_code.expires_in,
+            device_code,
+            interval,
+            expires_in,
         );
         defer token_response.deinit();
 
-        log.info("[Copilot] Device flow authentication successful", .{});
+        log.info("[Copilot] Device flow poll completed — got token", .{});
 
-        // Step 4: Save to apps.json
+        // Save to apps.json (best-effort)
         self.saveTokenToAppsJson(token_response.access_token) catch |err| {
             log.warn("[Copilot] Failed to save token to apps.json: {}", .{err});
-            // Non-fatal: we still have the token in memory
         };
 
-        return self.allocator.dupe(u8, token_response.access_token);
+        // Cache the token (expires_in from token response, default 8h for Copilot if zero)
+        const expires_in_secs: i64 = if (token_response.expires_in > 0) token_response.expires_in else 28800;
+        try self.oauth.cacheTokens(token_response.access_token, token_response.refresh_token, expires_in_secs);
+    }
+
+    /// GitHub Device Flow — full flow used internally by getAccessToken.
+    /// 1. Request device code
+    /// 2. Open browser
+    /// 3. Poll for token
+    /// 4. Save token to apps.json + cache
+    /// Returns duplicated access_token (caller must free)
+    fn deviceFlow(self: *CopilotClient) ![]const u8 {
+        var result = try self.startDeviceFlow();
+        defer result.deinit();
+
+        // Open browser page (non-fatal if it fails)
+        self.showDeviceFlowPage(result.user_code, result.verification_uri) catch |err| {
+            log.warn("[Copilot] Failed to open browser page: {}, falling back to stderr", .{err});
+            var msg_buf: [1024]u8 = undefined;
+            if (std.fmt.bufPrint(&msg_buf, "\n! First copy your one-time code: {s}\n- Open {s} in your browser\n- Paste the code and authorize\n\n", .{ result.user_code, result.verification_uri })) |msg| {
+                _ = std.posix.write(std.posix.STDERR_FILENO, msg) catch {};
+            } else |_| {}
+        };
+
+        // Poll + save + cache
+        try self.completeDeviceFlow(result.device_code, result.interval, result.expires_in);
+
+        // Return token from cache
+        return self.oauth.getCachedToken() orelse error.TokenFetchFailed;
     }
 
     /// Save OAuth token to ~/.config/github-copilot/apps.json
@@ -740,6 +807,130 @@ pub const CopilotClient = struct {
         };
 
         return parsed;
+    }
+
+    // ========================================================================
+    // Auth Status & Revoke
+    // ========================================================================
+
+    /// Check authentication status without making API calls.
+    /// - authenticated: valid token in cache
+    /// - configured: apps.json has an entry (token may need exchange)
+    /// - unauthenticated: no token, no apps.json entry
+    pub fn authStatus(self: *CopilotClient) AuthStatus {
+        // 1. In-memory token cache hit → authenticated
+        if (self.oauth.getCachedToken()) |token| {
+            self.allocator.free(token);
+            log.debug("[Copilot] authStatus: authenticated (token_cache hit)", .{});
+            return .authenticated;
+        }
+
+        // 2. apps.json has entry → configured
+        if (self.appsJsonHasEntry()) {
+            log.debug("[Copilot] authStatus: configured (apps.json entry)", .{});
+            return .configured;
+        }
+
+        // 3. Neither → unauthenticated
+        log.debug("[Copilot] authStatus: unauthenticated", .{});
+        return .unauthenticated;
+    }
+
+    /// Revoke authentication: clear token cache + remove apps.json entry.
+    pub fn revokeAuth(self: *CopilotClient) void {
+        // Clear in-memory token cache
+        self.oauth.clearCache();
+        log.info("[Copilot] revokeAuth: cleared token_cache", .{});
+
+        // Remove apps.json entry (best-effort)
+        self.removeAppsJsonEntry() catch |err| {
+            log.warn("[Copilot] revokeAuth: failed to remove apps.json entry: {}", .{err});
+        };
+    }
+
+    /// Check if apps.json contains an entry for this client_id.
+    fn appsJsonHasEntry(self: *CopilotClient) bool {
+        const home = std.posix.getenv("HOME") orelse return false;
+
+        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const apps_path = std.fmt.bufPrint(
+            &path_buf,
+            "{s}/.config/github-copilot/apps.json",
+            .{home},
+        ) catch return false;
+
+        const file = std.fs.cwd().openFile(apps_path, .{}) catch return false;
+        defer file.close();
+
+        const content = file.readToEndAlloc(self.allocator, 1024 * 1024) catch return false;
+        defer self.allocator.free(content);
+
+        const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, content, .{}) catch return false;
+        defer parsed.deinit();
+
+        if (parsed.value != .object) return false;
+
+        var key_buf: [256]u8 = undefined;
+        const lookup_key = std.fmt.bufPrint(&key_buf, "github.com:{s}", .{self.client_id}) catch return false;
+
+        const entry = parsed.value.object.get(lookup_key) orelse return false;
+        if (entry != .object) return false;
+        return entry.object.get("oauth_token") != null;
+    }
+
+    /// Remove this client's entry from apps.json.
+    fn removeAppsJsonEntry(self: *CopilotClient) !void {
+        const home = std.posix.getenv("HOME") orelse return error.HomeNotFound;
+
+        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const apps_path = std.fmt.bufPrint(
+            &path_buf,
+            "{s}/.config/github-copilot/apps.json",
+            .{home},
+        ) catch return error.PathTooLong;
+
+        const file = std.fs.cwd().openFile(apps_path, .{}) catch return; // not an error if missing
+        const content = file.readToEndAlloc(self.allocator, 1024 * 1024) catch {
+            file.close();
+            return;
+        };
+        file.close();
+        defer self.allocator.free(content);
+
+        const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, content, .{}) catch return;
+        defer parsed.deinit();
+
+        if (parsed.value != .object) return;
+
+        var key_buf: [256]u8 = undefined;
+        const lookup_key = std.fmt.bufPrint(&key_buf, "github.com:{s}", .{self.client_id}) catch return;
+
+        // Rebuild object without the entry
+        var new_obj = std.json.ObjectMap.init(self.allocator);
+        defer new_obj.deinit();
+        var it = parsed.value.object.iterator();
+        while (it.next()) |kv| {
+            if (!std.mem.eql(u8, kv.key_ptr.*, lookup_key)) {
+                try new_obj.put(kv.key_ptr.*, kv.value_ptr.*);
+            }
+        }
+
+        var buf = std.ArrayList(u8){};
+        defer buf.deinit(self.allocator);
+        const new_val = std.json.Value{ .object = new_obj };
+        buf.writer(self.allocator).print("{f}", .{std.json.fmt(new_val, .{ .whitespace = .indent_2 })}) catch |err| {
+            log.err("[Copilot] failed to serialize apps.json: {}", .{err});
+            return error.FileWriteError;
+        };
+
+        const out = std.fs.cwd().createFile(apps_path, .{ .truncate = true }) catch |err| {
+            log.err("[Copilot] Failed to write {s}: {}", .{ apps_path, err });
+            return error.FileWriteError;
+        };
+        defer out.close();
+        try out.writeAll(buf.items);
+
+        log.info("[Copilot] removed apps.json entry for '{s}'", .{lookup_key});
     }
 
     pub fn deinit(self: *CopilotClient) void {
