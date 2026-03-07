@@ -31,6 +31,8 @@ const log = @import("../log.zig");
 const token_cache = @import("../cache/token_cache.zig");
 const http_client = @import("../client.zig");
 const auth = @import("../auth/mod.zig");
+const SapAiCoreClient = @import("../providers/sap_ai_core/client.zig").SapAiCoreClient;
+const HaiClient = @import("../providers/hai/client.zig").HaiClient;
 
 const COPILOT_CACHE_KEY = "copilot";
 const COPILOT_DEFAULT_CLIENT_ID = "Iv1.b507a08c87ecfe98";
@@ -109,7 +111,17 @@ fn dispatchProviderAuth(
         if (eql(u8, method, "DELETE")) return handleCopilotAuthRevoke(allocator, connection);
     }
 
-    _ = cfg; // Will be used by SAP AI Core + HAI handlers in TASK-12
+    if (eql(u8, provider_name, "sap_ai_core")) {
+        if (eql(u8, method, "GET")) return handleSapAiCoreAuthStatus(allocator, connection, provider_name, cfg);
+        if (eql(u8, method, "POST")) return handleSapAiCoreAuth(allocator, connection, provider_name, cfg);
+        if (eql(u8, method, "DELETE")) return handleSapAiCoreAuthRevoke(allocator, connection, provider_name, cfg);
+    }
+
+    if (eql(u8, provider_name, "hai")) {
+        if (eql(u8, method, "GET")) return handleHaiAuthStatus(allocator, connection, provider_name, cfg);
+        if (eql(u8, method, "POST")) return handleHaiAuth(allocator, connection, provider_name, cfg);
+        if (eql(u8, method, "DELETE")) return handleHaiAuthRevoke(allocator, connection, provider_name, cfg);
+    }
 
     log.warn("Config auth: unsupported provider '{s}'", .{provider_name});
     return http.sendNotFound(connection);
@@ -344,6 +356,167 @@ fn handleCopilotAuthRevoke(allocator: std.mem.Allocator, connection: std.net.Ser
     // Reset device flow state
     device_flow_state.status.store(.idle, .release);
 
+    try http.sendJsonResponse(connection, .ok, "{\"ok\":true}");
+}
+
+// ============================================================================
+// SAP AI Core auth — GET / POST / DELETE
+// ============================================================================
+
+fn getSapAiCoreCacheKey(provider_name: []const u8, cfg: *const config_mod.Config) ?[]const u8 {
+    const provider_config = cfg.providers.get(provider_name) orelse return null;
+    return provider_config.getString("oauth_domain");
+}
+
+fn handleSapAiCoreAuthStatus(
+    allocator: std.mem.Allocator,
+    connection: std.net.Server.Connection,
+    provider_name: []const u8,
+    cfg: *const config_mod.Config,
+) !void {
+    const cache_key = getSapAiCoreCacheKey(provider_name, cfg) orelse {
+        log.warn("[config/sap_ai_core] provider '{s}' not found in config", .{provider_name});
+        return http.sendJsonResponse(connection, .ok, "{\"status\":\"unauthenticated\"}");
+    };
+
+    if (token_cache.get(allocator, cache_key, 0)) |result| {
+        allocator.free(result.access_token);
+        if (result.refresh_token) |rt| allocator.free(rt);
+        log.debug("[config/sap_ai_core] auth status: authenticated (token_cache hit)", .{});
+        return http.sendJsonResponse(connection, .ok, "{\"status\":\"authenticated\"}");
+    }
+
+    log.debug("[config/sap_ai_core] auth status: unauthenticated", .{});
+    try http.sendJsonResponse(connection, .ok, "{\"status\":\"unauthenticated\"}");
+}
+
+fn handleSapAiCoreAuth(
+    allocator: std.mem.Allocator,
+    connection: std.net.Server.Connection,
+    provider_name: []const u8,
+    cfg: *const config_mod.Config,
+) !void {
+    const provider_config = cfg.providers.getPtr(provider_name) orelse {
+        log.err("[config/sap_ai_core] provider '{s}' not found in config", .{provider_name});
+        return http.sendJsonResponse(connection, .bad_request, "{\"status\":\"error\",\"message\":\"Provider not configured\"}");
+    };
+
+    var client = SapAiCoreClient.init(allocator, provider_config) catch |err| {
+        log.err("[config/sap_ai_core] failed to init client: {}", .{err});
+        const resp = std.fmt.allocPrint(allocator,
+            "{{\"status\":\"error\",\"message\":\"Failed to initialize client\"}}",
+            .{},
+        ) catch return http.sendInternalError(connection);
+        defer allocator.free(resp);
+        return http.sendJsonResponse(connection, .bad_request, resp);
+    };
+    defer client.deinit();
+
+    const access_token = client.getAccessToken() catch |err| {
+        log.err("[config/sap_ai_core] auth failed: {}", .{err});
+        const resp = std.fmt.allocPrint(allocator,
+            "{{\"status\":\"error\",\"message\":\"Authentication failed\"}}",
+            .{},
+        ) catch return http.sendInternalError(connection);
+        defer allocator.free(resp);
+        return http.sendJsonResponse(connection, .ok, resp);
+    };
+    allocator.free(access_token);
+
+    log.info("[config/sap_ai_core] auth test successful", .{});
+    try http.sendJsonResponse(connection, .ok, "{\"status\":\"authenticated\"}");
+}
+
+fn handleSapAiCoreAuthRevoke(
+    allocator: std.mem.Allocator,
+    connection: std.net.Server.Connection,
+    provider_name: []const u8,
+    cfg: *const config_mod.Config,
+) !void {
+    _ = allocator;
+    if (getSapAiCoreCacheKey(provider_name, cfg)) |cache_key| {
+        token_cache.remove(cache_key);
+        log.info("[config/sap_ai_core] cleared token_cache for '{s}'", .{cache_key});
+    }
+    try http.sendJsonResponse(connection, .ok, "{\"ok\":true}");
+}
+
+// ============================================================================
+// HAI auth — GET / POST / DELETE
+// ============================================================================
+
+const HAI_CACHE_KEY = "hai";
+
+fn handleHaiAuthStatus(
+    allocator: std.mem.Allocator,
+    connection: std.net.Server.Connection,
+    provider_name: []const u8,
+    cfg: *const config_mod.Config,
+) !void {
+    _ = provider_name;
+    _ = cfg;
+
+    if (token_cache.get(allocator, HAI_CACHE_KEY, 0)) |result| {
+        allocator.free(result.access_token);
+        if (result.refresh_token) |rt| allocator.free(rt);
+        log.debug("[config/hai] auth status: authenticated (token_cache hit)", .{});
+        return http.sendJsonResponse(connection, .ok, "{\"status\":\"authenticated\"}");
+    }
+
+    log.debug("[config/hai] auth status: unauthenticated", .{});
+    try http.sendJsonResponse(connection, .ok, "{\"status\":\"unauthenticated\"}");
+}
+
+fn handleHaiAuth(
+    allocator: std.mem.Allocator,
+    connection: std.net.Server.Connection,
+    provider_name: []const u8,
+    cfg: *const config_mod.Config,
+) !void {
+    const provider_config = cfg.providers.getPtr(provider_name) orelse {
+        log.err("[config/hai] provider '{s}' not found in config", .{provider_name});
+        return http.sendJsonResponse(connection, .bad_request, "{\"status\":\"error\",\"message\":\"Provider not configured\"}");
+    };
+
+    var client = HaiClient.init(allocator, provider_config) catch |err| {
+        log.err("[config/hai] failed to init client: {}", .{err});
+        const resp = std.fmt.allocPrint(allocator,
+            "{{\"status\":\"error\",\"message\":\"Failed to initialize client\"}}",
+            .{},
+        ) catch return http.sendInternalError(connection);
+        defer allocator.free(resp);
+        return http.sendJsonResponse(connection, .bad_request, resp);
+    };
+    defer client.deinit();
+
+    // This blocks until browser auth completes (up to 120s timeout)
+    const access_token = client.getAccessToken() catch |err| {
+        log.err("[config/hai] auth failed: {}", .{err});
+        const resp = std.fmt.allocPrint(allocator,
+            "{{\"status\":\"error\",\"message\":\"Authentication failed\"}}",
+            .{},
+        ) catch return http.sendInternalError(connection);
+        defer allocator.free(resp);
+        return http.sendJsonResponse(connection, .ok, resp);
+    };
+    allocator.free(access_token);
+
+    log.info("[config/hai] auth successful", .{});
+    try http.sendJsonResponse(connection, .ok, "{\"status\":\"authenticated\"}");
+}
+
+fn handleHaiAuthRevoke(
+    allocator: std.mem.Allocator,
+    connection: std.net.Server.Connection,
+    provider_name: []const u8,
+    cfg: *const config_mod.Config,
+) !void {
+    _ = allocator;
+    _ = provider_name;
+    _ = cfg;
+
+    token_cache.remove(HAI_CACHE_KEY);
+    log.info("[config/hai] cleared token_cache for '{s}'", .{HAI_CACHE_KEY});
     try http.sendJsonResponse(connection, .ok, "{\"ok\":true}");
 }
 
