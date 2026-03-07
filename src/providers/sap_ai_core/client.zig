@@ -33,8 +33,6 @@ pub const SapAiCoreClient = struct {
     resource_group: []const u8,
     oauth_client_secret: []const u8,
     token_endpoint: []const u8,
-    retry_count: u32,
-    retry_delay_ms: u64,
     config: *const config_mod.ProviderConfig,
     client: http_client.HttpClient,
     oauth: auth.OAuth,
@@ -44,8 +42,6 @@ pub const SapAiCoreClient = struct {
 
     const DEFAULT_TIMEOUT_MS = 60000;
     const DEFAULT_MAX_RESPONSE_SIZE_MB = 10;
-    const DEFAULT_RETRY_COUNT = 0;
-    const DEFAULT_RETRY_DELAY_MS = 1000;
 
     pub fn init(allocator: std.mem.Allocator, provider_config: *const config_mod.ProviderConfig) !SapAiCoreClient {
         const api_domain = provider_config.getString("api_domain") orelse {
@@ -80,8 +76,6 @@ pub const SapAiCoreClient = struct {
 
         const timeout_ms = provider_config.getInt("timeout_ms") orelse DEFAULT_TIMEOUT_MS;
         const max_response_size_mb = provider_config.getInt("max_response_size_mb") orelse DEFAULT_MAX_RESPONSE_SIZE_MB;
-        const retry_count = provider_config.getInt("retry_count") orelse DEFAULT_RETRY_COUNT;
-        const retry_delay_ms = provider_config.getInt("retry_delay_ms") orelse DEFAULT_RETRY_DELAY_MS;
 
         // Build token endpoint URL (owned memory)
         const token_endpoint_buf = try std.fmt.allocPrint(allocator, "{s}/oauth/token", .{oauth_domain});
@@ -94,8 +88,6 @@ pub const SapAiCoreClient = struct {
             .oauth_client_secret = oauth_client_secret,
             .token_endpoint = token_endpoint_buf,
             .token_endpoint_buf = token_endpoint_buf,
-            .retry_count = @intCast(retry_count),
-            .retry_delay_ms = @intCast(retry_delay_ms),
             .config = provider_config,
             .client = http_client.HttpClient.initWithOptions(
                 allocator,
@@ -234,36 +226,7 @@ pub const SapAiCoreClient = struct {
         self: *SapAiCoreClient,
         request: SapAiCore.Request,
     ) !std.json.Parsed(SapAiCore.Response) {
-        var attempts: u32 = 0;
-        const max_attempts = self.retry_count + 1;
-
-        while (attempts < max_attempts) : (attempts += 1) {
-            const result = self.sendRequestOnce(request) catch |err| {
-                const is_retryable = switch (err) {
-                    error.ServerError, error.RateLimitError => true,
-                    error.AuthenticationError, error.InvalidStatusCode => false,
-                    else => true,
-                };
-
-                if (!is_retryable or attempts + 1 >= max_attempts) {
-                    return err;
-                }
-
-                log.warn("Request failed with error {}, retrying ({d}/{d}) after {d}ms...", .{
-                    err,
-                    attempts + 1,
-                    self.retry_count,
-                    self.retry_delay_ms,
-                });
-
-                std.Thread.sleep(self.retry_delay_ms * std.time.ns_per_ms);
-                continue;
-            };
-
-            return result;
-        }
-
-        unreachable;
+        return self.sendRequestOnce(request);
     }
 
     /// Internal method to send a single request without retry logic
