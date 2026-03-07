@@ -30,8 +30,6 @@ pub const AnthropicClient = struct {
     api_key: []const u8,
     api_url: []const u8,
     api_version: []const u8,
-    retry_count: u32,
-    retry_delay_ms: u64,
     config: *const config_mod.ProviderConfig,
     client: http_client.HttpClient,
 
@@ -39,8 +37,6 @@ pub const AnthropicClient = struct {
     const DEFAULT_API_VERSION = "2023-06-01";
     const DEFAULT_TIMEOUT_MS = 60000;
     const DEFAULT_MAX_RESPONSE_SIZE_MB = 10;
-    const DEFAULT_RETRY_COUNT = 0;
-    const DEFAULT_RETRY_DELAY_MS = 1000;
 
     pub fn init(allocator: std.mem.Allocator, provider_config: *const config_mod.ProviderConfig) !AnthropicClient {
         const api_key = provider_config.getString("api_key") orelse {
@@ -52,16 +48,12 @@ pub const AnthropicClient = struct {
         const api_version = provider_config.getString("api_version") orelse DEFAULT_API_VERSION;
         const timeout_ms = provider_config.getInt("timeout_ms") orelse DEFAULT_TIMEOUT_MS;
         const max_response_size_mb = provider_config.getInt("max_response_size_mb") orelse DEFAULT_MAX_RESPONSE_SIZE_MB;
-        const retry_count = provider_config.getInt("retry_count") orelse DEFAULT_RETRY_COUNT;
-        const retry_delay_ms = provider_config.getInt("retry_delay_ms") orelse DEFAULT_RETRY_DELAY_MS;
 
         return .{
             .allocator = allocator,
             .api_key = api_key,
             .api_url = api_url,
             .api_version = api_version,
-            .retry_count = @intCast(retry_count),
-            .retry_delay_ms = @intCast(retry_delay_ms),
             .config = provider_config,
             .client = http_client.HttpClient.initWithOptions(
                 allocator,
@@ -142,39 +134,12 @@ pub const AnthropicClient = struct {
     }
 
     /// Send a request to Anthropic Messages API (non-streaming)
-    /// Implements automatic retry logic based on retry_count and retry_delay_ms config
     /// Returns parsed Anthropic.Response
     pub fn sendRequest(
         self: *AnthropicClient,
         request: Anthropic.Request,
     ) !std.json.Parsed(Anthropic.Response) {
-        var attempts: u32 = 0;
-        const max_attempts = self.retry_count + 1;
-
-        while (attempts < max_attempts) : (attempts += 1) {
-            const result = self.sendRequestOnce(request) catch |err| {
-                // If out of attempts, return error
-                if (attempts + 1 >= max_attempts) {
-                    return err;
-                }
-
-                // Log retry attempt
-                log.warn("Anthropic request failed with error {}, retrying ({d}/{d}) after {d}ms...", .{
-                    err,
-                    attempts + 1,
-                    self.retry_count,
-                    self.retry_delay_ms,
-                });
-
-                // Wait before retry
-                std.Thread.sleep(self.retry_delay_ms * std.time.ns_per_ms);
-                continue;
-            };
-
-            return result;
-        }
-
-        unreachable;
+        return self.sendRequestOnce(request);
     }
 
     /// Internal method to send a single request without retry logic
