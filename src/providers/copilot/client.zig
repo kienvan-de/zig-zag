@@ -29,6 +29,7 @@ const http_client = @import("../../client.zig");
 const log = @import("../../log.zig");
 const auth = @import("../../auth/mod.zig");
 const app_cache = @import("../../cache/app_cache.zig");
+const uri_mod = std.Uri;
 
 /// Iterator for SSE streaming responses
 pub const SSEIterator = http_client.SSEIterator;
@@ -74,9 +75,19 @@ pub const CopilotClient = struct {
     oauth: auth.OAuth, // handles api_token caching via global token_cache
     api_base: ?[]const u8, // restored from app_cache alongside token
 
+    // Server port for device flow URL (read from app_cache)
+    server_port: u16,
+
     pub fn init(allocator: Allocator, provider_config: *const config_mod.ProviderConfig) !CopilotClient {
         const timeout_ms = provider_config.getInt("timeout_ms") orelse DEFAULT_TIMEOUT_MS;
         const max_response_size_mb = provider_config.getInt("max_response_size_mb") orelse DEFAULT_MAX_RESPONSE_SIZE_MB;
+
+        // Read server port from app_cache (stored by main/lib on startup)
+        var server_port: u16 = 8080;
+        if (app_cache.get(allocator, "server_port")) |port_str| {
+            defer allocator.free(port_str);
+            server_port = std.fmt.parseInt(u16, port_str, 10) catch 8080;
+        }
 
         return .{
             .allocator = allocator,
@@ -94,6 +105,7 @@ pub const CopilotClient = struct {
             .api_version = provider_config.getString("api_version") orelse DEFAULT_API_VERSION,
             .oauth = auth.OAuth.init(allocator, "copilot", provider_config.getString("client_id") orelse DEFAULT_CLIENT_ID),
             .api_base = null,
+            .server_port = server_port,
         };
     }
 
@@ -258,37 +270,22 @@ pub const CopilotClient = struct {
     // Task 1.5: Device Flow + Save Token
     // ========================================================================
 
-    /// HTML template embedded at compile time via the templates package.
-    /// Placeholders: {{USER_CODE}}, {{VERIFICATION_URI}}
-    const device_flow_html = @import("../../templates/mod.zig").device_flow;
-
-    /// Write the device flow HTML page to /tmp and open it in the default browser.
-    /// The template is embedded in the binary at compile time (no runtime file dependency).
+    /// Open the device flow page in the default browser via the server's template route.
+    /// URL: http://127.0.0.1:{port}/v1/html/device_flow?user_code=X&verification_uri=Y
     fn showDeviceFlowPage(self: *CopilotClient, user_code: []const u8, verification_uri: []const u8) !void {
-        const html_path = "/tmp/copilot-auth.html";
+        const url = try std.fmt.allocPrint(
+            self.allocator,
+            "http://127.0.0.1:{d}/v1/html/device_flow?user_code={s}&verification_uri={s}",
+            .{ self.server_port, user_code, verification_uri },
+        );
+        defer self.allocator.free(url);
 
-        // Replace {{USER_CODE}} with actual code (appears twice in template)
-        const after_code = try std.mem.replaceOwned(u8, self.allocator, device_flow_html, "{{USER_CODE}}", user_code);
-        defer self.allocator.free(after_code);
-
-        // Replace {{VERIFICATION_URI}} with actual URI
-        const html = try std.mem.replaceOwned(u8, self.allocator, after_code, "{{VERIFICATION_URI}}", verification_uri);
-        defer self.allocator.free(html);
-
-        // Write to temp file
-        const file = std.fs.cwd().createFile(html_path, .{}) catch |err| {
-            log.err("[Copilot] Failed to create {s}: {}", .{ html_path, err });
-            return err;
-        };
-        defer file.close();
-        try file.writeAll(html);
-
-        log.info("[Copilot] Opening device flow page: {s}", .{html_path});
+        log.info("[Copilot] Opening device flow page: {s}", .{url});
 
         // Open in default browser
         const result = std.process.Child.run(.{
             .allocator = self.allocator,
-            .argv = &[_][]const u8{ "open", html_path },
+            .argv = &[_][]const u8{ "open", url },
         }) catch |err| {
             log.err("[Copilot] Failed to open browser: {}", .{err});
             return err;
