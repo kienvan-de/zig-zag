@@ -19,9 +19,9 @@
 //!
 //!   GET    /v1/config/data                  → handleGet
 //!   POST   /v1/config/data                  → handlePost
-//!   GET    /v1/config/copilot/auth/status   → handleCopilotAuthStatus
-//!   POST   /v1/config/copilot/auth          → handleCopilotAuth
-//!   DELETE /v1/config/copilot/auth          → handleCopilotAuthRevoke
+//!   GET    /v1/config/{provider}/auth        → provider auth status
+//!   POST   /v1/config/{provider}/auth        → start provider auth flow
+//!   DELETE /v1/config/{provider}/auth        → revoke provider auth
 
 const std = @import("std");
 const http = @import("../http.zig");
@@ -71,8 +71,6 @@ pub fn handle(
     body: []const u8,
     cfg: *const config_mod.Config,
 ) !void {
-    _ = cfg;
-
     const eql = std.mem.eql;
 
     if (eql(u8, path, "/v1/config/data")) {
@@ -80,16 +78,40 @@ pub fn handle(
         if (eql(u8, method, "POST")) return handlePost(allocator, connection, body);
     }
 
-    if (eql(u8, path, "/v1/config/copilot/auth/status")) {
-        if (eql(u8, method, "GET")) return handleCopilotAuthStatus(allocator, connection);
+    // Match /v1/config/{provider}/auth
+    const auth_prefix = "/v1/config/";
+    const auth_suffix = "/auth";
+    if (std.mem.startsWith(u8, path, auth_prefix) and std.mem.endsWith(u8, path, auth_suffix)) {
+        const rest = path[auth_prefix.len..];
+        const provider_name = rest[0 .. rest.len - auth_suffix.len];
+        if (provider_name.len > 0 and std.mem.indexOfScalar(u8, provider_name, '/') == null) {
+            return dispatchProviderAuth(allocator, connection, method, provider_name, cfg);
+        }
     }
 
-    if (eql(u8, path, "/v1/config/copilot/auth")) {
+    log.warn("Config handler: no match for {s} {s}", .{ method, path });
+    return http.sendNotFound(connection);
+}
+
+/// Dispatch GET/POST/DELETE /v1/config/{provider}/auth to provider-specific handlers
+fn dispatchProviderAuth(
+    allocator: std.mem.Allocator,
+    connection: std.net.Server.Connection,
+    method: []const u8,
+    provider_name: []const u8,
+    cfg: *const config_mod.Config,
+) !void {
+    const eql = std.mem.eql;
+
+    if (eql(u8, provider_name, "copilot")) {
+        if (eql(u8, method, "GET")) return handleCopilotAuthStatus(allocator, connection);
         if (eql(u8, method, "POST")) return handleCopilotAuth(allocator, connection);
         if (eql(u8, method, "DELETE")) return handleCopilotAuthRevoke(allocator, connection);
     }
 
-    log.warn("Config handler: no match for {s} {s}", .{ method, path });
+    _ = cfg; // Will be used by SAP AI Core + HAI handlers in TASK-12
+
+    log.warn("Config auth: unsupported provider '{s}'", .{provider_name});
     return http.sendNotFound(connection);
 }
 
