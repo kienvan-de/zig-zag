@@ -41,22 +41,16 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    // Load configuration from ~/.config/zig-zag/config.json
-    var cfg = try config.Config.load(allocator);
-    defer cfg.deinit();
-
-    // Initialize app cache (for OIDC discovery configs, etc.)
+    // Initialize caches before config so Config.load can populate them
     app_cache.init(allocator);
     defer app_cache.deinit();
 
-    // Store server port in app cache so providers can build server URLs
-    var port_buf: [8]u8 = undefined;
-    const port_str = std.fmt.bufPrint(&port_buf, "{d}", .{cfg.server.port}) catch "8080";
-    app_cache.put("server_port", port_str) catch {};
-
-    // Initialize token cache
     token_cache.init(allocator);
     defer token_cache.deinit();
+
+    // Load configuration from ~/.config/zig-zag/config.json
+    var cfg = try config.Config.load(allocator);
+    defer cfg.deinit();
 
     // Initialize IO worker pool (before logging so async writes work)
     const io_pool_size: usize = if (cfg.server.io_pool_size) |size|

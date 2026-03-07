@@ -105,7 +105,14 @@ fn serverThreadFn(s: *State) void {
     // Initialize subsystems in dependency order (same as main.zig).
     // All initialization happens in this thread to avoid blocking UI.
 
-    // 1. Load config
+    // 1. Initialize caches (before config so Config.load can cache values)
+    app_cache.init(allocator);
+    defer app_cache.deinit();
+
+    token_cache.init(allocator);
+    defer token_cache.deinit();
+
+    // 2. Load config
     const cfg = config.Config.load(allocator) catch {
         server_status.store(.err, .release);
         server_error_code.store(.config_load_failed, .release);
@@ -126,20 +133,7 @@ fn serverThreadFn(s: *State) void {
         state_mutex.unlock();
     }
 
-    // 2. Initialize app cache (for OIDC discovery configs, etc.)
-    app_cache.init(allocator);
-    defer app_cache.deinit();
-
-    // Store server port in app cache so providers can build server URLs
-    var port_buf: [8]u8 = undefined;
-    const port_str = std.fmt.bufPrint(&port_buf, "{d}", .{cfg.server.port}) catch "8080";
-    app_cache.put("server_port", port_str) catch {};
-
-    // 3. Initialize token cache
-    token_cache.init(allocator);
-    defer token_cache.deinit();
-
-    // 4. Initialize worker pool
+    // 3. Initialize worker pool
     const io_pool_size: usize = if (cfg.server.io_pool_size) |size|
         @intCast(size)
     else
@@ -153,7 +147,7 @@ fn serverThreadFn(s: *State) void {
     };
     defer worker_pool.deinit();
 
-    // 5. Initialize logging
+    // 4. Initialize logging
     log.init(.{
         .level = cfg.log.level,
         .path = cfg.log.path,
@@ -166,10 +160,10 @@ fn serverThreadFn(s: *State) void {
     };
     defer log.deinit();
 
-    // 6. Log configured providers (auth is lazy, on first request)
+    // 5. Log configured providers (auth is lazy, on first request)
     provider.logConfiguredProviders(&cfg);
 
-    // 7. Initialize pricing engine (load cost CSVs for configured providers)
+    // 6. Initialize pricing engine (load cost CSVs for configured providers)
     var provider_names_buf: [32][]const u8 = undefined;
     var provider_name_count: usize = 0;
     {

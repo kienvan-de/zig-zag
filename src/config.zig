@@ -15,6 +15,7 @@
 const std = @import("std");
 const provider_mod = @import("provider.zig");
 const log_mod = @import("log.zig");
+const app_cache = @import("cache/app_cache.zig");
 const LogOutput = log_mod.LogOutput;
 
 /// Provider-specific configuration
@@ -211,6 +212,11 @@ pub const Config = struct {
                 }
             }
         }
+
+        // Cache server port so providers can build server URLs (e.g. Copilot redirect)
+        var port_buf: [8]u8 = undefined;
+        const port_str = std.fmt.bufPrint(&port_buf, "{d}", .{server_config.port}) catch "8080";
+        app_cache.put("server_port", port_str) catch {};
 
         // Parse logging config (optional, with defaults)
         var log_config = LogConfig{};
