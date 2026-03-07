@@ -212,12 +212,18 @@ extension ServerStats {
     }
     
     private func formatCost(_ cost: Float) -> String {
-        if cost >= 1.0 {
-            return String(format: "$%.2f", cost)
-        } else if cost >= 0.01 {
-            return String(format: "$%.3f", cost)
+        let abs = abs(cost)
+        let sign = cost < 0 ? "-" : ""
+        if abs >= 1_000_000 {
+            return "\(sign)$\(String(format: "%.1f", abs / 1_000_000))M"
+        } else if abs >= 10_000 {
+            return "\(sign)$\(String(format: "%.1f", abs / 1_000))K"
+        } else if abs >= 1.0 {
+            return "\(sign)$\(String(format: "%.2f", abs))"
+        } else if abs >= 0.01 {
+            return "\(sign)$\(String(format: "%.3f", abs))"
         }
-        return String(format: "$%.4f", cost)
+        return "\(sign)$\(String(format: "%.4f", abs))"
     }
 }
 
