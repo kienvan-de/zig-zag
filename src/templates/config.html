@@ -760,7 +760,7 @@ function renderSidebar() {
 
     var label = document.createElement('span');
     label.className = 'nav-item-label';
-    label.textContent = key;
+    label.textContent = providerLabel(key);
     content.appendChild(label);
 
     var badge = document.createElement('span');
@@ -882,9 +882,19 @@ function escHtml(s) {
 function providerDisplayName(type) {
   var names = {
     openai: 'OpenAI', anthropic: 'Anthropic', sap_ai_core: 'SAP AI Core',
-    hai: 'HAI', copilot: 'Copilot', compatible: 'Compatible',
+    hai: 'SAP Hyperspace AI', copilot: 'Copilot', compatible: 'Compatible',
   };
   return names[type] || type;
+}
+
+function providerLabel(key) {
+  var known = {
+    openai: 'OpenAI', anthropic: 'Anthropic', sap_ai_core: 'SAP AI Core',
+    hai: 'SAP Hyperspace AI', copilot: 'Copilot',
+  };
+  if (known[key]) return known[key];
+  // Custom provider: capitalize first char, replace underscores with spaces
+  return key.charAt(0).toUpperCase() + key.slice(1).replace(/_/g, ' ');
 }
 
 /* ── Render a single form field HTML ────────────────── */

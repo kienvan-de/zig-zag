@@ -415,7 +415,8 @@ pub const CopilotClient = struct {
     }
 
     /// Save OAuth token to ~/.config/github-copilot/apps.json
-    /// Read-modify-write: preserves other entries in the file
+    /// Read-modify-write: preserves other entries in the file.
+    /// Uses an arena allocator internally so all temporary JSON work is freed in one shot.
     fn saveTokenToAppsJson(self: *CopilotClient, access_token: []const u8) !void {
         const home = std.posix.getenv("HOME") orelse return error.HomeNotFound;
 
@@ -439,17 +440,18 @@ pub const CopilotClient = struct {
             return error.FileWriteError;
         };
 
+        // Use an arena for all temporary JSON allocations (parse tree + new entries + serialization)
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const alloc = arena.allocator();
+
         // Read existing file or start with empty object
-        var root = std.json.Value{ .object = std.json.ObjectMap.init(self.allocator) };
-        var parsed_holder: ?std.json.Parsed(std.json.Value) = null;
-        defer if (parsed_holder) |*p| p.deinit();
+        var root = std.json.Value{ .object = std.json.ObjectMap.init(alloc) };
 
         if (std.fs.cwd().openFile(apps_path, .{})) |file| {
             defer file.close();
-            if (file.readToEndAlloc(self.allocator, 1024 * 1024)) |content| {
-                defer self.allocator.free(content);
-                if (std.json.parseFromSlice(std.json.Value, self.allocator, content, .{})) |parsed| {
-                    parsed_holder = parsed;
+            if (file.readToEndAlloc(alloc, 1024 * 1024)) |content| {
+                if (std.json.parseFromSlice(std.json.Value, alloc, content, .{})) |parsed| {
                     if (parsed.value == .object) {
                         root = parsed.value;
                     }
@@ -466,16 +468,16 @@ pub const CopilotClient = struct {
         ) catch return error.PathTooLong;
 
         // Build the entry value as JSON
-        const key_dupe = try self.allocator.dupe(u8, lookup_key);
-        var entry_obj = std.json.ObjectMap.init(self.allocator);
+        const key_dupe = try alloc.dupe(u8, lookup_key);
+        var entry_obj = std.json.ObjectMap.init(alloc);
         try entry_obj.put("oauth_token", std.json.Value{ .string = access_token });
         try entry_obj.put("githubAppId", std.json.Value{ .string = self.client_id });
         try root.object.put(key_dupe, std.json.Value{ .object = entry_obj });
 
         // Serialize to buffer
         var json_buf = std.ArrayList(u8){};
-        defer json_buf.deinit(self.allocator);
-        json_buf.writer(self.allocator).print("{f}", .{std.json.fmt(root, .{ .whitespace = .indent_2 })}) catch |err| {
+        defer json_buf.deinit(alloc);
+        json_buf.writer(alloc).print("{f}", .{std.json.fmt(root, .{ .whitespace = .indent_2 })}) catch |err| {
             log.err("[Copilot] Failed to serialize apps.json: {}", .{err});
             return error.FileWriteError;
         };
