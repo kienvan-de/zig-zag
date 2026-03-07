@@ -936,7 +936,7 @@ function renderProviderForm(key) {
     '<div class="panel-subtitle">' + escHtml(subtitle) + '</div>' +
     '</div></div><div class="panel-body">';
 
-  // For copilot, add auth status placeholder (TASK-6E will replace this)
+  // Auth section for providers with OAuth/OIDC flows
   if (type === 'copilot') {
     html += '<div id="copilot-auth-section">' +
       '<div class="status-badge unauthenticated" id="copilot-status-badge">' +
@@ -962,6 +962,27 @@ function renderProviderForm(key) {
       html += renderFieldHtml(key, schema[i], obj[schema[i].name]);
     }
     html += '</div>';
+  } else if (type === 'sap_ai_core' || type === 'hai') {
+    // Auth section for SAP AI Core and HAI
+    var pid = type; // provider id for auth endpoints
+    var authLabel = type === 'sap_ai_core' ? '\uD83D\uDD11 Test Authentication' : '\uD83D\uDD11 Authenticate';
+    html += '<div id="' + pid + '-auth-section">' +
+      '<div class="status-badge unauthenticated" id="' + pid + '-status-badge">' +
+      '\u26A0\uFE0F Status: loading\u2026</div>' +
+      '<div id="' + pid + '-auth-progress" style="display:none;margin-top:12px;padding:12px;' +
+      'background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg)">' +
+      '<div style="display:flex;align-items:center;gap:8px;color:var(--text-muted);font-size:12px">' +
+      '<span class="spinner"></span> <span id="' + pid + '-auth-progress-text">' +
+      (type === 'hai' ? 'Waiting for browser authentication\u2026' : 'Testing authentication\u2026') +
+      '</span></div></div>' +
+      '<div style="display:flex;gap:8px;margin-top:10px">' +
+      '<button class="btn" id="' + pid + '-auth-btn">' + authLabel + '</button>' +
+      '<button class="btn btn-danger" id="' + pid + '-revoke-btn" style="display:none">' +
+      '\uD83D\uDDD1 Revoke</button></div></div>';
+    // Render config fields below auth section
+    for (var i = 0; i < schema.length; i++) {
+      html += renderFieldHtml(key, schema[i], obj[schema[i].name]);
+    }
   } else {
     // For compatible, show the compatible-type as a read-only badge
     if (type === 'compatible') {
@@ -1030,6 +1051,21 @@ function renderProviderForm(key) {
     // Load copilot auth status
     loadCopilotAuthStatus();
   }
+
+  // Wire up SAP AI Core / HAI auth panels
+  if (type === 'sap_ai_core' || type === 'hai') {
+    (function (pid) {
+      var authBtn = document.getElementById(pid + '-auth-btn');
+      var revokeBtn = document.getElementById(pid + '-revoke-btn');
+      if (authBtn) {
+        authBtn.addEventListener('click', function () { startProviderAuth(pid); });
+      }
+      if (revokeBtn) {
+        revokeBtn.addEventListener('click', function () { revokeProviderAuth(pid); });
+      }
+      loadProviderAuthStatus(pid);
+    })(type);
+  }
 }
 
 /* ── Copilot auth ───────────────────────────────────── */
@@ -1054,7 +1090,7 @@ function updateCopilotBadge(status) {
 }
 
 function loadCopilotAuthStatus() {
-  fetch('/v1/config/copilot/auth/status').then(function (res) {
+  fetch('/v1/config/copilot/auth').then(function (res) {
     if (!res.ok) throw new Error('HTTP ' + res.status);
     return res.json();
   }).then(function (data) {
@@ -1087,7 +1123,7 @@ function startCopilotAuth() {
     // Start polling for auth completion
     stopCopilotPoll();
     copilotPollTimer = setInterval(function () {
-      fetch('/v1/config/copilot/auth/status').then(function (res) {
+      fetch('/v1/config/copilot/auth').then(function (res) {
         if (!res.ok) throw new Error('HTTP ' + res.status);
         return res.json();
       }).then(function (d) {
@@ -1114,6 +1150,81 @@ function revokeCopilotAuth() {
     stopCopilotPoll();
     updateCopilotBadge('unauthenticated');
     showToast('Copilot token revoked', 'info');
+  }).catch(function (e) {
+    showToast('Failed to revoke: ' + e.message, 'error');
+  });
+}
+
+/* ── Generic provider auth (SAP AI Core, HAI) ───────── */
+
+function updateProviderBadge(pid, status) {
+  var badge = document.getElementById(pid + '-status-badge');
+  if (!badge) return;
+  var icon = status === 'unauthenticated' ? '\u26A0\uFE0F' : '\u2705';
+  var label = status === 'authenticated' ? 'Authenticated' : 'Not authenticated';
+  badge.className = 'status-badge ' + status;
+  badge.textContent = icon + ' ' + label;
+
+  var authBtn = document.getElementById(pid + '-auth-btn');
+  var revokeBtn = document.getElementById(pid + '-revoke-btn');
+  if (revokeBtn) revokeBtn.style.display = (status === 'authenticated') ? '' : 'none';
+  // Always show auth button (can re-test even when authenticated)
+  if (authBtn) {
+    authBtn.disabled = false;
+    if (pid === 'hai') {
+      authBtn.textContent = (status === 'authenticated') ? '\uD83D\uDD11 Re-authenticate' : '\uD83D\uDD11 Authenticate';
+    } else {
+      authBtn.textContent = '\uD83D\uDD11 Test Authentication';
+    }
+  }
+  // Hide progress
+  var progress = document.getElementById(pid + '-auth-progress');
+  if (progress) progress.style.display = 'none';
+}
+
+function loadProviderAuthStatus(pid) {
+  fetch('/v1/config/' + pid + '/auth').then(function (res) {
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return res.json();
+  }).then(function (data) {
+    updateProviderBadge(pid, data.status || 'unauthenticated');
+  }).catch(function () {
+    updateProviderBadge(pid, 'unauthenticated');
+  });
+}
+
+function startProviderAuth(pid) {
+  var authBtn = document.getElementById(pid + '-auth-btn');
+  var progress = document.getElementById(pid + '-auth-progress');
+  if (authBtn) { authBtn.disabled = true; authBtn.textContent = 'Authenticating\u2026'; }
+  if (progress) progress.style.display = '';
+
+  fetch('/v1/config/' + pid + '/auth', { method: 'POST' }).then(function (res) {
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return res.json();
+  }).then(function (data) {
+    if (progress) progress.style.display = 'none';
+    if (data.status === 'authenticated') {
+      updateProviderBadge(pid, 'authenticated');
+      var label = pid === 'hai' ? 'HAI' : 'SAP AI Core';
+      showToast(label + ' authentication successful!', 'success');
+    } else {
+      updateProviderBadge(pid, 'unauthenticated');
+      showToast('Authentication failed: ' + (data.message || 'Unknown error'), 'error');
+    }
+  }).catch(function (e) {
+    if (progress) progress.style.display = 'none';
+    updateProviderBadge(pid, 'unauthenticated');
+    showToast('Authentication failed: ' + e.message, 'error');
+  });
+}
+
+function revokeProviderAuth(pid) {
+  fetch('/v1/config/' + pid + '/auth', { method: 'DELETE' }).then(function (res) {
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    updateProviderBadge(pid, 'unauthenticated');
+    var label = pid === 'hai' ? 'HAI' : 'SAP AI Core';
+    showToast(label + ' token revoked', 'info');
   }).catch(function (e) {
     showToast('Failed to revoke: ' + e.message, 'error');
   });
