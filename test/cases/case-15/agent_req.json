@@ -1,1 +1,1 @@
-{"method":"GET","path":"/v1/config/copilot/auth/status"}
+{"method":"GET","path":"/v1/config/copilot/auth"}
