@@ -42,6 +42,7 @@ pub fn match(request_data: []const u8) ?Route {
     // Extract method and path from request line
     const method = extractMethod(request_data) orelse return null;
     const path = extractPath(request_data) orelse return null;
+    const full_uri = extractFullUri(request_data) orelse return null;
 
     // ── Exact matches ────────────────────────────────────────────────────────
 
@@ -56,8 +57,9 @@ pub fn match(request_data: []const u8) ?Route {
     // ── Prefix matches ───────────────────────────────────────────────────────
 
     // GET /v1/html/* → template handler (serves embedded HTML pages)
+    // Pass full URI (with query string) so templates can access query params
     if (std.mem.eql(u8, method, "GET") and std.mem.startsWith(u8, path, "/v1/html/")) {
-        return Route{ .method = method, .path = path, .handler = template_handler.handle };
+        return Route{ .method = method, .path = full_uri, .handler = template_handler.handle };
     }
 
     // * /v1/config/* → config REST handler (GET, POST, DELETE)
@@ -88,6 +90,14 @@ fn extractPath(request_data: []const u8) ?[]const u8 {
     }
 
     return path_with_query;
+}
+
+/// Extract full URI (path + query string) from request line
+fn extractFullUri(request_data: []const u8) ?[]const u8 {
+    const first_space = std.mem.indexOf(u8, request_data, " ") orelse return null;
+    const remaining = request_data[first_space + 1 ..];
+    const second_space = std.mem.indexOf(u8, remaining, " ") orelse return null;
+    return remaining[0..second_space];
 }
 
 // ============================================================================
