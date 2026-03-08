@@ -1,0 +1,13 @@
+{
+  "model": "claude-3-5-sonnet-latest",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Tell me a short joke."
+    }
+  ],
+  "max_tokens": 1024,
+  "system": "You are a helpful assistant.",
+  "temperature": 0.800000011920929,
+  "stream": true
+}

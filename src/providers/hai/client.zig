@@ -39,6 +39,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const OpenAI = @import("../openai/types.zig");
+const Anthropic = @import("../anthropic/types.zig");
 const config_mod = @import("../../config.zig");
 const http_client = @import("../../client.zig");
 const curl = @import("../../curl.zig");
@@ -72,6 +73,7 @@ pub const HaiClient = struct {
     redirect_path: []const u8,
     models_path: []const u8,
     chat_completions_path: []const u8,
+    messages_path: []const u8,
 
     const DEFAULT_TIMEOUT_MS = 60000;
     const DEFAULT_MAX_RESPONSE_SIZE_MB = 10;
@@ -119,6 +121,11 @@ pub const HaiClient = struct {
             return error.MissingConfig;
         };
 
+        const messages_path = provider_config.getString("messages_path") orelse {
+            log.err("HAI provider config missing 'messages_path' field", .{});
+            return error.MissingConfig;
+        };
+
         // Optional timeout settings (these can have defaults as they're not HAI-specific)
         const timeout_ms = provider_config.getInt("timeout_ms") orelse DEFAULT_TIMEOUT_MS;
         const max_response_size_mb = provider_config.getInt("max_response_size_mb") orelse DEFAULT_MAX_RESPONSE_SIZE_MB;
@@ -140,6 +147,7 @@ pub const HaiClient = struct {
             .redirect_path = redirect_path,
             .models_path = models_path,
             .chat_completions_path = chat_completions_path,
+            .messages_path = messages_path,
         };
     }
 
@@ -373,70 +381,98 @@ pub const HaiClient = struct {
     }
 
     /// Send a request to HAI Chat Completions API (non-streaming)
-    pub fn sendRequest(self: *HaiClient, request: OpenAI.Request) !std.json.Parsed(OpenAI.Response) {
-        log.debug("[HAI] [SYNC] sendRequest - getting access token...", .{});
-        // Get valid access token
+    /// Send a non-streaming request to HAI.
+    /// Dispatches URL by request type at comptime:
+    ///   - OpenAI.Request    → chat_completions_path, returns OpenAI.Response
+    ///   - Anthropic.Request → messages_path,          returns Anthropic.Response
+    pub fn sendRequest(self: *HaiClient, request: anytype) !std.json.Parsed(ResponseType(@TypeOf(request))) {
+        const Req = @TypeOf(request);
+        const Resp = ResponseType(Req);
+        const path = self.pathForRequest(Req);
+        const label = comptime requestLabel(Req);
+
+        log.debug("[HAI] [SYNC] " ++ label ++ " - getting access token...", .{});
         const access_token = try self.getAccessToken();
         defer self.allocator.free(access_token);
-        log.debug("[HAI] [SYNC] sendRequest - access token obtained", .{});
 
-        // Build URL
         var url_buffer: [512]u8 = undefined;
-        const url = try std.fmt.bufPrint(&url_buffer, "{s}{s}", .{ self.api_url, self.chat_completions_path });
-        log.debug("[HAI] [SYNC] sendRequest - URL: {s}", .{url});
+        const url = try std.fmt.bufPrint(&url_buffer, "{s}{s}", .{ self.api_url, path });
+        log.debug("[HAI] [SYNC] " ++ label ++ " - URL: {s}", .{url});
 
-        // Build headers
         var auth_buffer: [4096]u8 = undefined;
         var headers_buf: [2]std.http.Header = undefined;
         const headers = try self.buildHeaders(access_token, &auth_buffer, &headers_buf);
 
-        // Make POST request with JSON body
-        log.debug("[HAI] [SYNC] sendRequest - sending POST request...", .{});
-        return self.client.postJson(OpenAI.Response, url, headers, request) catch |err| {
-            log.err("[HAI] [SYNC] sendRequest failed: {}", .{err});
+        log.debug("[HAI] [SYNC] " ++ label ++ " - sending POST request...", .{});
+        return self.client.postJson(Resp, url, headers, request) catch |err| {
+            log.err("[HAI] [SYNC] " ++ label ++ " failed: {}", .{err});
             return err;
         };
     }
 
-    /// Send a streaming request to HAI Chat Completions API
-    pub fn sendStreamingRequest(self: *HaiClient, request: OpenAI.Request) !*StreamingResult {
-        log.debug("[HAI] [STREAM] sendStreamingRequest - getting access token...", .{});
-        // Get valid access token
+    /// Send a streaming request to HAI.
+    /// Dispatches URL by request type at comptime (same as sendRequest).
+    pub fn sendStreamingRequest(self: *HaiClient, request: anytype) !*StreamingResult {
+        const Req = @TypeOf(request);
+        const path = self.pathForRequest(Req);
+        const label = comptime requestLabel(Req);
+
+        log.debug("[HAI] [STREAM] " ++ label ++ " - getting access token...", .{});
         const access_token = try self.getAccessToken();
         defer self.allocator.free(access_token);
-        log.debug("[HAI] [STREAM] sendStreamingRequest - access token obtained", .{});
 
-        // Build URL
         var url_buffer: [512]u8 = undefined;
-        const url = try std.fmt.bufPrint(&url_buffer, "{s}{s}", .{ self.api_url, self.chat_completions_path });
-        log.debug("[HAI] [STREAM] sendStreamingRequest - URL: {s}", .{url});
+        const url = try std.fmt.bufPrint(&url_buffer, "{s}{s}", .{ self.api_url, path });
+        log.debug("[HAI] [STREAM] " ++ label ++ " - URL: {s}", .{url});
 
-        // Build headers
         var auth_buffer: [4096]u8 = undefined;
         var headers_buf: [2]std.http.Header = undefined;
         const headers = try self.buildHeaders(access_token, &auth_buffer, &headers_buf);
 
-        // Make streaming POST request
-        log.debug("[HAI] [STREAM] sendStreamingRequest - sending POST request...", .{});
+        log.debug("[HAI] [STREAM] " ++ label ++ " - sending POST request...", .{});
         const result = self.client.postStreaming(SSEIterator, url, headers, request) catch |err| {
-            log.err("[HAI] [STREAM] sendStreamingRequest - POST request failed: {}", .{err});
+            log.err("[HAI] [STREAM] " ++ label ++ " - POST request failed: {}", .{err});
             return err;
         };
-        log.debug("[HAI] [STREAM] sendStreamingRequest - response status: {}", .{result.response.head.status});
+        log.debug("[HAI] [STREAM] " ++ label ++ " - response status: {}", .{result.response.head.status});
 
-        // Check status code
         if (result.response.head.status != .ok) {
             self.client.freeStreamingResult(SSEIterator, result);
-            log.err("[HAI] [STREAM] sendStreamingRequest failed: HTTP {}", .{result.response.head.status});
+            log.err("[HAI] [STREAM] " ++ label ++ " failed: HTTP {}", .{result.response.head.status});
             return error.RequestFailed;
         }
 
-        log.debug("[HAI] [STREAM] sendStreamingRequest - stream established successfully", .{});
+        log.debug("[HAI] [STREAM] " ++ label ++ " - stream established successfully", .{});
         return result;
     }
 
     /// Free a streaming result allocated by sendStreamingRequest
     pub fn freeStreamingResult(self: *HaiClient, result: *StreamingResult) void {
         self.client.freeStreamingResult(SSEIterator, result);
+    }
+
+    // ========================================================================
+    // Comptime dispatch helpers
+    // ========================================================================
+
+    /// Map request type to response type at comptime
+    fn ResponseType(comptime Req: type) type {
+        if (Req == OpenAI.Request) return OpenAI.Response;
+        if (Req == Anthropic.Request) return Anthropic.Response;
+        @compileError("HaiClient: unsupported request type — expected OpenAI.Request or Anthropic.Request");
+    }
+
+    /// Pick the URL path based on request type
+    fn pathForRequest(self: *HaiClient, comptime Req: type) []const u8 {
+        if (Req == OpenAI.Request) return self.chat_completions_path;
+        if (Req == Anthropic.Request) return self.messages_path;
+        @compileError("HaiClient: unsupported request type");
+    }
+
+    /// Human-readable label for log messages
+    fn requestLabel(comptime Req: type) []const u8 {
+        if (Req == OpenAI.Request) return "sendRequest(OpenAI)";
+        if (Req == Anthropic.Request) return "sendRequest(Anthropic)";
+        @compileError("HaiClient: unsupported request type");
     }
 };

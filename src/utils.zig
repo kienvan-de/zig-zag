@@ -13,6 +13,11 @@
 // limitations under the License.
 
 const std = @import("std");
+const config_mod = @import("config.zig");
+const errors = @import("errors.zig");
+const http = @import("http.zig");
+const log = @import("log.zig");
+const metrics = @import("metrics.zig");
 
 /// Parsed model information
 pub const ModelInfo = struct {
@@ -56,6 +61,55 @@ pub fn parseModelString(model_str: []const u8, allocator: std.mem.Allocator) !Mo
         .provider = provider_name,
         .model = model_name,
     };
+}
+
+// ============================================================================
+// Budget Enforcement
+// ============================================================================
+
+/// Check cost controls and reject request if budget exceeded.
+/// Returns true if the request was rejected (caller should return immediately).
+/// Returns false if the request is allowed to proceed.
+pub fn enforceBudget(
+    config: *const config_mod.Config,
+    allocator: std.mem.Allocator,
+    connection: std.net.Server.Connection,
+) !bool {
+    if (!config.cost_controls.enabled) return false;
+
+    // Check if budget period has expired and reset if needed
+    if (config.cost_controls.days_duration > 0) {
+        const ps = metrics.getPeriodStart();
+        const now = std.time.timestamp();
+        if (ps == 0) {
+            metrics.resetCosts();
+            log.info("Budget period initialized (duration: {d} days)", .{config.cost_controls.days_duration});
+        } else {
+            const elapsed_seconds = now - ps;
+            const duration_seconds: i64 = @as(i64, @intCast(config.cost_controls.days_duration)) * 86400;
+            if (elapsed_seconds >= duration_seconds) {
+                metrics.resetCosts();
+                log.info("Budget period expired, costs reset (duration: {d} days)", .{config.cost_controls.days_duration});
+            }
+        }
+    }
+
+    const snap = metrics.snapshot();
+    const total_cost = snap.input_cost + snap.output_cost;
+    if (total_cost >= config.cost_controls.budget) {
+        log.warn("Budget exceeded: ${d:.6} >= ${d:.6}, rejecting request", .{ total_cost, config.cost_controls.budget });
+        const error_json = try errors.createErrorResponse(
+            allocator,
+            "Budget exceeded. Cost controls are enabled and the budget limit has been reached.",
+            .rate_limit_error,
+            "budget_exceeded",
+        );
+        defer allocator.free(error_json);
+        try http.sendJsonResponse(connection, .too_many_requests, error_json);
+        return true;
+    }
+
+    return false;
 }
 
 // ============================================================================

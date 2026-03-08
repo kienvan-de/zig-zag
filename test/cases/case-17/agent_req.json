@@ -1,0 +1,32 @@
+{
+  "x_path": "/v1/messages",
+  "model": "openai/gpt-4o",
+  "max_tokens": 1024,
+  "system": "You are a helpful assistant with access to tools.",
+  "messages": [
+    {
+      "role": "user",
+      "content": "What's the weather in Berlin?"
+    }
+  ],
+  "temperature": 0.7,
+  "tools": [
+    {
+      "name": "get_weather",
+      "description": "Get the current weather in a given location",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "location": {
+            "type": "string",
+            "description": "The city and country, e.g. Berlin, Germany"
+          }
+        },
+        "required": ["location"]
+      }
+    }
+  ],
+  "metadata": {
+    "user_id": "test-user-017"
+  }
+}

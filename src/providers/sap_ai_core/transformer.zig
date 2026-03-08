@@ -14,7 +14,9 @@
 
 const std = @import("std");
 const OpenAI = @import("../openai/types.zig");
+const Anthropic = @import("../anthropic/types.zig");
 const SapAiCore = @import("types.zig");
+const openai_transformer = @import("../openai/transformer.zig");
 const log = @import("../../log.zig");
 
 /// Check if a model has orchestration scenario
@@ -358,4 +360,138 @@ pub fn transformStreamLine(
     ) catch return .{ .skip = {} };
 
     return .{ .chunk = new_parsed };
+}
+
+// ============================================================================
+// Anthropic <-> SAP AI Core Reverse Transforms (for /v1/messages endpoint)
+// Chains: Anthropic <-> OpenAI (via openai_transformer) <-> SapAiCore (via existing)
+// ============================================================================
+
+/// Transform Anthropic request to SAP AI Core request
+/// Chain: Anthropic -> OpenAI (openai_transformer) -> SapAiCore (existing transform)
+pub fn transformFromAnthropic(
+    request: Anthropic.Request,
+    model: []const u8,
+    allocator: std.mem.Allocator,
+) !SapAiCore.Request {
+    // Step 1: Anthropic -> OpenAI
+    const openai_request = try openai_transformer.transformFromAnthropic(request, model, allocator);
+    // NOTE: Do NOT cleanup openai_request here — the SapAiCore.Request borrows
+    // its messages/tools slices from the OpenAI request. Cleanup happens in
+    // cleanupFromAnthropicRequest below, which frees the OpenAI-level allocations.
+
+    // Step 2: OpenAI -> SapAiCore (borrows slices from openai_request)
+    errdefer openai_transformer.cleanupFromAnthropicRequest(openai_request, allocator);
+    return try transform(openai_request, model, allocator);
+}
+
+/// Cleanup a request created by transformFromAnthropic.
+/// Must free both the SapAiCore wrapper AND the underlying OpenAI messages/tools
+/// that were allocated by the Anthropic→OpenAI step.
+pub fn cleanupFromAnthropicRequest(request: SapAiCore.Request, allocator: std.mem.Allocator) void {
+    // The template messages and tools were allocated by openai_transformer.transformFromAnthropic.
+    // Reconstruct a minimal OpenAI.Request so we can reuse the existing cleanup function.
+    const openai_request = OpenAI.Request{
+        .model = request.config.modules.prompt_templating.model.name,
+        .messages = request.config.modules.prompt_templating.prompt.template,
+        .tools = request.config.modules.prompt_templating.prompt.tools,
+    };
+    openai_transformer.cleanupFromAnthropicRequest(openai_request, allocator);
+}
+
+/// Transform SAP AI Core response to Anthropic response
+/// Chain: SapAiCore -> OpenAI (existing transformResponse) -> Anthropic (openai_transformer)
+pub fn transformToAnthropicResponse(
+    response: SapAiCore.Response,
+    allocator: std.mem.Allocator,
+    original_model: []const u8,
+) !Anthropic.Response {
+    // Step 1: SapAiCore -> OpenAI
+    const openai_response = try transformResponse(response, allocator, original_model);
+    defer cleanupResponse(openai_response, allocator);
+
+    // Step 2: OpenAI -> Anthropic
+    return try openai_transformer.transformToAnthropicResponse(openai_response, allocator, original_model);
+}
+
+/// Cleanup a response created by transformToAnthropicResponse
+pub fn cleanupAnthropicResponse(response: Anthropic.Response, allocator: std.mem.Allocator) void {
+    openai_transformer.cleanupAnthropicResponse(response, allocator);
+}
+
+// ============================================================================
+// Anthropic SSE Streaming (SapAiCore → OpenAI → Anthropic SSE events)
+// Chains through the OpenAI transformer's AnthropicStreamState.
+// ============================================================================
+
+pub const AnthropicStreamLineResult = Anthropic.AnthropicStreamLineResult;
+
+/// State machine that wraps OpenAI's AnthropicStreamState, handling the
+/// SapAiCore envelope (final_result unwrapping) first.
+pub const AnthropicStreamState = struct {
+    allocator: std.mem.Allocator,
+    /// Inner OpenAI→Anthropic stream state (handles SSE event generation)
+    inner: openai_transformer.AnthropicStreamState,
+
+    pub fn init(allocator: std.mem.Allocator, original_model: []const u8) AnthropicStreamState {
+        return .{
+            .allocator = allocator,
+            .inner = openai_transformer.AnthropicStreamState.init(allocator, original_model),
+        };
+    }
+
+    pub fn deinit(self: *AnthropicStreamState) void {
+        self.inner.deinit();
+    }
+
+    pub fn getUsage(self: *const AnthropicStreamState) Anthropic.StreamUsage {
+        return self.inner.getUsage();
+    }
+};
+
+/// Convert a SapAiCore SSE line into Anthropic SSE event bytes.
+/// Chain: SapAiCore SSE line → unwrap final_result → OpenAI SSE line → Anthropic SSE events
+pub fn transformStreamLineToAnthropic(
+    line: []const u8,
+    state: *AnthropicStreamState,
+    allocator: std.mem.Allocator,
+) AnthropicStreamLineResult {
+    // Only process "data: " lines
+    if (!std.mem.startsWith(u8, line, "data: ")) {
+        return .{ .skip = {} };
+    }
+
+    const json_part = line["data: ".len..];
+
+    // Handle [DONE]
+    if (std.mem.eql(u8, json_part, "[DONE]")) {
+        return openai_transformer.transformStreamLineToAnthropic(line, &state.inner, allocator);
+    }
+
+    // Step 1: Unwrap SapAiCore envelope to get OpenAI chunk
+    // Use existing transformStreamLine which extracts final_result and returns an OpenAI chunk
+    var sap_stream_state = StreamState.init(allocator, state.inner.original_model);
+    defer sap_stream_state.deinit();
+    const sap_result = transformStreamLine(line, &sap_stream_state, allocator);
+
+    switch (sap_result) {
+        .chunk => |parsed| {
+            var chunk = parsed;
+            defer chunk.deinit();
+
+            // Step 2: Re-serialize the OpenAI chunk as a "data: {...}" line
+            // and feed it through the OpenAI→Anthropic transformer
+            var buf = std.ArrayList(u8){};
+            buf.writer(allocator).print("data: {f}", .{std.json.fmt(chunk.value, .{})}) catch return .{ .skip = {} };
+            defer buf.deinit(allocator);
+
+            return openai_transformer.transformStreamLineToAnthropic(buf.items, &state.inner, allocator);
+        },
+        .@"error" => {
+            return .{ .skip = {} };
+        },
+        .skip => {
+            return .{ .skip = {} };
+        },
+    }
 }

@@ -120,7 +120,10 @@ pub const MockClient = struct {
         // Check if this is a streaming request by parsing the JSON
         const is_streaming = self.isStreamingRequest(request_body);
 
-        const response_body = try self.sendRaw(.POST, "/v1/chat/completions", request_body);
+        // Detect custom endpoint path from _path field in request JSON
+        const endpoint_path = self.detectEndpointPath(request_body);
+
+        const response_body = try self.sendRaw(.POST, endpoint_path, request_body);
 
         // Write to .txt for streaming, .json for non-streaming
         const res_filename = if (is_streaming) "agent_res.txt" else "agent_res.json";
@@ -133,6 +136,19 @@ pub const MockClient = struct {
         );
 
         return response_body;
+    }
+
+    /// Detect custom endpoint path from x_path field, defaulting to /v1/chat/completions.
+    /// Uses simple string search to avoid JSON parser lifetime issues.
+    fn detectEndpointPath(self: *MockClient, request_body: []const u8) []const u8 {
+        _ = self;
+        // Look for "x_path":"/v1/messages" in the raw JSON text
+        if (std.mem.indexOf(u8, request_body, "\"x_path\":\"/v1/messages\"") != null or
+            std.mem.indexOf(u8, request_body, "\"x_path\": \"/v1/messages\"") != null)
+        {
+            return "/v1/messages";
+        }
+        return "/v1/chat/completions";
     }
 
     /// Check if request has stream: true

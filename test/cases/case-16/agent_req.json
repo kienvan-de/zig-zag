@@ -1,0 +1,18 @@
+{
+  "x_path": "/v1/messages",
+  "model": "anthropic/claude-3-5-sonnet-latest",
+  "max_tokens": 1024,
+  "system": "You are a helpful assistant.",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Hello, how are you?"
+    }
+  ],
+  "temperature": 0.7,
+  "top_p": 0.9,
+  "stop_sequences": ["END"],
+  "metadata": {
+    "user_id": "test-user-001"
+  }
+}

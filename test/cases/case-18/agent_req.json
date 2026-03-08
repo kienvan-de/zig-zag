@@ -1,0 +1,13 @@
+{
+  "x_path": "/v1/messages",
+  "model": "sap_ai_core/gemini-2.5-pro",
+  "max_tokens": 512,
+  "system": "You are a concise assistant.",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Explain quantum computing in one sentence."
+    }
+  ],
+  "temperature": 0.5
+}

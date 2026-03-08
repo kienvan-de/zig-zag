@@ -1,0 +1,18 @@
+{
+  "id": "chatcmpl-case18-001",
+  "type": "message",
+  "role": "assistant",
+  "content": [
+    {
+      "type": "text",
+      "text": "Quantum computing uses quantum bits (qubits) that can exist in multiple states simultaneously, enabling exponentially faster processing for certain complex problems."
+    }
+  ],
+  "model": "sap_ai_core/gemini-2.5-pro",
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "usage": {
+    "input_tokens": 20,
+    "output_tokens": 30
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "x_path": "/v1/messages",
+  "model": "anthropic/claude-3-5-sonnet-latest",
+  "max_tokens": 1024,
+  "system": "You are a helpful assistant.",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Tell me a short joke."
+    }
+  ],
+  "stream": true,
+  "temperature": 0.8
+}

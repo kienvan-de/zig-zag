@@ -1,0 +1,17 @@
+{
+  "model": "claude-3-5-sonnet-latest",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Hello, how are you?"
+    }
+  ],
+  "max_tokens": 1024,
+  "system": "You are a helpful assistant.",
+  "temperature": 0.699999988079071,
+  "top_p": 0.89999997615814209,
+  "stop_sequences": ["END"],
+  "metadata": {
+    "user_id": "test-user-001"
+  }
+}

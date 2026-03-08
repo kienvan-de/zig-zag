@@ -1,0 +1,57 @@
+{
+  "request_id": "case18-req-001",
+  "intermediate_results": {
+    "templating": [
+      {
+        "role": "system",
+        "content": "You are a concise assistant."
+      },
+      {
+        "role": "user",
+        "content": "Explain quantum computing in one sentence."
+      }
+    ],
+    "llm": {
+      "id": "chatcmpl-case18-001",
+      "object": "chat.completion",
+      "created": 1710000018,
+      "model": "gemini-2.5-pro",
+      "choices": [
+        {
+          "index": 0,
+          "message": {
+            "role": "assistant",
+            "content": "Quantum computing uses quantum bits (qubits) that can exist in multiple states simultaneously, enabling exponentially faster processing for certain complex problems."
+          },
+          "finish_reason": "stop"
+        }
+      ],
+      "usage": {
+        "prompt_tokens": 20,
+        "completion_tokens": 30,
+        "total_tokens": 50
+      }
+    }
+  },
+  "final_result": {
+    "id": "chatcmpl-case18-001",
+    "object": "chat.completion",
+    "created": 1710000018,
+    "model": "gemini-2.5-pro",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "Quantum computing uses quantum bits (qubits) that can exist in multiple states simultaneously, enabling exponentially faster processing for certain complex problems."
+        },
+        "finish_reason": "stop"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 20,
+      "completion_tokens": 30,
+      "total_tokens": 50
+    }
+  }
+}
