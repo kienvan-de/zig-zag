@@ -16,30 +16,48 @@ const std = @import("std");
 const metrics = @import("metrics.zig");
 
 /// Send SSE (Server-Sent Events) headers to start a streaming response
+/// Uses Transfer-Encoding: chunked for proper HTTP/1.1 streaming framing.
+/// All subsequent writes MUST use sendSseChunk() and end with sendSseEnd().
 pub fn sendSseHeaders(connection: std.net.Server.Connection) !void {
     const headers =
         "HTTP/1.1 200 OK\r\n" ++
         "Content-Type: text/event-stream\r\n" ++
         "Cache-Control: no-cache\r\n" ++
         "Connection: keep-alive\r\n" ++
+        "Transfer-Encoding: chunked\r\n" ++
         "\r\n";
     _ = try connection.stream.writeAll(headers);
     metrics.addNetworkTx(headers.len);
 }
 
-/// Send a single SSE event line (data: <json>\n\n)
-pub fn sendSseEvent(connection: std.net.Server.Connection, data: []const u8) !void {
-    _ = try connection.stream.writeAll("data: ");
+/// Send a single SSE data block as an HTTP chunked-encoded frame.
+/// Format: <hex-size>\r\n<data>\r\n
+pub fn sendSseChunk(connection: std.net.Server.Connection, data: []const u8) !void {
+    var size_buf: [16]u8 = undefined;
+    const size_str = std.fmt.bufPrint(&size_buf, "{x}\r\n", .{data.len}) catch unreachable;
+    _ = try connection.stream.writeAll(size_str);
     _ = try connection.stream.writeAll(data);
-    _ = try connection.stream.writeAll("\n\n");
-    metrics.addNetworkTx(6 + data.len + 2); // "data: " + data + "\n\n"
+    _ = try connection.stream.writeAll("\r\n");
+    metrics.addNetworkTx(size_str.len + data.len + 2);
 }
 
-/// Send SSE done marker
+/// Send the terminating chunk (0\r\n\r\n) to end a chunked response.
+pub fn sendSseEnd(connection: std.net.Server.Connection) !void {
+    const terminator = "0\r\n\r\n";
+    _ = try connection.stream.writeAll(terminator);
+    metrics.addNetworkTx(terminator.len);
+}
+
+/// Send a single SSE event line (data: <json>\n\n) as a chunked frame.
+pub fn sendSseEvent(connection: std.net.Server.Connection, data: []const u8) !void {
+    var buf: [8192]u8 = undefined;
+    const event = std.fmt.bufPrint(&buf, "data: {s}\n\n", .{data}) catch return;
+    try sendSseChunk(connection, event);
+}
+
+/// Send SSE done marker as a chunked frame.
 pub fn sendSseDone(connection: std.net.Server.Connection) !void {
-    const done_msg = "data: [DONE]\n\n";
-    _ = try connection.stream.writeAll(done_msg);
-    metrics.addNetworkTx(done_msg.len);
+    try sendSseChunk(connection, "data: [DONE]\n\n");
 }
 
 /// Send an HTTP JSON response with the specified status code

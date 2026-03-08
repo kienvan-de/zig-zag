@@ -990,7 +990,31 @@ pub fn transformStreamLineToAnthropic(
         } else |_| {}
     }
 
-    // Forward the line as-is (append newline)
+    // Reconstruct proper SSE format: the SSEIterator strips `event:` lines and blank line
+    // separators, so we must rebuild them. Extract the `type` field from the JSON payload
+    // to emit `event: <type>\ndata: <json>\n\n`.
+    if (std.mem.startsWith(u8, line, "data: ")) {
+        const json_part = line["data: ".len..];
+
+        // Try to extract the "type" field for the SSE event name
+        const EventType = struct { type: []const u8 = "" };
+        if (std.json.parseFromSlice(EventType, allocator, json_part, .{
+            .allocate = .alloc_always,
+            .ignore_unknown_fields = true,
+        })) |parsed| {
+            defer parsed.deinit();
+            if (parsed.value.type.len > 0) {
+                const output = std.fmt.allocPrint(allocator, "event: {s}\n{s}\n\n", .{ parsed.value.type, line }) catch return .{ .skip = {} };
+                return .{ .output = output };
+            }
+        } else |_| {}
+
+        // Fallback: no type field found, emit data line with proper SSE termination
+        const output = std.fmt.allocPrint(allocator, "{s}\n\n", .{line}) catch return .{ .skip = {} };
+        return .{ .output = output };
+    }
+
+    // Non-data line (shouldn't happen with SSEIterator, but handle gracefully)
     const output = std.fmt.allocPrint(allocator, "{s}\n", .{line}) catch return .{ .skip = {} };
     return .{ .output = output };
 }
