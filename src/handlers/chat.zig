@@ -337,8 +337,7 @@ fn handleProviderStreaming(
             defer buffer.deinit(allocator);
             buffer.writer(allocator).print("data: {{\"error\":{{\"message\":\"Upstream connection lost while streaming response\",\"type\":\"server_error\",\"code\":null}}}}\n\n", .{}) catch break;
 
-            metrics.addNetworkTx(buffer.items.len);
-            _ = connection.stream.writeAll(buffer.items) catch {};
+            http.sendSseChunk(connection, buffer.items) catch {};
             break;
         };
 
@@ -382,9 +381,8 @@ fn handleProviderStreaming(
                 defer buffer.deinit(allocator);
                 buffer.writer(allocator).print("data: {f}\n\n", .{std.json.fmt(chunk.value, .{})}) catch continue;
 
-                // Track network TX bytes and send
-                metrics.addNetworkTx(buffer.items.len);
-                _ = try connection.stream.writeAll(buffer.items);
+                // Send as chunked-encoded frame
+                try http.sendSseChunk(connection, buffer.items);
             },
             .@"error" => |error_response| {
                 // Provider returned an error - send as SSE data event per OpenAI spec
@@ -399,9 +397,8 @@ fn handleProviderStreaming(
                 defer buffer.deinit(allocator);
                 buffer.writer(allocator).print("data: {f}\n\n", .{std.json.fmt(error_response, .{})}) catch break;
 
-                // Track network TX bytes and send error
-                metrics.addNetworkTx(buffer.items.len);
-                _ = try connection.stream.writeAll(buffer.items);
+                // Send error as chunked-encoded frame
+                try http.sendSseChunk(connection, buffer.items);
                 break; // Stop processing after error
             },
             .skip => {
@@ -412,9 +409,12 @@ fn handleProviderStreaming(
 
     // Always send [DONE] marker at the end (OpenAI format)
     // This ensures clients get a proper stream termination regardless of upstream provider
-    const done_msg = "data: [DONE]\n\n";
-    metrics.addNetworkTx(done_msg.len);
-    _ = try connection.stream.writeAll(done_msg);
+    try http.sendSseChunk(connection, "data: [DONE]\n\n");
+
+    // Send chunked transfer terminator
+    http.sendSseEnd(connection) catch |err| {
+        log.err("[STREAM] Failed to send chunked terminator: {}", .{err});
+    };
 
     const process_time = std.time.milliTimestamp() - process_start;
     log.debug("[STREAM] Processed {d} chunks in {d}ms", .{ chunk_count, process_time });

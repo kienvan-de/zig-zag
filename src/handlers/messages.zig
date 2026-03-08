@@ -393,8 +393,7 @@ fn handleProviderStreaming(
             .output => |output| {
                 defer allocator.free(output);
                 chunk_count += 1;
-                metrics.addNetworkTx(output.len);
-                _ = connection.stream.writeAll(output) catch |write_err| {
+                http.sendSseChunk(connection, output) catch |write_err| {
                     log.err("[STREAM] Failed to write to client: {}", .{write_err});
                     had_error = true;
                     break;
@@ -403,6 +402,11 @@ fn handleProviderStreaming(
             .skip => {},
         }
     }
+
+    // Send chunked transfer terminator
+    http.sendSseEnd(connection) catch |err| {
+        log.err("[STREAM] Failed to send chunked terminator: {}", .{err});
+    };
 
     // 5. Track tokens and costs from stream state
     const usage = stream_state.getUsage();

@@ -72,6 +72,33 @@ pub const ImageSource = union(enum) {
         url: []const u8,
     },
 
+    pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
+        const json_value = try std.json.innerParse(std.json.Value, allocator, source, options);
+        return jsonParseFromValue(allocator, json_value, options);
+    }
+
+    pub fn jsonParseFromValue(_: std.mem.Allocator, source: std.json.Value, _: std.json.ParseOptions) !@This() {
+        if (source != .object) return error.UnexpectedToken;
+        const obj = source.object;
+        const type_value = obj.get("type") orelse return error.MissingField;
+        if (type_value != .string) return error.UnexpectedToken;
+        const type_str = type_value.string;
+
+        if (std.mem.eql(u8, type_str, "base64")) {
+            const media_type = obj.get("media_type") orelse return error.MissingField;
+            if (media_type != .string) return error.UnexpectedToken;
+            const data = obj.get("data") orelse return error.MissingField;
+            if (data != .string) return error.UnexpectedToken;
+            return .{ .base64 = .{ .type = type_str, .media_type = media_type.string, .data = data.string } };
+        } else if (std.mem.eql(u8, type_str, "url")) {
+            const url_val = obj.get("url") orelse return error.MissingField;
+            if (url_val != .string) return error.UnexpectedToken;
+            return .{ .url = .{ .type = type_str, .url = url_val.string } };
+        } else {
+            return error.UnexpectedToken;
+        }
+    }
+
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         switch (self) {
             .base64 => |v| try jw.write(v),
@@ -97,6 +124,39 @@ pub const DocumentSource = union(enum) {
         url: []const u8,
     },
 
+    pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
+        const json_value = try std.json.innerParse(std.json.Value, allocator, source, options);
+        return jsonParseFromValue(allocator, json_value, options);
+    }
+
+    pub fn jsonParseFromValue(_: std.mem.Allocator, source: std.json.Value, _: std.json.ParseOptions) !@This() {
+        if (source != .object) return error.UnexpectedToken;
+        const obj = source.object;
+        const type_value = obj.get("type") orelse return error.MissingField;
+        if (type_value != .string) return error.UnexpectedToken;
+        const type_str = type_value.string;
+
+        const media_type_val = obj.get("media_type");
+
+        if (std.mem.eql(u8, type_str, "base64")) {
+            const data = obj.get("data") orelse return error.MissingField;
+            if (data != .string) return error.UnexpectedToken;
+            const mt = if (media_type_val) |m| (if (m == .string) m.string else "application/pdf") else "application/pdf";
+            return .{ .base64_pdf = .{ .type = type_str, .media_type = mt, .data = data.string } };
+        } else if (std.mem.eql(u8, type_str, "text")) {
+            const data = obj.get("data") orelse return error.MissingField;
+            if (data != .string) return error.UnexpectedToken;
+            const mt = if (media_type_val) |m| (if (m == .string) m.string else "text/plain") else "text/plain";
+            return .{ .plain_text = .{ .type = type_str, .media_type = mt, .data = data.string } };
+        } else if (std.mem.eql(u8, type_str, "url")) {
+            const url_val = obj.get("url") orelse return error.MissingField;
+            if (url_val != .string) return error.UnexpectedToken;
+            return .{ .url_pdf = .{ .type = type_str, .url = url_val.string } };
+        } else {
+            return error.UnexpectedToken;
+        }
+    }
+
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         switch (self) {
             .base64_pdf => |v| try jw.write(v),
@@ -112,6 +172,51 @@ pub const ToolResultBlock = struct {
     tool_use_id: []const u8,
     content: ?[]const u8 = null,
     is_error: ?bool = null,
+
+    pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
+        const json_value = try std.json.innerParse(std.json.Value, allocator, source, options);
+        return jsonParseFromValue(allocator, json_value, options);
+    }
+
+    pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, _: std.json.ParseOptions) !@This() {
+        if (source != .object) return error.UnexpectedToken;
+        const obj = source.object;
+
+        const tool_use_id_val = obj.get("tool_use_id") orelse return error.MissingField;
+        if (tool_use_id_val != .string) return error.UnexpectedToken;
+
+        const is_error: ?bool = if (obj.get("is_error")) |v| switch (v) {
+            .bool => |b| b,
+            else => null,
+        } else null;
+
+        // content can be a string or an array of content blocks — flatten to string
+        const content: ?[]const u8 = if (obj.get("content")) |cv| switch (cv) {
+            .string => |s| s,
+            .null => null,
+            .array => |arr| blk: {
+                var parts = std.ArrayList([]const u8){};
+                defer parts.deinit(allocator);
+                for (arr.items) |item| {
+                    if (item != .object) continue;
+                    const text_val = item.object.get("text") orelse continue;
+                    if (text_val == .string) {
+                        try parts.append(allocator, text_val.string);
+                    }
+                }
+                if (parts.items.len == 0) break :blk null;
+                if (parts.items.len == 1) break :blk parts.items[0];
+                break :blk try std.mem.join(allocator, "\n", parts.items);
+            },
+            else => null,
+        } else null;
+
+        return .{
+            .tool_use_id = tool_use_id_val.string,
+            .content = content,
+            .is_error = is_error,
+        };
+    }
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         try jw.beginObject();
@@ -163,6 +268,57 @@ pub const ContentBlockParam = union(enum) {
         type: []const u8 = "redacted_thinking",
         data: []const u8,
     },
+
+    pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
+        const json_value = try std.json.innerParse(std.json.Value, allocator, source, options);
+        return jsonParseFromValue(allocator, json_value, options);
+    }
+
+    pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, options: std.json.ParseOptions) !@This() {
+        if (source != .object) return error.UnexpectedToken;
+        const obj = source.object;
+
+        const type_value = obj.get("type") orelse return error.MissingField;
+        if (type_value != .string) return error.UnexpectedToken;
+        const type_str = type_value.string;
+
+        if (std.mem.eql(u8, type_str, "text")) {
+            const text_val = obj.get("text") orelse return error.MissingField;
+            if (text_val != .string) return error.UnexpectedToken;
+            return .{ .text = .{ .type = type_str, .text = text_val.string } };
+        } else if (std.mem.eql(u8, type_str, "image")) {
+            const source_val = obj.get("source") orelse return error.MissingField;
+            const img_source = try ImageSource.jsonParseFromValue(allocator, source_val, options);
+            return .{ .image = .{ .type = type_str, .source = img_source } };
+        } else if (std.mem.eql(u8, type_str, "document")) {
+            const source_val = obj.get("source") orelse return error.MissingField;
+            const doc_source = try DocumentSource.jsonParseFromValue(allocator, source_val, options);
+            const title = if (obj.get("title")) |v| (if (v == .string) v.string else null) else null;
+            const context = if (obj.get("context")) |v| (if (v == .string) v.string else null) else null;
+            return .{ .document = .{ .type = type_str, .source = doc_source, .title = title, .context = context } };
+        } else if (std.mem.eql(u8, type_str, "tool_use")) {
+            const id_val = obj.get("id") orelse return error.MissingField;
+            if (id_val != .string) return error.UnexpectedToken;
+            const name_val = obj.get("name") orelse return error.MissingField;
+            if (name_val != .string) return error.UnexpectedToken;
+            const input_val = obj.get("input") orelse std.json.Value{ .object = std.json.ObjectMap.init(allocator) };
+            return .{ .tool_use = .{ .type = type_str, .id = id_val.string, .name = name_val.string, .input = input_val } };
+        } else if (std.mem.eql(u8, type_str, "tool_result")) {
+            return .{ .tool_result = try ToolResultBlock.jsonParseFromValue(allocator, source, options) };
+        } else if (std.mem.eql(u8, type_str, "thinking")) {
+            const thinking_val = obj.get("thinking") orelse return error.MissingField;
+            if (thinking_val != .string) return error.UnexpectedToken;
+            const sig_val = obj.get("signature") orelse return error.MissingField;
+            if (sig_val != .string) return error.UnexpectedToken;
+            return .{ .thinking = .{ .type = type_str, .thinking = thinking_val.string, .signature = sig_val.string } };
+        } else if (std.mem.eql(u8, type_str, "redacted_thinking")) {
+            const data_val = obj.get("data") orelse return error.MissingField;
+            if (data_val != .string) return error.UnexpectedToken;
+            return .{ .redacted_thinking = .{ .type = type_str, .data = data_val.string } };
+        } else {
+            return error.UnexpectedToken;
+        }
+    }
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         switch (self) {
@@ -335,6 +491,137 @@ pub const Request = struct {
     tools: ?[]const Tool = null,
     tool_choice: ?ToolChoice = null,
     metadata: ?Metadata = null,
+
+    /// Parse system field that can be either a string or array of content blocks.
+    /// Array format: [{"type": "text", "text": "..."}, ...]
+    /// Concatenates text values with newline separator.
+    fn parseSystemField(allocator: std.mem.Allocator, value: std.json.Value) !?[]const u8 {
+        switch (value) {
+            .string => |s| return s,
+            .array => |arr| {
+                if (arr.items.len == 0) return null;
+                // Collect text from each block
+                var parts = std.ArrayList([]const u8){};
+                defer parts.deinit(allocator);
+                for (arr.items) |item| {
+                    if (item != .object) continue;
+                    const text_val = item.object.get("text") orelse continue;
+                    if (text_val == .string) {
+                        try parts.append(allocator, text_val.string);
+                    }
+                }
+                if (parts.items.len == 0) return null;
+                if (parts.items.len == 1) return parts.items[0];
+                return try std.mem.join(allocator, "\n", parts.items);
+            },
+            .null => return null,
+            else => return error.UnexpectedToken,
+        }
+    }
+
+    pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
+        const json_value = try std.json.innerParse(std.json.Value, allocator, source, options);
+        return jsonParseFromValue(allocator, json_value, options);
+    }
+
+    pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, options: std.json.ParseOptions) !@This() {
+        if (source != .object) return error.UnexpectedToken;
+        const obj = source.object;
+
+        // Required fields
+        const model_val = obj.get("model") orelse return error.MissingField;
+        if (model_val != .string) return error.UnexpectedToken;
+
+        const messages_val = obj.get("messages") orelse return error.MissingField;
+        if (messages_val != .array) return error.UnexpectedToken;
+        var messages = try allocator.alloc(Message, messages_val.array.items.len);
+        for (messages_val.array.items, 0..) |item, i| {
+            messages[i] = try std.json.innerParseFromValue(Message, allocator, item, options);
+        }
+
+        const max_tokens_val = obj.get("max_tokens") orelse return error.MissingField;
+        const max_tokens: u32 = switch (max_tokens_val) {
+            .integer => |v| @intCast(v),
+            else => return error.UnexpectedToken,
+        };
+
+        // System: string or array of content blocks
+        const system: ?[]const u8 = if (obj.get("system")) |sys_val|
+            try parseSystemField(allocator, sys_val)
+        else
+            null;
+
+        // Optional simple fields
+        const temperature: ?f32 = if (obj.get("temperature")) |v| switch (v) {
+            .float => |f| @floatCast(f),
+            .integer => |i| @floatFromInt(i),
+            else => return error.UnexpectedToken,
+        } else null;
+
+        const top_p: ?f32 = if (obj.get("top_p")) |v| switch (v) {
+            .float => |f| @floatCast(f),
+            .integer => |i| @floatFromInt(i),
+            else => return error.UnexpectedToken,
+        } else null;
+
+        const top_k: ?u32 = if (obj.get("top_k")) |v| switch (v) {
+            .integer => |i| @intCast(i),
+            else => return error.UnexpectedToken,
+        } else null;
+
+        const stream: ?bool = if (obj.get("stream")) |v| switch (v) {
+            .bool => |b| b,
+            else => return error.UnexpectedToken,
+        } else null;
+
+        // stop_sequences: optional array of strings
+        const stop_sequences: ?[]const []const u8 = if (obj.get("stop_sequences")) |v| blk: {
+            if (v != .array) return error.UnexpectedToken;
+            var seqs = try allocator.alloc([]const u8, v.array.items.len);
+            for (v.array.items, 0..) |item, i| {
+                if (item != .string) return error.UnexpectedToken;
+                seqs[i] = item.string;
+            }
+            break :blk seqs;
+        } else null;
+
+        // tools
+        const tools: ?[]const Tool = if (obj.get("tools")) |v| blk: {
+            if (v != .array) return error.UnexpectedToken;
+            var t = try allocator.alloc(Tool, v.array.items.len);
+            for (v.array.items, 0..) |item, i| {
+                t[i] = try std.json.innerParseFromValue(Tool, allocator, item, options);
+            }
+            break :blk t;
+        } else null;
+
+        // tool_choice
+        const tool_choice: ?ToolChoice = if (obj.get("tool_choice")) |v|
+            try ToolChoice.jsonParseFromValue(allocator, v, options)
+        else
+            null;
+
+        // metadata
+        const metadata: ?Metadata = if (obj.get("metadata")) |v|
+            try std.json.innerParseFromValue(Metadata, allocator, v, options)
+        else
+            null;
+
+        return .{
+            .model = model_val.string,
+            .messages = messages,
+            .max_tokens = max_tokens,
+            .system = system,
+            .temperature = temperature,
+            .top_p = top_p,
+            .top_k = top_k,
+            .stream = stream,
+            .stop_sequences = stop_sequences,
+            .tools = tools,
+            .tool_choice = tool_choice,
+            .metadata = metadata,
+        };
+    }
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         try jw.beginObject();
