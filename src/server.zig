@@ -30,7 +30,7 @@ const NOT_FOUND_RESPONSE =
     \\{"error": "Not Found"}
 ;
 
-const DEFAULT_THREAD_POOL_SIZE = 8;
+const DEFAULT_THREAD_POOL_SIZE = 3;
 
 /// Thread pool worker context
 const WorkerContext = struct {

@@ -281,6 +281,32 @@ pub const ToolChoice = union(enum) {
         name: []const u8,
     },
 
+    pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
+        const json_value = try std.json.innerParse(std.json.Value, allocator, source, options);
+        return jsonParseFromValue(allocator, json_value, options);
+    }
+
+    pub fn jsonParseFromValue(_: std.mem.Allocator, source: std.json.Value, _: std.json.ParseOptions) !@This() {
+        if (source != .object) return error.UnexpectedToken;
+        const obj = source.object;
+
+        const type_value = obj.get("type") orelse return error.MissingField;
+        if (type_value != .string) return error.UnexpectedToken;
+        const type_str = type_value.string;
+
+        if (std.mem.eql(u8, type_str, "auto")) {
+            return .{ .auto = .{ .type = type_str } };
+        } else if (std.mem.eql(u8, type_str, "any")) {
+            return .{ .any = .{ .type = type_str } };
+        } else if (std.mem.eql(u8, type_str, "tool")) {
+            const name_value = obj.get("name") orelse return error.MissingField;
+            if (name_value != .string) return error.UnexpectedToken;
+            return .{ .tool = .{ .type = type_str, .name = name_value.string } };
+        } else {
+            return error.UnexpectedToken;
+        }
+    }
+
     pub fn jsonStringify(self: @This(), out: anytype) !void {
         switch (self) {
             .auto => |v| try out.write(v),

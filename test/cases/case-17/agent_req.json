@@ -26,6 +26,9 @@
       }
     }
   ],
+  "tool_choice": {
+    "type": "auto"
+  },
   "metadata": {
     "user_id": "test-user-017"
   }

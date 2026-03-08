@@ -45,7 +45,7 @@ pub const WorkerPool = struct {
     shutdown: bool,
     active_tasks: usize,
 
-    const DEFAULT_POOL_SIZE = 4;
+    const DEFAULT_POOL_SIZE = 1;
     const COMPACT_THRESHOLD = 64;
 
     /// Initialize the worker pool

@@ -31,5 +31,6 @@
       }
     }
   ],
+  "tool_choice": "auto",
   "user": "test-user-017"
 }
