@@ -59,6 +59,7 @@ const provider = @import("../provider.zig");
 const log = @import("../log.zig");
 const metrics = @import("../metrics.zig");
 const pricing = @import("../pricing.zig");
+const config_mod = @import("../config.zig");
 
 // Provider modules
 const anthropic = struct {
@@ -157,176 +158,18 @@ pub fn handle(
         return;
     };
 
-    // Budget enforcement: reject request if cost controls enabled and budget exceeded
-    if (config.cost_controls.enabled) {
-        // Check if budget period has expired and reset if needed
-        if (config.cost_controls.days_duration > 0) {
-            const ps = metrics.getPeriodStart();
-            const now = std.time.timestamp();
-            // If period_start is 0 (never set), initialize it now
-            if (ps == 0) {
-                metrics.resetCosts();
-                log.info("Budget period initialized (duration: {d} days)", .{config.cost_controls.days_duration});
-            } else {
-                const elapsed_seconds = now - ps;
-                const duration_seconds: i64 = @as(i64, @intCast(config.cost_controls.days_duration)) * 86400;
-                if (elapsed_seconds >= duration_seconds) {
-                    metrics.resetCosts();
-                    log.info("Budget period expired, costs reset (duration: {d} days)", .{config.cost_controls.days_duration});
-                }
-            }
-        }
-
-        const snap = metrics.snapshot();
-        const total_cost = snap.input_cost + snap.output_cost;
-        if (total_cost >= config.cost_controls.budget) {
-            log.warn("Budget exceeded: ${d:.6} >= ${d:.6}, rejecting request", .{ total_cost, config.cost_controls.budget });
-            const error_json = try errors.createErrorResponse(
-                allocator,
-                "Budget exceeded. Cost controls are enabled and the budget limit has been reached.",
-                .rate_limit_error,
-                "budget_exceeded",
-            );
-            defer allocator.free(error_json);
-            try http.sendJsonResponse(connection, .too_many_requests, error_json);
-            return;
-        }
-    }
+    // Budget enforcement
+    if (try utils.enforceBudget(config, allocator, connection)) return;
 
     // Check if this is a native provider
     if (provider.Provider.fromString(model_info.provider)) |native_provider| {
         // Native provider - route based on enum
         switch (native_provider) {
-            .anthropic => {
-                if (is_streaming) {
-                    try handleProviderStreaming(
-                        anthropic.client.AnthropicClient,
-                        anthropic.transformer,
-                        allocator,
-                        connection,
-                        openai_request.value,
-                        model_info.model,
-                        model_info.provider,
-                        provider_config,
-                    );
-                } else {
-                    try handleProvider(
-                        anthropic.client.AnthropicClient,
-                        anthropic.transformer,
-                        anthropic.types,
-                        allocator,
-                        connection,
-                        openai_request.value,
-                        model_info.model,
-                        model_info.provider,
-                        provider_config,
-                    );
-                }
-            },
-            .openai => {
-                if (is_streaming) {
-                    try handleProviderStreaming(
-                        openai.client.OpenAIClient,
-                        openai.transformer,
-                        allocator,
-                        connection,
-                        openai_request.value,
-                        model_info.model,
-                        model_info.provider,
-                        provider_config,
-                    );
-                } else {
-                    try handleProvider(
-                        openai.client.OpenAIClient,
-                        openai.transformer,
-                        openai.types,
-                        allocator,
-                        connection,
-                        openai_request.value,
-                        model_info.model,
-                        model_info.provider,
-                        provider_config,
-                    );
-                }
-            },
-            .sap_ai_core => {
-                if (is_streaming) {
-                    try handleProviderStreaming(
-                        sap_ai_core.client.SapAiCoreClient,
-                        sap_ai_core.transformer,
-                        allocator,
-                        connection,
-                        openai_request.value,
-                        model_info.model,
-                        model_info.provider,
-                        provider_config,
-                    );
-                } else {
-                    try handleProvider(
-                        sap_ai_core.client.SapAiCoreClient,
-                        sap_ai_core.transformer,
-                        sap_ai_core.types,
-                        allocator,
-                        connection,
-                        openai_request.value,
-                        model_info.model,
-                        model_info.provider,
-                        provider_config,
-                    );
-                }
-            },
-            .hai => {
-                if (is_streaming) {
-                    try handleProviderStreaming(
-                        hai.client.HaiClient,
-                        hai.transformer,
-                        allocator,
-                        connection,
-                        openai_request.value,
-                        model_info.model,
-                        model_info.provider,
-                        provider_config,
-                    );
-                } else {
-                    try handleProvider(
-                        hai.client.HaiClient,
-                        hai.transformer,
-                        hai.types,
-                        allocator,
-                        connection,
-                        openai_request.value,
-                        model_info.model,
-                        model_info.provider,
-                        provider_config,
-                    );
-                }
-            },
-            .copilot => {
-                if (is_streaming) {
-                    try handleProviderStreaming(
-                        copilot.client.CopilotClient,
-                        copilot.transformer,
-                        allocator,
-                        connection,
-                        openai_request.value,
-                        model_info.model,
-                        model_info.provider,
-                        provider_config,
-                    );
-                } else {
-                    try handleProvider(
-                        copilot.client.CopilotClient,
-                        copilot.transformer,
-                        copilot.types,
-                        allocator,
-                        connection,
-                        openai_request.value,
-                        model_info.model,
-                        model_info.provider,
-                        provider_config,
-                    );
-                }
-            },
+            .anthropic => try dispatchChat(anthropic.client.AnthropicClient, anthropic.transformer, is_streaming, allocator, connection, openai_request.value, model_info.model, model_info.provider, provider_config),
+            .openai => try dispatchChat(openai.client.OpenAIClient, openai.transformer, is_streaming, allocator, connection, openai_request.value, model_info.model, model_info.provider, provider_config),
+            .sap_ai_core => try dispatchChat(sap_ai_core.client.SapAiCoreClient, sap_ai_core.transformer, is_streaming, allocator, connection, openai_request.value, model_info.model, model_info.provider, provider_config),
+            .hai => try dispatchChat(hai.client.HaiClient, hai.transformer, is_streaming, allocator, connection, openai_request.value, model_info.model, model_info.provider, provider_config),
+            .copilot => try dispatchChat(copilot.client.CopilotClient, copilot.transformer, is_streaming, allocator, connection, openai_request.value, model_info.model, model_info.provider, provider_config),
         }
     } else |_| {
         // Not a native provider - check for "compatible" field
@@ -345,55 +188,9 @@ pub fn handle(
 
         // Route based on compatibility
         if (std.mem.eql(u8, compatible, "openai")) {
-            if (is_streaming) {
-                try handleProviderStreaming(
-                    openai.client.OpenAIClient,
-                    openai.transformer,
-                    allocator,
-                    connection,
-                    openai_request.value,
-                    model_info.model,
-                    model_info.provider,
-                    provider_config,
-                );
-            } else {
-                try handleProvider(
-                    openai.client.OpenAIClient,
-                    openai.transformer,
-                    openai.types,
-                    allocator,
-                    connection,
-                    openai_request.value,
-                    model_info.model,
-                    model_info.provider,
-                    provider_config,
-                );
-            }
+            try dispatchChat(openai.client.OpenAIClient, openai.transformer, is_streaming, allocator, connection, openai_request.value, model_info.model, model_info.provider, provider_config);
         } else if (std.mem.eql(u8, compatible, "anthropic")) {
-            if (is_streaming) {
-                try handleProviderStreaming(
-                    anthropic.client.AnthropicClient,
-                    anthropic.transformer,
-                    allocator,
-                    connection,
-                    openai_request.value,
-                    model_info.model,
-                    model_info.provider,
-                    provider_config,
-                );
-            } else {
-                try handleProvider(
-                    anthropic.client.AnthropicClient,
-                    anthropic.transformer,
-                    anthropic.types,
-                    allocator,
-                    connection,
-                    openai_request.value,
-                    model_info.model,
-                    model_info.provider,
-                    provider_config,
-                );
-            }
+            try dispatchChat(anthropic.client.AnthropicClient, anthropic.transformer, is_streaming, allocator, connection, openai_request.value, model_info.model, model_info.provider, provider_config);
         } else {
             log.err("Unknown compatible provider type: '{s}'. Must be 'openai' or 'anthropic'", .{compatible});
             const error_json = try errors.createErrorResponse(
@@ -410,6 +207,25 @@ pub fn handle(
 }
 
 /// Generic streaming provider handler
+/// Helper to dispatch to streaming or non-streaming handler
+fn dispatchChat(
+    comptime Client: type,
+    comptime Transformer: type,
+    is_streaming: bool,
+    allocator: std.mem.Allocator,
+    connection: std.net.Server.Connection,
+    openai_request: OpenAI.Request,
+    model: []const u8,
+    provider_name: []const u8,
+    provider_config: *const config_mod.ProviderConfig,
+) !void {
+    if (is_streaming) {
+        try handleProviderStreaming(Client, Transformer, allocator, connection, openai_request, model, provider_name, provider_config);
+    } else {
+        try handleProvider(Client, Transformer, allocator, connection, openai_request, model, provider_name, provider_config);
+    }
+}
+
 fn handleProviderStreaming(
     comptime Client: type,
     comptime Transformer: type,
@@ -418,7 +234,7 @@ fn handleProviderStreaming(
     openai_request: OpenAI.Request,
     model: []const u8,
     provider_name: []const u8,
-    provider_config: *const @import("../config.zig").ProviderConfig,
+    provider_config: *const config_mod.ProviderConfig,
 ) !void {
     const start_time = std.time.milliTimestamp();
     log.info("[STREAM] POST /v1/chat/completions - request received for model '{s}'", .{openai_request.model});
@@ -673,13 +489,12 @@ fn handleProviderStreaming(
 fn handleProvider(
     comptime Client: type,
     comptime Transformer: type,
-    comptime _: type,
     allocator: std.mem.Allocator,
     connection: std.net.Server.Connection,
     openai_request: OpenAI.Request,
     model: []const u8,
     provider_name: []const u8,
-    provider_config: *const @import("../config.zig").ProviderConfig,
+    provider_config: *const config_mod.ProviderConfig,
 ) !void {
     const start_time = std.time.milliTimestamp();
     log.info("[SYNC] POST /v1/chat/completions - request received for model '{s}'", .{openai_request.model});

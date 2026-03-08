@@ -604,6 +604,26 @@ pub const MessageStop = struct {
 };
 
 // ============================================================================
+// Streaming Transform Types (shared across transformers)
+// ============================================================================
+
+/// Usage data returned by AnthropicStreamState.getUsage() across all transformers.
+/// Named struct avoids anonymous struct type mismatch across compilation units.
+pub const StreamUsage = struct {
+    input_tokens: u32,
+    output_tokens: u32,
+};
+
+/// Result of transforming a single SSE line to Anthropic format.
+/// Used by all transformers' `transformStreamLineToAnthropic` functions.
+pub const AnthropicStreamLineResult = union(enum) {
+    /// Formatted SSE bytes to write to the client (caller must free)
+    output: []const u8,
+    /// Nothing to send for this line
+    skip: void,
+};
+
+// ============================================================================
 // Models API Structures
 // ============================================================================
 

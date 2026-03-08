@@ -1,0 +1,1 @@
+{"providers":{"anthropic":{"api_key":"test-anthropic-key","api_url":"http://localhost:8001"}},"server":{"host":"127.0.0.1","port":8080}}

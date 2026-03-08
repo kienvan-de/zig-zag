@@ -1,0 +1,27 @@
+{
+  "config": {
+    "modules": {
+      "prompt_templating": {
+        "prompt": {
+          "template": [
+            {
+              "role": "system",
+              "content": "You are a concise assistant."
+            },
+            {
+              "role": "user",
+              "content": "What is the speed of light?"
+            }
+          ]
+        },
+        "model": {
+          "name": "gemini-2.5-pro",
+          "version": "latest"
+        }
+      }
+    },
+    "stream": {
+      "enabled": true
+    }
+  }
+}

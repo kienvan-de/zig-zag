@@ -1,0 +1,22 @@
+{
+  "id": "chatcmpl-case17-001",
+  "type": "message",
+  "role": "assistant",
+  "content": [
+    {
+      "type": "tool_use",
+      "id": "call_case17_weather_001",
+      "name": "get_weather",
+      "input": {
+        "location": "Berlin, Germany"
+      }
+    }
+  ],
+  "model": "openai/gpt-4o",
+  "stop_reason": "tool_use",
+  "stop_sequence": null,
+  "usage": {
+    "input_tokens": 45,
+    "output_tokens": 20
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "id": "msg_case16_001",
+  "type": "message",
+  "role": "assistant",
+  "content": [
+    {
+      "type": "text",
+      "text": "Hello! I'm Claude. How can I help you today?"
+    }
+  ],
+  "model": "claude-3-5-sonnet-latest",
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "usage": {
+    "input_tokens": 12,
+    "output_tokens": 15
+  }
+}

@@ -880,5 +880,121 @@ pub fn transformResponse(
 }
 
 // ============================================================================
+// PASS-THROUGH for /v1/messages endpoint (Anthropic → Anthropic)
+// Used when the incoming request is Anthropic format and the provider is also
+// Anthropic-native, so no transformation is needed — just replace the model.
+// ============================================================================
+
+/// Pass-through: replace model name (strip provider prefix), keep everything else.
+pub fn transformFromAnthropic(
+    request: Anthropic.Request,
+    model: []const u8,
+    allocator: std.mem.Allocator,
+) !Anthropic.Request {
+    _ = allocator;
+    return .{
+        .model = model,
+        .messages = request.messages,
+        .max_tokens = request.max_tokens,
+        .system = request.system,
+        .temperature = request.temperature,
+        .top_p = request.top_p,
+        .top_k = request.top_k,
+        .stream = request.stream,
+        .stop_sequences = request.stop_sequences,
+        .tools = request.tools,
+        .tool_choice = request.tool_choice,
+        .metadata = request.metadata,
+    };
+}
+
+/// Cleanup for pass-through request (no-op — no allocations made)
+pub fn cleanupFromAnthropicRequest(request: Anthropic.Request, allocator: std.mem.Allocator) void {
+    _ = request;
+    _ = allocator;
+}
+
+/// Pass-through: return the Anthropic response as-is.
+pub fn transformToAnthropicResponse(
+    response: Anthropic.Response,
+    allocator: std.mem.Allocator,
+    original_model: []const u8,
+) !Anthropic.Response {
+    _ = allocator;
+    _ = original_model;
+    return response;
+}
+
+/// Cleanup for pass-through response (no-op — no allocations made)
+pub fn cleanupAnthropicResponse(response: Anthropic.Response, allocator: std.mem.Allocator) void {
+    _ = response;
+    _ = allocator;
+}
+
+// ============================================================================
+// Anthropic SSE Streaming State (pass-through)
+// Forwards upstream Anthropic SSE lines as-is, parsing only for usage tracking.
+// ============================================================================
+
+pub const AnthropicStreamLineResult = Anthropic.AnthropicStreamLineResult;
+
+pub const AnthropicStreamState = struct {
+    allocator: std.mem.Allocator,
+    input_tokens: u32 = 0,
+    output_tokens: u32 = 0,
+
+    pub fn init(allocator: std.mem.Allocator, original_model: []const u8) AnthropicStreamState {
+        _ = original_model;
+        return .{ .allocator = allocator };
+    }
+
+    pub fn deinit(self: *AnthropicStreamState) void {
+        _ = self;
+    }
+
+    pub fn getUsage(self: *const AnthropicStreamState) Anthropic.StreamUsage {
+        return .{ .input_tokens = self.input_tokens, .output_tokens = self.output_tokens };
+    }
+};
+
+/// Pass-through streaming: forward each SSE line as-is, track usage from message_start/message_delta.
+pub fn transformStreamLineToAnthropic(
+    line: []const u8,
+    state: *AnthropicStreamState,
+    allocator: std.mem.Allocator,
+) AnthropicStreamLineResult {
+    // Try to extract usage from data lines for metrics tracking
+    if (std.mem.startsWith(u8, line, "data: ")) {
+        const json_part = line["data: ".len..];
+
+        // Try to parse message_start for input_tokens
+        if (std.json.parseFromSlice(Anthropic.MessageStart, allocator, json_part, .{
+            .allocate = .alloc_always,
+            .ignore_unknown_fields = true,
+        })) |parsed| {
+            defer parsed.deinit();
+            if (std.mem.eql(u8, parsed.value.type, "message_start")) {
+                state.input_tokens = parsed.value.message.usage.input_tokens;
+            }
+        } else |_| {}
+
+        // Try to parse message_delta for output_tokens
+        if (std.json.parseFromSlice(Anthropic.MessageDelta, allocator, json_part, .{
+            .allocate = .alloc_always,
+            .ignore_unknown_fields = true,
+        })) |parsed| {
+            defer parsed.deinit();
+            if (std.mem.eql(u8, parsed.value.type, "message_delta")) {
+                state.output_tokens = parsed.value.usage.output_tokens;
+            }
+        } else |_| {}
+    }
+
+    // Forward the line as-is (append newline)
+    const output = std.fmt.allocPrint(allocator, "{s}\n", .{line}) catch return .{ .skip = {} };
+    return .{ .output = output };
+}
+
+// ============================================================================
 // TESTS - REQUEST TRANSFORMATION
 // ============================================================================
