@@ -134,12 +134,7 @@ fn serverThreadFn(s: *State) void {
     }
 
     // 3. Initialize worker pool
-    const io_pool_size: usize = if (cfg.server.io_pool_size) |size|
-        @intCast(size)
-    else
-        4;
-
-    worker_pool.init(allocator, io_pool_size) catch |err| {
+    worker_pool.init(allocator, @intCast(cfg.server.io_pool_size)) catch |err| {
         log.err("Failed to init worker pool: {}", .{err});
         server_status.store(.err, .release);
         server_error_code.store(.worker_pool_init_failed, .release);
