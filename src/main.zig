@@ -54,11 +54,7 @@ pub fn main() !void {
     defer cfg.deinit();
 
     // Initialize IO worker pool (before logging so async writes work)
-    const io_pool_size: usize = if (cfg.server.io_pool_size) |size|
-        @intCast(size)
-    else
-        4;
-    try worker_pool.init(allocator, io_pool_size);
+    try worker_pool.init(allocator, @intCast(cfg.server.io_pool_size));
     defer worker_pool.deinit();
 
     // Initialize logging (after worker pool for async writes)

@@ -72,25 +72,50 @@ pub const ProviderConfig = struct {
     }
 };
 
+// ============================================================================
+// Default Values (single source of truth)
+// ============================================================================
+
+pub const defaults = struct {
+    // Server
+    pub const server_host: []const u8 = "0.0.0.0";
+    pub const server_port: u16 = 8080;
+    pub const server_http_pool_size: i64 = 3;
+    pub const server_io_pool_size: i64 = 4;
+    pub const server_max_header_size: i64 = 32 * 1024; // 32 KB
+    pub const server_max_body_size: i64 = 10 * 1024 * 1024; // 10 MB
+    pub const server_read_timeout_ms: i64 = 30_000; // 30 s
+
+    // Logging
+    pub const log_max_file_size_mb: i64 = 10;
+    pub const log_max_files: i64 = 5;
+    pub const log_buffer_size: i64 = 100;
+    pub const log_flush_interval_ms: i64 = 1_000;
+
+    // Provider (shared across all providers)
+    pub const provider_timeout_ms: i64 = 60_000; // 60 s
+    pub const provider_max_response_size_mb: i64 = 10;
+};
+
 /// Server configuration
 pub const ServerConfig = struct {
-    port: u16 = 8080,
-    host: []const u8 = "0.0.0.0",
-    http_pool_size: ?i64 = null,
-    io_pool_size: ?i64 = null,
-    max_header_size: i64 = 32 * 1024, // 32KB default
-    max_body_size: i64 = 10 * 1024 * 1024, // 10MB default
-    read_timeout_ms: i64 = 30000, // 30 seconds default
+    port: u16 = defaults.server_port,
+    host: []const u8 = defaults.server_host,
+    http_pool_size: i64 = defaults.server_http_pool_size,
+    io_pool_size: i64 = defaults.server_io_pool_size,
+    max_header_size: i64 = defaults.server_max_header_size,
+    max_body_size: i64 = defaults.server_max_body_size,
+    read_timeout_ms: i64 = defaults.server_read_timeout_ms,
 };
 
 /// Logging configuration
 pub const LogConfig = struct {
     level: std.log.Level = .info,
     path: ?[]const u8 = null, // null = use OS default
-    max_file_size_mb: i64 = 10, // rotate when file exceeds this size
-    max_files: i64 = 5, // keep this many rotated files
-    buffer_size: i64 = 100, // number of messages to buffer before flush
-    flush_interval_ms: i64 = 1000, // auto-flush interval in milliseconds
+    max_file_size_mb: i64 = defaults.log_max_file_size_mb,
+    max_files: i64 = defaults.log_max_files,
+    buffer_size: i64 = defaults.log_buffer_size,
+    flush_interval_ms: i64 = defaults.log_flush_interval_ms,
     output: LogOutput = .stderr, // output destination: "file" or "stderr"
 };
 
@@ -186,15 +211,11 @@ pub const Config = struct {
                     server_config.host = host_value.string;
                 }
             }
-            if (server_obj.get("http_pool_size")) |pool_value| {
-                if (pool_value == .integer) {
-                    server_config.http_pool_size = pool_value.integer;
-                }
+            if (server_obj.get("http_pool_size")) |v| {
+                if (v == .integer) server_config.http_pool_size = v.integer;
             }
-            if (server_obj.get("io_pool_size")) |pool_value| {
-                if (pool_value == .integer) {
-                    server_config.io_pool_size = pool_value.integer;
-                }
+            if (server_obj.get("io_pool_size")) |v| {
+                if (v == .integer) server_config.io_pool_size = v.integer;
             }
             if (server_obj.get("max_header_size")) |v| {
                 if (v == .integer) {

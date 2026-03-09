@@ -30,7 +30,7 @@ const NOT_FOUND_RESPONSE =
     \\{"error": "Not Found"}
 ;
 
-const DEFAULT_THREAD_POOL_SIZE = 3;
+
 
 /// Thread pool worker context
 const WorkerContext = struct {
@@ -70,10 +70,7 @@ pub fn start(allocator: std.mem.Allocator, cfg: *const config.Config) !void {
     const host = cfg.server.host;
     const port = cfg.server.port;
 
-    const pool_size: usize = if (cfg.server.http_pool_size) |size|
-        @intCast(size)
-    else
-        DEFAULT_THREAD_POOL_SIZE;
+    const pool_size: usize = @intCast(cfg.server.http_pool_size);
 
     log.info("Starting zig-zag proxy server on {s}:{d}...", .{ host, port });
     log.info("Loaded providers: {d}", .{cfg.providers.count()});
