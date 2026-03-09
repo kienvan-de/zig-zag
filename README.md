@@ -31,10 +31,14 @@
 | Feature | Description |
 |---------|-------------|
 | **OpenAI-Compatible API** | Drop-in replacement for any OpenAI client |
-| **Multi-Provider** | OpenAI, Anthropic, SAP AI Core, SAP HAI, and any compatible provider |
+| **Anthropic Messages API** | Native `/v1/messages` endpoint — use Anthropic clients directly |
+| **Multi-Provider** | OpenAI, Anthropic, SAP AI Core, SAP HAI, GitHub Copilot, and any compatible provider |
 | **Unified Namespace** | Access all models via `{provider}/{model}` format |
-| **Streaming** | Full SSE streaming with automatic protocol translation |
-| **Real-time Metrics** | CPU, memory, network I/O, token usage, and cost tracking |
+| **Streaming** | Full SSE streaming with chunked transfer encoding and automatic protocol translation |
+| **Pricing Engine** | Per-request cost tracking with auto-updating price tables |
+| **Budget Controls** | Budget enforcement — requests rejected when limit is reached, with automatic period resets |
+| **Config UI** | Web-based configuration UI served at `GET /v1/html/config` |
+| **Real-time Metrics** | CPU, memory, network I/O, token usage, and cost tracking — persisted across restarts |
 | **Cross-platform** | macOS (native app), Linux |
 
 ## Supported Providers
@@ -138,8 +142,12 @@ open ui/macos/zig-zag/zig-zag.xcodeproj
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/v1/chat/completions` | POST | Chat completion (streaming & non-streaming) |
-| `/v1/models` | GET | List available models from all providers |
+| `/v1/chat/completions` | POST | Chat completion — OpenAI format (streaming & non-streaming) |
+| `/v1/messages` | POST | Chat completion — Anthropic Messages API format |
+| `/v1/models` | GET | List available models from all configured providers |
+| `/v1/html/config` | GET | Web-based configuration UI |
+| `/v1/config/data` | GET / POST | Read / write `config.json` via REST |
+| `/v1/config/{provider}/auth` | GET / POST / DELETE | Provider auth status, start auth flow, revoke |
 
 ## Configuration
 
@@ -199,7 +207,7 @@ Control which stats rows appear in the macOS menu bar app:
 
 ### Cost Controls
 
-Set a budget limit to track spending:
+Set a budget limit to cap spending:
 
 ```json
 {
@@ -215,11 +223,13 @@ Set a budget limit to track spending:
 |--------|------|---------|-------------|
 | `enabled` | bool | `false` | Enable budget mode |
 | `budget` | number | `0.0` | Budget limit in USD |
-| `days_duration` | number | `0` | Budget reset period in days (0 = lifetime) |
+| `days_duration` | number | `0` | Reset period in days (0 = lifetime, 1 = daily, 30 = monthly) |
 
-When enabled, the cost row always shows and displays **remaining budget** instead of total spent. The icon changes color as budget depletes (gray → orange at 20% → red at 0%).
-
-> **Note:** Budget enforcement (rejecting requests when budget is exceeded) is planned for a future release. Currently display-only.
+When enabled:
+- **Requests are rejected** (`429 Too Many Requests`) once the budget is reached
+- The budget period is checked **at startup** — if the period expired while the proxy was offline, costs and tokens reset immediately before any request is served
+- The period resets automatically on the first request after expiry
+- The macOS cost row always shows **remaining budget** instead of total spent; the icon changes color as budget depletes (gray → orange at 20% → red at 0%)
 
 ### Provider Examples
 
@@ -323,8 +333,7 @@ Optional overrides:
 | `api_url` | string | Provider default | Base URL for API |
 | `compatible` | string | - | `"openai"` or `"anthropic"` for compatible providers |
 | `max_response_size_mb` | number | `10` | Maximum response size in MB |
-| `retry_count` | number | `0` | Retry attempts on failure |
-| `retry_delay_ms` | number | `1000` | Delay between retries |
+| `max_response_size_mb` | number | `10` | Maximum response size in MB |
 
 ## Model Naming
 
@@ -422,15 +431,23 @@ just push-release
 │   ├── cache/
 │   │   ├── token_cache.zig   # OAuth token caching
 │   │   └── app_cache.zig     # Application-level cache (models, OIDC config)
+│   ├── pricing.zig           # Pricing engine (per-token cost tracking, auto-update)
 │   ├── handlers/
 │   │   ├── chat.zig          # /v1/chat/completions handler
-│   │   └── models.zig        # /v1/models handler
+│   │   ├── messages.zig      # /v1/messages handler (Anthropic Messages API)
+│   │   ├── models.zig        # /v1/models handler
+│   │   ├── config.zig        # /v1/config/* handler (read/write config, auth flows)
+│   │   └── template.zig      # /v1/html/* handler (serves embedded HTML pages)
+│   ├── templates/
+│   │   ├── mod.zig           # Template registry (compile-time @embedFile)
+│   │   ├── config.html       # Web-based config UI
+│   │   └── device_flow.html  # GitHub Copilot device flow page
 │   └── providers/
 │       ├── openai/           # OpenAI provider (client, transformer, types)
 │       ├── anthropic/        # Anthropic provider (client, transformer, types)
 │       ├── sap_ai_core/      # SAP AI Core provider (client, transformer, types)
-│       ├── hai/              # SAP HAI provider (client only, uses OpenAI types)
-│       └── copilot/          # GitHub Copilot provider (client + device flow HTML)
+│       ├── hai/              # SAP HAI provider (client only, uses Anthropic types)
+│       └── copilot/          # GitHub Copilot provider (client, device flow)
 ├── include/
 │   └── zig-zag.h             # C header for FFI
 ├── ui/

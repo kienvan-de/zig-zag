@@ -7,9 +7,9 @@
 | Aspect | Details |
 |--------|---------|
 | **Language** | Zig 0.15 |
-| **Total LOC** | ~10,200 lines |
+| **Total LOC** | ~19,600 lines |
 | **Purpose** | LLM API Gateway/Proxy |
-| **API Style** | OpenAI-compatible REST API |
+| **API Style** | OpenAI-compatible + Anthropic Messages API |
 | **Platforms** | macOS (native app), Linux, Windows |
 
 ---
@@ -21,50 +21,57 @@ zig-zag/
 ├── version.txt                  # Single source of truth for version (semver)
 ├── build.zig                    # Zig build configuration (reads version.txt)
 ├── src/
-│   ├── main.zig                 # CLI entry point (56 LOC)
-│   ├── lib.zig                  # C FFI library for macOS app (312 LOC)
-│   ├── server.zig               # HTTP server implementation (297 LOC)
-│   ├── router.zig               # Request routing (74 LOC)
-│   ├── config.zig               # Configuration loader (321 LOC)
-│   ├── client.zig               # HTTP client for upstream providers (432 LOC)
+│   ├── main.zig                 # CLI entry point (103 LOC)
+│   ├── lib.zig                  # C FFI library for macOS app (366 LOC)
+│   ├── server.zig               # HTTP server implementation (311 LOC)
+│   ├── router.zig               # Request routing (110 LOC)
+│   ├── config.zig               # Configuration loader (465 LOC)
+│   ├── client.zig               # HTTP client for upstream providers (518 LOC)
 │   ├── curl.zig                 # Curl-based HTTP client for TLS-constrained servers (221 LOC)
 │   ├── http.zig                 # HTTP utilities (59 LOC)
-│   ├── metrics.zig              # CPU, memory, token, cost tracking (247 LOC)
-│   ├── errors.zig               # Error types (100 LOC)
-│   ├── log.zig                  # Logging system (446 LOC)
-│   ├── utils.zig                # Utilities (56 LOC)
+│   ├── metrics.zig              # CPU, memory, token, cost tracking — persisted (397 LOC)
+│   ├── pricing.zig              # Pricing engine — per-token cost, auto-update (562 LOC)
+│   ├── errors.zig               # Centralized error types (100 LOC)
+│   ├── log.zig                  # Logging system (461 LOC)
+│   ├── utils.zig                # Utilities + budget enforcement (134 LOC)
 │   ├── worker_pool.zig          # Thread pool for concurrent requests (249 LOC)
 │   ├── provider.zig             # Provider abstraction (137 LOC)
 │   ├── auth/                    # Authentication modules
 │   │   ├── mod.zig              # Auth module exports (45 LOC)
-│   │   ├── oidc.zig             # OIDC discovery (415 LOC)
-│   │   ├── oauth.zig            # OAuth token exchange & refresh (556 LOC)
+│   │   ├── oidc.zig             # OIDC discovery (427 LOC)
+│   │   ├── oauth.zig            # OAuth token exchange & refresh (740 LOC)
 │   │   ├── pkce.zig             # PKCE challenge generation (104 LOC)
-│   │   └── callback_server.zig  # Local callback server for browser auth (345 LOC)
+│   │   └── callback_server.zig  # Local callback server for browser auth (353 LOC)
 │   ├── cache/
 │   │   ├── token_cache.zig      # OAuth token caching (238 LOC)
 │   │   └── app_cache.zig        # Application-level cache (123 LOC)
 │   ├── handlers/                # HTTP request handlers
-│   │   ├── chat.zig             # /v1/chat/completions handler (641 LOC)
-│   │   └── models.zig           # /v1/models handler (426 LOC)
-│   ├── providers/               # LLM provider implementations
-│   │   ├── openai/              # OpenAI provider
-│   │   │   ├── client.zig       # API client (213 LOC)
-│   │   │   ├── transformer.zig  # Request/response transformation (228 LOC)
-│   │   │   └── types.zig        # Type definitions (954 LOC)
-│   │   ├── anthropic/           # Anthropic/Claude provider
-│   │   │   ├── client.zig       # API client (203 LOC)
-│   │   │   ├── transformer.zig  # Protocol translation Messages API to OpenAI (870 LOC)
-│   │   │   └── types.zig        # Type definitions (612 LOC)
-│   │   ├── sap_ai_core/         # SAP AI Core provider
-│   │   │   ├── client.zig       # Client with OAuth (334 LOC)
-│   │   │   ├── transformer.zig  # Transformation (347 LOC)
-│   │   │   └── types.zig        # Types (203 LOC)
-│   │   ├── hai/                 # SAP HAI provider
-│   │   │   └── client.zig       # Client with OIDC + browser auth (378 LOC)
-│   │   └── copilot/             # GitHub Copilot provider
-│   │       ├── client.zig       # Client with GitHub OAuth + token exchange + device flow
-│   │       └── device_flow.html # Browser auth page (embedded at compile time)
+│   │   ├── chat.zig             # /v1/chat/completions handler (610 LOC)
+│   │   ├── messages.zig         # /v1/messages handler — Anthropic Messages API (437 LOC)
+│   │   ├── models.zig           # /v1/models handler (467 LOC)
+│   │   ├── config.zig           # /v1/config/* handler — read/write config, auth flows (504 LOC)
+│   │   └── template.zig         # /v1/html/* handler — serves embedded HTML pages (151 LOC)
+│   ├── templates/               # Compile-time embedded HTML pages
+│   │   ├── mod.zig              # Template registry (@embedFile) (30 LOC)
+│   │   ├── config.html          # Web-based configuration UI
+│   │   └── device_flow.html     # GitHub Copilot device flow auth page
+│   └── providers/               # LLM provider implementations
+│       ├── openai/              # OpenAI provider
+│       │   ├── client.zig       # API client (213 LOC)
+│       │   ├── transformer.zig  # Request/response transformation (741 LOC)
+│       │   └── types.zig        # Type definitions (987 LOC)
+│       ├── anthropic/           # Anthropic/Claude provider
+│       │   ├── client.zig       # API client (203 LOC)
+│       │   ├── transformer.zig  # Protocol translation — Messages API ↔ OpenAI (1024 LOC)
+│       │   └── types.zig        # Type definitions (959 LOC)
+│       ├── sap_ai_core/         # SAP AI Core provider
+│       │   ├── client.zig       # Client with OAuth (365 LOC)
+│       │   ├── transformer.zig  # Transformation (497 LOC)
+│       │   └── types.zig        # Types (203 LOC)
+│       ├── hai/                 # SAP HAI provider
+│       │   └── client.zig       # Client with OIDC + browser auth (478 LOC)
+│       └── copilot/             # GitHub Copilot provider
+│           └── client.zig       # Client with GitHub OAuth + token exchange + device flow (942 LOC)
 ├── include/
 │   └── zig-zag.h                # C header for FFI
 ├── ui/
@@ -85,13 +92,17 @@ zig-zag/
 | Component | File(s) | Purpose |
 |-----------|---------|---------|
 | **HTTP Server** | `server.zig`, `router.zig` | Accept incoming requests, route to handlers |
-| **Request Handlers** | `handlers/chat.zig`, `handlers/models.zig` | Process `/v1/chat/completions` and `/v1/models` endpoints |
+| **Request Handlers** | `handlers/chat.zig`, `handlers/messages.zig`, `handlers/models.zig` | Process `/v1/chat/completions`, `/v1/messages`, and `/v1/models` |
+| **Config Handler** | `handlers/config.zig` | REST API for reading/writing config and triggering provider auth flows |
+| **Template Handler** | `handlers/template.zig`, `templates/` | Serve embedded HTML pages (`/v1/html/*`) |
 | **Provider System** | `provider.zig`, `providers/*/` | Abstract interface for multiple LLM backends |
+| **Pricing Engine** | `pricing.zig` | Per-token cost calculation with auto-updating price tables from GitHub Releases |
 | **HTTP Client** | `client.zig` | Zig stdlib HTTP client for upstream providers |
 | **Curl Client** | `curl.zig` | System curl wrapper for servers requiring client cert TLS |
 | **Auth System** | `auth/` | OIDC discovery, OAuth token exchange/refresh, PKCE, browser auth |
-| **Configuration** | `config.zig` | Load `~/.config/zig-zag/config.json` |
-| **Metrics** | `metrics.zig` | Track performance, tokens, and costs |
+| **Configuration** | `config.zig` | Load and write `~/.config/zig-zag/config.json` |
+| **Metrics** | `metrics.zig` | Track performance, tokens, and costs — persisted across restarts |
+| **Budget Enforcement** | `utils.zig` | Per-request and startup budget period check; reject requests when limit reached |
 | **Worker Pool** | `worker_pool.zig` | Thread pool for concurrent request handling |
 | **C FFI** | `lib.zig`, `zig-zag.h` | Expose functions for macOS Swift app |
 
@@ -101,8 +112,12 @@ zig-zag/
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/v1/chat/completions` | POST | Chat completion (streaming & non-streaming) |
+| `/v1/chat/completions` | POST | Chat completion — OpenAI format (streaming & non-streaming) |
+| `/v1/messages` | POST | Chat completion — Anthropic Messages API format |
 | `/v1/models` | GET | List available models from all configured providers |
+| `/v1/html/config` | GET | Web-based configuration UI (served from embedded HTML) |
+| `/v1/config/data` | GET / POST | Read / write `config.json` via REST |
+| `/v1/config/{provider}/auth` | GET / POST / DELETE | Provider auth status, start auth flow, revoke |
 
 ---
 
@@ -283,9 +298,13 @@ Location: `~/.config/zig-zag/config.json`
 |--------|------|---------|-------------|
 | `enabled` | bool | `false` | Enable budget mode |
 | `budget` | number | `0.0` | Budget limit in USD |
-| `days_duration` | number | `0` | Budget reset period in days (0 = lifetime, 1 = daily, 30 = monthly) |
+| `days_duration` | number | `0` | Reset period in days (0 = lifetime, 1 = daily, 30 = monthly) |
 
-When `cost_controls.enabled = true`, the cost row always shows regardless of `show_cost`, and displays remaining budget instead of total spent.
+When `cost_controls.enabled = true`:
+- The cost row always shows regardless of `show_cost`, and displays **remaining budget** instead of total spent
+- Requests are **rejected** (`429 Too Many Requests`) once the budget is reached
+- The budget period is checked **at startup** — if the period expired while the proxy was offline, costs **and token counts** are reset immediately before any request is served
+- On period reset, both costs and tokens are zeroed together (`resetCosts()` in `metrics.zig`)
 
 ---
 
@@ -294,30 +313,69 @@ When `cost_controls.enabled = true`, the cost row always shows regardless of `sh
 ### Provider Implementation
 Each provider in `src/providers/` follows the same pattern:
 - `client.zig` - HTTP client that talks to upstream API
-- `transformer.zig` - Converts between OpenAI format and provider's native format
+- `transformer.zig` - Converts between the provider's native format and OpenAI/Anthropic format
 - `types.zig` - Zig structs for JSON serialization/deserialization
 
-> **Note:** HAI and Copilot providers reuse OpenAI types and transformer since their APIs are OpenAI-compatible. They only have `client.zig` (plus `device_flow.html` for Copilot) for the auth flow.
+> **Note:** HAI reuses the Anthropic transformer. Copilot reuses the OpenAI transformer. Both only have `client.zig` for the auth flow.
 
-### Request Flow
+### Request Flow — `/v1/chat/completions`
 1. Request arrives at `server.zig`
-2. `router.zig` routes to appropriate handler
-3. Handler (`handlers/chat.zig` or `handlers/models.zig`) parses request
-4. Provider's transformer converts request to native format
+2. `router.zig` routes to `handlers/chat.zig`
+3. Handler parses request as OpenAI format
+4. Provider's transformer converts OpenAI → provider-native format
 5. Provider's client sends request upstream
 6. Response is transformed back to OpenAI format
 7. Response sent to client (streaming or buffered)
 
+### Request Flow — `/v1/messages`
+1. Request arrives at `server.zig`
+2. `router.zig` routes to `handlers/messages.zig`
+3. Handler parses request as Anthropic Messages API format
+4. Provider's transformer converts Anthropic → provider-native format
+5. Provider's client sends request upstream
+6. Response is transformed back to Anthropic Messages API format
+7. Response sent to client (streaming or buffered)
+
+### Pricing Engine
+- Price tables are loaded from CSV files at startup from `~/.config/zig-zag/pricing/`
+- On startup, `pricing.scheduleAutoUpdate()` checks GitHub Releases for a newer `pricing.tar.gz` and downloads it in the background
+- All tables are protected by a `RwLock` — reads are concurrent, writes (auto-update reload) are exclusive
+- Cost is calculated per request in `handlers/chat.zig` and `handlers/messages.zig` and added to `metrics`
+
+### Budget Enforcement
+- `utils.checkBudgetPeriodOnStartup()` runs once after `metrics.load()` — if the period expired while the proxy was offline, costs **and tokens** are reset before any request is served
+- `utils.enforceBudget()` runs on every chat/messages request — checks period expiry and rejects with `429` if budget is exceeded
+- Both call the shared private `checkAndResetBudgetPeriod()` to avoid duplicated logic
+
 ### Streaming (SSE)
-- Full Server-Sent Events support
-- Protocol translation for Anthropic (different SSE format)
-- Chunked transfer encoding for responses
+- Full Server-Sent Events support with HTTP chunked transfer encoding
+- Protocol translation for Anthropic (different SSE event types and schema)
 
 ### Auth Flow (HAI)
 1. On first request, HAI client checks token cache
 2. If no token, initiates OIDC browser auth (opens browser, local callback server)
 3. Exchanges auth code for tokens via OAuth (with PKCE)
 4. Caches tokens; auto-refreshes on expiry
+
+### Auth Flow (Copilot)
+1. On first request, reads OAuth token from `~/.config/github-copilot/apps.json`
+2. If no token, initiates GitHub device flow (opens browser with user code)
+3. Exchanges OAuth token for a short-lived Copilot API token (~30 min)
+4. Caches Copilot token; auto-refreshes via OAuth token on expiry
+5. `api_base` URL is dynamic — returned by the token exchange endpoint
+
+### Config UI & REST API
+- `GET /v1/html/config` serves a web UI (HTML embedded at compile time via `@embedFile`)
+- `GET /v1/config/data` returns the current `config.json`
+- `POST /v1/config/data` writes a new `config.json` (validated before write)
+- `GET /v1/config/{provider}/auth` returns auth status for the provider
+- `POST /v1/config/{provider}/auth` triggers the provider's auth flow (browser open, device flow, etc.)
+- `DELETE /v1/config/{provider}/auth` revokes cached tokens for the provider
+
+### Template System
+- All HTML pages are stored under `src/templates/` and embedded at compile time via `@embedFile`
+- `templates/mod.zig` is the single registry — add a new page: drop `.html` file + add a `pub const`
+- `handlers/template.zig` serves pages at `/v1/html/{name}` and handles placeholder substitution (e.g. `{{USER_CODE}}`)
 
 ---
 
