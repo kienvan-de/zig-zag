@@ -10,6 +10,7 @@
 
 <p align="center">
   <a href="#features">Features</a> •
+  <a href="#installation">Installation</a> •
   <a href="#quick-start">Quick Start</a> •
   <a href="#macos-app">macOS App</a> •
   <a href="#configuration">Configuration</a> •
@@ -52,15 +53,38 @@
 | `copilot` | Native | GitHub Copilot with OAuth device flow + automatic token exchange |
 | Any | Compatible | OpenAI/Anthropic-compatible APIs (Groq, Azure, Together, etc.) |
 
-## Quick Start
+## Installation
 
-### 1. Build
+### macOS App (menu bar) — recommended
+
+```bash
+brew tap kienvan-de/tap
+brew install --cask kienvan-de/tap/zig-zag
+```
+
+> If Gatekeeper blocks the app on first launch:
+> ```bash
+> xattr -dr com.apple.quarantine /Applications/zig-zag.app
+> ```
+
+### CLI
+
+```bash
+brew tap kienvan-de/tap
+brew install kienvan-de/tap/zig-zag
+```
+
+Works on macOS (Apple Silicon & Intel) and Linux (x86_64 & ARM64).
+
+### Build from Source
+
+#### 1. Build
 
 ```bash
 zig build
 ```
 
-### 2. Configure
+#### 2. Configure
 
 Create `~/.config/zig-zag/config.json`:
 
@@ -77,13 +101,13 @@ Create `~/.config/zig-zag/config.json`:
 }
 ```
 
-### 3. Run
+#### 3. Run
 
 ```bash
 zig build run
 ```
 
-### 4. Use
+#### 4. Use
 
 ```bash
 # Chat completion
@@ -128,7 +152,21 @@ zig-zag comes with a native macOS menu bar app for easy server management.
 - Tooltips on all metrics
 - Keyboard shortcuts (⌘Q to quit)
 
-### Build the macOS App
+### Install the macOS App
+
+**Via Homebrew (recommended):**
+
+```bash
+brew tap kienvan-de/tap
+brew install --cask kienvan-de/tap/zig-zag
+```
+
+> If Gatekeeper blocks the app on first launch:
+> ```bash
+> xattr -dr com.apple.quarantine /Applications/zig-zag.app
+> ```
+
+**Build from source:**
 
 ```bash
 # Build the Zig library
