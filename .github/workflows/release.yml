@@ -172,3 +172,83 @@ jobs:
           body_path: RELEASE_NOTES.md
           draft: false
           prerelease: false
+
+  # Update Homebrew tap with new version and checksums
+  update-homebrew:
+    needs: [release]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout homebrew tap
+        uses: actions/checkout@v4
+        with:
+          repository: kienvan-de/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+
+      - name: Download checksums
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          curl -sL "https://github.com/kienvan-de/zig-zag/releases/download/v${VERSION}/checksums.txt" \
+            -o checksums.txt
+          echo "--- Checksums ---"
+          cat checksums.txt
+
+      - name: Update Formula/zig-zag.rb
+        run: |
+          SHA_MACOS_ARM=$(grep "zig-zag-macos-aarch64.tar.gz" checksums.txt | awk '{print $1}')
+          SHA_MACOS_X86=$(grep "zig-zag-macos-x86_64.tar.gz"  checksums.txt | awk '{print $1}')
+          SHA_LINUX_ARM=$(grep "zig-zag-linux-aarch64.tar.gz"  checksums.txt | awk '{print $1}')
+          SHA_LINUX_X86=$(grep "zig-zag-linux-x86_64.tar.gz"   checksums.txt | awk '{print $1}')
+
+          FILE="homebrew-tap/Formula/zig-zag.rb"
+
+          # Update version
+          sed -i "s/version \".*\"/version \"${VERSION}\"/" "$FILE"
+
+          # Update SHA256 hashes (order matches the file: macos-arm, macos-x86, linux-arm, linux-x86)
+          python3 - "$FILE" "$SHA_MACOS_ARM" "$SHA_MACOS_X86" "$SHA_LINUX_ARM" "$SHA_LINUX_X86" <<'EOF'
+          import sys, re
+
+          path, sha_macos_arm, sha_macos_x86, sha_linux_arm, sha_linux_x86 = sys.argv[1:]
+          shas = [sha_macos_arm, sha_macos_x86, sha_linux_arm, sha_linux_x86]
+
+          with open(path) as f:
+              content = f.read()
+
+          idx = 0
+          def replacer(m):
+              global idx
+              result = f'sha256 "{shas[idx]}"'
+              idx += 1
+              return result
+
+          content = re.sub(r'sha256 "[0-9a-f]+"', replacer, content)
+
+          with open(path, "w") as f:
+              f.write(content)
+          EOF
+
+          echo "--- Updated Formula ---"
+          cat "$FILE"
+
+      - name: Update Casks/zig-zag.rb
+        run: |
+          SHA_APP=$(grep "zig-zag-macos-app.tar.gz" checksums.txt | awk '{print $1}')
+          FILE="homebrew-tap/Casks/zig-zag.rb"
+
+          sed -i "s/version \".*\"/version \"${VERSION}\"/" "$FILE"
+          sed -i "s/sha256 \".*\"/sha256 \"${SHA_APP}\"/" "$FILE"
+
+          echo "--- Updated Cask ---"
+          cat "$FILE"
+
+      - name: Commit and push
+        run: |
+          cd homebrew-tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/zig-zag.rb Casks/zig-zag.rb
+          git commit -m "chore: bump zig-zag to v${VERSION}"
+          git push
