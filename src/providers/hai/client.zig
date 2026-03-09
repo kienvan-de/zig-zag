@@ -75,9 +75,6 @@ pub const HaiClient = struct {
     chat_completions_path: []const u8,
     messages_path: []const u8,
 
-    const DEFAULT_TIMEOUT_MS = 60000;
-    const DEFAULT_MAX_RESPONSE_SIZE_MB = 10;
-
     pub fn init(allocator: Allocator, provider_config: *const config_mod.ProviderConfig) !HaiClient {
         // Extract ALL required config fields (no defaults for HAI-specific values)
         const api_url = provider_config.getString("api_url") orelse {
@@ -127,8 +124,8 @@ pub const HaiClient = struct {
         };
 
         // Optional timeout settings (these can have defaults as they're not HAI-specific)
-        const timeout_ms = provider_config.getInt("timeout_ms") orelse DEFAULT_TIMEOUT_MS;
-        const max_response_size_mb = provider_config.getInt("max_response_size_mb") orelse DEFAULT_MAX_RESPONSE_SIZE_MB;
+        const timeout_ms = provider_config.getInt("timeout_ms") orelse config_mod.defaults.provider_timeout_ms;
+        const max_response_size_mb = provider_config.getInt("max_response_size_mb") orelse config_mod.defaults.provider_max_response_size_mb;
 
         return .{
             .allocator = allocator,

@@ -42,9 +42,6 @@ pub const SapAiCoreClient = struct {
     // Owned memory for token_endpoint
     token_endpoint_buf: []u8,
 
-    const DEFAULT_TIMEOUT_MS = 60000;
-    const DEFAULT_MAX_RESPONSE_SIZE_MB = 10;
-
     pub fn init(allocator: std.mem.Allocator, provider_config: *const config_mod.ProviderConfig) !SapAiCoreClient {
         const api_domain = provider_config.getString("api_domain") orelse {
             log.err("SAP AI Core provider config missing 'api_domain' field", .{});
@@ -76,8 +73,8 @@ pub const SapAiCoreClient = struct {
             return error.MissingOAuthClientSecret;
         };
 
-        const timeout_ms = provider_config.getInt("timeout_ms") orelse DEFAULT_TIMEOUT_MS;
-        const max_response_size_mb = provider_config.getInt("max_response_size_mb") orelse DEFAULT_MAX_RESPONSE_SIZE_MB;
+        const timeout_ms = provider_config.getInt("timeout_ms") orelse config_mod.defaults.provider_timeout_ms;
+        const max_response_size_mb = provider_config.getInt("max_response_size_mb") orelse config_mod.defaults.provider_max_response_size_mb;
 
         // Build token endpoint URL (owned memory)
         const token_endpoint_buf = try std.fmt.allocPrint(allocator, "{s}/oauth/token", .{oauth_domain});

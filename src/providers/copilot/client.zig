@@ -52,8 +52,7 @@ const GITHUB_DEVICE_CODE_URL = "https://github.com/login/device/code";
 const GITHUB_ACCESS_TOKEN_URL = "https://github.com/login/oauth/access_token";
 
 const TOKEN_EXPIRY_BUFFER_SECONDS = 60;
-const DEFAULT_TIMEOUT_MS = 60000;
-const DEFAULT_MAX_RESPONSE_SIZE_MB = 10;
+
 
 // ============================================================================
 // Public Types
@@ -100,14 +99,14 @@ pub const CopilotClient = struct {
     server_port: u16,
 
     pub fn init(allocator: Allocator, provider_config: *const config_mod.ProviderConfig) !CopilotClient {
-        const timeout_ms = provider_config.getInt("timeout_ms") orelse DEFAULT_TIMEOUT_MS;
-        const max_response_size_mb = provider_config.getInt("max_response_size_mb") orelse DEFAULT_MAX_RESPONSE_SIZE_MB;
+        const timeout_ms = provider_config.getInt("timeout_ms") orelse config_mod.defaults.provider_timeout_ms;
+        const max_response_size_mb = provider_config.getInt("max_response_size_mb") orelse config_mod.defaults.provider_max_response_size_mb;
 
         // Read server port from app_cache (stored by main/lib on startup)
-        var server_port: u16 = 8080;
+        var server_port: u16 = config_mod.defaults.server_port;
         if (app_cache.get(allocator, "server_port")) |port_str| {
             defer allocator.free(port_str);
-            server_port = std.fmt.parseInt(u16, port_str, 10) catch 8080;
+            server_port = std.fmt.parseInt(u16, port_str, 10) catch config_mod.defaults.server_port;
         }
 
         return .{
