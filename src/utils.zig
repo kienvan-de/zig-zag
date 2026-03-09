@@ -67,6 +67,35 @@ pub fn parseModelString(model_str: []const u8, allocator: std.mem.Allocator) !Mo
 // Budget Enforcement
 // ============================================================================
 
+/// Check if the budget period has expired and reset costs + tokens if so.
+/// Shared by both startup check and per-request enforcement.
+/// No-op when cost_controls is disabled or days_duration == 0 (lifetime budget).
+fn checkAndResetBudgetPeriod(config: *const config_mod.Config) void {
+    if (!config.cost_controls.enabled) return;
+    if (config.cost_controls.days_duration == 0) return; // lifetime budget, never resets
+
+    const ps = metrics.getPeriodStart();
+    const now = std.time.timestamp();
+    if (ps == 0) {
+        metrics.resetCosts();
+        log.info("Budget period initialized (duration: {d} days)", .{config.cost_controls.days_duration});
+    } else {
+        const elapsed_seconds = now - ps;
+        const duration_seconds: i64 = @as(i64, @intCast(config.cost_controls.days_duration)) * 86400;
+        if (elapsed_seconds >= duration_seconds) {
+            metrics.resetCosts();
+            log.info("Budget period expired, costs and tokens reset (duration: {d} days)", .{config.cost_controls.days_duration});
+        }
+    }
+}
+
+/// Check if the budget period has expired at startup and reset if needed.
+/// Called once after metrics are loaded, before the server accepts requests.
+/// Ensures the macOS app displays correct (post-reset) stats immediately on launch.
+pub fn checkBudgetPeriodOnStartup(config: *const config_mod.Config) void {
+    checkAndResetBudgetPeriod(config);
+}
+
 /// Check cost controls and reject request if budget exceeded.
 /// Returns true if the request was rejected (caller should return immediately).
 /// Returns false if the request is allowed to proceed.
@@ -78,21 +107,7 @@ pub fn enforceBudget(
     if (!config.cost_controls.enabled) return false;
 
     // Check if budget period has expired and reset if needed
-    if (config.cost_controls.days_duration > 0) {
-        const ps = metrics.getPeriodStart();
-        const now = std.time.timestamp();
-        if (ps == 0) {
-            metrics.resetCosts();
-            log.info("Budget period initialized (duration: {d} days)", .{config.cost_controls.days_duration});
-        } else {
-            const elapsed_seconds = now - ps;
-            const duration_seconds: i64 = @as(i64, @intCast(config.cost_controls.days_duration)) * 86400;
-            if (elapsed_seconds >= duration_seconds) {
-                metrics.resetCosts();
-                log.info("Budget period expired, costs reset (duration: {d} days)", .{config.cost_controls.days_duration});
-            }
-        }
-    }
+    checkAndResetBudgetPeriod(config);
 
     const snap = metrics.snapshot();
     const total_cost = snap.input_cost + snap.output_cost;
