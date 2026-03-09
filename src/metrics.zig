@@ -100,9 +100,11 @@ pub fn reset() void {
     period_start.store(0, .monotonic);
 }
 
-/// Reset only cost counters and update period start timestamp.
+/// Reset cost and token counters, and update period start timestamp.
 /// Used when budget period expires (days_duration).
 pub fn resetCosts() void {
+    input_tokens.store(0, .monotonic);
+    output_tokens.store(0, .monotonic);
     input_cost_micros.store(0, .monotonic);
     output_cost_micros.store(0, .monotonic);
     period_start.store(std.time.timestamp(), .monotonic);

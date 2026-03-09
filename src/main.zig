@@ -21,6 +21,7 @@ const token_cache = @import("cache/token_cache.zig");
 const app_cache = @import("cache/app_cache.zig");
 const worker_pool = @import("worker_pool.zig");
 const metrics = @import("metrics.zig");
+const utils = @import("utils.zig");
 const provider = @import("provider.zig");
 const pricing = @import("pricing.zig");
 
@@ -71,6 +72,10 @@ pub fn main() !void {
     // Load persisted metrics (tokens, costs, period_start) from previous session
     metrics.load();
     defer metrics.persist();
+
+    // If the budget period expired while the proxy was offline, reset now so
+    // the macOS app shows correct stats before the first request arrives.
+    utils.checkBudgetPeriodOnStartup(&cfg);
 
     log.info("zig-zag v{s}", .{version});
 
