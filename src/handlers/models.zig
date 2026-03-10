@@ -19,41 +19,29 @@
 //! Fetches from providers in parallel using the IO worker pool.
 
 const std = @import("std");
-
-const http = @import("../http.zig");
-const errors = @import("../errors.zig");
-const config_mod = @import("../config.zig");
-const OpenAI = @import("../providers/openai/types.zig");
-const SapAiCore = @import("../providers/sap_ai_core/types.zig");
-const provider_mod = @import("../provider.zig");
-const log = @import("../log.zig");
-const worker_pool = @import("../worker_pool.zig");
+const core = @import("zig-zag-core");
+const errors = core.errors;
+const config_mod = core.config;
+const OpenAI = core.openai_types;
+const SapAiCore = core.providers.sap_ai_core.types;
+const provider_mod = core.provider;
+const log = core.log;
+const worker_pool = core.worker_pool;
 
 // Provider modules
-const openai = struct {
-    const client = @import("../providers/openai/client.zig");
-    const transformer = @import("../providers/openai/transformer.zig");
-};
-
-const anthropic = struct {
-    const client = @import("../providers/anthropic/client.zig");
-    const transformer = @import("../providers/anthropic/transformer.zig");
-};
-
-const sap_ai_core = struct {
-    const client = @import("../providers/sap_ai_core/client.zig");
-    const transformer = @import("../providers/sap_ai_core/transformer.zig");
-};
-
+const anthropic = core.providers.anthropic;
+const openai = core.providers.openai;
+const sap_ai_core = core.providers.sap_ai_core;
 const hai = struct {
-    const client = @import("../providers/hai/client.zig");
-    const transformer = @import("../providers/openai/transformer.zig"); // HAI is OpenAI-compatible
+    const client = core.providers.hai.client;
+    const transformer = core.providers.openai.transformer; // HAI is OpenAI-compatible
+};
+const copilot = struct {
+    const client = core.providers.copilot.client;
+    const transformer = core.providers.openai.transformer; // Copilot is OpenAI-compatible
 };
 
-const copilot = struct {
-    const client = @import("../providers/copilot/client.zig");
-    const transformer = @import("../providers/openai/transformer.zig"); // Copilot is OpenAI-compatible
-};
+const http = core.http;
 
 /// Thread-safe allocator wrapper
 const ThreadSafeAllocator = struct {

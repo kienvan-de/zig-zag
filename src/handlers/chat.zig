@@ -51,46 +51,30 @@
 //! The comptime system will verify all interfaces at compile time!
 
 const std = @import("std");
-const OpenAI = @import("../providers/openai/types.zig");
-const errors = @import("../errors.zig");
-const http = @import("../http.zig");
-const utils = @import("../utils.zig");
-const provider = @import("../provider.zig");
-const log = @import("../log.zig");
-const metrics = @import("../metrics.zig");
-const pricing = @import("../pricing.zig");
-const config_mod = @import("../config.zig");
+const core = @import("zig-zag-core");
+const OpenAI = core.openai_types;
+const errors = core.errors;
+const utils = core.utils;
+const provider = core.provider;
+const log = core.log;
+const metrics = core.metrics;
+const pricing = core.pricing;
+const config_mod = core.config;
 
 // Provider modules
-const anthropic = struct {
-    const types = @import("../providers/anthropic/types.zig");
-    const client = @import("../providers/anthropic/client.zig");
-    const transformer = @import("../providers/anthropic/transformer.zig");
-};
-
-const openai = struct {
-    const types = @import("../providers/openai/types.zig");
-    const client = @import("../providers/openai/client.zig");
-    const transformer = @import("../providers/openai/transformer.zig");
-};
-
-const sap_ai_core = struct {
-    const types = @import("../providers/sap_ai_core/types.zig");
-    const client = @import("../providers/sap_ai_core/client.zig");
-    const transformer = @import("../providers/sap_ai_core/transformer.zig");
-};
-
+const anthropic = core.providers.anthropic;
+const openai = core.providers.openai;
+const sap_ai_core = core.providers.sap_ai_core;
 const hai = struct {
-    const types = @import("../providers/openai/types.zig"); // HAI is OpenAI-compatible
-    const client = @import("../providers/hai/client.zig");
-    const transformer = @import("../providers/openai/transformer.zig"); // Reuse OpenAI transformer
+    const client = core.providers.hai.client;
+    const transformer = core.providers.openai.transformer; // HAI is OpenAI-compatible
+};
+const copilot = struct {
+    const client = core.providers.copilot.client;
+    const transformer = core.providers.openai.transformer; // Copilot is OpenAI-compatible
 };
 
-const copilot = struct {
-    const types = @import("../providers/openai/types.zig"); // Copilot is OpenAI-compatible
-    const client = @import("../providers/copilot/client.zig");
-    const transformer = @import("../providers/openai/transformer.zig"); // Reuse OpenAI transformer
-};
+const http = core.http;
 
 /// Handle POST /v1/chat/completions requests
 pub fn handle(
@@ -99,7 +83,7 @@ pub fn handle(
     method: []const u8,
     path: []const u8,
     body: []const u8,
-    config: *const @import("../config.zig").Config,
+    config: *const config_mod.Config,
 ) !void {
     _ = method;
     _ = path;

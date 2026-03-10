@@ -24,16 +24,17 @@
 //!   DELETE /v1/config/{provider}/auth        -> revoke provider auth
 
 const std = @import("std");
-const http = @import("../http.zig");
-const errors = @import("../errors.zig");
-const config_mod = @import("../config.zig");
-const log = @import("../log.zig");
-
-const worker_pool = @import("../worker_pool.zig");
-const copilot_mod = @import("../providers/copilot/client.zig");
+const core = @import("zig-zag-core");
+const errors = core.errors;
+const config_mod = core.config;
+const log = core.log;
+const worker_pool = core.worker_pool;
+const copilot_mod = core.providers.copilot.client;
 const CopilotClient = copilot_mod.CopilotClient;
-const SapAiCoreClient = @import("../providers/sap_ai_core/client.zig").SapAiCoreClient;
-const HaiClient = @import("../providers/hai/client.zig").HaiClient;
+const SapAiCoreClient = core.providers.sap_ai_core.client.SapAiCoreClient;
+const HaiClient = core.providers.hai.client.HaiClient;
+
+const http = core.http;
 
 // ============================================================================
 // Device Flow State -- module-level, single Copilot instance
