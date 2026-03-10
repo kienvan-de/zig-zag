@@ -24,8 +24,7 @@ const std = @import("std");
 const core = @import("zig-zag-core");
 const config_mod = core.config;
 const log = core.log;
-
-const http = core.http;
+const http = @import("../http.zig");
 const templates = @import("../templates/mod.zig");
 
 const HTML_PREFIX = "/v1/html/";

@@ -23,7 +23,7 @@ const Anthropic = core.anthropic_types;
 const errors = core.errors;
 const log = core.log;
 const config_mod = core.config;
-const http = core.http;
+const http = @import("../http.zig");
 
 /// Handle POST /v1/messages requests
 pub fn handle(

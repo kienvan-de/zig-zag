@@ -16,9 +16,9 @@ const std = @import("std");
 const core = @import("zig-zag-core");
 const config = core.config;
 const errors = core.errors;
+const http = @import("http.zig");
 const log = core.log;
 const metrics = core.metrics;
-const http = core.http;
 const router = @import("router.zig");
 
 // HTTP response constants

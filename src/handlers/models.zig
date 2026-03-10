@@ -21,9 +21,9 @@ const std = @import("std");
 const core = @import("zig-zag-core");
 const OpenAI = core.openai_types;
 const errors = core.errors;
-const config_mod = core.config;
 const log = core.log;
-const http = core.http;
+const config_mod = core.config;
+const http = @import("../http.zig");
 
 /// Handle GET /v1/models request
 pub fn handle(

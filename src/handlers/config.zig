@@ -34,7 +34,7 @@ const CopilotClient = copilot_mod.CopilotClient;
 const SapAiCoreClient = core.providers.sap_ai_core.client.SapAiCoreClient;
 const HaiClient = core.providers.hai.client.HaiClient;
 
-const http = core.http;
+const http = @import("../http.zig");
 
 // ============================================================================
 // Device Flow State -- module-level, single Copilot instance
