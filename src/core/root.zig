@@ -1,26 +1,92 @@
-// src/core/root.zig — public API surface for zig-zag-core
-pub const config = @import("config.zig");
-pub const errors = @import("errors.zig");
-pub const log = @import("log.zig");
-pub const metrics = @import("metrics.zig");
-pub const pricing = @import("pricing.zig");
-pub const utils = @import("utils.zig");
-pub const provider = @import("provider.zig");
-pub const client = @import("client.zig");
-pub const curl = @import("curl.zig");
-pub const worker_pool = @import("worker_pool.zig");
-pub const auth = @import("auth/mod.zig");
-pub const cache = @import("cache/token_cache.zig");
-pub const app_cache = @import("cache/app_cache.zig");
-pub const http = @import("http.zig");
+//! zig-zag-core — Transport-agnostic LLM proxy library.
+//!
+//! Public API surface for embedding zig-zag in any application.
+//! The wrapper (HTTP server, CLI tool, etc.) injects dependencies
+//! via `config.set()`, `worker_pool.init()`, and `log.init()`.
+//!
+//! ## Quick Start (Minimal Embedder)
+//!
+//! ```zig
+//! const core = @import("zig-zag-core");
+//!
+//! var cfg = try core.config.Config.load(allocator);
+//! core.config.set(&cfg);
+//! core.cache.init(allocator);
+//! core.metrics.load();
+//! core.pricing.init(allocator, provider_names);
+//!
+//! try core.completion.chatComplete(writer, allocator, request);
+//! ```
+
+// =========================================================================
+// High-level completion API
+// =========================================================================
+
+/// Transport-agnostic LLM completion functions.
+/// `chatComplete`, `messagesComplete`, `listModels`, `freeModels`.
 pub const completion = @import("completion.zig");
 
-// Provider types — for handler access (temporary, removed in STORY 4)
+// =========================================================================
+// Core infrastructure
+// =========================================================================
+
+/// Configuration loader and global singleton (`set`/`get`).
+pub const config = @import("config.zig");
+
+/// Centralized error types and error response builder.
+pub const errors = @import("errors.zig");
+
+/// Logging module (file rotation, buffered writes, worker pool integration).
+pub const log = @import("log.zig");
+
+/// CPU, memory, token, and cost tracking — persisted across restarts.
+pub const metrics = @import("metrics.zig");
+
+/// Per-token cost calculation with auto-updating price tables.
+pub const pricing = @import("pricing.zig");
+
+/// Utility functions: model parsing, budget enforcement.
+pub const utils = @import("utils.zig");
+
+/// Provider enum and helper functions.
+pub const provider = @import("provider.zig");
+
+/// Zig stdlib HTTP client for upstream provider calls.
+pub const client = @import("client.zig");
+
+/// System curl wrapper for TLS-constrained servers (SAP IAS).
+pub const curl = @import("curl.zig");
+
+/// Thread pool for concurrent request handling.
+pub const worker_pool = @import("worker_pool.zig");
+
+/// Authentication modules (OIDC, OAuth, PKCE, callback server).
+pub const auth = @import("auth/mod.zig");
+
+/// OAuth token caching.
+pub const cache = @import("cache/token_cache.zig");
+
+/// Application-level cache (e.g. server port for FFI).
+pub const app_cache = @import("cache/app_cache.zig");
+
+/// HTTP utilities: SSE framing, JSON responses, ChunkedWriter.
+pub const http = @import("http.zig");
+
+// =========================================================================
+// Provider types — for callers building request/response structs
+// =========================================================================
+
+/// OpenAI request/response type definitions.
 pub const openai_types = @import("providers/openai/types.zig");
+
+/// Anthropic request/response type definitions.
 pub const anthropic_types = @import("providers/anthropic/types.zig");
 
-// Provider internals — temporary, needed by handlers until STORY 4 moves
-// dispatch logic into completion.zig. Removed in STORY 5.
+// =========================================================================
+// Provider internals — used by config handler for auth flows.
+// Will be removed when auth flows move into core.
+// =========================================================================
+
 pub const providers = struct {
     pub const openai = struct {
         pub const client = @import("providers/openai/client.zig");
