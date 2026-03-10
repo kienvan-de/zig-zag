@@ -107,15 +107,16 @@ fn serverThreadFn(s: *State) void {
     // Initialize subsystems in dependency order (same as main.zig).
     // All initialization happens in this thread to avoid blocking UI.
 
-    // 1. Initialize caches (before config so Config.load can cache values)
+    // 1. Initialize caches (before config so loadFromFile can cache values)
     app_cache.init(allocator);
     defer app_cache.deinit();
 
     token_cache.init(allocator);
     defer token_cache.deinit();
 
-    // 2. Load config
-    const cfg = config.Config.load(allocator) catch {
+    // 2. Resolve config path and load config
+    const config_path = resolveConfigPath();
+    const cfg = config.Config.loadFromFile(allocator, config_path) catch {
         server_status.store(.err, .release);
         server_error_code.store(.config_load_failed, .release);
         return;
@@ -181,8 +182,8 @@ fn serverThreadFn(s: *State) void {
     // displays correct (already-reset) counters the moment it reads status = running.
     utils.checkBudgetPeriodOnStartup(&cfg);
 
-    // Set global config for core module access
-    config.set(&cfg);
+    // Set global config singleton + config file path for core module access
+    config.set(&cfg, config_path);
 
     // All init successful - transition to running state
     server_status.store(.running, .release);
@@ -368,4 +369,46 @@ export fn getServerStats() CServerStats {
 /// Returns a null-terminated string pointer (static lifetime, never freed).
 export fn getVersion() [*:0]const u8 {
     return version.ptr[0..version.len :0];
+}
+
+// ============================================================================
+// Config path resolution — wrapper responsibility (not in core)
+// ============================================================================
+
+const builtin = @import("builtin");
+
+var resolved_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+
+/// Resolve config file path: $ZIG_ZAG_CONFIG env var, or OS-specific default.
+fn resolveConfigPath() []const u8 {
+    if (std.posix.getenv("ZIG_ZAG_CONFIG")) |env_path| {
+        return env_path;
+    }
+    return defaultConfigPath() catch "config.json";
+}
+
+fn defaultConfigPath() ![]const u8 {
+    const home = std.posix.getenv("HOME") orelse return error.HomeNotFound;
+    if (builtin.os.tag == .macos or builtin.os.tag == .linux) {
+        return std.fmt.bufPrint(
+            &resolved_path_buf,
+            "{s}/.config/zig-zag/config.json",
+            .{home},
+        );
+    } else if (builtin.os.tag == .windows) {
+        if (std.posix.getenv("LOCALAPPDATA")) |app_data| {
+            return std.fmt.bufPrint(
+                &resolved_path_buf,
+                "{s}\\zig-zag\\config.json",
+                .{app_data},
+            );
+        }
+        return "config.json";
+    } else {
+        return std.fmt.bufPrint(
+            &resolved_path_buf,
+            "{s}/.config/zig-zag/config.json",
+            .{home},
+        );
+    }
 }

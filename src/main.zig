@@ -43,15 +43,18 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    // Initialize caches before config so Config.load can populate them
+    // Initialize caches before config so loadFromFile can populate them
     app_cache.init(allocator);
     defer app_cache.deinit();
 
     token_cache.init(allocator);
     defer token_cache.deinit();
 
-    // Load configuration from ~/.config/zig-zag/config.json
-    var cfg = try config.Config.load(allocator);
+    // Resolve config file path: env var ZIG_ZAG_CONFIG, or OS default
+    const config_path = resolveConfigPath();
+
+    // Load configuration
+    var cfg = try config.Config.loadFromFile(allocator, config_path);
     defer cfg.deinit();
 
     // Initialize IO worker pool (before logging so async writes work)
@@ -74,8 +77,8 @@ pub fn main() !void {
     // the macOS app shows correct stats before the first request arrives.
     utils.checkBudgetPeriodOnStartup(&cfg);
 
-    // Set global config for core module access
-    config.set(&cfg);
+    // Set global config singleton + config file path for core module access
+    config.set(&cfg, config_path);
 
     log.info("zig-zag v{s}", .{version});
 
@@ -100,4 +103,46 @@ pub fn main() !void {
 
     // Start the HTTP server
     try server.start(allocator, &cfg);
+}
+
+// ============================================================================
+// Config path resolution — wrapper responsibility (not in core)
+// ============================================================================
+
+const builtin = @import("builtin");
+
+var resolved_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+
+/// Resolve config file path: $ZIG_ZAG_CONFIG env var, or OS-specific default.
+fn resolveConfigPath() []const u8 {
+    if (std.posix.getenv("ZIG_ZAG_CONFIG")) |env_path| {
+        return env_path;
+    }
+    return defaultConfigPath() catch "config.json";
+}
+
+fn defaultConfigPath() ![]const u8 {
+    const home = std.posix.getenv("HOME") orelse return error.HomeNotFound;
+    if (builtin.os.tag == .macos or builtin.os.tag == .linux) {
+        return std.fmt.bufPrint(
+            &resolved_path_buf,
+            "{s}/.config/zig-zag/config.json",
+            .{home},
+        );
+    } else if (builtin.os.tag == .windows) {
+        if (std.posix.getenv("LOCALAPPDATA")) |app_data| {
+            return std.fmt.bufPrint(
+                &resolved_path_buf,
+                "{s}\\zig-zag\\config.json",
+                .{app_data},
+            );
+        }
+        return "config.json";
+    } else {
+        return std.fmt.bufPrint(
+            &resolved_path_buf,
+            "{s}/.config/zig-zag/config.json",
+            .{home},
+        );
+    }
 }

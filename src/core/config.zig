@@ -23,21 +23,36 @@ const LogOutput = log_mod.LogOutput;
 // ============================================================================
 
 var global_config: ?*const Config = null;
+var config_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+var config_path_len: usize = 0;
 
-/// Set the global config singleton reference.
+/// Set the global config singleton reference and store the config file path.
 ///
 /// Must be called **exactly once** by the wrapper (e.g. `main.zig` or `lib.zig`)
-/// after `Config.load()` / `Config.loadFromFile()` completes successfully.
+/// after `Config.loadFromFile()` completes successfully.
 /// All core modules obtain configuration via `config.get()`, so the proxy will
 /// panic on the first access if this function was never called.
 ///
+/// The `path` is stored internally so that `readRaw()` and `writeRaw()` can
+/// access the same file without the caller passing it again.
+///
 /// **Example (wrapper startup)**:
 /// ```zig
-/// var cfg = try Config.load(allocator);
-/// config.set(&cfg);
+/// const path = resolveConfigPath();   // wrapper decides the path
+/// var cfg = try Config.loadFromFile(allocator, path);
+/// config.set(&cfg, path);
 /// ```
-pub fn set(cfg: *const Config) void {
+pub fn set(cfg: *const Config, path: []const u8) void {
     global_config = cfg;
+    @memcpy(config_path_buf[0..path.len], path);
+    config_path_len = path.len;
+}
+
+/// Return the stored config file path.
+/// Panics if `set()` has not been called yet.
+pub fn getPath() []const u8 {
+    if (config_path_len == 0) @panic("config path not set — call config.set() first");
+    return config_path_buf[0..config_path_len];
 }
 
 /// Return the global config singleton.
@@ -244,9 +259,9 @@ pub const CostControlsConfig = struct {
 ///
 /// Typical lifecycle:
 /// ```
-/// var cfg = try Config.load(allocator);   // or Config.loadFromFile(…)
+/// var cfg = try Config.loadFromFile(allocator, path);
 /// defer cfg.deinit();
-/// config.set(&cfg);                       // publish as global singleton
+/// config.set(&cfg, path);                 // publish as global singleton
 /// ```
 pub const Config = struct {
     allocator: std.mem.Allocator,
@@ -259,31 +274,6 @@ pub const Config = struct {
     /// The root parsed JSON tree.  Kept alive so that all borrowed slices
     /// in `ProviderConfig` and other structs remain valid.
     _parsed: std.json.Parsed(std.json.Value),
-
-    /// Load configuration using the standard resolution order:
-    ///
-    /// 1. If the **`ZIG_ZAG_CONFIG`** environment variable is set, its value
-    ///    is used as the file path.
-    /// 2. Otherwise falls back to `~/.config/zig-zag/config.json`.
-    ///
-    /// Returns `error.HomeNotFound` when neither env var is set nor `$HOME`
-    /// is available.  All other errors propagate from `loadFromFile`.
-    pub fn load(allocator: std.mem.Allocator) !Config {
-        if (std.posix.getenv("ZIG_ZAG_CONFIG")) |config_path| {
-            return loadFromFile(allocator, config_path);
-        }
-
-        const home = std.posix.getenv("HOME") orelse return error.HomeNotFound;
-
-        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const config_path = try std.fmt.bufPrint(
-            &path_buf,
-            "{s}/.config/zig-zag/config.json",
-            .{home},
-        );
-
-        return loadFromFile(allocator, config_path);
-    }
 
     /// Load and parse configuration from an explicit file path.
     ///
@@ -570,25 +560,13 @@ pub const ConfigError = @import("errors.zig").ConfigError;
 // Raw Config File Access
 // ============================================================================
 
-/// Resolve the config file path (same logic as Config.load)
-fn resolveConfigPath(buf: []u8) ![]const u8 {
-    if (std.posix.getenv("ZIG_ZAG_CONFIG")) |config_path| {
-        return config_path;
-    }
-    const home = std.posix.getenv("HOME") orelse return error.HomeNotFound;
-    return try std.fmt.bufPrint(buf, "{s}/.config/zig-zag/config.json", .{home});
-}
-
 /// Read the raw config file as an unprocessed byte slice.
 ///
-/// Resolves the config path using the same logic as `Config.load()`
-/// (`$ZIG_ZAG_CONFIG` → `~/.config/zig-zag/config.json`).
-///
+/// Uses the config file path stored by `set()`.
 /// The caller **owns** the returned slice and must free it with `allocator`.
 /// Maximum file size: 1 MB.
 pub fn readRaw(allocator: std.mem.Allocator) ![]const u8 {
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const config_path = try resolveConfigPath(&path_buf);
+    const config_path = getPath();
 
     const file = std.fs.cwd().openFile(config_path, .{}) catch |err| {
         log_mod.err("readRaw: failed to open config file: {s}", .{config_path});
@@ -607,7 +585,7 @@ pub fn readRaw(allocator: std.mem.Allocator) ![]const u8 {
 /// 3. Performs an atomic **rename** (`.tmp` → config path) so that readers
 ///    never observe a partially-written file, even on crash.
 ///
-/// Resolves the target path with the same logic as `Config.load()`.
+/// Uses the config file path stored by `set()`.
 pub fn writeRaw(allocator: std.mem.Allocator, json: []const u8) !void {
     // Validate JSON first — refuse to write garbage
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, json, .{}) catch {
@@ -615,8 +593,7 @@ pub fn writeRaw(allocator: std.mem.Allocator, json: []const u8) !void {
     };
     parsed.deinit();
 
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const config_path = try resolveConfigPath(&path_buf);
+    const config_path = getPath();
 
     // Build .tmp path
     var tmp_buf: [std.fs.max_path_bytes]u8 = undefined;
