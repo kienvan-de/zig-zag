@@ -13,6 +13,7 @@ pub const auth = @import("auth/mod.zig");
 pub const cache = @import("cache/token_cache.zig");
 pub const app_cache = @import("cache/app_cache.zig");
 pub const http = @import("http.zig");
+pub const completion = @import("completion.zig");
 
 // Provider types — for handler access (temporary, removed in STORY 4)
 pub const openai_types = @import("providers/openai/types.zig");

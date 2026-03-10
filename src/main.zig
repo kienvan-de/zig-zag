@@ -74,6 +74,9 @@ pub fn main() !void {
     // the macOS app shows correct stats before the first request arrives.
     utils.checkBudgetPeriodOnStartup(&cfg);
 
+    // Set global config for core module access
+    config.set(&cfg);
+
     log.info("zig-zag v{s}", .{version});
 
     // Log configured providers (auth is lazy, on first request)
