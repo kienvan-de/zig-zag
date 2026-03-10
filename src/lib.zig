@@ -14,16 +14,17 @@
 
 const std = @import("std");
 const build_options = @import("build_options");
-const config = @import("config.zig");
+const core = @import("zig-zag-core");
+const config = core.config;
+const log = core.log;
+const token_cache = core.cache;
+const app_cache = core.app_cache;
+const worker_pool = core.worker_pool;
+const metrics = core.metrics;
+const provider = core.provider;
+const pricing = core.pricing;
+const utils = core.utils;
 const server = @import("server.zig");
-const log = @import("log.zig");
-const token_cache = @import("cache/token_cache.zig");
-const app_cache = @import("cache/app_cache.zig");
-const worker_pool = @import("worker_pool.zig");
-const metrics = @import("metrics.zig");
-const provider = @import("provider.zig");
-const pricing = @import("pricing.zig");
-const utils = @import("utils.zig");
 
 const version = build_options.version;
 

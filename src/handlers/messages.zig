@@ -23,41 +23,30 @@
 //!   5. Track metrics (tokens, costs)
 
 const std = @import("std");
-const Anthropic = @import("../providers/anthropic/types.zig");
-const errors = @import("../errors.zig");
-const http = @import("../http.zig");
-const utils = @import("../utils.zig");
-const provider_mod = @import("../provider.zig");
-const log = @import("../log.zig");
-const metrics = @import("../metrics.zig");
-const pricing = @import("../pricing.zig");
-const config_mod = @import("../config.zig");
+const core = @import("zig-zag-core");
+const Anthropic = core.anthropic_types;
+const errors = core.errors;
+const utils = core.utils;
+const provider_mod = core.provider;
+const log = core.log;
+const metrics = core.metrics;
+const pricing = core.pricing;
+const config_mod = core.config;
 
 // Provider modules
-const anthropic = struct {
-    const client = @import("../providers/anthropic/client.zig");
-    const transformer = @import("../providers/anthropic/transformer.zig");
-};
-
-const openai = struct {
-    const client = @import("../providers/openai/client.zig");
-    const transformer = @import("../providers/openai/transformer.zig");
-};
-
-const sap_ai_core = struct {
-    const client = @import("../providers/sap_ai_core/client.zig");
-    const transformer = @import("../providers/sap_ai_core/transformer.zig");
-};
-
+const anthropic = core.providers.anthropic;
+const openai = core.providers.openai;
+const sap_ai_core = core.providers.sap_ai_core;
 const hai = struct {
-    const client = @import("../providers/hai/client.zig");
-    const transformer = @import("../providers/anthropic/transformer.zig");
+    const client = core.providers.hai.client;
+    const transformer = core.providers.anthropic.transformer; // HAI uses Anthropic transformer for /v1/messages
+};
+const copilot = struct {
+    const client = core.providers.copilot.client;
+    const transformer = core.providers.openai.transformer; // Copilot is OpenAI-compatible
 };
 
-const copilot = struct {
-    const client = @import("../providers/copilot/client.zig");
-    const transformer = @import("../providers/openai/transformer.zig");
-};
+const http = core.http;
 
 /// Handle POST /v1/messages requests
 pub fn handle(
