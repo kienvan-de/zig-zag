@@ -115,7 +115,19 @@ pub fn handle(
     };
 
     // Budget enforcement
-    if (try utils.enforceBudget(config, allocator, connection)) return;
+    utils.enforceBudget(config) catch |err| switch (err) {
+        error.BudgetExceeded => {
+            const error_json = try errors.createErrorResponse(
+                allocator,
+                "Budget exceeded. Cost controls are enabled and the budget limit has been reached.",
+                .rate_limit_error,
+                "budget_exceeded",
+            );
+            defer allocator.free(error_json);
+            try http.sendJsonResponse(connection, .too_many_requests, error_json);
+            return;
+        },
+    };
 
     // Route to provider
     if (provider_mod.Provider.fromString(model_info.provider)) |native_provider| {
