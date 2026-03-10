@@ -9,8 +9,8 @@
 //! ```zig
 //! const core = @import("zig-zag-core");
 //!
-//! var cfg = try core.config.Config.load(allocator);
-//! core.config.set(&cfg);
+//! var cfg = try core.config.Config.loadFromFile(allocator, path);
+//! core.config.set(&cfg, path);
 //! core.cache.init(allocator);
 //! core.metrics.load();
 //! core.pricing.init(allocator, provider_names);
