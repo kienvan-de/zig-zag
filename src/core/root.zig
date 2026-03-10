@@ -69,9 +69,6 @@ pub const cache = @import("cache/token_cache.zig");
 /// Application-level cache (e.g. server port for FFI).
 pub const app_cache = @import("cache/app_cache.zig");
 
-/// HTTP utilities: SSE framing, JSON responses, ChunkedWriter.
-pub const http = @import("http.zig");
-
 // =========================================================================
 // Provider types — for callers building request/response structs
 // =========================================================================
