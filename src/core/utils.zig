@@ -14,8 +14,6 @@
 
 const std = @import("std");
 const config_mod = @import("config.zig");
-const errors = @import("errors.zig");
-const http = @import("http.zig");
 const log = @import("log.zig");
 const metrics = @import("metrics.zig");
 
@@ -96,15 +94,13 @@ pub fn checkBudgetPeriodOnStartup(config: *const config_mod.Config) void {
     checkAndResetBudgetPeriod(config);
 }
 
-/// Check cost controls and reject request if budget exceeded.
-/// Returns true if the request was rejected (caller should return immediately).
-/// Returns false if the request is allowed to proceed.
-pub fn enforceBudget(
-    config: *const config_mod.Config,
-    allocator: std.mem.Allocator,
-    connection: std.net.Server.Connection,
-) !bool {
-    if (!config.cost_controls.enabled) return false;
+pub const BudgetError = error{BudgetExceeded};
+
+/// Check budget and reset period if expired. Returns error.BudgetExceeded if
+/// cost_controls is enabled and the budget limit has been reached.
+/// No-op (returns void) if cost_controls is disabled.
+pub fn enforceBudget(config: *const config_mod.Config) BudgetError!void {
+    if (!config.cost_controls.enabled) return;
 
     // Check if budget period has expired and reset if needed
     checkAndResetBudgetPeriod(config);
@@ -113,18 +109,8 @@ pub fn enforceBudget(
     const total_cost = snap.input_cost + snap.output_cost;
     if (total_cost >= config.cost_controls.budget) {
         log.warn("Budget exceeded: ${d:.6} >= ${d:.6}, rejecting request", .{ total_cost, config.cost_controls.budget });
-        const error_json = try errors.createErrorResponse(
-            allocator,
-            "Budget exceeded. Cost controls are enabled and the budget limit has been reached.",
-            .rate_limit_error,
-            "budget_exceeded",
-        );
-        defer allocator.free(error_json);
-        try http.sendJsonResponse(connection, .too_many_requests, error_json);
-        return true;
+        return error.BudgetExceeded;
     }
-
-    return false;
 }
 
 // ============================================================================
