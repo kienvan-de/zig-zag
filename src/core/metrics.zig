@@ -57,39 +57,67 @@ var period_start: std.atomic.Value(i64) = std.atomic.Value(i64).init(0);
 // Public API - Counters
 // ============================================================================
 
-/// Add to the network receive counter
+/// Increment the cumulative network receive counter by the given number of bytes.
+///
+/// Called from the HTTP server layer each time data is read from a client connection.
+/// Thread-safe: uses an atomic fetch-add with monotonic ordering.
 pub fn addNetworkRx(bytes: u64) void {
     _ = network_rx_bytes.fetchAdd(bytes, .monotonic);
 }
 
-/// Add to the network transmit counter
+/// Increment the cumulative network transmit counter by the given number of bytes.
+///
+/// Called from the HTTP server layer each time data is written to a client connection.
+/// Thread-safe: uses an atomic fetch-add with monotonic ordering.
 pub fn addNetworkTx(bytes: u64) void {
     _ = network_tx_bytes.fetchAdd(bytes, .monotonic);
 }
 
-/// Add input tokens from an LLM response
+/// Increment the cumulative input (prompt) token counter.
+///
+/// Called after each LLM response is received, using the `prompt_tokens` (or equivalent)
+/// value reported by the upstream provider. These counts persist across restarts via `persist()`.
+/// Thread-safe: uses an atomic fetch-add with monotonic ordering.
 pub fn addInputTokens(tokens: u64) void {
     _ = input_tokens.fetchAdd(tokens, .monotonic);
 }
 
-/// Add output tokens from an LLM response
+/// Increment the cumulative output (completion) token counter.
+///
+/// Called after each LLM response is received, using the `completion_tokens` (or equivalent)
+/// value reported by the upstream provider. These counts persist across restarts via `persist()`.
+/// Thread-safe: uses an atomic fetch-add with monotonic ordering.
 pub fn addOutputTokens(tokens: u64) void {
     _ = output_tokens.fetchAdd(tokens, .monotonic);
 }
 
-/// Add input cost (in dollars, converted to micro-dollars internally)
+/// Add to the cumulative input (prompt) cost.
+///
+/// Accepts the cost in **dollars** (e.g. `0.003`) and converts it internally to
+/// micro-dollars (millionths of a dollar) so the value can be stored in an atomic `u64`.
+/// The conversion is: `micros = dollars * 1_000_000`.
+/// Thread-safe: uses an atomic fetch-add with monotonic ordering.
 pub fn addInputCost(dollars: f64) void {
     const micros: u64 = @intFromFloat(dollars * 1_000_000.0);
     _ = input_cost_micros.fetchAdd(micros, .monotonic);
 }
 
-/// Add output cost (in dollars, converted to micro-dollars internally)
+/// Add to the cumulative output (completion) cost.
+///
+/// Accepts the cost in **dollars** (e.g. `0.012`) and converts it internally to
+/// micro-dollars (millionths of a dollar) so the value can be stored in an atomic `u64`.
+/// The conversion is: `micros = dollars * 1_000_000`.
+/// Thread-safe: uses an atomic fetch-add with monotonic ordering.
 pub fn addOutputCost(dollars: f64) void {
     const micros: u64 = @intFromFloat(dollars * 1_000_000.0);
     _ = output_cost_micros.fetchAdd(micros, .monotonic);
 }
 
-/// Reset all counters to zero (useful for testing or server restart)
+/// Reset **all** counters to zero, including network I/O, tokens, costs, and `period_start`.
+///
+/// Primarily used in tests or when the server is fully restarted from a clean state.
+/// For budget-period resets (which preserve network counters), use `resetCosts()` instead.
+/// Thread-safe: each counter is stored atomically with monotonic ordering.
 pub fn reset() void {
     network_rx_bytes.store(0, .monotonic);
     network_tx_bytes.store(0, .monotonic);
@@ -100,8 +128,18 @@ pub fn reset() void {
     period_start.store(0, .monotonic);
 }
 
-/// Reset cost and token counters, and update period start timestamp.
-/// Used when budget period expires (days_duration).
+/// Reset cost **and** token counters, and set `period_start` to the current wall-clock time.
+///
+/// Called by `utils.checkAndResetBudgetPeriod()` when the budget period configured in
+/// `cost_controls.days_duration` has expired. This zeroes:
+/// - `input_tokens` and `output_tokens`
+/// - `input_cost_micros` and `output_cost_micros`
+///
+/// Network I/O counters are **not** affected.
+///
+/// After resetting, `period_start` is updated to `std.time.timestamp()` (seconds since
+/// epoch) so the next budget window begins immediately. The new values are subsequently
+/// written to disk by `persist()`.
 pub fn resetCosts() void {
     input_tokens.store(0, .monotonic);
     output_tokens.store(0, .monotonic);
@@ -110,8 +148,12 @@ pub fn resetCosts() void {
     period_start.store(std.time.timestamp(), .monotonic);
 }
 
-/// Get the budget period start timestamp.
-/// Returns 0 if not set (caller should treat as "now").
+/// Return the budget period start timestamp as seconds since the Unix epoch.
+///
+/// A return value of `0` means the period has never been initialised — callers
+/// (e.g. `utils.checkAndResetBudgetPeriod`) should treat this as "period starts now"
+/// and call `resetCosts()` to anchor the timestamp.
+/// Thread-safe: uses an atomic load with monotonic ordering.
 pub fn getPeriodStart() i64 {
     return period_start.load(.monotonic);
 }
@@ -252,21 +294,46 @@ fn getProcessStats() struct { rss_bytes: u64, cpu_time_us: u64 } {
 // Snapshot for stats reporting
 // ============================================================================
 
+/// A point-in-time capture of every tracked metric.
+///
+/// Returned by `snapshot()` and consumed by the macOS menu-bar app (via C FFI)
+/// and by any future REST metrics endpoint. All monetary values are expressed in
+/// **dollars** (converted from the internal micro-dollar representation).
+///
+/// Because each field is read from a separate atomic counter, a `Snapshot` is
+/// *nearly* consistent — individual fields are each atomic, but the aggregate is
+/// not captured under a single lock. This is acceptable for display purposes.
 pub const Snapshot = struct {
-    // Process stats from OS
+    /// Resident memory (physical footprint) of the process in bytes.
+    /// macOS: `phys_footprint` from `TASK_VM_INFO` (matches the `top` MEM column).
+    /// Linux: RSS from `/proc/self/statm`.
     rss_bytes: u64,
+    /// Total CPU time (user + system) consumed by the process, in **microseconds**.
     cpu_time_us: u64,
-    // Network I/O
+    /// Cumulative bytes received from downstream clients since the process started.
     network_rx_bytes: u64,
+    /// Cumulative bytes sent to downstream clients since the process started.
     network_tx_bytes: u64,
-    // LLM metrics
+    /// Cumulative input (prompt) tokens across all LLM requests in the current budget period.
     input_tokens: u64,
+    /// Cumulative output (completion) tokens across all LLM requests in the current budget period.
     output_tokens: u64,
+    /// Cumulative input (prompt) cost in **dollars** for the current budget period.
     input_cost: f64,
+    /// Cumulative output (completion) cost in **dollars** for the current budget period.
     output_cost: f64,
 };
 
-/// Get a consistent snapshot of all metrics including process stats
+/// Capture a point-in-time `Snapshot` of all tracked metrics, including live
+/// process stats (RSS, CPU) obtained from the OS.
+///
+/// Each atomic counter is loaded individually with monotonic ordering, so the
+/// snapshot is *nearly* consistent — suitable for human-readable dashboards but
+/// not for transactional accounting. Cost values are converted from internal
+/// micro-dollars back to dollars before being stored in the returned struct.
+///
+/// This function is called frequently by the macOS app's polling timer and is
+/// designed to be cheap (no allocations, no syscall failures propagated).
 pub fn snapshot() Snapshot {
     const process_stats = getProcessStats();
     return .{
@@ -302,9 +369,18 @@ fn getMetricsPath(buf: []u8) ?[]const u8 {
     return std.fmt.bufPrint(buf, "{s}/.config/zig-zag/{s}", .{ home, METRICS_FILENAME }) catch null;
 }
 
-/// Load persisted metrics from disk and restore atomic counters.
-/// Called once at startup before the server accepts requests.
-/// If the file doesn't exist or is malformed, counters start at zero (no error).
+/// Load persisted metrics from `~/.config/zig-zag/metrics.json` and restore the
+/// atomic counters (tokens, costs, and `period_start`).
+///
+/// **Must be called once at startup**, before the server accepts any requests and
+/// before `utils.checkBudgetPeriodOnStartup()` runs, so that the budget logic
+/// sees the correct accumulated totals and period timestamp.
+///
+/// If the file does not exist (first run) or cannot be parsed, all counters
+/// remain at their initial zero values — no error is propagated.
+///
+/// Network I/O counters (`network_rx_bytes`, `network_tx_bytes`) are **not**
+/// persisted and always start at zero on each process launch.
 pub fn load() void {
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const path = getMetricsPath(&path_buf) orelse return;
@@ -348,8 +424,20 @@ pub fn load() void {
     });
 }
 
-/// Persist current metrics to disk.
-/// Called after each request that updates costs, and on shutdown.
+/// Persist current token counts, costs, and `period_start` to
+/// `~/.config/zig-zag/metrics.json`.
+///
+/// The write is **atomic**: data is first written to a temporary `.tmp` file and
+/// then renamed over the target path, so a crash mid-write never corrupts the
+/// existing file.
+///
+/// Called after every request that modifies cost/token counters, after a budget
+/// period reset, and on graceful shutdown. Network I/O counters are intentionally
+/// **not** persisted (they reset each process launch).
+///
+/// If any step fails (serialisation, file creation, rename), a warning is logged
+/// and the function returns silently — the next successful call will capture the
+/// latest values.
 pub fn persist() void {
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const path = getMetricsPath(&path_buf) orelse return;

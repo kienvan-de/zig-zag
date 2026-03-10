@@ -24,24 +24,52 @@ const LogOutput = log_mod.LogOutput;
 
 var global_config: ?*const Config = null;
 
-/// Set the global config reference. Called once by the wrapper after loading.
+/// Set the global config singleton reference.
+///
+/// Must be called **exactly once** by the wrapper (e.g. `main.zig` or `lib.zig`)
+/// after `Config.load()` / `Config.loadFromFile()` completes successfully.
+/// All core modules obtain configuration via `config.get()`, so the proxy will
+/// panic on the first access if this function was never called.
+///
+/// **Example (wrapper startup)**:
+/// ```zig
+/// var cfg = try Config.load(allocator);
+/// config.set(&cfg);
+/// ```
 pub fn set(cfg: *const Config) void {
     global_config = cfg;
 }
 
-/// Get the global config reference. Panics if not set.
+/// Return the global config singleton.
+///
+/// This is the primary entry-point used throughout the core and handler code
+/// to read configuration at runtime.  It is safe to call from any thread
+/// because the pointer is set once at startup and never mutated afterwards.
+///
+/// **Panics** if `set()` has not been called yet.
 pub fn get() *const Config {
     return global_config orelse @panic("config not set — call config.set() first");
 }
 
-/// Provider-specific configuration
-/// Wraps a parsed JSON object and provides type-safe accessors
+/// Provider-specific configuration backed by a raw JSON object.
+///
+/// Each key inside the top-level `"providers"` object in `config.json` is
+/// parsed into a `ProviderConfig`.  The struct does **not** copy data — it
+/// holds a reference into the root `std.json.Parsed` tree owned by `Config`,
+/// so it remains valid for the lifetime of the parent `Config`.
+///
+/// Type-safe accessors (`getString`, `getInt`, `getFloat`, `getBool`) let
+/// provider client code read values without touching raw JSON directly.
 pub const ProviderConfig = struct {
     allocator: std.mem.Allocator,
-    name: []const u8, // Provider name from config key (e.g., "openai", "groq")
+    /// Provider name taken from the config key (e.g. `"openai"`, `"groq"`, `"anthropic"`).
+    name: []const u8,
+    /// The raw JSON object for this provider — a reference into the root parsed tree.
     raw: std.json.Value,
 
-    /// Get string value from config
+    /// Look up a string value by `key` in this provider's JSON object.
+    ///
+    /// Returns `null` when the key is missing or the value is not a JSON string.
     pub fn getString(self: *const ProviderConfig, key: []const u8) ?[]const u8 {
         const obj = self.raw.object;
         const value = obj.get(key) orelse return null;
@@ -51,7 +79,9 @@ pub const ProviderConfig = struct {
         };
     }
 
-    /// Get integer value from config
+    /// Look up an integer value by `key` in this provider's JSON object.
+    ///
+    /// Returns `null` when the key is missing or the value is not a JSON integer.
     pub fn getInt(self: *const ProviderConfig, key: []const u8) ?i64 {
         const obj = self.raw.object;
         const value = obj.get(key) orelse return null;
@@ -61,7 +91,11 @@ pub const ProviderConfig = struct {
         };
     }
 
-    /// Get float value from config
+    /// Look up a floating-point value by `key` in this provider's JSON object.
+    ///
+    /// JSON integers are transparently promoted to `f64`, so a config entry
+    /// like `"timeout": 30` is returned as `30.0`.
+    /// Returns `null` when the key is missing or the value is neither float nor integer.
     pub fn getFloat(self: *const ProviderConfig, key: []const u8) ?f64 {
         const obj = self.raw.object;
         const value = obj.get(key) orelse return null;
@@ -72,7 +106,9 @@ pub const ProviderConfig = struct {
         };
     }
 
-    /// Get boolean value from config
+    /// Look up a boolean value by `key` in this provider's JSON object.
+    ///
+    /// Returns `null` when the key is missing or the value is not a JSON boolean.
     pub fn getBool(self: *const ProviderConfig, key: []const u8) ?bool {
         const obj = self.raw.object;
         const value = obj.get(key) orelse return null;
@@ -82,7 +118,11 @@ pub const ProviderConfig = struct {
         };
     }
 
-    /// Cleanup provider config (no-op now, kept for API compatibility)
+    /// Release resources owned by this provider config.
+    ///
+    /// Currently a no-op because all data is borrowed from the root parsed
+    /// tree (freed by `Config.deinit()`).  Retained for API compatibility so
+    /// callers that iterate and deinit individual providers keep compiling.
     pub fn deinit(self: *ProviderConfig) void {
         _ = self;
     }
@@ -92,28 +132,50 @@ pub const ProviderConfig = struct {
 // Default Values (single source of truth)
 // ============================================================================
 
+/// Compile-time default values for every configurable setting.
+///
+/// This namespace is the **single source of truth** for defaults — struct
+/// field initialisers in `ServerConfig`, `LogConfig`, etc. reference these
+/// constants so that a missing JSON key always falls back to a well-known
+/// value without duplicating magic numbers.
 pub const defaults = struct {
-    // Server
+    // ── Server ──────────────────────────────────────────────────────────
+    /// Default bind address (all interfaces).
     pub const server_host: []const u8 = "0.0.0.0";
+    /// Default listening port.
     pub const server_port: u16 = 8080;
+    /// Number of HTTP worker threads in the server pool.
     pub const server_http_pool_size: i64 = 3;
+    /// Number of I/O worker threads for background tasks.
     pub const server_io_pool_size: i64 = 1;
+    /// Maximum HTTP header size in bytes (32 KB).
     pub const server_max_header_size: i64 = 32 * 1024; // 32 KB
+    /// Maximum HTTP body size in bytes (10 MB).
     pub const server_max_body_size: i64 = 10 * 1024 * 1024; // 10 MB
+    /// Read timeout per connection in milliseconds (30 s).
     pub const server_read_timeout_ms: i64 = 30_000; // 30 s
 
-    // Logging
+    // ── Logging ─────────────────────────────────────────────────────────
+    /// Maximum size of a single log file before rotation, in megabytes.
     pub const log_max_file_size_mb: i64 = 10;
+    /// Maximum number of rotated log files to retain.
     pub const log_max_files: i64 = 5;
+    /// In-memory log buffer size (number of entries).
     pub const log_buffer_size: i64 = 100;
+    /// Interval between automatic log flushes, in milliseconds.
     pub const log_flush_interval_ms: i64 = 1_000;
 
-    // Provider (shared across all providers)
+    // ── Provider (shared across all providers) ──────────────────────────
+    /// Upstream request timeout in milliseconds (60 s).
     pub const provider_timeout_ms: i64 = 60_000; // 60 s
+    /// Maximum upstream response body size in megabytes.
     pub const provider_max_response_size_mb: i64 = 10;
 };
 
-/// Server configuration
+/// HTTP server configuration, parsed from the `"server"` section of `config.json`.
+///
+/// Every field has a sensible default (see `defaults`) so the entire section
+/// can be omitted from the config file.
 pub const ServerConfig = struct {
     port: u16 = defaults.server_port,
     host: []const u8 = defaults.server_host,
@@ -124,42 +186,88 @@ pub const ServerConfig = struct {
     read_timeout_ms: i64 = defaults.server_read_timeout_ms,
 };
 
-/// Logging configuration
+/// Logging configuration, parsed from the `"logging"` section of `config.json`.
+///
+/// Controls log level, output destination (`stderr` or rotating files),
+/// file rotation policy, and the in-memory buffer that batches writes.
+/// All fields are optional and fall back to `defaults`.
 pub const LogConfig = struct {
     level: std.log.Level = .info,
-    path: ?[]const u8 = null, // null = use OS default
+    /// Explicit log file path.  `null` means use the OS-default location.
+    path: ?[]const u8 = null,
     max_file_size_mb: i64 = defaults.log_max_file_size_mb,
     max_files: i64 = defaults.log_max_files,
     buffer_size: i64 = defaults.log_buffer_size,
     flush_interval_ms: i64 = defaults.log_flush_interval_ms,
-    output: LogOutput = .stderr, // output destination: "file" or "stderr"
+    /// Output destination — `"file"` or `"stderr"` in the JSON; defaults to `.stderr`.
+    output: LogOutput = .stderr,
 };
 
-/// Statistics display configuration
+/// Statistics display toggles, parsed from the `"statistics"` section of `config.json`.
+///
+/// These flags control which informational rows are visible in the macOS
+/// menu-bar app.  They have no effect on the proxy's runtime behaviour —
+/// metrics are always collected regardless of these settings.
 pub const StatisticsConfig = struct {
+    /// Show the RAM / CPU / Network performance row.
     show_performance: bool = true,
+    /// Show the Providers / Input-Output tokens row.
     show_llm: bool = true,
+    /// Show the cost row.  Overridden to `true` when `CostControlsConfig.enabled` is set.
     show_cost: bool = true,
 };
 
-/// Cost controls configuration
+/// Cost / budget controls, parsed from the `"cost_controls"` section of `config.json`.
+///
+/// When `enabled` is `true` the proxy enforces a spending limit:
+/// - Requests are rejected with **429 Too Many Requests** once the budget is exhausted.
+/// - The cost row in the macOS app always shows regardless of `StatisticsConfig.show_cost`,
+///   and displays **remaining budget** instead of total spent.
+/// - On startup, if the budget period has expired, both costs **and** token counts
+///   are reset before any request is served (see `utils.checkBudgetPeriodOnStartup`).
 pub const CostControlsConfig = struct {
+    /// Master switch — `false` disables all budget enforcement.
     enabled: bool = false,
+    /// Spending limit in USD for the current period.
     budget: f64 = 0.0,
-    days_duration: u32 = 0, // 0 = no reset (lifetime budget)
+    /// Budget reset period in days.  `0` = lifetime (never resets),
+    /// `1` = daily, `30` = monthly, etc.
+    days_duration: u32 = 0,
 };
 
-/// Main application configuration
+/// Main application configuration — the top-level result of parsing `config.json`.
+///
+/// Owns the root `std.json.Parsed` tree and a hash-map of `ProviderConfig`
+/// entries.  All string slices inside nested structs (e.g. `ServerConfig.host`,
+/// `ProviderConfig.name`) are **borrowed** from the parsed tree, so they remain
+/// valid until `deinit()` is called.
+///
+/// Typical lifecycle:
+/// ```
+/// var cfg = try Config.load(allocator);   // or Config.loadFromFile(…)
+/// defer cfg.deinit();
+/// config.set(&cfg);                       // publish as global singleton
+/// ```
 pub const Config = struct {
     allocator: std.mem.Allocator,
+    /// Map of provider name → `ProviderConfig` (e.g. `"openai"` → config object).
     providers: std.StringHashMap(ProviderConfig),
     server: ServerConfig,
     log: LogConfig,
     statistics: StatisticsConfig,
     cost_controls: CostControlsConfig,
-    _parsed: std.json.Parsed(std.json.Value), // Keep root parsed alive
+    /// The root parsed JSON tree.  Kept alive so that all borrowed slices
+    /// in `ProviderConfig` and other structs remain valid.
+    _parsed: std.json.Parsed(std.json.Value),
 
-    /// Load configuration from ZIG_ZAG_CONFIG env var or ~/.config/zig-zag/config.json
+    /// Load configuration using the standard resolution order:
+    ///
+    /// 1. If the **`ZIG_ZAG_CONFIG`** environment variable is set, its value
+    ///    is used as the file path.
+    /// 2. Otherwise falls back to `~/.config/zig-zag/config.json`.
+    ///
+    /// Returns `error.HomeNotFound` when neither env var is set nor `$HOME`
+    /// is available.  All other errors propagate from `loadFromFile`.
     pub fn load(allocator: std.mem.Allocator) !Config {
         if (std.posix.getenv("ZIG_ZAG_CONFIG")) |config_path| {
             return loadFromFile(allocator, config_path);
@@ -177,7 +285,18 @@ pub const Config = struct {
         return loadFromFile(allocator, config_path);
     }
 
-    /// Load configuration from specific file path
+    /// Load and parse configuration from an explicit file path.
+    ///
+    /// The file must contain a JSON object with at least a `"providers"` key.
+    /// Optional top-level keys (`"server"`, `"logging"`, `"statistics"`,
+    /// `"cost_controls"`) are merged with their respective defaults.
+    ///
+    /// On success the returned `Config` owns all allocated memory; call
+    /// `deinit()` when it is no longer needed.
+    ///
+    /// **Side-effect:** caches `server.port` in `app_cache` so that provider
+    /// clients (e.g. Copilot redirect URI) can discover the port without a
+    /// direct config dependency.
     pub fn loadFromFile(allocator: std.mem.Allocator, path: []const u8) !Config {
         // Read file
         const file = std.fs.cwd().openFile(path, .{}) catch |err| {
@@ -407,19 +526,29 @@ pub const Config = struct {
         };
     }
 
-    /// Get configuration for specific provider
+    /// Return a pointer to the `ProviderConfig` for the given `provider`, or
+    /// `null` if that provider is not present in the config file.
+    ///
+    /// The returned pointer borrows into `self.providers` and is valid for
+    /// the lifetime of this `Config`.
     pub fn getProviderConfig(self: *const Config, provider: provider_mod.Provider) ?*const ProviderConfig {
         const provider_name = @tagName(provider);
         return self.providers.getPtr(provider_name);
     }
 
-    /// Check if provider is configured
+    /// Return `true` if the given `provider` has an entry in the `"providers"`
+    /// section of the config file (regardless of whether its fields are valid).
     pub fn hasProvider(self: *const Config, provider: provider_mod.Provider) bool {
         const provider_name = @tagName(provider);
         return self.providers.contains(provider_name);
     }
 
-    /// Cleanup configuration
+    /// Release all resources owned by this configuration.
+    ///
+    /// Deinitialises every `ProviderConfig`, the provider hash-map, and the
+    /// root parsed JSON tree.  After this call **all** borrowed slices
+    /// (provider names, string config values, `ServerConfig.host`, etc.)
+    /// become invalid.
     pub fn deinit(self: *Config) void {
         var it = self.providers.valueIterator();
         while (it.next()) |prov_config| {
@@ -430,7 +559,11 @@ pub const Config = struct {
     }
 };
 
-/// Configuration errors — defined in errors.zig
+/// Configuration error set, re-exported from `errors.zig`.
+///
+/// Includes errors such as `InvalidConfigFormat`, `InvalidProviderConfig`,
+/// and `HomeNotFound` that can be returned during config loading and
+/// validation.
 pub const ConfigError = @import("errors.zig").ConfigError;
 
 // ============================================================================
@@ -446,8 +579,13 @@ fn resolveConfigPath(buf: []u8) ![]const u8 {
     return try std.fmt.bufPrint(buf, "{s}/.config/zig-zag/config.json", .{home});
 }
 
-/// Read the raw config file bytes.
-/// Caller owns the returned slice and must free it.
+/// Read the raw config file as an unprocessed byte slice.
+///
+/// Resolves the config path using the same logic as `Config.load()`
+/// (`$ZIG_ZAG_CONFIG` → `~/.config/zig-zag/config.json`).
+///
+/// The caller **owns** the returned slice and must free it with `allocator`.
+/// Maximum file size: 1 MB.
 pub fn readRaw(allocator: std.mem.Allocator) ![]const u8 {
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const config_path = try resolveConfigPath(&path_buf);
@@ -461,9 +599,15 @@ pub fn readRaw(allocator: std.mem.Allocator) ![]const u8 {
     return file.readToEndAlloc(allocator, 1024 * 1024); // 1MB max
 }
 
-/// Write raw JSON bytes to the config file atomically.
-/// Validates that `json` is valid JSON before writing.
-/// Uses a .tmp file + rename to avoid partial writes on crash.
+/// Atomically write raw JSON bytes to the config file.
+///
+/// 1. **Validates** that `json` is syntactically valid JSON — refuses to
+///    write malformed data (returns `error.InvalidConfigFormat`).
+/// 2. Writes to a temporary `.tmp` sibling file.
+/// 3. Performs an atomic **rename** (`.tmp` → config path) so that readers
+///    never observe a partially-written file, even on crash.
+///
+/// Resolves the target path with the same logic as `Config.load()`.
 pub fn writeRaw(allocator: std.mem.Allocator, json: []const u8) !void {
     // Validate JSON first — refuse to write garbage
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, json, .{}) catch {
