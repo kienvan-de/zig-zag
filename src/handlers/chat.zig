@@ -14,66 +14,15 @@
 
 //! Chat Completions Handler
 //!
-//! This module handles POST /v1/chat/completions requests and routes them to
-//! appropriate LLM providers using comptime generics.
-//!
-//! ## Adding a New Provider
-//!
-//! 1. Create provider folder: `src/newprovider/`
-//!    - `types.zig` - Provider-specific request/response schemas
-//!    - `client.zig` - HTTP client with `init()`, `deinit()`, `sendRequest()`
-//!    - `transformer.zig` - OpenAI ↔ Provider transformations
-//!
-//! 2. Implement required interfaces:
-//!    - Client: `init(allocator, api_key)`, `deinit()`, `sendRequest(request)`
-//!    - Transformer: `transform()`, `transformResponse()`, `cleanupRequest()`, `cleanupResponse()`
-//!    - Types: `Request` and `Response` structs
-//!
-//! 3. Add provider import:
-//!    ```zig
-//!    const newprovider = struct {
-//!        const types = @import("../newprovider/types.zig");
-//!        const client = @import("../newprovider/client.zig");
-//!        const transformer = @import("../newprovider/transformer.zig");
-//!    };
-//!    ```
-//!
-//! 4. Add case to switch statement:
-//!    ```zig
-//!    .newprovider => try handleProvider(
-//!        newprovider.client.ClientType,
-//!        newprovider.transformer,
-//!        newprovider.types,
-//!        allocator, connection, openai_request.value, model_info.model, api_key
-//!    ),
-//!    ```
-//!
-//! The comptime system will verify all interfaces at compile time!
+//! Thin HTTP wrapper over core.completion.chatComplete().
+//! Handles POST /v1/chat/completions requests.
 
 const std = @import("std");
 const core = @import("zig-zag-core");
 const OpenAI = core.openai_types;
 const errors = core.errors;
-const utils = core.utils;
-const provider = core.provider;
 const log = core.log;
-const metrics = core.metrics;
-const pricing = core.pricing;
 const config_mod = core.config;
-
-// Provider modules
-const anthropic = core.providers.anthropic;
-const openai = core.providers.openai;
-const sap_ai_core = core.providers.sap_ai_core;
-const hai = struct {
-    const client = core.providers.hai.client;
-    const transformer = core.providers.openai.transformer; // HAI is OpenAI-compatible
-};
-const copilot = struct {
-    const client = core.providers.copilot.client;
-    const transformer = core.providers.openai.transformer; // Copilot is OpenAI-compatible
-};
-
 const http = core.http;
 
 /// Handle POST /v1/chat/completions requests
@@ -87,6 +36,8 @@ pub fn handle(
 ) !void {
     _ = method;
     _ = path;
+    _ = config;
+
     // Parse OpenAI request
     const openai_request = std.json.parseFromSlice(
         OpenAI.Request,
@@ -108,499 +59,110 @@ pub fn handle(
     };
     defer openai_request.deinit();
 
-    // Check if streaming
     const is_streaming = openai_request.value.stream orelse false;
 
-    // Parse model string to extract provider
-    const model_info = utils.parseModelString(openai_request.value.model, allocator) catch |err| {
-        log.err("Model parsing error: {} for model '{s}'", .{ err, openai_request.value.model });
-        const error_json = try errors.createErrorResponse(
-            allocator,
-            "Invalid model format. Expected 'provider/model-name' (e.g., 'anthropic/claude-3-5-sonnet-latest')",
-            .invalid_request_error,
-            null,
-        );
-        defer allocator.free(error_json);
-        try http.sendJsonResponse(connection, .bad_request, error_json);
-        return;
-    };
-    defer allocator.free(model_info.model);
-
-    defer allocator.free(model_info.provider);
-
-    // Try to get provider config by name (allows any provider name, not just enum values)
-    const provider_config = config.providers.getPtr(model_info.provider) orelse {
-        log.err("Provider not configured: '{s}'", .{model_info.provider});
-        const error_json = try errors.createErrorResponse(
-            allocator,
-            "Provider not configured",
-            .invalid_request_error,
-            null,
-        );
-        defer allocator.free(error_json);
-        try http.sendJsonResponse(connection, .bad_request, error_json);
-        return;
-    };
-
-    // Budget enforcement
-    utils.enforceBudget(config) catch |err| switch (err) {
-        error.BudgetExceeded => {
-            const error_json = try errors.createErrorResponse(
-                allocator,
-                "Budget exceeded. Cost controls are enabled and the budget limit has been reached.",
-                .rate_limit_error,
-                "budget_exceeded",
-            );
-            defer allocator.free(error_json);
-            try http.sendJsonResponse(connection, .too_many_requests, error_json);
-            return;
-        },
-    };
-
-    // Check if this is a native provider
-    if (provider.Provider.fromString(model_info.provider)) |native_provider| {
-        // Native provider - route based on enum
-        switch (native_provider) {
-            .anthropic => try dispatchChat(anthropic.client.AnthropicClient, anthropic.transformer, is_streaming, allocator, connection, openai_request.value, model_info.model, model_info.provider, provider_config),
-            .openai => try dispatchChat(openai.client.OpenAIClient, openai.transformer, is_streaming, allocator, connection, openai_request.value, model_info.model, model_info.provider, provider_config),
-            .sap_ai_core => try dispatchChat(sap_ai_core.client.SapAiCoreClient, sap_ai_core.transformer, is_streaming, allocator, connection, openai_request.value, model_info.model, model_info.provider, provider_config),
-            .hai => try dispatchChat(hai.client.HaiClient, hai.transformer, is_streaming, allocator, connection, openai_request.value, model_info.model, model_info.provider, provider_config),
-            .copilot => try dispatchChat(copilot.client.CopilotClient, copilot.transformer, is_streaming, allocator, connection, openai_request.value, model_info.model, model_info.provider, provider_config),
-        }
-    } else |_| {
-        // Not a native provider - check for "compatible" field
-        const compatible = provider_config.getString("compatible") orelse {
-            log.err("Provider '{s}' not supported and no 'compatible' field specified", .{model_info.provider});
-            const error_json = try errors.createErrorResponse(
-                allocator,
-                "Provider not supported and no 'compatible' field specified",
-                .invalid_request_error,
-                null,
-            );
-            defer allocator.free(error_json);
-            try http.sendJsonResponse(connection, .bad_request, error_json);
-            return;
-        };
-
-        // Route based on compatibility
-        if (std.mem.eql(u8, compatible, "openai")) {
-            try dispatchChat(openai.client.OpenAIClient, openai.transformer, is_streaming, allocator, connection, openai_request.value, model_info.model, model_info.provider, provider_config);
-        } else if (std.mem.eql(u8, compatible, "anthropic")) {
-            try dispatchChat(anthropic.client.AnthropicClient, anthropic.transformer, is_streaming, allocator, connection, openai_request.value, model_info.model, model_info.provider, provider_config);
-        } else {
-            log.err("Unknown compatible provider type: '{s}'. Must be 'openai' or 'anthropic'", .{compatible});
-            const error_json = try errors.createErrorResponse(
-                allocator,
-                "Unknown compatible provider type. Must be 'openai' or 'anthropic'",
-                .invalid_request_error,
-                null,
-            );
-            defer allocator.free(error_json);
-            try http.sendJsonResponse(connection, .bad_request, error_json);
-            return;
-        }
-    }
-}
-
-/// Generic streaming provider handler
-/// Helper to dispatch to streaming or non-streaming handler
-fn dispatchChat(
-    comptime Client: type,
-    comptime Transformer: type,
-    is_streaming: bool,
-    allocator: std.mem.Allocator,
-    connection: std.net.Server.Connection,
-    openai_request: OpenAI.Request,
-    model: []const u8,
-    provider_name: []const u8,
-    provider_config: *const config_mod.ProviderConfig,
-) !void {
     if (is_streaming) {
-        try handleProviderStreaming(Client, Transformer, allocator, connection, openai_request, model, provider_name, provider_config);
-    } else {
-        try handleProvider(Client, Transformer, allocator, connection, openai_request, model, provider_name, provider_config);
-    }
-}
-
-fn handleProviderStreaming(
-    comptime Client: type,
-    comptime Transformer: type,
-    allocator: std.mem.Allocator,
-    connection: std.net.Server.Connection,
-    openai_request: OpenAI.Request,
-    model: []const u8,
-    provider_name: []const u8,
-    provider_config: *const config_mod.ProviderConfig,
-) !void {
-    const start_time = std.time.milliTimestamp();
-    log.info("[STREAM] POST /v1/chat/completions - request received for model '{s}'", .{openai_request.model});
-
-    // Transform OpenAI request to provider format
-    const transform_start = std.time.milliTimestamp();
-    const provider_request = Transformer.transform(
-        openai_request,
-        model,
-        allocator,
-    ) catch |err| {
-        log.err("[STREAM] Transform request error: {} for model '{s}'", .{ err, openai_request.model });
-        const error_json = try errors.createErrorResponse(
-            allocator,
-            "Failed to transform request",
-            .invalid_request_error,
-            null,
-        );
-        defer allocator.free(error_json);
-        try http.sendJsonResponse(connection, .bad_request, error_json);
-        return;
-    };
-    defer Transformer.cleanupRequest(provider_request, allocator);
-    const transform_time = std.time.milliTimestamp() - transform_start;
-    log.debug("[STREAM] Transform request completed in {d}ms", .{transform_time});
-
-    // Initialize client
-    const client_init_start = std.time.milliTimestamp();
-    var client = Client.init(allocator, provider_config) catch |err| {
-        log.err("[STREAM] Client initialization error: {} for model '{s}'", .{ err, openai_request.model });
-        const error_json = try errors.createErrorResponse(
-            allocator,
-            "Failed to initialize provider client",
-            .invalid_request_error,
-            null,
-        );
-        defer allocator.free(error_json);
-        try http.sendJsonResponse(connection, .bad_request, error_json);
-        return;
-    };
-    defer client.deinit();
-    const client_init_time = std.time.milliTimestamp() - client_init_start;
-    log.debug("[STREAM] Client init completed in {d}ms", .{client_init_time});
-
-    // Start streaming request and get iterator
-    const stream_connect_start = std.time.milliTimestamp();
-    const stream_result = client.sendStreamingRequest(provider_request) catch |err| {
-        log.err("[STREAM] Provider streaming error: {} for model '{s}'", .{ err, openai_request.model });
-        const error_json = try errors.createErrorResponse(
-            allocator,
-            "Failed to communicate with upstream API",
-            .server_error,
-            null,
-        );
-        defer allocator.free(error_json);
-        try http.sendJsonResponse(connection, .bad_gateway, error_json);
-        return;
-    };
-    defer client.freeStreamingResult(stream_result);
-    const stream_connect_time = std.time.milliTimestamp() - stream_connect_start;
-    log.debug("[STREAM] Stream connection established in {d}ms", .{stream_connect_time});
-
-    // Send SSE headers to client
-    try http.sendSseHeaders(connection);
-
-    // Initialize streaming state
-    var state = Transformer.StreamState.init(allocator, openai_request.model);
-    defer state.deinit();
-
-    // Process each chunk from upstream
-    const process_start = std.time.milliTimestamp();
-    var chunk_count: u32 = 0;
-    var first_chunk_time: ?i64 = null;
-    var had_error = false;
-    while (true) {
-        const maybe_line = stream_result.iterator.next() catch |err| {
-            // Upstream read failure — the provider connection broke mid-stream.
-            // This wraps the real socket error (ConnectionResetByPeer, ConnectionTimedOut, etc.)
-            // inside error.ReadFailed via the Zig Io.Reader adapter layer.
-            had_error = true;
-
-            // Try to get the underlying HTTP-level error for diagnostics
-            const body_err = stream_result.response.bodyErr();
-            if (body_err) |underlying| {
-                log.err("[STREAM] Upstream read failed for model '{s}': {} (underlying: {})", .{ openai_request.model, err, underlying });
-            } else {
-                log.err("[STREAM] Upstream read failed for model '{s}': {} (after {d} chunks)", .{ openai_request.model, err, chunk_count });
-            }
-
-            // Send an SSE error event to the client so it knows what happened
-            const error_response = errors.createErrorResponse(
-                allocator,
-                "Upstream connection lost while streaming response",
-                .server_error,
-                null,
-            ) catch break;
-            defer allocator.free(error_response);
-
-            var buffer = std.ArrayList(u8){};
-            defer buffer.deinit(allocator);
-            buffer.writer(allocator).print("data: {{\"error\":{{\"message\":\"Upstream connection lost while streaming response\",\"type\":\"server_error\",\"code\":null}}}}\n\n", .{}) catch break;
-
-            http.sendSseChunk(connection, buffer.items) catch {};
-            break;
+        // Streaming: send SSE headers first, then use ChunkedWriter
+        try http.sendSseHeaders(connection);
+        var chunked = http.ChunkedWriter.init(connection.stream);
+        core.completion.chatComplete(chunked.writer(), allocator, openai_request.value) catch |err| {
+            // For streaming, errors after headers are sent as SSE error events
+            try handleStreamingError(&chunked, allocator, err);
         };
-
-        const line = maybe_line orelse break; // null = stream complete
-
-        // Check for [DONE] marker (OpenAI format) - skip it, we send our own at the end
-        if (std.mem.startsWith(u8, line, "data: [DONE]")) {
-            break;
-        }
-
-        // Transform the chunk
-        const result = Transformer.transformStreamLine(line, &state, allocator);
-        switch (result) {
-            .chunk => |parsed| {
-                var chunk = parsed;
-                defer chunk.deinit();
-
-                if (first_chunk_time == null) {
-                    first_chunk_time = std.time.milliTimestamp() - process_start;
-                    log.debug("[STREAM] Time to first chunk: {d}ms", .{first_chunk_time.?});
-                }
-                chunk_count += 1;
-
-                // Track tokens and costs from usage (usually in final chunk)
-                if (chunk.value.usage) |usage| {
-                    const in_tokens: u64 = @intCast(usage.prompt_tokens);
-                    const out_tokens: u64 = @intCast(usage.completion_tokens);
-                    metrics.addInputTokens(in_tokens);
-                    metrics.addOutputTokens(out_tokens);
-
-                    // Calculate and track costs
-                    if (pricing.getCost(provider_name, model)) |cost_entry| {
-                        const cost = pricing.calculateCost(cost_entry, in_tokens, out_tokens);
-                        metrics.addInputCost(cost.input_cost);
-                        metrics.addOutputCost(cost.output_cost);
-                    }
-                }
-
-                // Serialize chunk to SSE format
-                var buffer = std.ArrayList(u8){};
-                defer buffer.deinit(allocator);
-                buffer.writer(allocator).print("data: {f}\n\n", .{std.json.fmt(chunk.value, .{})}) catch continue;
-
-                // Send as chunked-encoded frame
-                try http.sendSseChunk(connection, buffer.items);
-            },
-            .@"error" => |error_response| {
-                // Provider returned an error - send as SSE data event per OpenAI spec
-                // OpenAI streams errors as regular data events with {"error": {...}}
-                // Clients should check for 'error' field before assuming 'choices' exists
-                had_error = true;
-                log.warn("[STREAM] Provider returned error: {s}", .{
-                    error_response.@"error".message,
-                });
-
-                var buffer = std.ArrayList(u8){};
-                defer buffer.deinit(allocator);
-                buffer.writer(allocator).print("data: {f}\n\n", .{std.json.fmt(error_response, .{})}) catch break;
-
-                // Send error as chunked-encoded frame
-                try http.sendSseChunk(connection, buffer.items);
-                break; // Stop processing after error
-            },
-            .skip => {
-                // Non-data line or empty chunk, continue
-            },
-        }
-    }
-
-    // Always send [DONE] marker at the end (OpenAI format)
-    // This ensures clients get a proper stream termination regardless of upstream provider
-    try http.sendSseChunk(connection, "data: [DONE]\n\n");
-
-    // Send chunked transfer terminator
-    http.sendSseEnd(connection) catch |err| {
-        log.err("[STREAM] Failed to send chunked terminator: {}", .{err});
-    };
-
-    const process_time = std.time.milliTimestamp() - process_start;
-    log.debug("[STREAM] Processed {d} chunks in {d}ms", .{ chunk_count, process_time });
-
-    const total_elapsed = std.time.milliTimestamp() - start_time;
-    if (had_error) {
-        log.warn("[STREAM] POST /v1/chat/completions - completed with error | model='{s}' | total={d}ms | transform_req={d}ms | client_init={d}ms | stream_connect={d}ms | process={d}ms | chunks={d}", .{
-            openai_request.model,
-            total_elapsed,
-            transform_time,
-            client_init_time,
-            stream_connect_time,
-            process_time,
-            chunk_count,
-        });
+        // Send chunked terminator
+        chunked.finish() catch |err| {
+            log.err("[STREAM] Failed to send chunked terminator: {}", .{err});
+        };
     } else {
-        log.info("[STREAM] POST /v1/chat/completions - completed | model='{s}' | total={d}ms | transform_req={d}ms | client_init={d}ms | stream_connect={d}ms | process={d}ms | chunks={d}", .{
-            openai_request.model,
-            total_elapsed,
-            transform_time,
-            client_init_time,
-            stream_connect_time,
-            process_time,
-            chunk_count,
-        });
+        // Non-streaming: buffer response, then send as JSON
+        var buf = std.ArrayList(u8){};
+        defer buf.deinit(allocator);
+        core.completion.chatComplete(buf.writer(allocator), allocator, openai_request.value) catch |err| {
+            try handleSyncError(allocator, connection, err);
+            return;
+        };
+        try http.sendJsonResponse(connection, .ok, buf.items);
     }
 }
 
-/// Generic provider handler using comptime duck typing
-///
-/// **How Interface Checking Works:**
-/// - No explicit interface definition needed (unlike Java/Go)
-/// - Compiler checks methods when they're called
-/// - If method missing or wrong signature = COMPILE ERROR
-/// - Zero runtime overhead - all checks at compile time
-///
-/// **Required Interface (enforced by compiler when used):**
-///
-/// Client type must have:
-///   - `init(allocator: Allocator, api_key: []const u8) Client`
-///   - `deinit(self: *Client) void`
-///   - `sendRequest(self: *Client, request: anytype) !std.json.Parsed(Types.Response)`
-///
-/// Transformer module must have:
-///   - `transform(request: OpenAI.Request, model: []const u8, allocator: Allocator) !ProviderRequest`
-///   - `transformResponse(response: ProviderResponse, allocator: Allocator) !OpenAI.Response`
-///   - `cleanupRequest(request: ProviderRequest, allocator: Allocator) void`
-///   - `cleanupResponse(response: OpenAI.Response, allocator: Allocator) void`
-///
-/// Types module must have:
-///   - `Request: type`
-///   - `Response: type`
-///
-/// **Example of what happens if interface violated:**
-/// ```zig
-/// // Missing transform() function
-/// const BadTransformer = struct {};
-/// handleProvider(Client, BadTransformer, Types, ...)
-/// // ❌ Compile Error: container 'BadTransformer' has no member named 'transform'
-///
-/// // Wrong signature
-/// const BadTransformer2 = struct {
-///     pub fn transform(x: i32) void {}  // Wrong params!
-/// };
-/// handleProvider(Client, BadTransformer2, Types, ...)
-/// // ❌ Compile Error: expected 3 arguments, found 1
-/// ```
-///
-/// **Key Point:** The compiler discovers the interface requirements by analyzing
-/// the function body. When it sees `Transformer.transform(...)`, it checks if
-/// that function exists with the correct signature. No pre-declaration needed!
-fn handleProvider(
-    comptime Client: type,
-    comptime Transformer: type,
+/// Handle errors during streaming (after SSE headers already sent)
+fn handleStreamingError(chunked: *http.ChunkedWriter, allocator: std.mem.Allocator, err: anyerror) !void {
+    // Format error as SSE data event
+    const error_json = errors.createErrorResponse(
+        allocator,
+        mapErrorMessage(err),
+        mapErrorType(err),
+        null,
+    ) catch return;
+    defer allocator.free(error_json);
+
+    var buffer = std.ArrayList(u8){};
+    defer buffer.deinit(allocator);
+    buffer.writer(allocator).print("data: {s}\n\n", .{error_json}) catch return;
+    chunked.writer().writeAll(buffer.items) catch {};
+}
+
+/// Handle errors during non-streaming (before any response sent)
+fn handleSyncError(
     allocator: std.mem.Allocator,
     connection: std.net.Server.Connection,
-    openai_request: OpenAI.Request,
-    model: []const u8,
-    provider_name: []const u8,
-    provider_config: *const config_mod.ProviderConfig,
+    err: anyerror,
 ) !void {
-    const start_time = std.time.milliTimestamp();
-    log.info("[SYNC] POST /v1/chat/completions - request received for model '{s}'", .{openai_request.model});
-
-    // Transform OpenAI request to provider format
-    const transform_start = std.time.milliTimestamp();
-    const provider_request = Transformer.transform(
-        openai_request,
-        model,
+    const error_json = try errors.createErrorResponse(
         allocator,
-    ) catch |err| {
-        log.err("[SYNC] Transform request error: {} for model '{s}'", .{ err, openai_request.model });
-        const error_json = try errors.createErrorResponse(
-            allocator,
-            "Failed to transform request",
-            .invalid_request_error,
-            null,
-        );
-        defer allocator.free(error_json);
-        try http.sendJsonResponse(connection, .bad_request, error_json);
-        return;
-    };
-    defer Transformer.cleanupRequest(provider_request, allocator);
-    const transform_request_time = std.time.milliTimestamp() - transform_start;
-    log.debug("[SYNC] Transform request completed in {d}ms", .{transform_request_time});
-
-    // Initialize client
-    const client_init_start = std.time.milliTimestamp();
-    var client = Client.init(allocator, provider_config) catch |err| {
-        log.err("[SYNC] Client initialization error: {} for model '{s}'", .{ err, openai_request.model });
-        const error_json = try errors.createErrorResponse(
-            allocator,
-            "Failed to initialize provider client",
-            .invalid_request_error,
-            null,
-        );
-        defer allocator.free(error_json);
-        try http.sendJsonResponse(connection, .bad_request, error_json);
-        return;
-    };
-    defer client.deinit();
-    const client_init_time = std.time.milliTimestamp() - client_init_start;
-    log.debug("[SYNC] Client init completed in {d}ms", .{client_init_time});
-
-    // Send request to provider
-    const provider_request_start = std.time.milliTimestamp();
-    const provider_response = client.sendRequest(provider_request) catch |err| {
-        log.err("[SYNC] Provider API error: {} for model '{s}'", .{ err, openai_request.model });
-        const error_json = try errors.createErrorFromStatus(
-            allocator,
-            .bad_gateway,
-            "Failed to communicate with upstream API",
-        );
-        defer allocator.free(error_json);
-        try http.sendJsonResponse(connection, .bad_gateway, error_json);
-        return;
-    };
-    defer provider_response.deinit();
-    const provider_request_time = std.time.milliTimestamp() - provider_request_start;
-    log.debug("[SYNC] Provider request/response completed in {d}ms", .{provider_request_time});
-
-    // Transform provider response back to OpenAI format
-    const transform_response_start = std.time.milliTimestamp();
-    const openai_response = try Transformer.transformResponse(
-        provider_response.value,
-        allocator,
-        openai_request.model,
+        mapErrorMessage(err),
+        mapErrorType(err),
+        mapErrorCode(err),
     );
-    defer Transformer.cleanupResponse(openai_response, allocator);
-    const transform_response_time = std.time.milliTimestamp() - transform_response_start;
-    log.debug("[SYNC] Transform response completed in {d}ms", .{transform_response_time});
+    defer allocator.free(error_json);
+    try http.sendJsonResponse(connection, mapHttpStatus(err), error_json);
+}
 
-    // Track tokens and costs from the response
-    if (openai_response.usage) |usage| {
-        const in_tokens: u64 = @intCast(usage.prompt_tokens);
-        const out_tokens: u64 = @intCast(usage.completion_tokens);
-        metrics.addInputTokens(in_tokens);
-        metrics.addOutputTokens(out_tokens);
+fn mapErrorMessage(err: anyerror) []const u8 {
+    return switch (err) {
+        error.BudgetExceeded => "Budget exceeded. Cost controls are enabled and the budget limit has been reached.",
+        error.InvalidModelFormat, error.EmptyProvider, error.EmptyModel => "Invalid model format. Expected 'provider/model-name' (e.g., 'anthropic/claude-3-5-sonnet-latest')",
+        error.ProviderNotConfigured => "Provider not configured",
+        error.CompatibleFieldMissing => "Provider not supported and no 'compatible' field specified",
+        error.UnknownCompatibleType => "Unknown compatible provider type. Must be 'openai' or 'anthropic'",
+        error.TransformFailed => "Failed to transform request",
+        error.ClientInitFailed => "Failed to initialize provider client",
+        error.UpstreamError => "Failed to communicate with upstream API",
+        error.TransformResponseFailed => "Failed to transform response",
+        else => "Internal server error",
+    };
+}
 
-        // Calculate and track costs
-        if (pricing.getCost(provider_name, model)) |cost_entry| {
-            const cost = pricing.calculateCost(cost_entry, in_tokens, out_tokens);
-            metrics.addInputCost(cost.input_cost);
-            metrics.addOutputCost(cost.output_cost);
-        }
-    }
+fn mapErrorType(err: anyerror) errors.ErrorType {
+    return switch (err) {
+        error.BudgetExceeded => .rate_limit_error,
+        error.InvalidModelFormat, error.EmptyProvider, error.EmptyModel,
+        error.ProviderNotConfigured, error.CompatibleFieldMissing,
+        error.UnknownCompatibleType, error.TransformFailed,
+        error.ClientInitFailed,
+        => .invalid_request_error,
+        error.UpstreamError, error.TransformResponseFailed => .server_error,
+        else => .server_error,
+    };
+}
 
-    // Serialize OpenAI response
-    const serialize_start = std.time.milliTimestamp();
-    var response_buffer = std.ArrayList(u8){};
-    defer response_buffer.deinit(allocator);
-    try response_buffer.writer(allocator).print("{f}", .{std.json.fmt(openai_response, .{})});
-    const serialize_time = std.time.milliTimestamp() - serialize_start;
-    log.debug("[SYNC] Response serialization completed in {d}ms", .{serialize_time});
+fn mapErrorCode(err: anyerror) ?[]const u8 {
+    return switch (err) {
+        error.BudgetExceeded => "budget_exceeded",
+        else => null,
+    };
+}
 
-    // Send response
-    const send_start = std.time.milliTimestamp();
-    try http.sendJsonResponse(connection, .ok, response_buffer.items);
-    const send_time = std.time.milliTimestamp() - send_start;
-    log.debug("[SYNC] Response sent in {d}ms", .{send_time});
-
-    const total_elapsed = std.time.milliTimestamp() - start_time;
-    log.info("[SYNC] POST /v1/chat/completions - completed | model='{s}' | total={d}ms | transform_req={d}ms | client_init={d}ms | provider_req={d}ms | transform_resp={d}ms | serialize={d}ms | send={d}ms", .{
-        openai_request.model,
-        total_elapsed,
-        transform_request_time,
-        client_init_time,
-        provider_request_time,
-        transform_response_time,
-        serialize_time,
-        send_time,
-    });
+fn mapHttpStatus(err: anyerror) std.http.Status {
+    return switch (err) {
+        error.BudgetExceeded => .too_many_requests,
+        error.InvalidModelFormat, error.EmptyProvider, error.EmptyModel,
+        error.ProviderNotConfigured, error.CompatibleFieldMissing,
+        error.UnknownCompatibleType, error.TransformFailed,
+        error.ClientInitFailed,
+        => .bad_request,
+        error.UpstreamError => .bad_gateway,
+        error.TransformResponseFailed => .internal_server_error,
+        else => .internal_server_error,
+    };
 }

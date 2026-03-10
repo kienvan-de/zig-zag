@@ -18,6 +18,22 @@ const log_mod = @import("log.zig");
 const app_cache = @import("cache/app_cache.zig");
 const LogOutput = log_mod.LogOutput;
 
+// ============================================================================
+// Global config singleton — set by wrapper, accessed by core
+// ============================================================================
+
+var global_config: ?*const Config = null;
+
+/// Set the global config reference. Called once by the wrapper after loading.
+pub fn set(cfg: *const Config) void {
+    global_config = cfg;
+}
+
+/// Get the global config reference. Panics if not set.
+pub fn get() *const Config {
+    return global_config orelse @panic("config not set — call config.set() first");
+}
+
 /// Provider-specific configuration
 /// Wraps a parsed JSON object and provides type-safe accessors
 pub const ProviderConfig = struct {

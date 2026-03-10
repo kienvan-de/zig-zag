@@ -181,6 +181,9 @@ fn serverThreadFn(s: *State) void {
     // displays correct (already-reset) counters the moment it reads status = running.
     utils.checkBudgetPeriodOnStartup(&cfg);
 
+    // Set global config for core module access
+    config.set(&cfg);
+
     // All init successful - transition to running state
     server_status.store(.running, .release);
     server_error_code.store(.none, .release);

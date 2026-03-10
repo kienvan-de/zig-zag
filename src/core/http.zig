@@ -103,5 +103,44 @@ pub fn sendInternalError(connection: std.net.Server.Connection) !void {
 }
 
 // ============================================================================
+// ChunkedWriter — wraps a stream to add HTTP chunked transfer encoding
+// ============================================================================
+
+/// Writer wrapper that adds HTTP chunked transfer encoding.
+/// Each `write()` call produces one chunked frame: `{hex-size}\r\n{data}\r\n`.
+/// Call `finish()` to send the terminating chunk (`0\r\n\r\n`).
+pub const ChunkedWriter = struct {
+    stream: std.net.Stream,
+
+    pub fn init(stream: std.net.Stream) ChunkedWriter {
+        return .{ .stream = stream };
+    }
+
+    /// Write data as one HTTP chunked frame.
+    pub fn write(self: *ChunkedWriter, data: []const u8) anyerror!usize {
+        if (data.len == 0) return 0;
+        var size_buf: [16]u8 = undefined;
+        const size_str = std.fmt.bufPrint(&size_buf, "{x}\r\n", .{data.len}) catch unreachable;
+        try self.stream.writeAll(size_str);
+        try self.stream.writeAll(data);
+        try self.stream.writeAll("\r\n");
+        metrics.addNetworkTx(size_str.len + data.len + 2);
+        return data.len;
+    }
+
+    /// Get a `std.io.GenericWriter` backed by this chunked writer.
+    pub fn writer(self: *ChunkedWriter) std.io.GenericWriter(*ChunkedWriter, anyerror, write) {
+        return .{ .context = self };
+    }
+
+    /// Send the terminating chunk to end a chunked response.
+    pub fn finish(self: *ChunkedWriter) !void {
+        const terminator = "0\r\n\r\n";
+        try self.stream.writeAll(terminator);
+        metrics.addNetworkTx(terminator.len);
+    }
+};
+
+// ============================================================================
 // Unit Tests
 // ============================================================================
