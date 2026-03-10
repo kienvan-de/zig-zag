@@ -58,40 +58,43 @@ const copilot = struct {
     const client = @import("providers/copilot/client.zig");
 };
 
-// Re-export types for callers
+/// Re-exported OpenAI type definitions (`Request`, `Response`, `Model`, etc.).
+/// Callers use `completion.OpenAI.Request` instead of importing the provider types directly.
 pub const OpenAI = openai_types;
+
+/// Re-exported Anthropic type definitions (`Request`, `Response`, etc.).
+/// Callers use `completion.Anthropic.Request` instead of importing the provider types directly.
 pub const Anthropic = anthropic_types;
 
-/// Errors that can be returned by completion functions.
-/// Callers should use `switch (err)` to map these to appropriate responses.
-pub const CompletionError = error{
-    BudgetExceeded,
-    InvalidModelFormat,
-    EmptyProvider,
-    EmptyModel,
-    ProviderNotConfigured,
-    CompatibleFieldMissing,
-    UnknownCompatibleType,
-    TransformFailed,
-    ClientInitFailed,
-    UpstreamError,
-    TransformResponseFailed,
-};
+/// Errors returned by the public completion functions (`chatComplete`, `messagesComplete`).
+/// Re-exported from `errors.zig` — the single source of truth for all error sets.
+///
+/// These are **well-known** error conditions that the caller (e.g. an HTTP handler) should
+/// map to transport-specific responses — typically HTTP status codes and JSON error bodies.
+/// Use `switch (err)` for exhaustive handling.
+pub const CompletionError = errors.CompletionError;
 
 // ============================================================================
 // chatComplete — OpenAI format
 // ============================================================================
 
-/// OpenAI-format chat completion (streaming or non-streaming based on request.stream).
+/// Perform an OpenAI-format chat completion (`/v1/chat/completions`).
 ///
-/// For streaming: writes SSE event lines (`data: {json}\n\n`) to the writer.
-/// For non-streaming: writes a single JSON body to the writer.
+/// Streaming or non-streaming mode is determined by `request.stream`:
+///   - **Streaming**: writes Server-Sent Events lines (`data: {json}\n\n`) followed
+///     by a `data: [DONE]\n\n` sentinel to `writer`.
+///   - **Non-streaming**: writes a single complete JSON response body to `writer`.
 ///
-/// Internally: enforceBudget → parseModel → dispatch → transform → call → metrics.
+/// The caller provides `writer` (e.g. a `ChunkedWriter` for HTTP responses, an
+/// `ArrayList(u8).writer()` for buffering) and is responsible for any framing
+/// (HTTP headers, chunked transfer encoding, etc.).
 ///
-/// Errors: Returns `CompletionError` for well-known conditions (budget, model parsing,
-/// provider not found, etc.). The caller maps these to HTTP status codes or other
-/// transport-specific responses.
+/// **Pipeline**: enforceBudget → parseModel → resolve provider → transform request →
+/// init client → send upstream → transform response → track metrics → write to `writer`.
+///
+/// Returns `CompletionError` for well-known conditions (budget exceeded, model parsing
+/// failure, provider not configured, upstream error, etc.). The caller should map
+/// these to transport-specific responses (e.g. HTTP 429 for `BudgetExceeded`).
 pub fn chatComplete(
     writer: anytype,
     allocator: std.mem.Allocator,
@@ -396,12 +399,25 @@ fn chatStreaming(
 // messagesComplete — Anthropic format
 // ============================================================================
 
-/// Anthropic Messages API completion (streaming or non-streaming based on request.stream).
+/// Perform an Anthropic Messages API completion (`/v1/messages`).
 ///
-/// For streaming: writes Anthropic SSE event lines to the writer.
-/// For non-streaming: writes a single JSON body to the writer.
+/// Streaming or non-streaming mode is determined by `request.stream`:
+///   - **Streaming**: writes Anthropic-format SSE event lines
+///     (`event: <type>\ndata: {json}\n\n`) to `writer`.
+///   - **Non-streaming**: writes a single complete JSON response body to `writer`.
 ///
-/// Same lifecycle as chatComplete but with Anthropic input/output types.
+/// The caller provides `writer` and is responsible for any transport framing,
+/// exactly as with `chatComplete`. The difference is that input and output use
+/// Anthropic types (`anthropic_types.Request` / `anthropic_types.Response`).
+///
+/// **Pipeline**: identical to `chatComplete` — enforceBudget → parseModel →
+/// resolve provider → transform request → init client → send upstream →
+/// transform response → track metrics → write to `writer`.
+///
+/// **Note**: HAI uses the Anthropic transformer for this endpoint, while
+/// OpenAI-compatible providers use cross-protocol translation.
+///
+/// Returns `CompletionError` — see `chatComplete` for the full error contract.
 pub fn messagesComplete(
     writer: anytype,
     allocator: std.mem.Allocator,
@@ -732,8 +748,17 @@ const FetchContext = struct {
     wg: *worker_pool.WaitGroup,
 };
 
-/// Fetch models from all configured providers (parallel or sequential).
-/// Returns caller-owned slice. Must free with freeModels().
+/// Fetch the model catalogue from all configured providers.
+///
+/// When a worker pool is available, providers are queried **in parallel**;
+/// otherwise the function falls back to sequential fetching. Individual
+/// provider failures are logged and skipped — the returned slice contains
+/// models from all providers that responded successfully, sorted
+/// alphabetically by model `id`.
+///
+/// The returned slice is **caller-owned**. Free it with `freeModels()` when
+/// done — that function handles freeing both the slice and the heap-allocated
+/// strings inside each `Model`.
 pub fn listModels(allocator: std.mem.Allocator) ![]openai_types.Model {
     const cfg = config_mod.get();
     const provider_count = cfg.providers.count();
@@ -835,7 +860,11 @@ pub fn listModels(allocator: std.mem.Allocator) ![]openai_types.Model {
     return sorted;
 }
 
-/// Free the slice returned by listModels.
+/// Free a model slice previously returned by `listModels`.
+///
+/// Releases every heap-allocated `id` (and non-static `owned_by`) string
+/// inside each `Model`, then frees the slice itself. Safe to call with a
+/// zero-length slice.
 pub fn freeModels(allocator: std.mem.Allocator, models: []openai_types.Model) void {
     for (models) |m| {
         allocator.free(m.id);

@@ -17,22 +17,65 @@ const config_mod = @import("config.zig");
 const log = @import("log.zig");
 const metrics = @import("metrics.zig");
 
-/// Parsed model information
+/// Result of parsing a `"provider/model-name"` string via `parseModelString`.
+///
+/// Both fields are heap-allocated copies owned by the caller. Free them with
+/// the same `std.mem.Allocator` that was passed to `parseModelString`:
+///
+/// ```zig
+/// const info = try parseModelString("openai/gpt-4", allocator);
+/// defer allocator.free(info.provider);
+/// defer allocator.free(info.model);
+/// ```
 pub const ModelInfo = struct {
+    /// The provider segment before the first `/` (e.g. `"anthropic"`, `"openai"`).
+    /// Heap-allocated — caller must free.
     provider: []const u8,
+    /// The model segment after the first `/`. May itself contain slashes
+    /// (e.g. `"models/claude"` from `"anthropic/models/claude"`).
+    /// Heap-allocated — caller must free.
     model: []const u8,
 };
 
-/// Model parsing errors — defined in errors.zig
+/// Error set for `parseModelString`. Re-exported from `errors.zig`.
+///
+/// | Variant              | Cause                                                    |
+/// |----------------------|----------------------------------------------------------|
+/// | `InvalidModelFormat` | Input is empty (after trimming) or contains no `/`       |
+/// | `EmptyProvider`      | The segment before the first `/` is empty or whitespace  |
+/// | `EmptyModel`         | The segment after the first `/` is empty or whitespace   |
+/// | `OutOfMemory`        | Allocator failed to duplicate the provider or model name |
 pub const ModelParseError = @import("errors.zig").ModelParseError;
 
-/// Parse model string in format "provider/model-name"
-/// Examples:
-///   "anthropic/claude-3-5-sonnet-latest" -> { .provider = .anthropic, .model = "claude-3-5-sonnet-latest" }
-///   "openai/gpt-4" -> { .provider = .openai, .model = "gpt-4" }
-///   "anthropic/models/claude" -> { .provider = .anthropic, .model = "models/claude" }
+/// Parse a model string in the format `"provider/model-name"` into a `ModelInfo`.
 ///
-/// Caller is responsible for freeing model_info.model using the same allocator
+/// The input is split on the **first** `/` only, so the model segment may
+/// itself contain slashes (e.g. `"anthropic/models/claude"`).
+///
+/// Leading and trailing whitespace on both the full string and each segment
+/// is trimmed before validation.
+///
+/// ## Examples
+///
+/// ```
+/// "anthropic/claude-3-5-sonnet-latest" → { .provider = "anthropic", .model = "claude-3-5-sonnet-latest" }
+/// "openai/gpt-4"                       → { .provider = "openai",    .model = "gpt-4" }
+/// "anthropic/models/claude"            → { .provider = "anthropic", .model = "models/claude" }
+/// ```
+///
+/// ## Ownership
+///
+/// Both `provider` and `model` in the returned `ModelInfo` are freshly
+/// allocated copies. The **caller** must free them with the same `allocator`:
+///
+/// ```zig
+/// defer allocator.free(info.provider);
+/// defer allocator.free(info.model);
+/// ```
+///
+/// ## Errors
+///
+/// Returns `ModelParseError` — see that type for the full set.
 pub fn parseModelString(model_str: []const u8, allocator: std.mem.Allocator) !ModelInfo {
     // Trim whitespace
     const trimmed = std.mem.trim(u8, model_str, " \t\n\r");
@@ -87,18 +130,39 @@ fn checkAndResetBudgetPeriod(config: *const config_mod.Config) void {
     }
 }
 
-/// Check if the budget period has expired at startup and reset if needed.
-/// Called once after metrics are loaded, before the server accepts requests.
-/// Ensures the macOS app displays correct (post-reset) stats immediately on launch.
+/// Check whether the current budget period has expired and, if so, reset
+/// accumulated costs **and** token counts so the new period starts fresh.
+///
+/// Call this **once**, right after `metrics.load()` and before the server
+/// begins accepting requests. This covers the case where the proxy was
+/// offline when the period rolled over — without this call the stale totals
+/// from the previous period would carry over.
+///
+/// No-op when `cost_controls.enabled` is `false` or `days_duration` is `0`
+/// (lifetime budget, which never resets).
+///
+/// The macOS menu-bar app reads metrics immediately on launch, so calling
+/// this early ensures it displays correct (post-reset) statistics.
 pub fn checkBudgetPeriodOnStartup(config: *const config_mod.Config) void {
     checkAndResetBudgetPeriod(config);
 }
 
-pub const BudgetError = error{BudgetExceeded};
+/// Error set returned by `enforceBudget`.  Re-exported from `errors.zig`
+/// so callers can reference `utils.BudgetError` without a separate import.
+pub const BudgetError = @import("errors.zig").BudgetError;
 
-/// Check budget and reset period if expired. Returns error.BudgetExceeded if
-/// cost_controls is enabled and the budget limit has been reached.
-/// No-op (returns void) if cost_controls is disabled.
+/// Enforce the configured spending budget on every incoming chat/messages request.
+///
+/// 1. If `cost_controls.enabled` is `false`, returns immediately (no-op).
+/// 2. Checks whether the budget period has expired and resets costs/tokens
+///    if necessary (delegates to `checkAndResetBudgetPeriod`).
+/// 3. Compares total accumulated cost (`input_cost + output_cost`) against
+///    `cost_controls.budget`. If the limit has been reached or exceeded,
+///    returns `error.BudgetExceeded` — the caller should respond with
+///    HTTP `429 Too Many Requests`.
+///
+/// This function is intended to be called at the **start** of every
+/// `/v1/chat/completions` and `/v1/messages` handler invocation.
 pub fn enforceBudget(config: *const config_mod.Config) BudgetError!void {
     if (!config.cost_controls.enabled) return;
 

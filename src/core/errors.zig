@@ -82,6 +82,41 @@ pub const ModelParseError = error{
     OutOfMemory,
 };
 
+/// Budget enforcement error (utils.zig).
+/// Total cost (input + output) has reached or exceeded the configured budget.
+pub const BudgetError = error{
+    BudgetExceeded,
+};
+
+/// Completion lifecycle errors (completion.zig).
+/// Superset that includes model parsing and budget errors for convenience.
+/// Callers should `switch (err)` to map these to HTTP status codes or other
+/// transport-specific responses.
+pub const CompletionError = error{
+    /// Cost budget exceeded — caller should respond with 429.
+    BudgetExceeded,
+    /// Model string could not be parsed (`"provider/model-name"` expected).
+    InvalidModelFormat,
+    /// Provider portion of the model string is empty (e.g. `"/gpt-4o"`).
+    EmptyProvider,
+    /// Model portion of the model string is empty (e.g. `"openai/"`).
+    EmptyModel,
+    /// No matching provider entry in `config.json`.
+    ProviderNotConfigured,
+    /// Non-native provider without a `"compatible"` field in its config.
+    CompatibleFieldMissing,
+    /// `"compatible"` field value is not `"openai"` or `"anthropic"`.
+    UnknownCompatibleType,
+    /// Transformer failed to convert the request to provider-native format.
+    TransformFailed,
+    /// Provider client init failed (auth, credentials, network).
+    ClientInitFailed,
+    /// Upstream provider returned an error or the connection failed.
+    UpstreamError,
+    /// Transformer failed to convert the upstream response back.
+    TransformResponseFailed,
+};
+
 /// HTTP upstream errors — shared by all provider clients
 pub const HttpError = error{
     AuthenticationError,
