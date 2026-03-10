@@ -21,9 +21,11 @@
 //!   /v1/html/<unknown>    => 404
 
 const std = @import("std");
-const http = @import("../http.zig");
-const config_mod = @import("../config.zig");
-const log = @import("../log.zig");
+const core = @import("zig-zag-core");
+const config_mod = core.config;
+const log = core.log;
+
+const http = core.http;
 const templates = @import("../templates/mod.zig");
 
 const HTML_PREFIX = "/v1/html/";

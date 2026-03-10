@@ -13,12 +13,13 @@
 // limitations under the License.
 
 const std = @import("std");
-const config = @import("config.zig");
+const core = @import("zig-zag-core");
+const config = core.config;
+const errors = core.errors;
+const log = core.log;
+const metrics = core.metrics;
+const http = core.http;
 const router = @import("router.zig");
-const errors = @import("errors.zig");
-const http = @import("http.zig");
-const log = @import("log.zig");
-const metrics = @import("metrics.zig");
 
 // HTTP response constants
 const NOT_FOUND_RESPONSE =
