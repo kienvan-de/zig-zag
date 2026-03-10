@@ -23,6 +23,7 @@ const worker_pool = @import("worker_pool.zig");
 const metrics = @import("metrics.zig");
 const provider = @import("provider.zig");
 const pricing = @import("pricing.zig");
+const utils = @import("utils.zig");
 
 const version = build_options.version;
 
@@ -173,6 +174,11 @@ fn serverThreadFn(s: *State) void {
     pricing.init(allocator, provider_names_buf[0..provider_name_count]);
     defer pricing.deinit();
     pricing.scheduleAutoUpdate();
+
+    // Check if budget period expired while the proxy was offline and reset costs/tokens if so.
+    // Mirrors main.zig — must run before transitioning to running state so the macOS app
+    // displays correct (already-reset) counters the moment it reads status = running.
+    utils.checkBudgetPeriodOnStartup(&cfg);
 
     // All init successful - transition to running state
     server_status.store(.running, .release);
