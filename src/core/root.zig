@@ -2,7 +2,7 @@
 //!
 //! Public API surface for embedding zig-zag in any application.
 //! The wrapper (HTTP server, CLI tool, etc.) injects dependencies
-//! via `config.set()`, `worker_pool.setSubmitFn()`, and `log.init()`.
+//! via `config.set()`, `worker_pool.setSubmitFn()`, and `log.setSink()`.
 //!
 //! ## Quick Start (Minimal Embedder)
 //!
@@ -41,7 +41,7 @@ pub const config = @import("config.zig");
 /// Centralized error types and error response builder.
 pub const errors = @import("errors.zig");
 
-/// Logging module (file rotation, buffered writes, worker pool integration).
+/// Logging facade — pluggable sink, stack-buffer formatting, stderr default.
 pub const log = @import("log.zig");
 
 /// CPU, memory, token, and cost tracking — persisted across restarts.

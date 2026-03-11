@@ -20,6 +20,7 @@ const log = core.log;
 const token_cache = core.cache;
 const app_cache = core.app_cache;
 const worker_pool = @import("worker_pool.zig");
+const log_impl = @import("log.zig");
 const metrics = core.metrics;
 const provider = core.provider;
 const pricing = core.pricing;
@@ -147,17 +148,15 @@ fn serverThreadFn(s: *State) void {
     defer worker_pool.deinit();
 
     // 4. Initialize logging
-    log.init(.{
-        .level = cfg.core.log.level,
-        .path = cfg.core.log.path,
-        .output = .file, // lib mode always writes to file
-    }, allocator) catch |err| {
+    var lib_log_config = cfg.log;
+    lib_log_config.output = .file; // lib mode always writes to file
+    log_impl.init(lib_log_config, allocator) catch |err| {
         log.err("Failed to init logging: {}", .{err});
         server_status.store(.err, .release);
         server_error_code.store(.log_init_failed, .release);
         return;
     };
-    defer log.deinit();
+    defer log_impl.deinit();
 
     // 5. Log configured providers (auth is lazy, on first request)
     provider.logConfiguredProviders(&cfg.core);
