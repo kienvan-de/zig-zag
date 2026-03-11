@@ -22,7 +22,6 @@ const core = @import("zag-core");
 const OpenAI = core.openai_types;
 const errors = core.errors;
 const log = core.log;
-const config_mod = core.config;
 const http = @import("../http.zig");
 
 /// Handle GET /v1/models request
@@ -32,12 +31,10 @@ pub fn handle(
     method: []const u8,
     path: []const u8,
     body: []const u8,
-    cfg: *const config_mod.Config,
 ) !void {
     _ = method;
     _ = path;
     _ = body;
-    _ = cfg;
 
     const models = core.completion.listModels(allocator) catch |err| {
         log.err("Failed to list models: {}", .{err});

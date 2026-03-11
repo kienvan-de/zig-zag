@@ -16,7 +16,6 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const provider_mod = @import("provider.zig");
 const log_mod = @import("log.zig");
-const app_cache = @import("cache/app_cache.zig");
 const worker_pool = @import("worker_pool.zig");
 const LogOutput = log_mod.LogOutput;
 
@@ -36,7 +35,7 @@ var config_path_len: usize = 0;
 /// Set the global config singleton reference and store the config file path.
 ///
 /// Must be called **exactly once** by the wrapper (e.g. `main.zig` or `lib.zig`)
-/// after `Config.loadFromFile()` completes successfully.
+/// after `Config.parseFromJson()` completes successfully.
 /// All core modules obtain configuration via `config.get()`, so the proxy will
 /// panic on the first access if this function was never called.
 ///
@@ -46,7 +45,7 @@ var config_path_len: usize = 0;
 /// **Example (wrapper startup)**:
 /// ```zig
 /// const path = resolveConfigPath();   // wrapper decides the path
-/// var cfg = try Config.loadFromFile(allocator, path);
+/// var cfg = try Config.parseFromJson(allocator, parsed);
 /// config.set(&cfg, path);
 /// ```
 pub fn set(cfg: *const Config, path: []const u8) void {
@@ -154,29 +153,12 @@ pub const ProviderConfig = struct {
 // Default Values (single source of truth)
 // ============================================================================
 
-/// Compile-time default values for every configurable setting.
+/// Compile-time default values for core settings.
 ///
-/// This namespace is the **single source of truth** for defaults — struct
-/// field initialisers in `ServerConfig`, `LogConfig`, etc. reference these
-/// constants so that a missing JSON key always falls back to a well-known
-/// value without duplicating magic numbers.
+/// This namespace is the **single source of truth** for defaults used by
+/// core modules.  Wrapper-specific defaults (server, statistics) live in
+/// the wrapper's own config module.
 pub const defaults = struct {
-    // ── Server ──────────────────────────────────────────────────────────
-    /// Default bind address (all interfaces).
-    pub const server_host: []const u8 = "0.0.0.0";
-    /// Default listening port.
-    pub const server_port: u16 = 8080;
-    /// Number of HTTP worker threads in the server pool.
-    pub const server_http_pool_size: i64 = 3;
-    /// Number of I/O worker threads for background tasks.
-    pub const server_io_pool_size: i64 = 1;
-    /// Maximum HTTP header size in bytes (32 KB).
-    pub const server_max_header_size: i64 = 32 * 1024; // 32 KB
-    /// Maximum HTTP body size in bytes (10 MB).
-    pub const server_max_body_size: i64 = 10 * 1024 * 1024; // 10 MB
-    /// Read timeout per connection in milliseconds (30 s).
-    pub const server_read_timeout_ms: i64 = 30_000; // 30 s
-
     // ── Logging ─────────────────────────────────────────────────────────
     /// Maximum size of a single log file before rotation, in megabytes.
     pub const log_max_file_size_mb: i64 = 10;
@@ -192,20 +174,6 @@ pub const defaults = struct {
     pub const provider_timeout_ms: i64 = 60_000; // 60 s
     /// Maximum upstream response body size in megabytes.
     pub const provider_max_response_size_mb: i64 = 10;
-};
-
-/// HTTP server configuration, parsed from the `"server"` section of `config.json`.
-///
-/// Every field has a sensible default (see `defaults`) so the entire section
-/// can be omitted from the config file.
-pub const ServerConfig = struct {
-    port: u16 = defaults.server_port,
-    host: []const u8 = defaults.server_host,
-    http_pool_size: i64 = defaults.server_http_pool_size,
-    io_pool_size: i64 = defaults.server_io_pool_size,
-    max_header_size: i64 = defaults.server_max_header_size,
-    max_body_size: i64 = defaults.server_max_body_size,
-    read_timeout_ms: i64 = defaults.server_read_timeout_ms,
 };
 
 /// Logging configuration, parsed from the `"logging"` section of `config.json`.
@@ -225,26 +193,10 @@ pub const LogConfig = struct {
     output: LogOutput = .stderr,
 };
 
-/// Statistics display toggles, parsed from the `"statistics"` section of `config.json`.
-///
-/// These flags control which informational rows are visible in the macOS
-/// menu-bar app.  They have no effect on the proxy's runtime behaviour —
-/// metrics are always collected regardless of these settings.
-pub const StatisticsConfig = struct {
-    /// Show the RAM / CPU / Network performance row.
-    show_performance: bool = true,
-    /// Show the Providers / Input-Output tokens row.
-    show_llm: bool = true,
-    /// Show the cost row.  Overridden to `true` when `CostControlsConfig.enabled` is set.
-    show_cost: bool = true,
-};
-
 /// Cost / budget controls, parsed from the `"cost_controls"` section of `config.json`.
 ///
 /// When `enabled` is `true` the proxy enforces a spending limit:
 /// - Requests are rejected with **429 Too Many Requests** once the budget is exhausted.
-/// - The cost row in the macOS app always shows regardless of `StatisticsConfig.show_cost`,
-///   and displays **remaining budget** instead of total spent.
 /// - On startup, if the budget period has expired, both costs **and** token counts
 ///   are reset before any request is served (see `utils.checkBudgetPeriodOnStartup`).
 pub const CostControlsConfig = struct {
@@ -257,119 +209,48 @@ pub const CostControlsConfig = struct {
     days_duration: u32 = 0,
 };
 
-/// Main application configuration — the top-level result of parsing `config.json`.
+/// Core configuration — providers, logging, and cost controls.
+///
+/// This struct contains only the settings needed by the core library.
+/// Wrapper-specific settings (server, statistics) are managed by the
+/// wrapper's own config type.
 ///
 /// Owns the root `std.json.Parsed` tree and a hash-map of `ProviderConfig`
-/// entries.  All string slices inside nested structs (e.g. `ServerConfig.host`,
-/// `ProviderConfig.name`) are **borrowed** from the parsed tree, so they remain
-/// valid until `deinit()` is called.
+/// entries.  All string slices inside nested structs are **borrowed** from
+/// the parsed tree, so they remain valid until `deinit()` is called.
 ///
 /// Typical lifecycle:
 /// ```
-/// var cfg = try Config.loadFromFile(allocator, path);
+/// var cfg = try Config.parseFromJson(allocator, parsed);
 /// defer cfg.deinit();
-/// config.set(&cfg, path);                 // publish as global singleton
+/// config.set(&cfg, path);
 /// ```
 pub const Config = struct {
-    allocator: std.mem.Allocator,
+    allocator: Allocator,
     /// Map of provider name → `ProviderConfig` (e.g. `"openai"` → config object).
     providers: std.StringHashMap(ProviderConfig),
-    server: ServerConfig,
     log: LogConfig,
-    statistics: StatisticsConfig,
     cost_controls: CostControlsConfig,
     /// The root parsed JSON tree.  Kept alive so that all borrowed slices
     /// in `ProviderConfig` and other structs remain valid.
     _parsed: std.json.Parsed(std.json.Value),
 
-    /// Load and parse configuration from an explicit file path.
+    /// Parse core configuration from an already-parsed JSON tree.
     ///
-    /// The file must contain a JSON object with at least a `"providers"` key.
-    /// Optional top-level keys (`"server"`, `"logging"`, `"statistics"`,
-    /// `"cost_controls"`) are merged with their respective defaults.
+    /// The caller provides an `std.json.Parsed(std.json.Value)` obtained by
+    /// parsing the config file.  **Ownership of `parsed` transfers to the
+    /// returned `Config`** — the caller must NOT deinit it separately.
     ///
-    /// On success the returned `Config` owns all allocated memory; call
-    /// `deinit()` when it is no longer needed.
-    ///
-    /// **Side-effect:** caches `server.port` in `app_cache` so that provider
-    /// clients (e.g. Copilot redirect URI) can discover the port without a
-    /// direct config dependency.
-    pub fn loadFromFile(allocator: std.mem.Allocator, path: []const u8) !Config {
-        // Read file
-        const file = std.fs.cwd().openFile(path, .{}) catch |err| {
-            log_mod.err("Failed to open config file: {s}", .{path});
-            log_mod.err("Error: {}", .{err});
-            return err;
-        };
-        defer file.close();
-
-        const file_content = try file.readToEndAlloc(allocator, 1024 * 1024); // 1MB max
-        defer allocator.free(file_content);
-
-        // Parse JSON
-        const parsed = try std.json.parseFromSlice(
-            std.json.Value,
-            allocator,
-            file_content,
-            .{},
-        );
-        errdefer parsed.deinit();
-
+    /// The root value must be a JSON object with at least a `"providers"` key.
+    /// Optional keys `"logging"` and `"cost_controls"` are merged with defaults.
+    pub fn parseFromJson(allocator: Allocator, parsed: std.json.Parsed(std.json.Value)) !Config {
         // Validate it's an object
         if (parsed.value != .object) {
-            parsed.deinit();
             log_mod.err("Config must be a JSON object", .{});
             return error.InvalidConfigFormat;
         }
 
         const root_obj = parsed.value.object;
-
-        // Parse server config (optional, with defaults)
-        var server_config = ServerConfig{};
-        if (root_obj.get("server")) |server_value| {
-            if (server_value != .object) {
-                parsed.deinit();
-                log_mod.err("Server config must be an object", .{});
-                return error.InvalidConfigFormat;
-            }
-            const server_obj = server_value.object;
-            if (server_obj.get("port")) |port_value| {
-                if (port_value == .integer) {
-                    server_config.port = @intCast(port_value.integer);
-                }
-            }
-            if (server_obj.get("host")) |host_value| {
-                if (host_value == .string) {
-                    server_config.host = host_value.string;
-                }
-            }
-            if (server_obj.get("http_pool_size")) |v| {
-                if (v == .integer) server_config.http_pool_size = v.integer;
-            }
-            if (server_obj.get("io_pool_size")) |v| {
-                if (v == .integer) server_config.io_pool_size = v.integer;
-            }
-            if (server_obj.get("max_header_size")) |v| {
-                if (v == .integer) {
-                    server_config.max_header_size = v.integer;
-                }
-            }
-            if (server_obj.get("max_body_size")) |v| {
-                if (v == .integer) {
-                    server_config.max_body_size = v.integer;
-                }
-            }
-            if (server_obj.get("read_timeout_ms")) |v| {
-                if (v == .integer) {
-                    server_config.read_timeout_ms = v.integer;
-                }
-            }
-        }
-
-        // Cache server port so providers can build server URLs (e.g. Copilot redirect)
-        var port_buf: [8]u8 = undefined;
-        const port_str = std.fmt.bufPrint(&port_buf, "{d}", .{server_config.port}) catch "8080";
-        app_cache.put("server_port", port_str) catch {};
 
         // Parse logging config (optional, with defaults)
         var log_config = LogConfig{};
@@ -387,55 +268,20 @@ pub const Config = struct {
                     }
                 }
                 if (log_obj.get("max_file_size_mb")) |v| {
-                    if (v == .integer) {
-                        log_config.max_file_size_mb = v.integer;
-                    }
+                    if (v == .integer) log_config.max_file_size_mb = v.integer;
                 }
                 if (log_obj.get("max_files")) |v| {
-                    if (v == .integer) {
-                        log_config.max_files = v.integer;
-                    }
+                    if (v == .integer) log_config.max_files = v.integer;
                 }
                 if (log_obj.get("buffer_size")) |v| {
-                    if (v == .integer) {
-                        log_config.buffer_size = v.integer;
-                    }
+                    if (v == .integer) log_config.buffer_size = v.integer;
                 }
                 if (log_obj.get("flush_interval_ms")) |v| {
-                    if (v == .integer) {
-                        log_config.flush_interval_ms = v.integer;
-                    }
+                    if (v == .integer) log_config.flush_interval_ms = v.integer;
                 }
                 if (log_obj.get("output")) |v| {
                     if (v == .string) {
-                        if (std.mem.eql(u8, v.string, "stderr")) {
-                            log_config.output = .stderr;
-                        } else {
-                            log_config.output = .file;
-                        }
-                    }
-                }
-            }
-        }
-
-        // Parse statistics config (optional, with defaults)
-        var statistics_config = StatisticsConfig{};
-        if (root_obj.get("statistics")) |stats_value| {
-            if (stats_value == .object) {
-                const stats_obj = stats_value.object;
-                if (stats_obj.get("show_performance")) |v| {
-                    if (v == .bool) {
-                        statistics_config.show_performance = v.bool;
-                    }
-                }
-                if (stats_obj.get("show_llm")) |v| {
-                    if (v == .bool) {
-                        statistics_config.show_llm = v.bool;
-                    }
-                }
-                if (stats_obj.get("show_cost")) |v| {
-                    if (v == .bool) {
-                        statistics_config.show_cost = v.bool;
+                        log_config.output = if (std.mem.eql(u8, v.string, "stderr")) .stderr else .file;
                     }
                 }
             }
@@ -447,9 +293,7 @@ pub const Config = struct {
             if (cost_value == .object) {
                 const cost_obj = cost_value.object;
                 if (cost_obj.get("enabled")) |v| {
-                    if (v == .bool) {
-                        cost_controls_config.enabled = v.bool;
-                    }
+                    if (v == .bool) cost_controls_config.enabled = v.bool;
                 }
                 if (cost_obj.get("budget")) |v| {
                     if (v == .float) {
@@ -468,13 +312,11 @@ pub const Config = struct {
 
         // Get providers object
         const providers_value = root_obj.get("providers") orelse {
-            parsed.deinit();
             log_mod.err("Config must contain 'providers' object", .{});
             return error.InvalidConfigFormat;
         };
 
         if (providers_value != .object) {
-            parsed.deinit();
             log_mod.err("'providers' must be a JSON object", .{});
             return error.InvalidConfigFormat;
         }
@@ -495,13 +337,11 @@ pub const Config = struct {
             const provider_name = entry.key_ptr.*;
             const provider_value_ptr = entry.value_ptr;
 
-            // Validate provider config is an object
             if (provider_value_ptr.* != .object) {
                 log_mod.err("Provider config must be an object: {s}", .{provider_name});
                 return error.InvalidProviderConfig;
             }
 
-            // Create a wrapper that references the value in the root parsed object
             const provider_config = ProviderConfig{
                 .allocator = allocator,
                 .name = provider_name,
@@ -511,13 +351,10 @@ pub const Config = struct {
             try providers.put(provider_name, provider_config);
         }
 
-        // Keep the root parsed object alive - all provider configs reference it
         return Config{
             .allocator = allocator,
             .providers = providers,
-            .server = server_config,
             .log = log_config,
-            .statistics = statistics_config,
             .cost_controls = cost_controls_config,
             ._parsed = parsed,
         };
@@ -525,16 +362,13 @@ pub const Config = struct {
 
     /// Return a pointer to the `ProviderConfig` for the given `provider`, or
     /// `null` if that provider is not present in the config file.
-    ///
-    /// The returned pointer borrows into `self.providers` and is valid for
-    /// the lifetime of this `Config`.
     pub fn getProviderConfig(self: *const Config, provider: provider_mod.Provider) ?*const ProviderConfig {
         const provider_name = @tagName(provider);
         return self.providers.getPtr(provider_name);
     }
 
     /// Return `true` if the given `provider` has an entry in the `"providers"`
-    /// section of the config file (regardless of whether its fields are valid).
+    /// section of the config file.
     pub fn hasProvider(self: *const Config, provider: provider_mod.Provider) bool {
         const provider_name = @tagName(provider);
         return self.providers.contains(provider_name);
@@ -544,8 +378,7 @@ pub const Config = struct {
     ///
     /// Deinitialises every `ProviderConfig`, the provider hash-map, and the
     /// root parsed JSON tree.  After this call **all** borrowed slices
-    /// (provider names, string config values, `ServerConfig.host`, etc.)
-    /// become invalid.
+    /// (provider names, string config values, etc.) become invalid.
     pub fn deinit(self: *Config) void {
         var it = self.providers.valueIterator();
         while (it.next()) |prov_config| {

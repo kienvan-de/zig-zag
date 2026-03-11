@@ -15,7 +15,7 @@
 const std = @import("std");
 const build_options = @import("build_options");
 const core = @import("zag-core");
-const config = core.config;
+const core_config = core.config;
 const log = core.log;
 const token_cache = core.cache;
 const app_cache = core.app_cache;
@@ -24,6 +24,7 @@ const metrics = core.metrics;
 const provider = core.provider;
 const pricing = core.pricing;
 const utils = core.utils;
+const app_config = @import("config.zig");
 const server = @import("server.zig");
 
 const version = build_options.version;
@@ -35,7 +36,7 @@ const version = build_options.version;
 
 const State = struct {
     gpa: std.heap.GeneralPurposeAllocator(.{}),
-    cfg: ?config.Config, // null until loaded in serverThreadFn
+    cfg: ?app_config.AppConfig, // null until loaded in serverThreadFn
     thread: std.Thread,
     port: u16,
     start_timestamp: i64,
@@ -116,7 +117,7 @@ fn serverThreadFn(s: *State) void {
 
     // 2. Resolve config path and load config
     const config_path = resolveConfigPath();
-    const cfg = config.Config.loadFromFile(allocator, config_path) catch {
+    var cfg = app_config.AppConfig.loadFromFile(allocator, config_path) catch {
         server_status.store(.err, .release);
         server_error_code.store(.config_load_failed, .release);
         return;
@@ -147,8 +148,8 @@ fn serverThreadFn(s: *State) void {
 
     // 4. Initialize logging
     log.init(.{
-        .level = cfg.log.level,
-        .path = cfg.log.path,
+        .level = cfg.core.log.level,
+        .path = cfg.core.log.path,
         .output = .file, // lib mode always writes to file
     }, allocator) catch |err| {
         log.err("Failed to init logging: {}", .{err});
@@ -159,13 +160,13 @@ fn serverThreadFn(s: *State) void {
     defer log.deinit();
 
     // 5. Log configured providers (auth is lazy, on first request)
-    provider.logConfiguredProviders(&cfg);
+    provider.logConfiguredProviders(&cfg.core);
 
     // 6. Initialize pricing engine (load cost CSVs for configured providers)
     var provider_names_buf: [32][]const u8 = undefined;
     var provider_name_count: usize = 0;
     {
-        var piter = cfg.providers.keyIterator();
+        var piter = cfg.core.providers.keyIterator();
         while (piter.next()) |key_ptr| {
             if (provider_name_count < provider_names_buf.len) {
                 provider_names_buf[provider_name_count] = key_ptr.*;
@@ -178,12 +179,10 @@ fn serverThreadFn(s: *State) void {
     pricing.scheduleAutoUpdate();
 
     // Check if budget period expired while the proxy was offline and reset costs/tokens if so.
-    // Mirrors main.zig — must run before transitioning to running state so the macOS app
-    // displays correct (already-reset) counters the moment it reads status = running.
-    utils.checkBudgetPeriodOnStartup(&cfg);
+    utils.checkBudgetPeriodOnStartup(&cfg.core);
 
     // Set global config singleton + config file path for core module access
-    config.set(&cfg, config_path);
+    core_config.set(&cfg.core, config_path);
 
     // All init successful - transition to running state
     server_status.store(.running, .release);
@@ -192,7 +191,6 @@ fn serverThreadFn(s: *State) void {
     // server.start() blocks until server.shutdown() closes the listener.
     server.start(allocator, &cfg) catch |err| {
         log.err("Server error: {}", .{err});
-        // Check if it's a port-in-use error
         if (err == error.AddressInUse) {
             server_status.store(.err, .release);
             server_error_code.store(.port_in_use, .release);
@@ -335,11 +333,11 @@ export fn getServerStats() CServerStats {
     const snap = metrics.snapshot();
 
     // Config may be null if still loading
-    const configured: u32 = if (s.cfg) |cfg| @intCast(cfg.providers.count()) else 0;
+    const configured: u32 = if (s.cfg) |cfg| @intCast(cfg.core.providers.count()) else 0;
 
     // Read display config (defaults if config not loaded yet)
-    const stats_cfg = if (s.cfg) |cfg| cfg.statistics else config.StatisticsConfig{};
-    const cost_cfg = if (s.cfg) |cfg| cfg.cost_controls else config.CostControlsConfig{};
+    const stats_cfg = if (s.cfg) |cfg| cfg.statistics else app_config.StatisticsConfig{};
+    const cost_cfg = if (s.cfg) |cfg| cfg.core.cost_controls else core_config.CostControlsConfig{};
 
     return CServerStats{
         .status = status,

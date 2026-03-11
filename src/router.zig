@@ -18,8 +18,6 @@ const messages_handler = @import("handlers/messages.zig");
 const models_handler = @import("handlers/models.zig");
 const template_handler = @import("handlers/template.zig");
 const config_handler = @import("handlers/config.zig");
-const core = @import("zag-core");
-const config_mod = core.config;
 
 /// Route definition
 pub const Route = struct {
@@ -31,7 +29,6 @@ pub const Route = struct {
         method: []const u8,
         path: []const u8,
         body: []const u8,
-        config: *const config_mod.Config,
     ) anyerror!void,
 };
 

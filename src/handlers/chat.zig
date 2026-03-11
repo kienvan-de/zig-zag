@@ -22,7 +22,6 @@ const core = @import("zag-core");
 const OpenAI = core.openai_types;
 const errors = core.errors;
 const log = core.log;
-const config_mod = core.config;
 const http = @import("../http.zig");
 
 /// Handle POST /v1/chat/completions requests
@@ -32,11 +31,9 @@ pub fn handle(
     method: []const u8,
     path: []const u8,
     body: []const u8,
-    config: *const config_mod.Config,
 ) !void {
     _ = method;
     _ = path;
-    _ = config;
 
     // Parse OpenAI request
     const openai_request = std.json.parseFromSlice(
@@ -121,6 +118,7 @@ fn handleSyncError(
 fn mapErrorMessage(err: anyerror) []const u8 {
     return switch (err) {
         error.BudgetExceeded => "Budget exceeded. Cost controls are enabled and the budget limit has been reached.",
+        error.AuthRequired => "Authentication required. Please authenticate this provider via POST /v1/config/{provider}/auth",
         error.InvalidModelFormat, error.EmptyProvider, error.EmptyModel => "Invalid model format. Expected 'provider/model-name' (e.g., 'anthropic/claude-3-5-sonnet-latest')",
         error.ProviderNotConfigured => "Provider not configured",
         error.CompatibleFieldMissing => "Provider not supported and no 'compatible' field specified",
@@ -136,6 +134,7 @@ fn mapErrorMessage(err: anyerror) []const u8 {
 fn mapErrorType(err: anyerror) errors.ErrorType {
     return switch (err) {
         error.BudgetExceeded => .rate_limit_error,
+        error.AuthRequired => .invalid_request_error,
         error.InvalidModelFormat, error.EmptyProvider, error.EmptyModel,
         error.ProviderNotConfigured, error.CompatibleFieldMissing,
         error.UnknownCompatibleType, error.TransformFailed,
@@ -149,6 +148,7 @@ fn mapErrorType(err: anyerror) errors.ErrorType {
 fn mapErrorCode(err: anyerror) ?[]const u8 {
     return switch (err) {
         error.BudgetExceeded => "budget_exceeded",
+        error.AuthRequired => "auth_required",
         else => null,
     };
 }
@@ -156,6 +156,7 @@ fn mapErrorCode(err: anyerror) ?[]const u8 {
 fn mapHttpStatus(err: anyerror) std.http.Status {
     return switch (err) {
         error.BudgetExceeded => .too_many_requests,
+        error.AuthRequired => .unauthorized,
         error.InvalidModelFormat, error.EmptyProvider, error.EmptyModel,
         error.ProviderNotConfigured, error.CompatibleFieldMissing,
         error.UnknownCompatibleType, error.TransformFailed,

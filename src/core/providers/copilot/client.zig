@@ -95,19 +95,9 @@ pub const CopilotClient = struct {
     oauth: auth.OAuth, // handles api_token caching via global token_cache
     api_base: ?[]const u8, // restored from app_cache alongside token
 
-    // Server port for device flow URL (read from app_cache)
-    server_port: u16,
-
     pub fn init(allocator: Allocator, provider_config: *const config_mod.ProviderConfig) !CopilotClient {
         const timeout_ms = provider_config.getInt("timeout_ms") orelse config_mod.defaults.provider_timeout_ms;
         const max_response_size_mb = provider_config.getInt("max_response_size_mb") orelse config_mod.defaults.provider_max_response_size_mb;
-
-        // Read server port from app_cache (stored by main/lib on startup)
-        var server_port: u16 = config_mod.defaults.server_port;
-        if (app_cache.get(allocator, "server_port")) |port_str| {
-            defer allocator.free(port_str);
-            server_port = std.fmt.parseInt(u16, port_str, 10) catch config_mod.defaults.server_port;
-        }
 
         return .{
             .allocator = allocator,
@@ -125,7 +115,6 @@ pub const CopilotClient = struct {
             .api_version = provider_config.getString("api_version") orelse DEFAULT_API_VERSION,
             .oauth = auth.OAuth.init(allocator, "copilot", provider_config.getString("client_id") orelse DEFAULT_CLIENT_ID),
             .api_base = null,
-            .server_port = server_port,
         };
     }
 
@@ -290,31 +279,6 @@ pub const CopilotClient = struct {
     // Task 1.5: Device Flow + Save Token
     // ========================================================================
 
-    /// Open the device flow page in the default browser via the server's template route.
-    /// URL: http://127.0.0.1:{port}/v1/html/device_flow?user_code=X&verification_uri=Y
-    fn showDeviceFlowPage(self: *CopilotClient, user_code: []const u8, verification_uri: []const u8) !void {
-        const url = try std.fmt.allocPrint(
-            self.allocator,
-            "http://127.0.0.1:{d}/v1/html/device_flow?user_code={s}&verification_uri={s}",
-            .{ self.server_port, user_code, verification_uri },
-        );
-        defer self.allocator.free(url);
-
-        log.info("[Copilot] Opening device flow page: {s}", .{url});
-
-        // Open in default browser
-        const result = std.process.Child.run(.{
-            .allocator = self.allocator,
-            .argv = &[_][]const u8{ "open", url },
-        }) catch |err| {
-            log.err("[Copilot] Failed to open browser: {}", .{err});
-            return err;
-        };
-        if (result.term.Exited != 0) {
-            return error.BrowserOpenFailed;
-        }
-    }
-
     /// Start GitHub Device Flow — request device code from GitHub.
     /// Returns device code info that the caller can use to show UI
     /// and later call completeDeviceFlow().
@@ -385,32 +349,6 @@ pub const CopilotClient = struct {
         // Cache the token (expires_in from token response, default 8h for Copilot if zero)
         const expires_in_secs: i64 = if (token_response.expires_in > 0) token_response.expires_in else 28800;
         try self.oauth.cacheTokens(token_response.access_token, token_response.refresh_token, expires_in_secs);
-    }
-
-    /// GitHub Device Flow — full flow used internally by getAccessToken.
-    /// 1. Request device code
-    /// 2. Open browser
-    /// 3. Poll for token
-    /// 4. Save token to apps.json + cache
-    /// Returns duplicated access_token (caller must free)
-    fn deviceFlow(self: *CopilotClient) ![]const u8 {
-        var result = try self.startDeviceFlow();
-        defer result.deinit();
-
-        // Open browser page (non-fatal if it fails)
-        self.showDeviceFlowPage(result.user_code, result.verification_uri) catch |err| {
-            log.warn("[Copilot] Failed to open browser page: {}, falling back to stderr", .{err});
-            var msg_buf: [1024]u8 = undefined;
-            if (std.fmt.bufPrint(&msg_buf, "\n! First copy your one-time code: {s}\n- Open {s} in your browser\n- Paste the code and authorize\n\n", .{ result.user_code, result.verification_uri })) |msg| {
-                _ = std.posix.write(std.posix.STDERR_FILENO, msg) catch {};
-            } else |_| {}
-        };
-
-        // Poll + save + cache
-        try self.completeDeviceFlow(result.device_code, result.interval, result.expires_in);
-
-        // Return token from cache
-        return self.oauth.getCachedToken() orelse error.TokenFetchFailed;
     }
 
     /// Save OAuth token to ~/.config/github-copilot/apps.json
@@ -540,11 +478,8 @@ pub const CopilotClient = struct {
         // 4. Fetch fresh — read GitHub OAuth token from apps.json
         const oauth_token = self.readGitHubToken() catch |err| {
             if (err == error.TokenFileNotFound or err == error.TokenNotFound) {
-                log.info("[Copilot] No saved token found, starting device flow...", .{});
-                const new_token = try self.deviceFlow();
-                defer self.allocator.free(new_token);
-                try self.fetchCopilotToken(new_token);
-                return self.oauth.getCachedToken() orelse error.TokenFetchFailed;
+                log.warn("[Copilot] No saved token — authenticate via POST /v1/config/copilot/auth", .{});
+                return error.AuthRequired;
             }
             return err;
         };
@@ -553,11 +488,8 @@ pub const CopilotClient = struct {
         // 5. Exchange GitHub OAuth token for Copilot API token
         self.fetchCopilotToken(oauth_token) catch |err| {
             if (err == error.InvalidOAuthToken) {
-                log.warn("[Copilot] Saved OAuth token expired, starting device flow...", .{});
-                const new_token = try self.deviceFlow();
-                defer self.allocator.free(new_token);
-                try self.fetchCopilotToken(new_token);
-                return self.oauth.getCachedToken() orelse error.TokenFetchFailed;
+                log.warn("[Copilot] OAuth token expired — re-authenticate via POST /v1/config/copilot/auth", .{});
+                return error.AuthRequired;
             }
             return err;
         };
