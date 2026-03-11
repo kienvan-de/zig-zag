@@ -115,6 +115,9 @@ pub const CompletionError = error{
     UpstreamError,
     /// Transformer failed to convert the upstream response back.
     TransformResponseFailed,
+    /// Provider requires authentication before use (e.g. Copilot device flow).
+    /// Caller should prompt the user to authenticate via the config auth API.
+    AuthRequired,
 };
 
 /// HTTP upstream errors — shared by all provider clients

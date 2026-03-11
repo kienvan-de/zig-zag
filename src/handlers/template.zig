@@ -22,7 +22,6 @@
 
 const std = @import("std");
 const core = @import("zag-core");
-const config_mod = core.config;
 const log = core.log;
 const http = @import("../http.zig");
 const templates = @import("../templates/mod.zig");
@@ -35,11 +34,9 @@ pub fn handle(
     method: []const u8,
     path: []const u8,
     body: []const u8,
-    cfg: *const config_mod.Config,
 ) !void {
     _ = method;
     _ = body;
-    _ = cfg;
 
     // Split path from query string
     var path_part = path;

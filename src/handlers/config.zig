@@ -41,9 +41,7 @@ pub fn handle(
     method: []const u8,
     path: []const u8,
     body: []const u8,
-    cfg: *const config_mod.Config,
 ) !void {
-    _ = cfg;
     const eql = std.mem.eql;
 
     if (eql(u8, path, "/v1/config/data")) {

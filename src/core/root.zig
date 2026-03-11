@@ -9,13 +9,18 @@
 //! ```zig
 //! const core = @import("zag-core");
 //!
-//! var cfg = try core.config.Config.loadFromFile(allocator, path);
+//! // Parse JSON, construct core Config (providers, log, cost_controls)
+//! var cfg = try core.config.Config.parseFromJson(allocator, parsed);
 //! core.config.set(&cfg, path);
 //! core.cache.init(allocator);
 //! core.metrics.load();
 //! core.pricing.init(allocator, provider_names);
 //!
 //! try core.completion.chatComplete(writer, allocator, request);
+//!
+//! // Auth management
+//! const status = core.config.checkAuthStatus(allocator, "copilot");
+//! const result = core.config.initiateAuth(allocator, "copilot");
 //! ```
 
 // =========================================================================
