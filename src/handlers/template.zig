@@ -21,7 +21,7 @@
 //!   /v1/html/<unknown>    => 404
 
 const std = @import("std");
-const core = @import("zig-zag-core");
+const core = @import("zag-core");
 const config_mod = core.config;
 const log = core.log;
 const http = @import("../http.zig");

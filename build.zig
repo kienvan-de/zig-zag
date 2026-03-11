@@ -30,7 +30,7 @@ pub fn build(b: *std.Build) void {
     build_options.addOption([]const u8, "version", version_trimmed);
 
     // =========================================================================
-    // Core module — transport-agnostic library (zig-zag-core)
+    // Core module — transport-agnostic library (zag-core)
     // =========================================================================
     const core_module = b.createModule(.{
         .root_source_file = b.path("src/core/root.zig"),
@@ -48,7 +48,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     exe.root_module.addOptions("build_options", build_options);
-    exe.root_module.addImport("zig-zag-core", core_module);
+    exe.root_module.addImport("zag-core", core_module);
 
     b.installArtifact(exe);
 
@@ -127,7 +127,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     debug_exe.root_module.addOptions("build_options", build_options);
-    debug_exe.root_module.addImport("zig-zag-core", core_module);
+    debug_exe.root_module.addImport("zag-core", core_module);
 
     const debug_step = b.step("exec:dbg", "Build debug binary");
     const install_debug = b.addInstallArtifact(debug_exe, .{});
@@ -144,7 +144,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     release_exe.root_module.addOptions("build_options", build_options);
-    release_exe.root_module.addImport("zig-zag-core", core_module);
+    release_exe.root_module.addImport("zag-core", core_module);
 
     const release_step = b.step("exec:rls", "Build release binary (smallest size)");
     const install_release = b.addInstallArtifact(release_exe, .{});
@@ -180,7 +180,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     lib.root_module.addOptions("build_options", build_options);
-    lib.root_module.addImport("zig-zag-core", core_module);
+    lib.root_module.addImport("zag-core", core_module);
 
     const lib_install = b.addInstallArtifact(lib, .{});
     const lib_step = b.step("lib:dbg", "Build debug shared library for platform UI integration");
@@ -198,7 +198,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     lib_release.root_module.addOptions("build_options", build_options);
-    lib_release.root_module.addImport("zig-zag-core", core_module);
+    lib_release.root_module.addImport("zag-core", core_module);
 
     const lib_release_install = b.addInstallArtifact(lib_release, .{});
     const lib_release_step = b.step("lib:rls", "Build release shared library for platform UI integration");

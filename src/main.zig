@@ -14,7 +14,7 @@
 
 const std = @import("std");
 const build_options = @import("build_options");
-const core = @import("zig-zag-core");
+const core = @import("zag-core");
 const config = core.config;
 const log = core.log;
 const token_cache = core.cache;

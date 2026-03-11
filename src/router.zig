@@ -18,7 +18,7 @@ const messages_handler = @import("handlers/messages.zig");
 const models_handler = @import("handlers/models.zig");
 const template_handler = @import("handlers/template.zig");
 const config_handler = @import("handlers/config.zig");
-const core = @import("zig-zag-core");
+const core = @import("zag-core");
 const config_mod = core.config;
 
 /// Route definition
