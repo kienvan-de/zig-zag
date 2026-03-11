@@ -79,31 +79,3 @@ pub const openai_types = @import("providers/openai/types.zig");
 /// Anthropic request/response type definitions.
 pub const anthropic_types = @import("providers/anthropic/types.zig");
 
-// =========================================================================
-// Provider internals — used by config handler for auth flows.
-// Will be removed when auth flows move into core.
-// =========================================================================
-
-pub const providers = struct {
-    pub const openai = struct {
-        pub const client = @import("providers/openai/client.zig");
-        pub const transformer = @import("providers/openai/transformer.zig");
-        pub const types = @import("providers/openai/types.zig");
-    };
-    pub const anthropic = struct {
-        pub const client = @import("providers/anthropic/client.zig");
-        pub const transformer = @import("providers/anthropic/transformer.zig");
-        pub const types = @import("providers/anthropic/types.zig");
-    };
-    pub const sap_ai_core = struct {
-        pub const client = @import("providers/sap_ai_core/client.zig");
-        pub const transformer = @import("providers/sap_ai_core/transformer.zig");
-        pub const types = @import("providers/sap_ai_core/types.zig");
-    };
-    pub const hai = struct {
-        pub const client = @import("providers/hai/client.zig");
-    };
-    pub const copilot = struct {
-        pub const client = @import("providers/copilot/client.zig");
-    };
-};
