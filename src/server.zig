@@ -13,7 +13,7 @@
 // limitations under the License.
 
 const std = @import("std");
-const core = @import("zig-zag-core");
+const core = @import("zag-core");
 const config = core.config;
 const errors = core.errors;
 const http = @import("http.zig");

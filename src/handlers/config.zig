@@ -24,7 +24,7 @@
 //!   DELETE /v1/config/{provider}/auth        -> revoke provider auth
 
 const std = @import("std");
-const core = @import("zig-zag-core");
+const core = @import("zag-core");
 const errors = core.errors;
 const config_mod = core.config;
 const log = core.log;

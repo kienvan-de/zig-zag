@@ -1,4 +1,4 @@
-//! zig-zag-core — Transport-agnostic LLM proxy library.
+//! zag-core — Transport-agnostic LLM proxy library.
 //!
 //! Public API surface for embedding zig-zag in any application.
 //! The wrapper (HTTP server, CLI tool, etc.) injects dependencies
@@ -7,7 +7,7 @@
 //! ## Quick Start (Minimal Embedder)
 //!
 //! ```zig
-//! const core = @import("zig-zag-core");
+//! const core = @import("zag-core");
 //!
 //! var cfg = try core.config.Config.loadFromFile(allocator, path);
 //! core.config.set(&cfg, path);
