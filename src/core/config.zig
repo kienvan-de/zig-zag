@@ -747,8 +747,8 @@ fn initiateSapAiCoreAuth(allocator: Allocator, cfg: *const Config, provider_name
     };
     defer client.deinit();
 
-    // SAP AI Core uses client-credentials grant — fully automated, no browser
-    const access_token = client.getAccessToken() catch {
+    // SAP AI Core uses client-credentials grant — fetch and cache token
+    const access_token = client.fetchToken() catch {
         return .{ .err = .{ .message = "Authentication failed" } };
     };
     allocator.free(access_token);
