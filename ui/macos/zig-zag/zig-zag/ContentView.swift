@@ -216,7 +216,7 @@ extension ServerStats {
         let sign = cost < 0 ? "-" : ""
         if abs >= 1_000_000 {
             return "\(sign)$\(String(format: "%.1f", abs / 1_000_000))M"
-        } else if abs >= 10_000 {
+        } else if abs >= 1_000 {
             return "\(sign)$\(String(format: "%.1f", abs / 1_000))K"
         } else if abs >= 1.0 {
             return "\(sign)$\(String(format: "%.2f", abs))"
