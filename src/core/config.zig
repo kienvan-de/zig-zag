@@ -17,7 +17,6 @@ const Allocator = std.mem.Allocator;
 const provider_mod = @import("provider.zig");
 const log_mod = @import("log.zig");
 const worker_pool = @import("worker_pool.zig");
-const LogOutput = log_mod.LogOutput;
 
 // Provider clients — used by auth functions
 const CopilotClient = @import("providers/copilot/client.zig").CopilotClient;
@@ -156,41 +155,14 @@ pub const ProviderConfig = struct {
 /// Compile-time default values for core settings.
 ///
 /// This namespace is the **single source of truth** for defaults used by
-/// core modules.  Wrapper-specific defaults (server, statistics) live in
-/// the wrapper's own config module.
+/// core modules.  Wrapper-specific defaults (server, statistics, logging)
+/// live in the wrapper's own config module.
 pub const defaults = struct {
-    // ── Logging ─────────────────────────────────────────────────────────
-    /// Maximum size of a single log file before rotation, in megabytes.
-    pub const log_max_file_size_mb: i64 = 10;
-    /// Maximum number of rotated log files to retain.
-    pub const log_max_files: i64 = 5;
-    /// In-memory log buffer size (number of entries).
-    pub const log_buffer_size: i64 = 100;
-    /// Interval between automatic log flushes, in milliseconds.
-    pub const log_flush_interval_ms: i64 = 1_000;
-
     // ── Provider (shared across all providers) ──────────────────────────
     /// Upstream request timeout in milliseconds (60 s).
     pub const provider_timeout_ms: i64 = 60_000; // 60 s
     /// Maximum upstream response body size in megabytes.
     pub const provider_max_response_size_mb: i64 = 10;
-};
-
-/// Logging configuration, parsed from the `"logging"` section of `config.json`.
-///
-/// Controls log level, output destination (`stderr` or rotating files),
-/// file rotation policy, and the in-memory buffer that batches writes.
-/// All fields are optional and fall back to `defaults`.
-pub const LogConfig = struct {
-    level: std.log.Level = .info,
-    /// Explicit log file path.  `null` means use the OS-default location.
-    path: ?[]const u8 = null,
-    max_file_size_mb: i64 = defaults.log_max_file_size_mb,
-    max_files: i64 = defaults.log_max_files,
-    buffer_size: i64 = defaults.log_buffer_size,
-    flush_interval_ms: i64 = defaults.log_flush_interval_ms,
-    /// Output destination — `"file"` or `"stderr"` in the JSON; defaults to `.stderr`.
-    output: LogOutput = .stderr,
 };
 
 /// Cost / budget controls, parsed from the `"cost_controls"` section of `config.json`.
@@ -229,7 +201,6 @@ pub const Config = struct {
     allocator: Allocator,
     /// Map of provider name → `ProviderConfig` (e.g. `"openai"` → config object).
     providers: std.StringHashMap(ProviderConfig),
-    log: LogConfig,
     cost_controls: CostControlsConfig,
     /// The root parsed JSON tree.  Kept alive so that all borrowed slices
     /// in `ProviderConfig` and other structs remain valid.
@@ -242,7 +213,7 @@ pub const Config = struct {
     /// returned `Config`** — the caller must NOT deinit it separately.
     ///
     /// The root value must be a JSON object with at least a `"providers"` key.
-    /// Optional keys `"logging"` and `"cost_controls"` are merged with defaults.
+    /// Optional key `"cost_controls"` is merged with defaults.
     pub fn parseFromJson(allocator: Allocator, parsed: std.json.Parsed(std.json.Value)) !Config {
         // Validate it's an object
         if (parsed.value != .object) {
@@ -251,41 +222,6 @@ pub const Config = struct {
         }
 
         const root_obj = parsed.value.object;
-
-        // Parse logging config (optional, with defaults)
-        var log_config = LogConfig{};
-        if (root_obj.get("logging")) |log_value| {
-            if (log_value == .object) {
-                const log_obj = log_value.object;
-                if (log_obj.get("level")) |level_value| {
-                    if (level_value == .string) {
-                        log_config.level = log_mod.parseLevel(level_value.string);
-                    }
-                }
-                if (log_obj.get("path")) |path_value| {
-                    if (path_value == .string) {
-                        log_config.path = path_value.string;
-                    }
-                }
-                if (log_obj.get("max_file_size_mb")) |v| {
-                    if (v == .integer) log_config.max_file_size_mb = v.integer;
-                }
-                if (log_obj.get("max_files")) |v| {
-                    if (v == .integer) log_config.max_files = v.integer;
-                }
-                if (log_obj.get("buffer_size")) |v| {
-                    if (v == .integer) log_config.buffer_size = v.integer;
-                }
-                if (log_obj.get("flush_interval_ms")) |v| {
-                    if (v == .integer) log_config.flush_interval_ms = v.integer;
-                }
-                if (log_obj.get("output")) |v| {
-                    if (v == .string) {
-                        log_config.output = if (std.mem.eql(u8, v.string, "stderr")) .stderr else .file;
-                    }
-                }
-            }
-        }
 
         // Parse cost controls config (optional, with defaults)
         var cost_controls_config = CostControlsConfig{};
@@ -354,7 +290,6 @@ pub const Config = struct {
         return Config{
             .allocator = allocator,
             .providers = providers,
-            .log = log_config,
             .cost_controls = cost_controls_config,
             ._parsed = parsed,
         };

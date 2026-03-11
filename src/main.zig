@@ -20,6 +20,7 @@ const log = core.log;
 const token_cache = core.cache;
 const app_cache = core.app_cache;
 const worker_pool = @import("worker_pool.zig");
+const log_impl = @import("log.zig");
 const metrics = core.metrics;
 const utils = core.utils;
 const provider = core.provider;
@@ -63,12 +64,8 @@ pub fn main() !void {
     defer worker_pool.deinit();
 
     // Initialize logging (after worker pool for async writes)
-    try log.init(.{
-        .level = cfg.core.log.level,
-        .path = cfg.core.log.path,
-        .output = cfg.core.log.output,
-    }, allocator);
-    defer log.deinit();
+    try log_impl.init(cfg.log, allocator);
+    defer log_impl.deinit();
 
     // Load persisted metrics (tokens, costs, period_start) from previous session
     metrics.load();

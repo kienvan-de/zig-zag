@@ -15,14 +15,18 @@
 //! Wrapper-level application configuration.
 //!
 //! Parses the full `config.json` and splits it into:
-//! - `core` — providers, logging, cost controls (passed to `zag-core`)
+//! - `core` — providers, cost controls (passed to `zag-core`)
+//! - `log` — logging settings (level, file, rotation, buffering)
 //! - `server` — HTTP server settings (host, port, pool sizes, timeouts)
 //! - `statistics` — macOS UI display toggles
 
 const std = @import("std");
 const core = @import("zag-core");
 const core_config = core.config;
-const log = core.log;
+const log_facade = core.log;
+const log_impl = @import("log.zig");
+const LogConfig = log_impl.LogConfig;
+const LogOutput = log_impl.LogOutput;
 
 /// Full application configuration — core + wrapper-specific sections.
 ///
@@ -37,19 +41,20 @@ const log = core.log;
 /// ```
 pub const AppConfig = struct {
     core: core_config.Config,
+    log: LogConfig,
     server: ServerConfig,
     statistics: StatisticsConfig,
 
     /// Load and parse the full config.json from an explicit file path.
     ///
     /// Reads the file, parses JSON, then splits into core and wrapper sections.
-    /// Core sections (providers, logging, cost_controls) are parsed by
-    /// `core.config.Config.parseFromJson`.  Wrapper sections (server,
+    /// Core sections (providers, cost_controls) are parsed by
+    /// `core.config.Config.parseFromJson`.  Wrapper sections (logging, server,
     /// statistics) are parsed here.
     pub fn loadFromFile(allocator: std.mem.Allocator, path: []const u8) !AppConfig {
         const file = std.fs.cwd().openFile(path, .{}) catch |err| {
-            log.err("Failed to open config file: {s}", .{path});
-            log.err("Error: {}", .{err});
+            log_facade.err("Failed to open config file: {s}", .{path});
+            log_facade.err("Error: {}", .{err});
             return err;
         };
         defer file.close();
@@ -68,22 +73,24 @@ pub const AppConfig = struct {
         errdefer parsed.deinit();
 
         if (parsed.value != .object) {
-            log.err("Config must be a JSON object", .{});
+            log_facade.err("Config must be a JSON object", .{});
             return error.InvalidConfigFormat;
         }
 
         const root_obj = parsed.value.object;
 
         // Parse wrapper-specific sections before handing parsed to core
+        const log_config = parseLogConfig(root_obj);
         const server_config = parseServerConfig(root_obj);
         const statistics_config = parseStatisticsConfig(root_obj);
 
-        // Core takes ownership of parsed (providers, logging, cost_controls)
+        // Core takes ownership of parsed (providers, cost_controls)
         var core_cfg = try core_config.Config.parseFromJson(allocator, parsed);
         errdefer core_cfg.deinit();
 
         return .{
             .core = core_cfg,
+            .log = log_config,
             .server = server_config,
             .statistics = statistics_config,
         };
@@ -130,6 +137,39 @@ pub const StatisticsConfig = struct {
 // ============================================================================
 // JSON parsing helpers
 // ============================================================================
+
+fn parseLogConfig(root_obj: std.json.ObjectMap) LogConfig {
+    var cfg = LogConfig{};
+    const log_value = root_obj.get("logging") orelse return cfg;
+    if (log_value != .object) return cfg;
+    const obj = log_value.object;
+
+    if (obj.get("level")) |v| {
+        if (v == .string) cfg.level = log_impl.parseLevel(v.string);
+    }
+    if (obj.get("path")) |v| {
+        if (v == .string) cfg.path = v.string;
+    }
+    if (obj.get("max_file_size_mb")) |v| {
+        if (v == .integer) cfg.max_file_size_mb = v.integer;
+    }
+    if (obj.get("max_files")) |v| {
+        if (v == .integer) cfg.max_files = v.integer;
+    }
+    if (obj.get("buffer_size")) |v| {
+        if (v == .integer) cfg.buffer_size = v.integer;
+    }
+    if (obj.get("flush_interval_ms")) |v| {
+        if (v == .integer) cfg.flush_interval_ms = v.integer;
+    }
+    if (obj.get("output")) |v| {
+        if (v == .string) {
+            cfg.output = if (std.mem.eql(u8, v.string, "stderr")) .stderr else .file;
+        }
+    }
+
+    return cfg;
+}
 
 fn parseServerConfig(root_obj: std.json.ObjectMap) ServerConfig {
     var cfg = ServerConfig{};
