@@ -147,6 +147,23 @@ pub fn chatComplete(
     }
 }
 
+/// Attempt automatic re-authentication for sync-auth providers (SAP AI Core, HAI).
+/// Returns `true` if auth succeeded and the request should be retried.
+/// Returns `false` for async-auth providers (Copilot device flow) or on failure —
+/// the caller should propagate `error.AuthRequired` to the transport layer.
+fn tryAutoReauth(allocator: std.mem.Allocator, provider_name: []const u8) bool {
+    log.info("[AUTH] Attempting auto-reauth for provider '{s}'...", .{provider_name});
+    const result = config_mod.initiateAuth(allocator, provider_name);
+    return switch (result) {
+        .authenticated => true,
+        .device_flow => false, // Copilot — async, can't retry
+        .err => |e| {
+            log.err("[AUTH] Auto-reauth failed for '{s}': {s}", .{ provider_name, e.message });
+            return false;
+        },
+    };
+}
+
 fn dispatchChat(
     comptime Client: type,
     comptime Transformer: type,
@@ -159,9 +176,19 @@ fn dispatchChat(
     provider_config: *const config_mod.ProviderConfig,
 ) !void {
     if (is_streaming) {
-        try chatStreaming(Client, Transformer, writer, allocator, request, model, provider_name, provider_config);
+        chatStreaming(Client, Transformer, writer, allocator, request, model, provider_name, provider_config) catch |err| {
+            if (err == error.AuthRequired and tryAutoReauth(allocator, provider_name)) {
+                return chatStreaming(Client, Transformer, writer, allocator, request, model, provider_name, provider_config);
+            }
+            return err;
+        };
     } else {
-        try chatSync(Client, Transformer, writer, allocator, request, model, provider_name, provider_config);
+        chatSync(Client, Transformer, writer, allocator, request, model, provider_name, provider_config) catch |err| {
+            if (err == error.AuthRequired and tryAutoReauth(allocator, provider_name)) {
+                return chatSync(Client, Transformer, writer, allocator, request, model, provider_name, provider_config);
+            }
+            return err;
+        };
     }
 }
 
@@ -485,9 +512,19 @@ fn dispatchMessages(
     provider_config: *const config_mod.ProviderConfig,
 ) !void {
     if (is_streaming) {
-        try messagesStreaming(Client, Transformer, writer, allocator, request, model, provider_name, provider_config);
+        messagesStreaming(Client, Transformer, writer, allocator, request, model, provider_name, provider_config) catch |err| {
+            if (err == error.AuthRequired and tryAutoReauth(allocator, provider_name)) {
+                return messagesStreaming(Client, Transformer, writer, allocator, request, model, provider_name, provider_config);
+            }
+            return err;
+        };
     } else {
-        try messagesSync(Client, Transformer, writer, allocator, request, model, provider_name, provider_config);
+        messagesSync(Client, Transformer, writer, allocator, request, model, provider_name, provider_config) catch |err| {
+            if (err == error.AuthRequired and tryAutoReauth(allocator, provider_name)) {
+                return messagesSync(Client, Transformer, writer, allocator, request, model, provider_name, provider_config);
+            }
+            return err;
+        };
     }
 }
 
@@ -951,6 +988,19 @@ fn listModelsSequential(allocator: std.mem.Allocator, cfg: *const config_mod.Con
 }
 
 fn fetchModelsForProvider(
+    allocator: std.mem.Allocator,
+    provider_name: []const u8,
+    provider_config: *const config_mod.ProviderConfig,
+) !?[]openai_types.Model {
+    return fetchModelsForProviderInner(allocator, provider_name, provider_config) catch |err| {
+        if (err == error.AuthRequired and tryAutoReauth(allocator, provider_name)) {
+            return fetchModelsForProviderInner(allocator, provider_name, provider_config);
+        }
+        return err;
+    };
+}
+
+fn fetchModelsForProviderInner(
     allocator: std.mem.Allocator,
     provider_name: []const u8,
     provider_config: *const config_mod.ProviderConfig,
