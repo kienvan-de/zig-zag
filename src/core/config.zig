@@ -721,7 +721,7 @@ fn initiateCopilotAuth(allocator: Allocator, cfg: *const Config, provider_name: 
         .expires_in = result.expires_in,
     };
 
-    worker_pool.submit(deviceFlowPollTask, @ptrCast(thread_args)) catch {
+    worker_pool.submit(&deviceFlowPollTask, @ptrCast(thread_args)) catch {
         std.heap.page_allocator.destroy(thread_args);
         device_flow_state.status.store(.failed, .release);
         return .{ .err = .{ .message = "Failed to submit poll task" } };

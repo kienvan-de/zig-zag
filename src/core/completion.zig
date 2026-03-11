@@ -810,11 +810,11 @@ pub fn listModels(allocator: std.mem.Allocator) ![]openai_types.Model {
         return try allocator.alloc(openai_types.Model, 0);
     }
 
-    // Get worker pool — if available, parallel; else sequential
-    const pool = worker_pool.getPool() orelse {
+    // If a pool backend is available, fetch in parallel; else sequential
+    if (!worker_pool.isAvailable()) {
         log.warn("Worker pool not initialized, falling back to sequential fetch", .{});
         return try listModelsSequential(allocator, cfg);
-    };
+    }
 
     // Wrap allocator with thread-safe wrapper
     var ts_alloc = ThreadSafeAllocator{ .backing_allocator = allocator };
@@ -854,7 +854,7 @@ pub fn listModels(allocator: std.mem.Allocator) ![]openai_types.Model {
         };
 
         wg.add(1);
-        pool.submit(fetchTask, @ptrCast(&contexts[i])) catch |err| {
+        worker_pool.submit(&fetchTask, @ptrCast(&contexts[i])) catch |err| {
             log.warn("Failed to submit task for provider '{s}': {}", .{ pname, err });
             results[i].err = err;
             results[i].provider_name = pname;

@@ -373,7 +373,7 @@ fn logImpl(
     const msg = std.fmt.allocPrint(allocator, "[{s}] [{s}] {s}" ++ format ++ "\n", .{ timestamp, level_txt, scope_prefix } ++ args) catch return;
 
     // Try to submit to worker pool
-    if (worker_pool.getPool()) |_| {
+    if (worker_pool.isAvailable()) {
         const task_ctx = allocator.create(LogTaskContext) catch {
             allocator.free(msg);
             return;
@@ -383,7 +383,7 @@ fn logImpl(
             .allocator = allocator,
         };
 
-        worker_pool.submit(logWorkerTask, task_ctx) catch {
+        worker_pool.submit(&logWorkerTask, @ptrCast(task_ctx)) catch {
             allocator.free(msg);
             allocator.destroy(task_ctx);
             return;
