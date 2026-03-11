@@ -202,6 +202,7 @@ fn chatSync(
     const provider_request_start = std.time.milliTimestamp();
     const provider_response = client.sendRequest(provider_request) catch |err| {
         log.err("[SYNC] Provider API error: {} for model '{s}'", .{ err, request.model });
+        if (err == error.AuthRequired) return error.AuthRequired;
         return error.UpstreamError;
     };
     defer provider_response.deinit();
@@ -290,6 +291,7 @@ fn chatStreaming(
     const stream_connect_start = std.time.milliTimestamp();
     const stream_result = client.sendStreamingRequest(provider_request) catch |err| {
         log.err("[STREAM] Provider streaming error: {} for model '{s}'", .{ err, request.model });
+        if (err == error.AuthRequired) return error.AuthRequired;
         return error.UpstreamError;
     };
     defer client.freeStreamingResult(stream_result);
@@ -526,6 +528,7 @@ fn messagesSync(
     const provider_request_start = std.time.milliTimestamp();
     const provider_response = client.sendRequest(provider_request) catch |err| {
         log.err("[SYNC] Provider API error: {} for model '{s}/{s}'", .{ err, provider_name, model });
+        if (err == error.AuthRequired) return error.AuthRequired;
         return error.UpstreamError;
     };
     defer provider_response.deinit();
@@ -609,6 +612,7 @@ fn messagesStreaming(
     const stream_connect_start = std.time.milliTimestamp();
     const stream_result = client.sendStreamingRequest(provider_request) catch |err| {
         log.err("[STREAM] Provider streaming error: {} for model '{s}/{s}'", .{ err, provider_name, model });
+        if (err == error.AuthRequired) return error.AuthRequired;
         return error.UpstreamError;
     };
     defer client.freeStreamingResult(stream_result);

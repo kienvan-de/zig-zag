@@ -15,7 +15,7 @@
 const std = @import("std");
 const build_options = @import("build_options");
 const core = @import("zag-core");
-const config = core.config;
+const core_config = core.config;
 const log = core.log;
 const token_cache = core.cache;
 const app_cache = core.app_cache;
@@ -24,6 +24,7 @@ const metrics = core.metrics;
 const utils = core.utils;
 const provider = core.provider;
 const pricing = core.pricing;
+const app_config = @import("config.zig");
 const server = @import("server.zig");
 
 const version = build_options.version;
@@ -43,7 +44,7 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    // Initialize caches before config so loadFromFile can populate them
+    // Initialize caches before config loading
     app_cache.init(allocator);
     defer app_cache.deinit();
 
@@ -53,8 +54,8 @@ pub fn main() !void {
     // Resolve config file path: env var ZIG_ZAG_CONFIG, or OS default
     const config_path = resolveConfigPath();
 
-    // Load configuration
-    var cfg = try config.Config.loadFromFile(allocator, config_path);
+    // Load full application config (wrapper + core sections)
+    var cfg = try app_config.AppConfig.loadFromFile(allocator, config_path);
     defer cfg.deinit();
 
     // Initialize IO worker pool (before logging so async writes work)
@@ -63,9 +64,9 @@ pub fn main() !void {
 
     // Initialize logging (after worker pool for async writes)
     try log.init(.{
-        .level = cfg.log.level,
-        .path = cfg.log.path,
-        .output = cfg.log.output,
+        .level = cfg.core.log.level,
+        .path = cfg.core.log.path,
+        .output = cfg.core.log.output,
     }, allocator);
     defer log.deinit();
 
@@ -75,21 +76,21 @@ pub fn main() !void {
 
     // If the budget period expired while the proxy was offline, reset now so
     // the macOS app shows correct stats before the first request arrives.
-    utils.checkBudgetPeriodOnStartup(&cfg);
+    utils.checkBudgetPeriodOnStartup(&cfg.core);
 
     // Set global config singleton + config file path for core module access
-    config.set(&cfg, config_path);
+    core_config.set(&cfg.core, config_path);
 
     log.info("zig-zag v{s}", .{version});
 
     // Log configured providers (auth is lazy, on first request)
-    provider.logConfiguredProviders(&cfg);
+    provider.logConfiguredProviders(&cfg.core);
 
     // Initialize pricing engine (load cost CSVs for configured providers)
     var provider_names_buf: [32][]const u8 = undefined;
     var provider_name_count: usize = 0;
     {
-        var piter = cfg.providers.keyIterator();
+        var piter = cfg.core.providers.keyIterator();
         while (piter.next()) |key_ptr| {
             if (provider_name_count < provider_names_buf.len) {
                 provider_names_buf[provider_name_count] = key_ptr.*;

@@ -14,11 +14,11 @@
 
 const std = @import("std");
 const core = @import("zag-core");
-const config = core.config;
 const errors = core.errors;
 const http = @import("http.zig");
 const log = core.log;
 const metrics = core.metrics;
+const app_config = @import("config.zig");
 const router = @import("router.zig");
 
 // HTTP response constants
@@ -31,12 +31,10 @@ const NOT_FOUND_RESPONSE =
     \\{"error": "Not Found"}
 ;
 
-
-
 /// Thread pool worker context
 const WorkerContext = struct {
     allocator: std.mem.Allocator,
-    cfg: *const config.Config,
+    server_cfg: app_config.ServerConfig,
     listener: *std.net.Server,
     shutdown: *std.atomic.Value(bool),
 };
@@ -67,14 +65,14 @@ pub fn shutdown() void {
 // Server entry point
 // ============================================================================
 
-pub fn start(allocator: std.mem.Allocator, cfg: *const config.Config) !void {
+pub fn start(allocator: std.mem.Allocator, cfg: *const app_config.AppConfig) !void {
     const host = cfg.server.host;
     const port = cfg.server.port;
 
     const pool_size: usize = @intCast(cfg.server.http_pool_size);
 
     log.info("Starting zig-zag proxy server on {s}:{d}...", .{ host, port });
-    log.info("Loaded providers: {d}", .{cfg.providers.count()});
+    log.info("Loaded providers: {d}", .{cfg.core.providers.count()});
     log.info("HTTP pool size: {d}", .{pool_size});
 
     const address = try std.net.Address.parseIp(host, port);
@@ -104,7 +102,7 @@ pub fn start(allocator: std.mem.Allocator, cfg: *const config.Config) !void {
 
     var worker_ctx = WorkerContext{
         .allocator = allocator,
-        .cfg = cfg,
+        .server_cfg = cfg.server,
         .listener = &listener,
         .shutdown = &shutdown_flag,
     };
@@ -160,7 +158,7 @@ fn workerThread(ctx: *WorkerContext) void {
             continue;
         };
 
-        handleConnection(ctx.allocator, connection, ctx.cfg) catch |err| {
+        handleConnection(ctx.allocator, connection, ctx.server_cfg) catch |err| {
             log.warn("Error handling connection: {}", .{err});
         };
     }
@@ -172,7 +170,7 @@ fn workerThread(ctx: *WorkerContext) void {
 // Connection handling
 // ============================================================================
 
-fn handleConnection(allocator: std.mem.Allocator, connection: std.net.Server.Connection, cfg: *const config.Config) !void {
+fn handleConnection(allocator: std.mem.Allocator, connection: std.net.Server.Connection, server_cfg: app_config.ServerConfig) !void {
     defer connection.stream.close();
 
     var arena = std.heap.ArenaAllocator.init(allocator);
@@ -180,9 +178,9 @@ fn handleConnection(allocator: std.mem.Allocator, connection: std.net.Server.Con
     const request_allocator = arena.allocator();
 
     // Size limits from config
-    const max_header_size: usize = @intCast(cfg.server.max_header_size);
-    const max_body_size: usize = @intCast(cfg.server.max_body_size);
-    const read_timeout_ms: i64 = cfg.server.read_timeout_ms;
+    const max_header_size: usize = @intCast(server_cfg.max_header_size);
+    const max_body_size: usize = @intCast(server_cfg.max_body_size);
+    const read_timeout_ms: i64 = server_cfg.read_timeout_ms;
 
     // Set read timeout on the socket using SO_RCVTIMEO
     if (read_timeout_ms > 0) {
@@ -275,7 +273,7 @@ fn handleConnection(allocator: std.mem.Allocator, connection: std.net.Server.Con
             }
         };
 
-        try route.handler(request_allocator, connection, route.method, route.path, body, cfg);
+        try route.handler(request_allocator, connection, route.method, route.path, body);
     } else {
         _ = try connection.stream.writeAll(NOT_FOUND_RESPONSE);
     }
