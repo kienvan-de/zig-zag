@@ -159,8 +159,8 @@ pub const ProviderConfig = struct {
 /// live in the wrapper's own config module.
 pub const defaults = struct {
     // ── Provider (shared across all providers) ──────────────────────────
-    /// Upstream request timeout in milliseconds (60 s).
-    pub const provider_timeout_ms: i64 = 60_000; // 60 s
+    /// Upstream request timeout in milliseconds (5 min).
+    pub const provider_timeout_ms: i64 = 300_000; // 5 min
     /// Maximum upstream response body size in megabytes.
     pub const provider_max_response_size_mb: i64 = 10;
 };
