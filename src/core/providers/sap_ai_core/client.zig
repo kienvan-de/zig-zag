@@ -177,8 +177,10 @@ pub const SapAiCoreClient = struct {
         };
     }
 
-    /// Get a valid OAuth access token, using global cache
-    /// Returns owned memory that the caller must free
+    /// Get a valid cached access token.
+    /// Returns `error.AuthRequired` when no cached token exists —
+    /// the caller should trigger auth via `POST /v1/config/sap_ai_core/auth`.
+    /// Returns duplicated token that caller must free.
     pub fn getAccessToken(self: *SapAiCoreClient) ![]const u8 {
         // 1. Check if we have a valid cached token
         if (self.oauth.getCachedToken()) |token| {
@@ -196,8 +198,16 @@ pub const SapAiCoreClient = struct {
             return token;
         }
 
-        // 4. Fetch new token using client_credentials
-        log.info("SAP AI Core: Fetching new OAuth token", .{});
+        // 4. No cached token — require explicit auth
+        log.warn("SAP AI Core: No valid token — authenticate via POST /v1/config/sap_ai_core/auth", .{});
+        return error.AuthRequired;
+    }
+
+    /// Fetch a new token using OAuth client-credentials grant.
+    /// Called explicitly by the config auth API (`POST /v1/config/sap_ai_core/auth`).
+    /// Returns duplicated access_token (caller must free).
+    pub fn fetchToken(self: *SapAiCoreClient) ![]const u8 {
+        log.info("SAP AI Core: Fetching new OAuth token via client_credentials", .{});
         var tokens = try auth.oauth.fetchClientCredentials(self.allocator, &self.client, .{
             .token_endpoint = self.token_endpoint,
             .client_id = self.oauth.client_id,
@@ -205,10 +215,9 @@ pub const SapAiCoreClient = struct {
         });
         defer tokens.deinit();
 
-        // 5. Cache token (no refresh_token for client_credentials)
+        // Cache token (no refresh_token for client_credentials)
         try self.oauth.cacheTokens(tokens.access_token, null, tokens.expires_in);
 
-        // 6. Return duplicated token
         return self.allocator.dupe(u8, tokens.access_token);
     }
 
