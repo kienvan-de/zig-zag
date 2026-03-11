@@ -18,7 +18,7 @@
 //! Handles GET /v1/models requests.
 
 const std = @import("std");
-const core = @import("zig-zag-core");
+const core = @import("zag-core");
 const OpenAI = core.openai_types;
 const errors = core.errors;
 const log = core.log;

@@ -13,7 +13,7 @@
 // limitations under the License.
 
 const std = @import("std");
-const metrics = @import("zig-zag-core").metrics;
+const metrics = @import("zag-core").metrics;
 
 /// Send SSE (Server-Sent Events) headers to initiate a streaming response.
 ///

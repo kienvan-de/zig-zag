@@ -18,7 +18,7 @@
 //! Handles POST /v1/messages requests (Anthropic Messages API format).
 
 const std = @import("std");
-const core = @import("zig-zag-core");
+const core = @import("zag-core");
 const Anthropic = core.anthropic_types;
 const errors = core.errors;
 const log = core.log;
