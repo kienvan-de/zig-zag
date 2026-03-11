@@ -564,11 +564,11 @@ pub fn initiateAuth(allocator: Allocator, provider_name: []const u8) AuthResult 
     }
 
     if (eql(u8, provider_name, "sap_ai_core")) {
-        return initiateSyncAuth(SapAiCoreClient, allocator, cfg, provider_name);
+        return initiateSapAiCoreAuth(allocator, cfg, provider_name);
     }
 
     if (eql(u8, provider_name, "hai")) {
-        return initiateSyncAuth(HaiClient, allocator, cfg, provider_name);
+        return initiateHaiAuth(allocator, cfg, provider_name);
     }
 
     return .{ .err = .{ .message = "Unknown provider" } };
@@ -734,32 +734,51 @@ fn initiateCopilotAuth(allocator: Allocator, cfg: *const Config, provider_name: 
 }
 
 // ============================================================================
-// Auth internals — sync providers (SAP AI Core, HAI)
+// Auth internals — SAP AI Core (client-credentials, fully automated)
 // ============================================================================
 
-/// Generic sync auth for any provider client with `init`, `deinit`, and
-/// `getAccessToken` methods.
-fn initiateSyncAuth(
-    comptime Client: type,
-    allocator: Allocator,
-    cfg: *const Config,
-    provider_name: []const u8,
-) AuthResult {
+fn initiateSapAiCoreAuth(allocator: Allocator, cfg: *const Config, provider_name: []const u8) AuthResult {
     const provider_config = cfg.providers.getPtr(provider_name) orelse {
         return .{ .err = .{ .message = "Provider not configured" } };
     };
 
-    var client = Client.init(allocator, provider_config) catch {
+    var client = SapAiCoreClient.init(allocator, provider_config) catch {
         return .{ .err = .{ .message = "Failed to initialize client" } };
     };
     defer client.deinit();
 
+    // SAP AI Core uses client-credentials grant — fully automated, no browser
     const access_token = client.getAccessToken() catch {
         return .{ .err = .{ .message = "Authentication failed" } };
     };
     allocator.free(access_token);
 
-    log_mod.info("[auth/{s}] auth successful", .{provider_name});
+    log_mod.info("[auth/sap_ai_core] auth successful", .{});
+    return .authenticated;
+}
+
+// ============================================================================
+// Auth internals — HAI (browser-based OIDC)
+// ============================================================================
+
+fn initiateHaiAuth(allocator: Allocator, cfg: *const Config, provider_name: []const u8) AuthResult {
+    const provider_config = cfg.providers.getPtr(provider_name) orelse {
+        return .{ .err = .{ .message = "Provider not configured" } };
+    };
+
+    var client = HaiClient.init(allocator, provider_config) catch {
+        return .{ .err = .{ .message = "Failed to initialize client" } };
+    };
+    defer client.deinit();
+
+    // HAI requires browser-based OIDC login — this blocks until the user
+    // completes authentication in their browser (up to 120s timeout).
+    const access_token = client.browserAuthFlow() catch {
+        return .{ .err = .{ .message = "Authentication failed" } };
+    };
+    allocator.free(access_token);
+
+    log_mod.info("[auth/hai] auth successful", .{});
     return .authenticated;
 }
 

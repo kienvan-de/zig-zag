@@ -180,8 +180,10 @@ pub const HaiClient = struct {
     // Authentication
     // ========================================================================
 
-    /// Get valid access token, refreshing or re-authenticating if needed
-    /// Returns duplicated token that caller must free
+    /// Get valid access token, refreshing if possible.
+    /// Returns `error.AuthRequired` when no token exists and refresh fails —
+    /// the caller should prompt the user to authenticate via the config auth API.
+    /// Returns duplicated token that caller must free.
     pub fn getAccessToken(self: *HaiClient) ![]const u8 {
         // 1. Check if we have a valid cached token
         if (self.oauth.getCachedToken()) |token| {
@@ -200,14 +202,14 @@ pub const HaiClient = struct {
         }
 
         // 4. Try to refresh using cached refresh_token
-        if (try self.tryRefreshToken()) |access_token| {
+        if (self.tryRefreshToken() catch null) |access_token| {
             log.info("HAI: Token refreshed successfully", .{});
             return access_token;
         }
 
-        // 5. Need full browser auth flow
-        log.info("HAI: Starting browser authentication flow", .{});
-        return try self.browserAuthFlow();
+        // 5. No token and refresh failed — require explicit auth
+        log.warn("HAI: No valid token — authenticate via POST /v1/config/hai/auth", .{});
+        return error.AuthRequired;
     }
 
     /// Try to refresh token using cached refresh token
@@ -234,9 +236,14 @@ pub const HaiClient = struct {
         return result;
     }
 
-    /// Full browser-based OIDC authentication flow
-    /// Returns access_token (caller owns)
-    fn browserAuthFlow(self: *HaiClient) ![]const u8 {
+    /// Full browser-based OIDC authentication flow.
+    /// Opens the system browser for user login, waits for the callback,
+    /// exchanges the auth code for tokens, and caches them.
+    /// Returns access_token (caller owns).
+    ///
+    /// This is called explicitly by the config auth API
+    /// (`POST /v1/config/hai/auth`), NOT during normal request flow.
+    pub fn browserAuthFlow(self: *HaiClient) ![]const u8 {
         // 1. Discover OIDC endpoints (use curl for TLS compatibility)
         log.debug("HAI: browserAuthFlow - discovering OIDC endpoints...", .{});
         _ = self.oidc.discover(&self.curl_client) catch |err| {
