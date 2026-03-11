@@ -12,168 +12,49 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Worker Pool
+//! Worker Pool Facade
 //!
-//! A generic thread pool for executing tasks concurrently.
-//! Supports configurable pool size and task queue.
+//! Thin interface for submitting background tasks. The core module uses
+//! `submit()` and `isAvailable()` without knowing the pool implementation.
+//! The wrapper injects the real pool via `setSubmitFn()` at startup.
 
 const std = @import("std");
 
-/// Task function type - takes a context pointer and executes work
+/// Task function signature — takes an opaque context pointer.
 pub const TaskFn = *const fn (*anyopaque) void;
 
-/// A task in the queue
-const Task = struct {
-    func: TaskFn,
-    context: *anyopaque,
-};
+/// Submit function signature — the bridge to the real pool.
+pub const SubmitFn = *const fn (TaskFn, *anyopaque) anyerror!void;
 
-/// Global worker pool instance
-/// pool_ptr uses atomic operations for lock-free read access via getPool()
-var pool_ptr: std.atomic.Value(?*WorkerPool) = std.atomic.Value(?*WorkerPool).init(null);
-var pool_allocator: ?std.mem.Allocator = null;
-var pool_mutex: std.Thread.Mutex = .{};
+/// Pluggable submit function — set by the wrapper during init.
+var submit_fn: ?SubmitFn = null;
 
-/// Worker Pool implementation
-pub const WorkerPool = struct {
-    allocator: std.mem.Allocator,
-    threads: []std.Thread,
-    queue: std.ArrayList(Task),
-    queue_head: usize,
-    queue_mutex: std.Thread.Mutex,
-    queue_not_empty: std.Thread.Condition,
-    shutdown: bool,
-    active_tasks: usize,
+/// Register a submit function (called by the wrapper at startup).
+pub fn setSubmitFn(f: SubmitFn) void {
+    submit_fn = f;
+}
 
-    const DEFAULT_POOL_SIZE = 1;
-    const COMPACT_THRESHOLD = 64;
+/// Clear the submit function (called by the wrapper at shutdown).
+pub fn clearSubmitFn() void {
+    submit_fn = null;
+}
 
-    /// Initialize the worker pool
-    pub fn init(allocator: std.mem.Allocator, pool_size: usize) !*WorkerPool {
-        const size = if (pool_size == 0) DEFAULT_POOL_SIZE else pool_size;
+/// Submit a task for background execution.
+///
+/// Returns `error.PoolNotInitialized` if no backend has been registered.
+pub fn submit(func: TaskFn, context: *anyopaque) !void {
+    const f = submit_fn orelse return error.PoolNotInitialized;
+    return f(func, context);
+}
 
-        const self = try allocator.create(WorkerPool);
-        self.* = .{
-            .allocator = allocator,
-            .threads = try allocator.alloc(std.Thread, size),
-            .queue = std.ArrayList(Task){},
-            .queue_head = 0,
-            .queue_mutex = .{},
-            .queue_not_empty = .{},
-            .shutdown = false,
-            .active_tasks = 0,
-        };
+/// Check whether a pool backend is available.
+pub fn isAvailable() bool {
+    return submit_fn != null;
+}
 
-        // Start worker threads
-        for (self.threads, 0..) |*thread, i| {
-            thread.* = try std.Thread.spawn(.{}, workerLoop, .{self});
-            _ = i;
-        }
-
-        return self;
-    }
-
-    /// Shutdown the worker pool
-    pub fn deinit(self: *WorkerPool) void {
-        // Signal shutdown
-        {
-            self.queue_mutex.lock();
-            self.shutdown = true;
-            self.queue_mutex.unlock();
-        }
-
-        // Wake up all waiting threads
-        self.queue_not_empty.broadcast();
-
-        // Wait for all threads to finish
-        for (self.threads) |thread| {
-            thread.join();
-        }
-
-        self.allocator.free(self.threads);
-        self.queue.deinit(self.allocator);
-
-        self.allocator.destroy(self);
-    }
-
-    /// Submit a task to the pool
-    pub fn submit(self: *WorkerPool, comptime func: fn (*anyopaque) void, context: *anyopaque) !void {
-        self.queue_mutex.lock();
-        defer self.queue_mutex.unlock();
-
-        if (self.shutdown) {
-            return error.PoolShutdown;
-        }
-
-        try self.queue.append(self.allocator, .{
-            .func = func,
-            .context = context,
-        });
-
-        // Signal one waiting worker
-        self.queue_not_empty.signal();
-    }
-
-    /// Get number of pending tasks
-    pub fn pendingTasks(self: *WorkerPool) usize {
-        self.queue_mutex.lock();
-        defer self.queue_mutex.unlock();
-        return self.queue.items.len - self.queue_head;
-    }
-
-    /// Compact the queue by removing consumed items (call with lock held)
-    fn compactQueue(self: *WorkerPool) void {
-        if (self.queue_head >= COMPACT_THRESHOLD) {
-            const remaining = self.queue.items.len - self.queue_head;
-            if (remaining > 0) {
-                std.mem.copyForwards(Task, self.queue.items[0..remaining], self.queue.items[self.queue_head..]);
-            }
-            self.queue.shrinkRetainingCapacity(remaining);
-            self.queue_head = 0;
-        }
-    }
-
-    /// Worker thread main loop
-    fn workerLoop(self: *WorkerPool) void {
-        while (true) {
-            var task: Task = undefined;
-
-            // Get next task
-            {
-                self.queue_mutex.lock();
-                defer self.queue_mutex.unlock();
-
-                while (self.queue_head >= self.queue.items.len and !self.shutdown) {
-                    self.queue_not_empty.wait(&self.queue_mutex);
-                }
-
-                if (self.shutdown and self.queue_head >= self.queue.items.len) {
-                    return;
-                }
-
-                // O(1) dequeue using head index
-                task = self.queue.items[self.queue_head];
-                self.queue_head += 1;
-                self.active_tasks += 1;
-
-                // Compact queue periodically to reclaim memory
-                self.compactQueue();
-            }
-
-            // Execute task outside of lock
-            task.func(task.context);
-
-            // Decrement active count
-            {
-                self.queue_mutex.lock();
-                defer self.queue_mutex.unlock();
-                self.active_tasks -= 1;
-            }
-        }
-    }
-};
-
-/// WaitGroup for synchronizing multiple tasks
+/// A synchronisation primitive for waiting on multiple submitted tasks.
+///
+/// Pure data structure with no external dependencies — safe to keep in core.
 pub const WaitGroup = struct {
     count: usize,
     mutex: std.Thread.Mutex,
@@ -187,14 +68,14 @@ pub const WaitGroup = struct {
         };
     }
 
-    /// Add to the counter
+    /// Add to the counter.
     pub fn add(self: *WaitGroup, n: usize) void {
         self.mutex.lock();
         defer self.mutex.unlock();
         self.count += n;
     }
 
-    /// Mark one task as done
+    /// Mark one task as done.
     pub fn done(self: *WaitGroup) void {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -207,7 +88,7 @@ pub const WaitGroup = struct {
         }
     }
 
-    /// Wait for all tasks to complete
+    /// Wait for all tasks to complete.
     pub fn wait(self: *WaitGroup) void {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -217,48 +98,3 @@ pub const WaitGroup = struct {
         }
     }
 };
-
-// ============================================================================
-// Global pool functions
-// ============================================================================
-
-/// Initialize the global worker pool
-pub fn init(allocator: std.mem.Allocator, pool_size: usize) !void {
-    pool_mutex.lock();
-    defer pool_mutex.unlock();
-
-    if (pool_ptr.load(.acquire) != null) {
-        return error.AlreadyInitialized;
-    }
-    const p = try WorkerPool.init(allocator, pool_size);
-    pool_allocator = allocator;
-    pool_ptr.store(p, .release);
-}
-
-/// Shutdown the global worker pool
-pub fn deinit() void {
-    pool_mutex.lock();
-
-    const p = pool_ptr.swap(null, .acq_rel) orelse {
-        pool_mutex.unlock();
-        return;
-    };
-    pool_allocator = null;
-
-    pool_mutex.unlock();
-
-    // Deinit outside of lock to avoid deadlock if workers try to access pool
-    p.deinit();
-}
-
-/// Submit a task to the global pool
-pub fn submit(comptime func: fn (*anyopaque) void, context: *anyopaque) !void {
-    const p = pool_ptr.load(.acquire) orelse return error.PoolNotInitialized;
-    try p.submit(func, context);
-}
-
-/// Get the global pool instance (for advanced usage)
-/// Lock-free read - safe to call from any context including logging
-pub fn getPool() ?*WorkerPool {
-    return pool_ptr.load(.acquire);
-}

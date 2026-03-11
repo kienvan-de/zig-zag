@@ -201,7 +201,7 @@ pub fn scheduleAutoUpdate() void {
         return;
     }
 
-    worker_pool.submit(autoUpdateTask, undefined) catch |err| {
+    worker_pool.submit(&autoUpdateTask, undefined) catch |err| {
         log.warn("Failed to schedule pricing auto-update: {}", .{err});
     };
 }
