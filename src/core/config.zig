@@ -696,10 +696,34 @@ fn initiateSapAiCoreAuth(allocator: Allocator, cfg: *const Config, provider_name
 // Auth internals — HAI (browser-based OIDC)
 // ============================================================================
 
+/// Global guard preventing concurrent HAI browser auth flows.
+/// Only one browserAuthFlow() can run at a time; subsequent callers
+/// spin-wait for it to complete, then check the token cache.
+var hai_auth_in_progress: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
+
 fn initiateHaiAuth(allocator: Allocator, cfg: *const Config, provider_name: []const u8) AuthResult {
     const provider_config = cfg.providers.getPtr(provider_name) orelse {
         return .{ .err = .{ .message = "Provider not configured" } };
     };
+
+    // Try to acquire the global HAI auth lock
+    if (hai_auth_in_progress.cmpxchgStrong(false, true, .acq_rel, .acquire)) |_| {
+        // Another thread is already running browserAuthFlow — wait for it
+        log_mod.info("[auth/hai] auth already in progress, waiting...", .{});
+        while (hai_auth_in_progress.load(.acquire)) {
+            std.Thread.sleep(100 * std.time.ns_per_ms);
+        }
+        // The other thread finished — check if it succeeded by verifying cache
+        var check_client = HaiClient.init(allocator, provider_config) catch {
+            return .{ .err = .{ .message = "Failed to initialize client" } };
+        };
+        defer check_client.deinit();
+        if (check_client.authStatus() == .authenticated) {
+            return .authenticated;
+        }
+        return .{ .err = .{ .message = "Concurrent auth flow failed" } };
+    }
+    defer hai_auth_in_progress.store(false, .release);
 
     var client = HaiClient.init(allocator, provider_config) catch {
         return .{ .err = .{ .message = "Failed to initialize client" } };
