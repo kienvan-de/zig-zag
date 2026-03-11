@@ -13,10 +13,17 @@
 // limitations under the License.
 
 const std = @import("std");
+const Allocator = std.mem.Allocator;
 const provider_mod = @import("provider.zig");
 const log_mod = @import("log.zig");
 const app_cache = @import("cache/app_cache.zig");
+const worker_pool = @import("worker_pool.zig");
 const LogOutput = log_mod.LogOutput;
+
+// Provider clients — used by auth functions
+const CopilotClient = @import("providers/copilot/client.zig").CopilotClient;
+const SapAiCoreClient = @import("providers/sap_ai_core/client.zig").SapAiCoreClient;
+const HaiClient = @import("providers/hai/client.zig").HaiClient;
 
 // ============================================================================
 // Global config singleton — set by wrapper, accessed by core
@@ -616,6 +623,311 @@ pub fn writeRaw(allocator: std.mem.Allocator, json: []const u8) !void {
     };
 
     log_mod.info("Config written to {s} ({d} bytes)", .{ config_path, json.len });
+}
+
+// ============================================================================
+// Provider Auth API
+// ============================================================================
+
+/// Unified auth status across all providers.
+///
+/// - `authenticated` — a valid cached token exists; the provider is ready.
+/// - `configured`    — credentials exist on disk but no cached token yet
+///                     (Copilot-specific: `apps.json` has an entry).
+/// - `unauthenticated` — no credentials and no cached token.
+pub const AuthStatus = enum {
+    authenticated,
+    configured,
+    unauthenticated,
+};
+
+/// Result of `initiateAuth`.
+///
+/// - `authenticated` — the provider authenticated synchronously (SAP AI Core,
+///   HAI).  The caller can report success immediately.
+/// - `device_flow`  — a device-flow was started (Copilot).  The caller should
+///   show `user_code` + `verification_uri` to the user.  A background poll
+///   thread has already been spawned; subsequent calls to `checkAuthStatus`
+///   will eventually return `.authenticated`.
+/// - `err` — the auth attempt failed.  `message` describes what went wrong.
+pub const AuthResult = union(enum) {
+    authenticated,
+    device_flow: struct {
+        user_code: []const u8,
+        verification_uri: []const u8,
+    },
+    err: struct {
+        message: []const u8,
+    },
+};
+
+/// Check authentication status for a provider.
+///
+/// Returns immediately without blocking or performing network I/O — it only
+/// inspects cached tokens and local credential files.
+///
+/// Unknown or unconfigured provider names return `.unauthenticated`.
+pub fn checkAuthStatus(allocator: Allocator, provider_name: []const u8) AuthStatus {
+    const cfg = get();
+    const eql = std.mem.eql;
+
+    if (eql(u8, provider_name, "copilot")) {
+        // Check device flow state first — if a poll is active or just succeeded
+        const df_status = device_flow_state.status.load(.acquire);
+        if (df_status == .authenticated) return .authenticated;
+        if (df_status == .pending) return .configured;
+
+        const provider_config = cfg.providers.getPtr(provider_name) orelse return .unauthenticated;
+        var client = CopilotClient.init(allocator, provider_config) catch return .unauthenticated;
+        defer client.deinit();
+        return switch (client.authStatus()) {
+            .authenticated => .authenticated,
+            .configured => .configured,
+            .unauthenticated => .unauthenticated,
+        };
+    }
+
+    if (eql(u8, provider_name, "sap_ai_core")) {
+        const provider_config = cfg.providers.getPtr(provider_name) orelse return .unauthenticated;
+        var client = SapAiCoreClient.init(allocator, provider_config) catch return .unauthenticated;
+        defer client.deinit();
+        return switch (client.authStatus()) {
+            .authenticated => .authenticated,
+            .unauthenticated => .unauthenticated,
+        };
+    }
+
+    if (eql(u8, provider_name, "hai")) {
+        const provider_config = cfg.providers.getPtr(provider_name) orelse return .unauthenticated;
+        var client = HaiClient.init(allocator, provider_config) catch return .unauthenticated;
+        defer client.deinit();
+        return switch (client.authStatus()) {
+            .authenticated => .authenticated,
+            .unauthenticated => .unauthenticated,
+        };
+    }
+
+    return .unauthenticated;
+}
+
+/// Start authentication for a provider.
+///
+/// **Copilot:** Returns `.device_flow` with user code and verification URI.
+/// A background thread polls GitHub until the user authorises the device;
+/// subsequent `checkAuthStatus("copilot")` calls track progress.
+/// If a device flow is already pending, returns the in-progress codes.
+///
+/// **SAP AI Core / HAI:** Blocks until the auth flow completes (client-
+/// credentials grant or browser-based OIDC respectively).  Returns
+/// `.authenticated` on success or `.err` on failure.
+///
+/// Unknown or unconfigured providers return `.err`.
+pub fn initiateAuth(allocator: Allocator, provider_name: []const u8) AuthResult {
+    const cfg = get();
+    const eql = std.mem.eql;
+
+    if (eql(u8, provider_name, "copilot")) {
+        return initiateCopilotAuth(allocator, cfg, provider_name);
+    }
+
+    if (eql(u8, provider_name, "sap_ai_core")) {
+        return initiateSyncAuth(SapAiCoreClient, allocator, cfg, provider_name);
+    }
+
+    if (eql(u8, provider_name, "hai")) {
+        return initiateSyncAuth(HaiClient, allocator, cfg, provider_name);
+    }
+
+    return .{ .err = .{ .message = "Unknown provider" } };
+}
+
+/// Revoke cached tokens for a provider.
+///
+/// Clears the in-memory token cache (and, for Copilot, the `apps.json`
+/// entry).  Resets any in-progress device flow state.
+///
+/// No-op for unknown or unconfigured providers.
+pub fn revokeAuth(allocator: Allocator, provider_name: []const u8) void {
+    const cfg = get();
+    const eql = std.mem.eql;
+
+    if (eql(u8, provider_name, "copilot")) {
+        const provider_config = cfg.providers.getPtr(provider_name) orelse return;
+        var client = CopilotClient.init(allocator, provider_config) catch return;
+        defer client.deinit();
+        client.revokeAuth();
+        device_flow_state.status.store(.idle, .release);
+        return;
+    }
+
+    if (eql(u8, provider_name, "sap_ai_core")) {
+        const provider_config = cfg.providers.getPtr(provider_name) orelse return;
+        var client = SapAiCoreClient.init(allocator, provider_config) catch return;
+        defer client.deinit();
+        client.revokeAuth();
+        return;
+    }
+
+    if (eql(u8, provider_name, "hai")) {
+        const provider_config = cfg.providers.getPtr(provider_name) orelse return;
+        var client = HaiClient.init(allocator, provider_config) catch return;
+        defer client.deinit();
+        client.revokeAuth();
+        return;
+    }
+}
+
+// ============================================================================
+// Auth internals — Copilot device flow
+// ============================================================================
+
+const DeviceFlowStatus = enum(u8) { idle, pending, authenticated, failed };
+
+const DeviceFlowState = struct {
+    status: std.atomic.Value(DeviceFlowStatus),
+    user_code: [32]u8,
+    user_code_len: usize,
+    verification_uri: [256]u8,
+    verification_uri_len: usize,
+};
+
+var device_flow_state: DeviceFlowState = .{
+    .status = std.atomic.Value(DeviceFlowStatus).init(.idle),
+    .user_code = [_]u8{0} ** 32,
+    .user_code_len = 0,
+    .verification_uri = [_]u8{0} ** 256,
+    .verification_uri_len = 0,
+};
+
+/// Thread args for the background device-flow poll task.
+/// Uses fixed-size buffers so it can be allocated with page_allocator
+/// (survives after the request's arena allocator is freed).
+const DeviceFlowThreadArgs = struct {
+    provider_config: *const ProviderConfig,
+    device_code: [256]u8,
+    device_code_len: usize,
+    interval: i64,
+    expires_in: i64,
+};
+
+fn deviceFlowPollTask(ctx: *anyopaque) void {
+    const args_ptr: *DeviceFlowThreadArgs = @ptrCast(@alignCast(ctx));
+    const args = args_ptr.*;
+    defer std.heap.page_allocator.destroy(args_ptr);
+
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const thread_allocator = gpa.allocator();
+
+    var client = CopilotClient.init(thread_allocator, args.provider_config) catch |err| {
+        log_mod.err("[auth/copilot] poll thread: failed to init client: {}", .{err});
+        device_flow_state.status.store(.failed, .release);
+        return;
+    };
+    defer client.deinit();
+
+    const device_code = args.device_code[0..args.device_code_len];
+    client.completeDeviceFlow(device_code, args.interval, args.expires_in) catch |err| {
+        log_mod.err("[auth/copilot] device flow poll failed: {}", .{err});
+        device_flow_state.status.store(.failed, .release);
+        return;
+    };
+
+    device_flow_state.status.store(.authenticated, .release);
+    log_mod.info("[auth/copilot] device flow completed — authenticated", .{});
+}
+
+fn initiateCopilotAuth(allocator: Allocator, cfg: *const Config, provider_name: []const u8) AuthResult {
+    // If a flow is already pending, return the in-progress codes
+    const current = device_flow_state.status.load(.acquire);
+    if (current == .pending) {
+        return .{ .device_flow = .{
+            .user_code = device_flow_state.user_code[0..device_flow_state.user_code_len],
+            .verification_uri = device_flow_state.verification_uri[0..device_flow_state.verification_uri_len],
+        } };
+    }
+
+    const provider_config = cfg.providers.getPtr(provider_name) orelse {
+        return .{ .err = .{ .message = "Provider not configured" } };
+    };
+
+    var client = CopilotClient.init(allocator, provider_config) catch {
+        return .{ .err = .{ .message = "Failed to initialize client" } };
+    };
+    defer client.deinit();
+
+    var result = client.startDeviceFlow() catch {
+        return .{ .err = .{ .message = "Failed to start device flow" } };
+    };
+    defer result.deinit();
+
+    // Store codes in module-level state for subsequent status polls
+    const uc_len = @min(result.user_code.len, device_flow_state.user_code.len);
+    @memcpy(device_flow_state.user_code[0..uc_len], result.user_code[0..uc_len]);
+    device_flow_state.user_code_len = uc_len;
+
+    const uri_len = @min(result.verification_uri.len, device_flow_state.verification_uri.len);
+    @memcpy(device_flow_state.verification_uri[0..uri_len], result.verification_uri[0..uri_len]);
+    device_flow_state.verification_uri_len = uri_len;
+
+    device_flow_state.status.store(.pending, .release);
+
+    // Spawn background poll thread
+    const thread_args = std.heap.page_allocator.create(DeviceFlowThreadArgs) catch {
+        device_flow_state.status.store(.failed, .release);
+        return .{ .err = .{ .message = "Failed to allocate thread args" } };
+    };
+
+    const dc_len = @min(result.device_code.len, thread_args.device_code.len);
+    @memcpy(thread_args.device_code[0..dc_len], result.device_code[0..dc_len]);
+    thread_args.* = .{
+        .provider_config = provider_config,
+        .device_code = thread_args.device_code,
+        .device_code_len = dc_len,
+        .interval = result.interval,
+        .expires_in = result.expires_in,
+    };
+
+    worker_pool.submit(deviceFlowPollTask, @ptrCast(thread_args)) catch {
+        std.heap.page_allocator.destroy(thread_args);
+        device_flow_state.status.store(.failed, .release);
+        return .{ .err = .{ .message = "Failed to submit poll task" } };
+    };
+
+    return .{ .device_flow = .{
+        .user_code = device_flow_state.user_code[0..device_flow_state.user_code_len],
+        .verification_uri = device_flow_state.verification_uri[0..device_flow_state.verification_uri_len],
+    } };
+}
+
+// ============================================================================
+// Auth internals — sync providers (SAP AI Core, HAI)
+// ============================================================================
+
+/// Generic sync auth for any provider client with `init`, `deinit`, and
+/// `getAccessToken` methods.
+fn initiateSyncAuth(
+    comptime Client: type,
+    allocator: Allocator,
+    cfg: *const Config,
+    provider_name: []const u8,
+) AuthResult {
+    const provider_config = cfg.providers.getPtr(provider_name) orelse {
+        return .{ .err = .{ .message = "Provider not configured" } };
+    };
+
+    var client = Client.init(allocator, provider_config) catch {
+        return .{ .err = .{ .message = "Failed to initialize client" } };
+    };
+    defer client.deinit();
+
+    const access_token = client.getAccessToken() catch {
+        return .{ .err = .{ .message = "Authentication failed" } };
+    };
+    allocator.free(access_token);
+
+    log_mod.info("[auth/{s}] auth successful", .{provider_name});
+    return .authenticated;
 }
 
 // ============================================================================
