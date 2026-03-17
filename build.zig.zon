@@ -1,0 +1,14 @@
+.{
+    .name = .zig_zag,
+    .version = "0.6.1",
+    .fingerprint = 0xb4a5f9bb3eb82593,
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "pricing",
+        "include",
+        "version.txt",
+    },
+}

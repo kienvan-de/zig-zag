@@ -39,6 +39,14 @@ pub fn build(b: *std.Build) void {
     });
     core_module.addOptions("build_options", build_options);
 
+    // Expose zag-core as a module for external consumers (e.g. zoo-run)
+    const exported_core = b.addModule("zag-core", .{
+        .root_source_file = b.path("src/core/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    exported_core.addOptions("build_options", build_options);
+
     const exe = b.addExecutable(.{
         .name = "zig-zag",
         .root_module = b.createModule(.{
