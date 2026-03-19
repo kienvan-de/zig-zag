@@ -133,8 +133,8 @@ pub const CopilotClient = struct {
         var auth_buf: [4096]u8 = undefined;
         const auth_value = std.fmt.bufPrint(&auth_buf, "token {s}", .{oauth_token}) catch return error.BufferTooSmall;
 
-        // Use getUncompressed: GitHub's API returns gzip by default, but Zig's
-        // response.reader() does not decompress — we must request identity encoding.
+        // Use getUncompressed: GitHub's token endpoint returns gzip by default.
+        // The core HttpClient now decompresses, but identity is still fine here.
         var response = self.client.getUncompressed(TOKEN_ENDPOINT, &[_]std.http.Header{
             .{ .name = "Authorization", .value = auth_value },
             .{ .name = "Accept", .value = "application/json" },
