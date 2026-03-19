@@ -15,6 +15,18 @@
 const std = @import("std");
 const log = @import("log.zig");
 
+/// Allocate a decompression buffer sized for the given content encoding.
+/// Returns an empty slice for identity (no compression).
+/// Caller must free the returned buffer.
+fn decompressBuffer(allocator: std.mem.Allocator, encoding: std.http.ContentEncoding) ![]u8 {
+    return switch (encoding) {
+        .identity => &.{},
+        .deflate, .gzip => try allocator.alloc(u8, std.compress.flate.max_window_len),
+        .zstd => try allocator.alloc(u8, std.compress.zstd.default_window_len),
+        .compress => error.UnsupportedCompressionMethod,
+    };
+}
+
 /// Set socket read/write timeout
 pub fn setSocketTimeout(handle: std.posix.socket_t, timeout_ms: u64) void {
     if (timeout_ms == 0) return;
@@ -252,7 +264,10 @@ pub const HttpClient = struct {
         log.debug("HTTP GET: response received, status: {}", .{response.head.status});
 
         var transfer_buf: [4096]u8 = undefined;
-        const reader = response.reader(&transfer_buf);
+        var decompress: std.http.Decompress = undefined;
+        const decompress_buf = try decompressBuffer(self.allocator, response.head.content_encoding);
+        defer self.allocator.free(decompress_buf);
+        const reader = response.readerDecompressing(&transfer_buf, &decompress, decompress_buf);
         const body = try reader.allocRemaining(self.allocator, std.io.Limit.limited(self.max_response_size));
 
         return .{
@@ -353,9 +368,12 @@ pub const HttpClient = struct {
         };
         log.debug("HTTP POST: response received, status: {}", .{response.head.status});
 
-        // Read response body
+        // Read response body (with decompression for gzip/deflate/zstd)
         var transfer_buf: [4096]u8 = undefined;
-        const reader = response.reader(&transfer_buf);
+        var decompress: std.http.Decompress = undefined;
+        const decompress_buf = try decompressBuffer(self.allocator, response.head.content_encoding);
+        defer self.allocator.free(decompress_buf);
+        const reader = response.readerDecompressing(&transfer_buf, &decompress, decompress_buf);
         const body = try reader.allocRemaining(self.allocator, std.io.Limit.limited(self.max_response_size));
 
         return .{
@@ -432,9 +450,12 @@ pub const HttpClient = struct {
             return error.HttpRequestFailed;
         }
 
-        // Read response body
+        // Read response body (with decompression for gzip/deflate/zstd)
         var transfer_buf: [4096]u8 = undefined;
-        const reader = response.reader(&transfer_buf);
+        var decompress: std.http.Decompress = undefined;
+        const decompress_buf = try decompressBuffer(self.allocator, response.head.content_encoding);
+        defer self.allocator.free(decompress_buf);
+        const reader = response.readerDecompressing(&transfer_buf, &decompress, decompress_buf);
 
         const response_body = try reader.allocRemaining(self.allocator, std.io.Limit.limited(self.max_response_size));
         defer self.allocator.free(response_body);
