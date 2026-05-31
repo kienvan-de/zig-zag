@@ -256,9 +256,9 @@ pub const SapAiCoreClient = struct {
         const headers = try self.buildHeaders(&auth_buffer, &headers_buf, access_token);
 
         // Serialize request to JSON
-        var request_body = std.ArrayList(u8){};
+        var request_body = std.ArrayList(u8).empty;
         defer request_body.deinit(self.allocator);
-        try request_body.writer(self.allocator).print("{f}", .{std.json.fmt(request, .{})});
+        try request_body.print(self.allocator, "{f}", .{std.json.fmt(request, .{})});
 
         // Make POST request
         var response = try self.client.postForm(url, headers, request_body.items);
@@ -342,9 +342,9 @@ pub const SapAiCoreClient = struct {
         log.debug("[SAP] [STREAM] Request URL: {s}", .{url});
 
         // Log request payload for debugging
-        var request_body = std.ArrayList(u8){};
+        var request_body = std.ArrayList(u8).empty;
         defer request_body.deinit(self.allocator);
-        request_body.writer(self.allocator).print("{f}", .{std.json.fmt(request, .{})}) catch {};
+        request_body.print(self.allocator, "{f}", .{std.json.fmt(request, .{})}) catch {};
         log.debug("[SAP] [STREAM] Request payload: {s}", .{request_body.items});
 
         // Build headers

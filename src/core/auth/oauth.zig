@@ -60,6 +60,7 @@
 //! ```
 
 const std = @import("std");
+const time = @import("../time.zig");
 const Allocator = std.mem.Allocator;
 const token_cache = @import("../cache/token_cache.zig");
 const log = @import("../log.zig");
@@ -249,7 +250,7 @@ pub const OAuth = struct {
 
 /// Build form-urlencoded body for token requests
 fn buildFormBody(allocator: Allocator, params: anytype) ![]u8 {
-    var result = std.ArrayListUnmanaged(u8){};
+    var result: std.ArrayList(u8) = .empty;
     errdefer result.deinit(allocator);
 
     const fields = @typeInfo(@TypeOf(params)).@"struct".fields;
@@ -278,7 +279,7 @@ fn appendUrlEncoded(result: *std.ArrayListUnmanaged(u8), allocator: Allocator, i
         if (std.ascii.isAlphanumeric(c) or c == '-' or c == '_' or c == '.' or c == '~') {
             try result.append(allocator, c);
         } else {
-            try result.writer(allocator).print("%{X:0>2}", .{c});
+            try result.print(allocator, "%{X:0>2}", .{c});
         }
     }
 }
@@ -569,10 +570,10 @@ pub fn pollDeviceToken(
     log.info("Polling for device token at {s}", .{params.token_url});
 
     var interval: u64 = @intCast(@max(initial_interval, 5));
-    const deadline = std.time.timestamp() + expires_in;
+    const deadline = time.timestamp() + expires_in;
 
-    while (std.time.timestamp() < deadline) {
-        std.Thread.sleep(interval * std.time.ns_per_s);
+    while (time.timestamp() < deadline) {
+        time.sleep(interval * std.time.ns_per_s);
 
         const body = try buildFormBody(allocator, .{
             .client_id = params.client_id,

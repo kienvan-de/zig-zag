@@ -18,6 +18,7 @@
 //! Handles GET /v1/models requests.
 
 const std = @import("std");
+const net = @import("zag-core").net;
 const core = @import("zag-core");
 const OpenAI = core.openai_types;
 const errors = core.errors;
@@ -27,7 +28,7 @@ const http = @import("../http.zig");
 /// Handle GET /v1/models request
 pub fn handle(
     allocator: std.mem.Allocator,
-    connection: std.net.Server.Connection,
+    connection: net.Connection,
     method: []const u8,
     path: []const u8,
     body: []const u8,
@@ -54,9 +55,9 @@ pub fn handle(
         .data = models,
     };
 
-    var json_buf = std.ArrayList(u8){};
+    var json_buf = std.ArrayList(u8).empty;
     defer json_buf.deinit(allocator);
-    try json_buf.writer(allocator).print("{f}", .{std.json.fmt(response, .{})});
+    try json_buf.print(allocator, "{f}", .{std.json.fmt(response, .{})});
 
     try http.sendJsonResponse(connection, .ok, json_buf.items);
 }

@@ -195,7 +195,7 @@ pub const ToolResultBlock = struct {
             .string => |s| s,
             .null => null,
             .array => |arr| blk: {
-                var parts = std.ArrayList([]const u8){};
+                var parts = std.ArrayList([]const u8).empty;
                 defer parts.deinit(allocator);
                 for (arr.items) |item| {
                     if (item != .object) continue;
@@ -301,7 +301,7 @@ pub const ContentBlockParam = union(enum) {
             if (id_val != .string) return error.UnexpectedToken;
             const name_val = obj.get("name") orelse return error.MissingField;
             if (name_val != .string) return error.UnexpectedToken;
-            const input_val = obj.get("input") orelse std.json.Value{ .object = std.json.ObjectMap.init(allocator) };
+            const input_val = obj.get("input") orelse std.json.Value{ .object = std.json.ObjectMap{} };
             return .{ .tool_use = .{ .type = type_str, .id = id_val.string, .name = name_val.string, .input = input_val } };
         } else if (std.mem.eql(u8, type_str, "tool_result")) {
             return .{ .tool_result = try ToolResultBlock.jsonParseFromValue(allocator, source, options) };
@@ -501,7 +501,7 @@ pub const Request = struct {
             .array => |arr| {
                 if (arr.items.len == 0) return null;
                 // Collect text from each block
-                var parts = std.ArrayList([]const u8){};
+                var parts = std.ArrayList([]const u8).empty;
                 defer parts.deinit(allocator);
                 for (arr.items) |item| {
                     if (item != .object) continue;
@@ -715,6 +715,7 @@ pub const ContentBlock = union(enum) {
     }
 
     pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, options: std.json.ParseOptions) !@This() {
+        _ = allocator;
         _ = options;
         if (source != .object) return error.UnexpectedToken;
         const obj = source.object;
@@ -735,7 +736,7 @@ pub const ContentBlock = union(enum) {
             if (id_value != .string) return error.UnexpectedToken;
             const name_value = obj.get("name") orelse return error.MissingField;
             if (name_value != .string) return error.UnexpectedToken;
-            const input_value = obj.get("input") orelse std.json.Value{ .object = std.json.ObjectMap.init(allocator) };
+            const input_value = obj.get("input") orelse std.json.Value{ .object = std.json.ObjectMap{} };
             return .{ .tool_use = .{
                 .type = type_str,
                 .id = id_value.string,

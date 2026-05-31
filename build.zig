@@ -23,7 +23,7 @@ pub fn build(b: *std.Build) void {
     const version = b.option([]const u8, "version", "Override version string") orelse
         @embedFile("version.txt");
     // Trim trailing newline
-    const version_trimmed = std.mem.trimRight(u8, version, "\n\r ");
+    const version_trimmed = std.mem.trimEnd(u8, version, "\n\r ");
 
     // Build options module to inject version into Zig source code
     const build_options = b.addOptions();
@@ -81,7 +81,9 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    recorder_module.addImport("zag-core", core_module);
     mock_upstream_module.addImport("recorder.zig", recorder_module);
+    mock_upstream_module.addImport("zag-core", core_module);
 
     const mock_client_module = b.createModule(.{
         .root_source_file = b.path("test/integration/mock_client.zig"),
@@ -89,6 +91,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     mock_client_module.addImport("recorder.zig", recorder_module);
+    mock_client_module.addImport("zag-core", core_module);
 
     const integration_main_module = b.createModule(.{
         .root_source_file = b.path("test/integration/main.zig"),
@@ -98,6 +101,7 @@ pub fn build(b: *std.Build) void {
     integration_main_module.addImport("recorder.zig", recorder_module);
     integration_main_module.addImport("mock_client.zig", mock_client_module);
     integration_main_module.addImport("mock_upstream.zig", mock_upstream_module);
+    integration_main_module.addImport("zag-core", core_module);
 
     const integration_exe = b.addExecutable(.{
         .name = "integration-test",
@@ -112,6 +116,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     mock_upstream_exe_module.addImport("recorder.zig", recorder_module);
+    mock_upstream_exe_module.addImport("zag-core", core_module);
 
     const mock_upstream_exe = b.addExecutable(.{
         .name = "mock-upstream",

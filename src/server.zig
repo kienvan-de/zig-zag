@@ -20,6 +20,7 @@ const log = core.log;
 const metrics = core.metrics;
 const app_config = @import("config.zig");
 const router = @import("router.zig");
+const net = core.net;
 
 // HTTP response constants
 const NOT_FOUND_RESPONSE =
@@ -35,7 +36,7 @@ const NOT_FOUND_RESPONSE =
 const WorkerContext = struct {
     allocator: std.mem.Allocator,
     server_cfg: app_config.ServerConfig,
-    listener: *std.net.Server,
+    listener: *net.TcpServer,
     shutdown: *std.atomic.Value(bool),
 };
 
@@ -45,8 +46,8 @@ const WorkerContext = struct {
 
 /// Global listener pointer and mutex for shutdown support.
 /// Protected by listener_mutex - set while server is running, null otherwise.
-var global_listener: ?*std.net.Server = null;
-var listener_mutex: std.Thread.Mutex = .{};
+var global_listener: ?*net.TcpServer = null;
+var listener_mutex: core.sync.Mutex = .{};
 
 /// Signal the running server to stop.
 /// Closes the listener socket which causes all accept() calls to return an
@@ -75,9 +76,7 @@ pub fn start(allocator: std.mem.Allocator, cfg: *const app_config.AppConfig) !vo
     log.info("Loaded providers: {d}", .{cfg.core.providers.count()});
     log.info("HTTP pool size: {d}", .{pool_size});
 
-    const address = try std.net.Address.parseIp(host, port);
-
-    var listener = try address.listen(.{
+    var listener = try net.TcpServer.listen(host, port, .{
         .reuse_address = true,
     });
     // NOTE: We do NOT defer listener.deinit() here.
@@ -170,8 +169,8 @@ fn workerThread(ctx: *WorkerContext) void {
 // Connection handling
 // ============================================================================
 
-fn handleConnection(allocator: std.mem.Allocator, connection: std.net.Server.Connection, server_cfg: app_config.ServerConfig) !void {
-    defer connection.stream.close();
+fn handleConnection(allocator: std.mem.Allocator, connection: net.Connection, server_cfg: app_config.ServerConfig) !void {
+    defer connection.close();
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -190,14 +189,14 @@ fn handleConnection(allocator: std.mem.Allocator, connection: std.net.Server.Con
             .sec = timeout_sec,
             .usec = timeout_usec,
         };
-        std.posix.setsockopt(connection.stream.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&timeval)) catch |err| {
+        std.posix.setsockopt(connection.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&timeval)) catch |err| {
             log.warn("Failed to set read timeout: {}", .{err});
         };
     }
 
     // Read the full request into a dynamically grown buffer so large bodies
     // are not silently truncated.
-    var request_buf = std.ArrayListUnmanaged(u8){};
+    var request_buf: std.ArrayList(u8) = .empty;
 
     var read_buf: [16384]u8 = undefined;
     var header_end: ?usize = null;
@@ -205,7 +204,7 @@ fn handleConnection(allocator: std.mem.Allocator, connection: std.net.Server.Con
 
     // Phase 1: read until we have the full headers (find \r\n\r\n).
     while (true) {
-        const n = connection.stream.read(&read_buf) catch |err| {
+        const n = connection.read(&read_buf) catch |err| {
             if (err == error.WouldBlock) {
                 log.debug("Read timeout waiting for request", .{});
                 return;
@@ -224,7 +223,7 @@ fn handleConnection(allocator: std.mem.Allocator, connection: std.net.Server.Con
             // Enforce max header size before finding header end
             if (request_buf.items.len > max_header_size) {
                 log.warn("Request headers exceed max size ({d} bytes)", .{max_header_size});
-                _ = try connection.stream.writeAll("HTTP/1.1 431 Request Header Fields Too Large\r\nConnection: close\r\n\r\n");
+                _ = try connection.writeAll("HTTP/1.1 431 Request Header Fields Too Large\r\nConnection: close\r\n\r\n");
                 return;
             }
 
@@ -244,7 +243,7 @@ fn handleConnection(allocator: std.mem.Allocator, connection: std.net.Server.Con
                 // Enforce max body size
                 if (content_length.? > max_body_size) {
                     log.warn("Request body too large: {d} bytes (max: {d})", .{ content_length.?, max_body_size });
-                    _ = try connection.stream.writeAll("HTTP/1.1 413 Content Too Large\r\nConnection: close\r\n\r\n");
+                    _ = try connection.writeAll("HTTP/1.1 413 Content Too Large\r\nConnection: close\r\n\r\n");
                     return;
                 }
             }
@@ -275,7 +274,7 @@ fn handleConnection(allocator: std.mem.Allocator, connection: std.net.Server.Con
 
         try route.handler(request_allocator, connection, route.method, route.path, body);
     } else {
-        _ = try connection.stream.writeAll(NOT_FOUND_RESPONSE);
+        _ = try connection.writeAll(NOT_FOUND_RESPONSE);
     }
 }
 

@@ -19,10 +19,12 @@
 //! Includes fetch mutex to prevent thundering herd problem.
 
 const std = @import("std");
+const time = @import("../time.zig");
+const sync = @import("../sync.zig");
 const log = @import("../log.zig");
 
 /// Opaque handle returned by acquireFetchLock, must be passed to releaseFetchLock
-pub const FetchLockHandle = *std.Thread.Mutex;
+pub const FetchLockHandle = *sync.Mutex;
 
 /// Cached token entry
 pub const CachedToken = struct {
@@ -31,7 +33,7 @@ pub const CachedToken = struct {
     expires_at: i64, // Unix timestamp in seconds
 
     pub fn isValid(self: CachedToken, buffer_seconds: i64) bool {
-        const now = @divTrunc(std.time.milliTimestamp(), 1000);
+        const now = @divTrunc(time.milliTimestamp(), 1000);
         return now < self.expires_at - buffer_seconds;
     }
 };
@@ -39,11 +41,11 @@ pub const CachedToken = struct {
 /// Global token cache
 var cache: ?std.StringHashMap(CachedToken) = null;
 var cache_allocator: ?std.mem.Allocator = null;
-var rwlock: std.Thread.RwLock = .{};
+var rwlock: sync.RwLock = .{};
 
 /// Fetch mutexes per domain to prevent thundering herd
-var fetch_mutexes: ?std.StringHashMap(*std.Thread.Mutex) = null;
-var fetch_mutex_lock: std.Thread.Mutex = .{};
+var fetch_mutexes: ?std.StringHashMap(*sync.Mutex) = null;
+var fetch_mutex_lock: sync.Mutex = .{};
 
 /// Initialize the global token cache
 pub fn init(allocator: std.mem.Allocator) void {
@@ -52,7 +54,7 @@ pub fn init(allocator: std.mem.Allocator) void {
 
     if (cache == null) {
         cache = std.StringHashMap(CachedToken).init(allocator);
-        fetch_mutexes = std.StringHashMap(*std.Thread.Mutex).init(allocator);
+        fetch_mutexes = std.StringHashMap(*sync.Mutex).init(allocator);
         cache_allocator = allocator;
         log.debug("Token cache initialized", .{});
     }
@@ -172,7 +174,7 @@ pub fn acquireFetchLock(key: []const u8) !FetchLockHandle {
         }
 
         // Create new mutex for this domain
-        const new_mutex = try alloc.create(std.Thread.Mutex);
+        const new_mutex = try alloc.create(sync.Mutex);
         new_mutex.* = .{};
 
         const key_copy = try alloc.dupe(u8, key);
@@ -203,7 +205,7 @@ pub fn put(key: []const u8, access_token: []const u8, refresh_token: ?[]const u8
     const a = cache_allocator orelse return error.CacheNotInitialized;
     var c = &(cache orelse return error.CacheNotInitialized);
 
-    const now = @divTrunc(std.time.milliTimestamp(), 1000);
+    const now = @divTrunc(time.milliTimestamp(), 1000);
     const expires_at = now + expires_in_seconds;
 
     // Check if key already exists

@@ -25,6 +25,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const core = @import("zag-core");
+const env = core.env;
 const worker_pool = core.worker_pool;
 
 /// Log output destination.
@@ -62,7 +63,7 @@ pub fn parseLevel(level_str: []const u8) std.log.Level {
 // Global state
 // ============================================================================
 
-var log_file: ?std.fs.File = null;
+var log_file: ?core.fs.File = null;
 var initialized: bool = false;
 var log_allocator: ?std.mem.Allocator = null;
 var log_output: LogOutput = .file;
@@ -73,14 +74,14 @@ var flush_interval_ns: u64 = 1000 * std.time.ns_per_ms;
 var shutdown_flush: bool = false;
 
 /// Buffer state (only accessed by worker threads)
-var buffer_mutex: std.Thread.Mutex = .{};
-var log_buffer: std.ArrayList(u8) = .{};
+var buffer_mutex: core.sync.Mutex = .{};
+var log_buffer: std.ArrayList(u8) = .empty;
 
 /// Rotation config
 var max_file_size: usize = 10 * 1024 * 1024;
 var max_files: usize = 5;
 var buffer_threshold: usize = 8192;
-var log_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+var log_path_buf: [core.fs.max_path_bytes]u8 = undefined;
 var log_path: []const u8 = "";
 
 /// Context for log task submitted to worker pool.
@@ -112,13 +113,13 @@ pub fn init(config: LogConfig, allocator: std.mem.Allocator) !void {
 
         // Ensure parent directory exists
         if (std.fs.path.dirname(path)) |dir| {
-            std.fs.cwd().makePath(dir) catch {};
+            core.fs.cwd().makePath(dir) catch {};
         }
 
         // Open file in append mode
-        log_file = std.fs.cwd().openFile(path, .{ .mode = .write_only }) catch |e| blk: {
+        log_file = core.fs.cwd().openFile(path, .{ .mode = .write_only }) catch |e| blk: {
             if (e == error.FileNotFound) {
-                break :blk try std.fs.cwd().createFile(path, .{ .truncate = false });
+                break :blk try core.fs.cwd().createFile(path, .{ .truncate = false });
             }
             return e;
         };
@@ -129,7 +130,7 @@ pub fn init(config: LogConfig, allocator: std.mem.Allocator) !void {
         }
 
         // Initialize buffer
-        log_buffer = .{};
+        log_buffer = .empty;
 
         initialized = true;
 
@@ -204,14 +205,14 @@ pub fn flush() void {
 fn bufferedSink(msg: []const u8) void {
     const allocator = log_allocator orelse {
         // Fallback: direct stderr if allocator not available
-        _ = std.posix.write(std.posix.STDERR_FILENO, msg) catch {};
+        _ = std.c.write(std.posix.STDERR_FILENO, msg.ptr, msg.len);
         return;
     };
 
     // Duplicate message — the facade formats into a stack buffer that
     // will be invalidated after the call returns.
     const owned_msg = allocator.alloc(u8, msg.len) catch {
-        _ = std.posix.write(std.posix.STDERR_FILENO, msg) catch {};
+        _ = std.c.write(std.posix.STDERR_FILENO, msg.ptr, msg.len);
         return;
     };
     @memcpy(owned_msg, msg);
@@ -269,7 +270,7 @@ fn logWorkerTask(ctx: *anyopaque) void {
 /// Flush timer thread loop.
 fn flushTimerLoop() void {
     while (!shutdown_flush) {
-        std.Thread.sleep(flush_interval_ns);
+        core.time.sleep(flush_interval_ns);
         if (shutdown_flush) break;
 
         buffer_mutex.lock();
@@ -281,7 +282,7 @@ fn flushTimerLoop() void {
 /// Write a message directly to file or stderr (no buffering).
 fn writeDirectMsg(msg: []const u8) void {
     if (log_output == .stderr) {
-        _ = std.posix.write(std.posix.STDERR_FILENO, msg) catch {};
+        _ = std.c.write(std.posix.STDERR_FILENO, msg.ptr, msg.len);
     } else if (log_file) |f| {
         f.writeAll(msg) catch {};
     }
@@ -303,7 +304,7 @@ fn flushBufferLocked() void {
     if (log_buffer.items.len == 0) return;
 
     if (log_output == .stderr) {
-        _ = std.posix.write(std.posix.STDERR_FILENO, log_buffer.items) catch {};
+        _ = std.c.write(std.posix.STDERR_FILENO, log_buffer.items.ptr, log_buffer.items.len);
     } else if (log_file) |f| {
         const stat = f.stat() catch return;
         if (stat.size + log_buffer.items.len > max_file_size) {
@@ -325,8 +326,8 @@ fn rotateLogsLocked() void {
 
     var i: usize = max_files;
     while (i > 0) : (i -= 1) {
-        var old_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-        var new_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        var old_path_buf: [core.fs.max_path_bytes]u8 = undefined;
+        var new_path_buf: [core.fs.max_path_bytes]u8 = undefined;
 
         const old_path = if (i == 1)
             log_path
@@ -336,44 +337,44 @@ fn rotateLogsLocked() void {
         const new_path = std.fmt.bufPrint(&new_path_buf, "{s}.{d}", .{ log_path, i }) catch continue;
 
         if (i == max_files) {
-            std.fs.cwd().deleteFile(new_path) catch {};
+            core.fs.cwd().deleteFile(new_path) catch {};
         }
 
-        std.fs.cwd().rename(old_path, new_path) catch {};
+        core.fs.cwd().rename(old_path, new_path) catch {};
     }
 
-    log_file = std.fs.cwd().createFile(log_path, .{ .truncate = false }) catch null;
+    log_file = core.fs.cwd().createFile(log_path, .{ .truncate = false }) catch null;
 }
 
 /// Get default log path based on OS.
 fn getDefaultLogPath() []const u8 {
     const Static = struct {
-        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        var path_buf: [core.fs.max_path_bytes]u8 = undefined;
     };
 
     if (builtin.os.tag == .macos) {
-        const home = std.posix.getenv("HOME") orelse return "zig-zag.log";
+        const home = env.get("HOME") orelse return "zig-zag.log";
         return std.fmt.bufPrint(
             &Static.path_buf,
             "{s}/Library/Logs/zig-zag/zig-zag.log",
             .{home},
         ) catch "zig-zag.log";
     } else if (builtin.os.tag == .linux) {
-        if (std.posix.getenv("XDG_STATE_HOME")) |state_home| {
+        if (env.get("XDG_STATE_HOME")) |state_home| {
             return std.fmt.bufPrint(
                 &Static.path_buf,
                 "{s}/zig-zag/zig-zag.log",
                 .{state_home},
             ) catch "zig-zag.log";
         }
-        const home = std.posix.getenv("HOME") orelse return "zig-zag.log";
+        const home = env.get("HOME") orelse return "zig-zag.log";
         return std.fmt.bufPrint(
             &Static.path_buf,
             "{s}/.local/state/zig-zag/zig-zag.log",
             .{home},
         ) catch "zig-zag.log";
     } else if (builtin.os.tag == .windows) {
-        if (std.posix.getenv("LOCALAPPDATA")) |app_data| {
+        if (env.get("LOCALAPPDATA")) |app_data| {
             return std.fmt.bufPrint(
                 &Static.path_buf,
                 "{s}\\zig-zag\\zig-zag.log",
@@ -388,7 +389,7 @@ fn getDefaultLogPath() []const u8 {
 
 /// Get current timestamp as formatted string.
 fn getTimestamp(buf: []u8) []const u8 {
-    const ts = std.time.timestamp();
+    const ts = core.time.timestamp();
     const epoch_secs: u64 = @intCast(ts);
 
     const epoch_day = epoch_secs / 86400;

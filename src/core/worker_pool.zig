@@ -19,6 +19,7 @@
 //! The wrapper injects the real pool via `setSubmitFn()` at startup.
 
 const std = @import("std");
+const sync = @import("sync.zig");
 
 /// Task function signature — takes an opaque context pointer.
 pub const TaskFn = *const fn (*anyopaque) void;
@@ -57,8 +58,8 @@ pub fn isAvailable() bool {
 /// Pure data structure with no external dependencies — safe to keep in core.
 pub const WaitGroup = struct {
     count: usize,
-    mutex: std.Thread.Mutex,
-    done_cond: std.Thread.Condition,
+    mutex: sync.Mutex,
+    done_cond: sync.Condition,
 
     pub fn init() WaitGroup {
         return .{

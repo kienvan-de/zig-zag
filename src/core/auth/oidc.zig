@@ -105,14 +105,14 @@ pub const OIDCError = @import("../errors.zig").OIDCError;
 /// URL-encode a string per RFC 3986
 /// Encodes all characters except unreserved: A-Z a-z 0-9 - _ . ~
 fn urlEncode(allocator: Allocator, input: []const u8) ![]u8 {
-    var result = std.ArrayListUnmanaged(u8){};
+    var result: std.ArrayList(u8) = .empty;
     errdefer result.deinit(allocator);
 
     for (input) |c| {
         if (std.ascii.isAlphanumeric(c) or c == '-' or c == '_' or c == '.' or c == '~') {
             try result.append(allocator, c);
         } else {
-            try result.writer(allocator).print("%{X:0>2}", .{c});
+            try result.print(allocator, "%{X:0>2}", .{c});
         }
     }
 
@@ -263,7 +263,7 @@ pub const OIDC = struct {
 
         // Generate random state for CSRF protection (32 bytes -> 43 chars base64url)
         var state_bytes: [32]u8 = undefined;
-        std.crypto.random.bytes(&state_bytes);
+        std.c.arc4random_buf(&state_bytes, state_bytes.len);
         const state = try allocator.alloc(u8, 43);
         errdefer allocator.free(state);
         _ = std.base64.url_safe_no_pad.Encoder.encode(state, &state_bytes);

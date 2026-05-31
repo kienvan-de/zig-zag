@@ -219,8 +219,8 @@ pub fn transformStreamLine(
     };
 
     // Serialize to JSON
-    var buffer = std.ArrayList(u8){};
-    buffer.writer(allocator).print("{f}", .{std.json.fmt(new_chunk, .{})}) catch {
+    var buffer = std.ArrayList(u8).empty;
+    buffer.print(allocator, "{f}", .{std.json.fmt(new_chunk, .{})}) catch {
         parsed.deinit();
         return .{ .skip = {} };
     };
@@ -256,7 +256,7 @@ pub fn transformFromAnthropic(
     allocator: std.mem.Allocator,
 ) !OpenAI.Request {
     // Build OpenAI messages array
-    var messages = std.ArrayList(OpenAI.Message){};
+    var messages = std.ArrayList(OpenAI.Message).empty;
     errdefer {
         for (messages.items) |msg| {
             freeAnthropicTransformedMessage(msg, allocator);
@@ -290,13 +290,13 @@ pub fn transformFromAnthropic(
             .blocks => |blocks| {
                 // Check for tool_result blocks (user role) - each becomes a separate tool message
                 // Check for tool_use blocks (assistant role) - become tool_calls on a single message
-                var text_parts = std.ArrayList([]const u8){};
+                var text_parts = std.ArrayList([]const u8).empty;
                 defer text_parts.deinit(allocator);
 
-                var tool_use_blocks = std.ArrayList(OpenAI.ToolCall){};
+                var tool_use_blocks = std.ArrayList(OpenAI.ToolCall).empty;
                 defer tool_use_blocks.deinit(allocator);
 
-                var tool_results = std.ArrayList(struct { id: []const u8, content: ?[]const u8 }){};
+                var tool_results = std.ArrayList(struct { id: []const u8, content: ?[]const u8 }).empty;
                 defer tool_results.deinit(allocator);
 
                 for (blocks) |block| {
@@ -306,9 +306,9 @@ pub fn transformFromAnthropic(
                         },
                         .tool_use => |tu| {
                             // Stringify tool input JSON
-                            var args_list = std.ArrayList(u8){};
+                            var args_list = std.ArrayList(u8).empty;
                             defer args_list.deinit(allocator);
-                            try args_list.writer(allocator).print("{f}", .{std.json.fmt(tu.input, .{})});
+                            try args_list.print(allocator, "{f}", .{std.json.fmt(tu.input, .{})});
                             const args_str = try allocator.dupe(u8, args_list.items);
 
                             try tool_use_blocks.append(allocator, .{
@@ -389,11 +389,11 @@ pub fn transformFromAnthropic(
         .any => std.json.Value{ .string = "required" },
         .tool => |t| blk: {
             // Build {"type": "function", "function": {"name": "..."}}
-            var obj = std.json.ObjectMap.init(allocator);
-            try obj.put("type", std.json.Value{ .string = "function" });
-            var func_obj = std.json.ObjectMap.init(allocator);
-            try func_obj.put("name", std.json.Value{ .string = t.name });
-            try obj.put("function", std.json.Value{ .object = func_obj });
+            var obj = std.json.ObjectMap{};
+            try obj.put(allocator, "type", std.json.Value{ .string = "function" });
+            var func_obj = std.json.ObjectMap{};
+            try func_obj.put(allocator, "name", std.json.Value{ .string = t.name });
+            try obj.put(allocator, "function", std.json.Value{ .object = func_obj });
             break :blk std.json.Value{ .object = obj };
         },
     } else null;
@@ -454,7 +454,7 @@ pub fn transformToAnthropicResponse(
     original_model: []const u8,
 ) !Anthropic.Response {
     // Build content blocks from the first choice
-    var content_blocks = std.ArrayList(Anthropic.ContentBlock){};
+    var content_blocks = std.ArrayList(Anthropic.ContentBlock).empty;
     defer content_blocks.deinit(allocator);
 
     var stop_reason: ?[]const u8 = null;
@@ -484,7 +484,7 @@ pub fn transformToAnthropicResponse(
                     .{},
                 ) catch blk: {
                     break :blk std.json.Parsed(std.json.Value){
-                        .value = .{ .object = std.json.ObjectMap.init(allocator) },
+                        .value = .{ .object = std.json.ObjectMap{} },
                         .arena = undefined,
                     };
                 };
@@ -632,12 +632,12 @@ pub fn transformStreamLineToAnthropic(
                 state.output_tokens = @intCast(usage.completion_tokens);
             }
 
-            var buf = std.ArrayList(u8){};
+            var buf = std.ArrayList(u8).empty;
 
             // Emit message_start + content_block_start on first chunk
             if (!state.sent_message_start) {
                 state.sent_message_start = true;
-                buf.writer(allocator).print(
+                buf.print(allocator, 
                     "event: message_start\ndata: {{\"type\":\"message_start\",\"message\":{{\"id\":\"msg_proxy\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"{s}\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{{\"input_tokens\":0,\"output_tokens\":0}}}}}}\n\n",
                     .{state.original_model},
                 ) catch return .{ .skip = {} };
@@ -645,7 +645,7 @@ pub fn transformStreamLineToAnthropic(
 
             if (!state.sent_content_block_start) {
                 state.sent_content_block_start = true;
-                buf.writer(allocator).print(
+                buf.print(allocator, 
                     "event: content_block_start\ndata: {{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{{\"type\":\"text\",\"text\":\"\"}}}}\n\n",
                     .{},
                 ) catch {
@@ -670,7 +670,7 @@ pub fn transformStreamLineToAnthropic(
                             .index = 0,
                             .delta = delta,
                         };
-                        buf.writer(allocator).print("event: content_block_delta\ndata: {f}\n\n", .{
+                        buf.print(allocator, "event: content_block_delta\ndata: {f}\n\n", .{
                             std.json.fmt(block_delta, .{}),
                         }) catch {
                             buf.deinit(allocator);
@@ -701,11 +701,11 @@ pub fn transformStreamLineToAnthropic(
 
 /// Emit content_block_stop + message_delta + message_stop at end of stream
 fn emitClosingEvents(state: *AnthropicStreamState, allocator: std.mem.Allocator) AnthropicStreamLineResult {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
 
     // If we never sent content_block_start, emit both start and stop
     if (!state.sent_content_block_start and state.sent_message_start) {
-        buf.writer(allocator).print(
+        buf.print(allocator, 
             "event: content_block_start\ndata: {{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{{\"type\":\"text\",\"text\":\"\"}}}}\n\n",
             .{},
         ) catch return .{ .skip = {} };
@@ -713,14 +713,14 @@ fn emitClosingEvents(state: *AnthropicStreamState, allocator: std.mem.Allocator)
 
     if (!state.sent_message_start) {
         // Never received any chunks — emit minimal message
-        buf.writer(allocator).print(
+        buf.print(allocator, 
             "event: message_start\ndata: {{\"type\":\"message_start\",\"message\":{{\"id\":\"msg_proxy\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"{s}\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{{\"input_tokens\":0,\"output_tokens\":0}}}}}}\n\n" ++
                 "event: content_block_start\ndata: {{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{{\"type\":\"text\",\"text\":\"\"}}}}\n\n",
             .{state.original_model},
         ) catch return .{ .skip = {} };
     }
 
-    buf.writer(allocator).print(
+    buf.print(allocator, 
         "event: content_block_stop\ndata: {{\"type\":\"content_block_stop\",\"index\":0}}\n\n" ++
             "event: message_delta\ndata: {{\"type\":\"message_delta\",\"delta\":{{\"stop_reason\":\"{s}\",\"stop_sequence\":null}},\"usage\":{{\"output_tokens\":{d}}}}}\n\n" ++
             "event: message_stop\ndata: {{\"type\":\"message_stop\"}}\n\n",

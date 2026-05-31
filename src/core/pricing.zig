@@ -13,7 +13,11 @@
 // limitations under the License.
 
 const std = @import("std");
+const fs = @import("fs.zig");
+const time = @import("time.zig");
+const sync = @import("sync.zig");
 const builtin = @import("builtin");
+const env = @import("env.zig");
 const log = @import("log.zig");
 const worker_pool = @import("worker_pool.zig");
 
@@ -54,7 +58,7 @@ var alloc: std.mem.Allocator = undefined;
 var default_table: ?PricingTable = null;
 var provider_tables: std.StringHashMap(PricingTable) = undefined;
 var initialized: bool = false;
-var rwlock: std.Thread.RwLock = .{};
+var rwlock: sync.RwLock = .{};
 
 /// Provider names stored for reload after auto-update
 var stored_provider_names: std.ArrayList([]const u8) = undefined;
@@ -67,7 +71,7 @@ var stored_provider_names: std.ArrayList([]const u8) = undefined;
 pub fn init(allocator: std.mem.Allocator, provider_names: []const []const u8) void {
     alloc = allocator;
     provider_tables = std.StringHashMap(PricingTable).init(allocator);
-    stored_provider_names = std.ArrayList([]const u8){};
+    stored_provider_names = std.ArrayList([]const u8).empty;
 
     // Store provider names for reload after auto-update
     for (provider_names) |name| {
@@ -226,7 +230,7 @@ fn autoUpdate() void {
     defer alloc.free(pricing_dir);
 
     // Ensure pricing directory exists
-    std.fs.cwd().makePath(pricing_dir) catch |err| {
+    fs.cwd().makePath(pricing_dir) catch |err| {
         log.warn("Failed to create pricing directory: {}", .{err});
         return;
     };
@@ -278,60 +282,56 @@ fn autoUpdate() void {
 
 /// Download a URL to a local file path using curl
 fn downloadFile(url: []const u8, dest: []const u8) bool {
-    var child = std.process.Child.init(
-        &[_][]const u8{ "curl", "-sL", "--max-time", "30", "-o", dest, url },
-        alloc,
-    );
-    child.stdout_behavior = .Ignore;
-    child.stderr_behavior = .Pipe;
-
-    child.spawn() catch |err| {
+    const io = time.io();
+    var child = std.process.spawn(io, .{
+        .argv = &[_][]const u8{ "curl", "-sL", "--max-time", "30", "-o", dest, url },
+        .stdout = .ignore,
+        .stderr = .pipe,
+    }) catch |err| {
         log.warn("Failed to spawn curl: {}", .{err});
         return false;
     };
 
-    const stderr = child.stderr.?.readToEndAlloc(alloc, 64 * 1024) catch null;
+    const stderr = if (child.stderr) |f| fs.readFdAlloc(alloc, f.handle, 64 * 1024) catch null else null;
     defer if (stderr) |s| alloc.free(s);
 
-    const result = child.wait() catch |err| {
+    const result = child.wait(io) catch |err| {
         log.warn("Failed to wait for curl: {}", .{err});
         return false;
     };
 
     return switch (result) {
-        .Exited => |code| code == 0,
+        .exited => |code| code == 0,
         else => false,
     };
 }
 
 /// Extract a single file from a tar.gz archive using tar -xzf <archive> -O <filename>
 fn extractFileFromArchive(archive_path: []const u8, filename: []const u8) ?[]const u8 {
-    var child = std.process.Child.init(
-        &[_][]const u8{ "tar", "xzf", archive_path, "-O", filename },
-        alloc,
-    );
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Ignore;
+    const io = time.io();
+    var child = std.process.spawn(io, .{
+        .argv = &[_][]const u8{ "tar", "xzf", archive_path, "-O", filename },
+        .stdout = .pipe,
+        .stderr = .ignore,
+    }) catch return null;
 
-    child.spawn() catch return null;
-
-    const output = child.stdout.?.readToEndAlloc(alloc, 64 * 1024) catch {
-        _ = child.wait() catch {};
+    const output = if (child.stdout) |f| fs.readFdAlloc(alloc, f.handle, 64 * 1024) catch {
+        _ = child.wait(io) catch {};
         return null;
-    };
+    } else null;
 
-    const result = child.wait() catch {
-        alloc.free(output);
+    const result = child.wait(io) catch {
+        if (output) |o| alloc.free(o);
         return null;
     };
 
     return switch (result) {
-        .Exited => |code| if (code == 0) output else {
-            alloc.free(output);
+        .exited => |code| if (code == 0) output else {
+            if (output) |o| alloc.free(o);
             return null;
         },
         else => {
-            alloc.free(output);
+            if (output) |o| alloc.free(o);
             return null;
         },
     };
@@ -339,38 +339,36 @@ fn extractFileFromArchive(archive_path: []const u8, filename: []const u8) ?[]con
 
 /// Extract all files from a tar.gz archive to a directory
 fn extractArchive(archive_path: []const u8, dest_dir: []const u8) bool {
-    var child = std.process.Child.init(
-        &[_][]const u8{ "tar", "xzf", archive_path, "-C", dest_dir },
-        alloc,
-    );
-    child.stdout_behavior = .Ignore;
-    child.stderr_behavior = .Pipe;
-
-    child.spawn() catch |err| {
+    const io = time.io();
+    var child = std.process.spawn(io, .{
+        .argv = &[_][]const u8{ "tar", "xzf", archive_path, "-C", dest_dir },
+        .stdout = .ignore,
+        .stderr = .pipe,
+    }) catch |err| {
         log.warn("Failed to spawn tar: {}", .{err});
         return false;
     };
 
-    const stderr = child.stderr.?.readToEndAlloc(alloc, 64 * 1024) catch null;
+    const stderr = if (child.stderr) |f| fs.readFdAlloc(alloc, f.handle, 64 * 1024) catch null else null;
     defer if (stderr) |s| alloc.free(s);
 
-    const result = child.wait() catch |err| {
+    const result = child.wait(io) catch |err| {
         log.warn("Failed to wait for tar: {}", .{err});
         return false;
     };
 
     return switch (result) {
-        .Exited => |code| code == 0,
+        .exited => |code| code == 0,
         else => false,
     };
 }
 
 /// Read the local checksum file
 fn readLocalChecksum(pricing_dir: []const u8) ?[]const u8 {
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var path_buf: [fs.max_path_bytes]u8 = undefined;
     const path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ pricing_dir, CHECKSUM_FILENAME }) catch return null;
 
-    const file = std.fs.cwd().openFile(path, .{}) catch return null;
+    const file = fs.cwd().openFile(path, .{}) catch return null;
     defer file.close();
 
     return file.readToEndAlloc(alloc, 64 * 1024) catch null;
@@ -432,8 +430,8 @@ fn freeTables() void {
 
 /// Get the pricing directory path
 fn getPricingDir() ?[]const u8 {
-    const home = std.posix.getenv("HOME") orelse return null;
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const home = env.get("HOME") orelse return null;
+    var buf: [fs.max_path_bytes]u8 = undefined;
     const path = std.fmt.bufPrint(&buf, "{s}/.config/zig-zag/pricing", .{home}) catch return null;
 
     // Return a stable pointer by duping
@@ -442,22 +440,22 @@ fn getPricingDir() ?[]const u8 {
 
 /// Get a temp file path
 fn getTempPath(filename: []const u8) ?[]const u8 {
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    var buf: [fs.max_path_bytes]u8 = undefined;
     const path = std.fmt.bufPrint(&buf, "/tmp/zig-zag-{s}", .{filename}) catch return null;
     return alloc.dupe(u8, path) catch null;
 }
 
 /// Delete a file, ignoring errors
 fn deleteFile(path: []const u8) void {
-    std.fs.cwd().deleteFile(path) catch {};
+    fs.cwd().deleteFile(path) catch {};
 }
 
 /// Load and parse a single CSV file into a PricingTable
 fn loadCsvFile(dir: []const u8, filename: []const u8) ?PricingTable {
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var path_buf: [fs.max_path_bytes]u8 = undefined;
     const path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ dir, filename }) catch return null;
 
-    const file = std.fs.cwd().openFile(path, .{}) catch {
+    const file = fs.cwd().openFile(path, .{}) catch {
         return null;
     };
     defer file.close();
@@ -477,7 +475,7 @@ fn parseCsv(content: []const u8) ?PricingTable {
     var first_line = true;
 
     while (line_iter.next()) |raw_line| {
-        const line = std.mem.trimRight(u8, raw_line, "\r ");
+        const line = std.mem.trimEnd(u8, raw_line, "\r ");
 
         // Skip empty lines
         if (line.len == 0) continue;

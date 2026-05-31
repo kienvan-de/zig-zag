@@ -13,6 +13,7 @@
 // limitations under the License.
 
 const std = @import("std");
+const time = @import("time.zig");
 const config_mod = @import("config.zig");
 const log = @import("log.zig");
 const metrics = @import("metrics.zig");
@@ -116,7 +117,7 @@ fn checkAndResetBudgetPeriod(config: *const config_mod.Config) void {
     if (config.cost_controls.days_duration == 0) return; // lifetime budget, never resets
 
     const ps = metrics.getPeriodStart();
-    const now = std.time.timestamp();
+    const now = time.timestamp();
     if (ps == 0) {
         metrics.resetCosts();
         log.info("Budget period initialized (duration: {d} days)", .{config.cost_controls.days_duration});

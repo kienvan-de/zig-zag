@@ -13,6 +13,8 @@
 // limitations under the License.
 
 const std = @import("std");
+const core = @import("zag-core");
+const net = core.net;
 const recorder = @import("recorder.zig");
 
 /// Mock upstream server that mimics provider APIs (Anthropic, OpenAI, etc.)
@@ -54,7 +56,7 @@ pub const MockUpstream = struct {
     pub fn start(self: *MockUpstream) !void {
         self.thread = try std.Thread.spawn(.{}, runServer, .{self});
         // Give server time to bind
-        std.Thread.sleep(100 * std.time.ns_per_ms);
+        core.time.sleep(100 * std.time.ns_per_ms);
     }
 
     /// Stop the mock server
@@ -63,19 +65,16 @@ pub const MockUpstream = struct {
     }
 
     fn runServer(self: *MockUpstream) !void {
-        const addr = try std.net.Address.parseIp("127.0.0.1", self.port);
-        var listener = addr.listen(.{
+        var listener = try net.TcpServer.listen("127.0.0.1", self.port, .{
             .reuse_address = true,
-        }) catch |err| {
-            return err;
-        };
+        });
         defer listener.deinit();
 
         while (!self.should_stop.load(.monotonic)) {
             // Accept with timeout to allow checking should_stop
             const connection = listener.accept() catch |err| {
                 if (err == error.WouldBlock) {
-                    std.Thread.sleep(100 * std.time.ns_per_ms);
+                    core.time.sleep(100 * std.time.ns_per_ms);
                     continue;
                 }
                 return err;
@@ -87,8 +86,8 @@ pub const MockUpstream = struct {
         }
     }
 
-    fn handleConnection(self: *MockUpstream, connection: std.net.Server.Connection) !void {
-        defer connection.stream.close();
+    fn handleConnection(self: *MockUpstream, connection: net.Connection) !void {
+        defer connection.close();
 
         // Use arena for request handling
         var arena = std.heap.ArenaAllocator.init(self.allocator);
@@ -96,7 +95,7 @@ pub const MockUpstream = struct {
         const request_allocator = arena.allocator();
 
         var read_buffer: [16384]u8 = undefined;
-        const bytes_read = try connection.stream.read(&read_buffer);
+        const bytes_read = try connection.read(&read_buffer);
         if (bytes_read == 0) return;
 
         const request_data = read_buffer[0..bytes_read];
@@ -141,32 +140,31 @@ pub const MockUpstream = struct {
         const txt_path = std.fmt.allocPrint(self.allocator, "test/cases/{s}/upstream_res.txt", .{self.case_name}) catch return false;
         defer self.allocator.free(txt_path);
 
-        const file = std.fs.cwd().openFile(txt_path, .{}) catch return false;
+        const file = core.fs.cwd().openFile(txt_path, .{}) catch return false;
         file.close();
         return true;
     }
 
-    fn sendOAuthTokenResponse(self: *MockUpstream, connection: std.net.Server.Connection, request_allocator: std.mem.Allocator) !void {
+    fn sendOAuthTokenResponse(self: *MockUpstream, connection: net.Connection, request_allocator: std.mem.Allocator) !void {
         _ = self;
         const token_response =
             \\{"access_token":"mock-access-token-12345","token_type":"Bearer","expires_in":3600}
         ;
 
-        var response_buf = std.ArrayList(u8){};
+        var response_buf = std.ArrayList(u8).empty;
         defer response_buf.deinit(request_allocator);
 
-        const writer = response_buf.writer(request_allocator);
-        try writer.writeAll("HTTP/1.1 200 OK\r\n");
-        try writer.writeAll("Content-Type: application/json\r\n");
-        try writer.print("Content-Length: {d}\r\n", .{token_response.len});
-        try writer.writeAll("Connection: close\r\n");
-        try writer.writeAll("\r\n");
-        try writer.writeAll(token_response);
+        try response_buf.appendSlice(request_allocator, "HTTP/1.1 200 OK\r\n");
+        try response_buf.appendSlice(request_allocator, "Content-Type: application/json\r\n");
+        try response_buf.print(request_allocator, "Content-Length: {d}\r\n", .{token_response.len});
+        try response_buf.appendSlice(request_allocator, "Connection: close\r\n");
+        try response_buf.appendSlice(request_allocator, "\r\n");
+        try response_buf.appendSlice(request_allocator, token_response);
 
-        _ = try connection.stream.writeAll(response_buf.items);
+        _ = try connection.writeAll(response_buf.items);
     }
 
-    fn sendModelsResponse(self: *MockUpstream, connection: std.net.Server.Connection, request_allocator: std.mem.Allocator, path: []const u8) !void {
+    fn sendModelsResponse(self: *MockUpstream, connection: net.Connection, request_allocator: std.mem.Allocator, path: []const u8) !void {
         // Determine which provider based on path prefix
         const response_file = self.getModelsResponseFile(path);
 
@@ -183,18 +181,17 @@ pub const MockUpstream = struct {
         defer self.allocator.free(response_body);
 
         // Send HTTP response
-        var response_buf = std.ArrayList(u8){};
+        var response_buf = std.ArrayList(u8).empty;
         defer response_buf.deinit(request_allocator);
 
-        const writer = response_buf.writer(request_allocator);
-        try writer.writeAll("HTTP/1.1 200 OK\r\n");
-        try writer.writeAll("Content-Type: application/json\r\n");
-        try writer.print("Content-Length: {d}\r\n", .{response_body.len});
-        try writer.writeAll("Connection: close\r\n");
-        try writer.writeAll("\r\n");
-        try writer.writeAll(response_body);
+        try response_buf.appendSlice(request_allocator, "HTTP/1.1 200 OK\r\n");
+        try response_buf.appendSlice(request_allocator, "Content-Type: application/json\r\n");
+        try response_buf.print(request_allocator, "Content-Length: {d}\r\n", .{response_body.len});
+        try response_buf.appendSlice(request_allocator, "Connection: close\r\n");
+        try response_buf.appendSlice(request_allocator, "\r\n");
+        try response_buf.appendSlice(request_allocator, response_body);
 
-        _ = try connection.stream.writeAll(response_buf.items);
+        _ = try connection.writeAll(response_buf.items);
     }
 
     fn getModelsResponseFile(self: *MockUpstream, path: []const u8) []const u8 {
@@ -222,7 +219,7 @@ pub const MockUpstream = struct {
         return "upstream_res.json";
     }
 
-    fn sendJsonResponse(self: *MockUpstream, connection: std.net.Server.Connection, request_allocator: std.mem.Allocator) !void {
+    fn sendJsonResponse(self: *MockUpstream, connection: net.Connection, request_allocator: std.mem.Allocator) !void {
         // Generate mock response based on provider
         const response_body = try self.generateMockResponse();
         defer self.allocator.free(response_body);
@@ -231,18 +228,17 @@ pub const MockUpstream = struct {
         const http_status = self.detectHttpStatus(response_body, request_allocator);
 
         // Send HTTP response
-        var response_buf = std.ArrayList(u8){};
+        var response_buf = std.ArrayList(u8).empty;
         defer response_buf.deinit(request_allocator);
 
-        const writer = response_buf.writer(request_allocator);
-        try writer.print("HTTP/1.1 {d} {s}\r\n", .{ http_status.code, http_status.reason });
-        try writer.writeAll("Content-Type: application/json\r\n");
-        try writer.print("Content-Length: {d}\r\n", .{response_body.len});
-        try writer.writeAll("Connection: close\r\n");
-        try writer.writeAll("\r\n");
-        try writer.writeAll(response_body);
+        try response_buf.print(request_allocator, "HTTP/1.1 {d} {s}\r\n", .{ http_status.code, http_status.reason });
+        try response_buf.appendSlice(request_allocator, "Content-Type: application/json\r\n");
+        try response_buf.print(request_allocator, "Content-Length: {d}\r\n", .{response_body.len});
+        try response_buf.appendSlice(request_allocator, "Connection: close\r\n");
+        try response_buf.appendSlice(request_allocator, "\r\n");
+        try response_buf.appendSlice(request_allocator, response_body);
 
-        _ = try connection.stream.writeAll(response_buf.items);
+        _ = try connection.writeAll(response_buf.items);
     }
 
     const HttpStatus = struct {
@@ -282,7 +278,7 @@ pub const MockUpstream = struct {
         return .{ .code = 200, .reason = "OK" };
     }
 
-    fn sendStreamingResponse(self: *MockUpstream, connection: std.net.Server.Connection) !void {
+    fn sendStreamingResponse(self: *MockUpstream, connection: net.Connection) !void {
         // Read SSE data from upstream_res.txt
         const sse_data = try recorder.readCaseFile(
             self.allocator,
@@ -300,19 +296,19 @@ pub const MockUpstream = struct {
             "Cache-Control: no-cache\r\n" ++
             "Connection: keep-alive\r\n" ++
             "\r\n";
-        _ = try connection.stream.writeAll(headers);
+        _ = try connection.writeAll(headers);
 
         // Stream each line with a small delay to simulate real streaming
         var lines = std.mem.splitScalar(u8, sse_data, '\n');
         while (lines.next()) |line| {
-            const trimmed = std.mem.trimRight(u8, line, "\r");
+            const trimmed = std.mem.trimEnd(u8, line, "\r");
             if (trimmed.len == 0) continue;
 
-            _ = try connection.stream.writeAll(trimmed);
-            _ = try connection.stream.writeAll("\n\n");
+            _ = try connection.writeAll(trimmed);
+            _ = try connection.writeAll("\n\n");
 
             // Small delay between chunks to simulate streaming
-            std.Thread.sleep(10 * std.time.ns_per_ms);
+            core.time.sleep(10 * std.time.ns_per_ms);
         }
     }
 
@@ -360,7 +356,7 @@ fn parseHttpRequest(allocator: std.mem.Allocator, data: []const u8) !ParsedReque
     const path = parts.next() orelse "/";
 
     // Parse headers (simplified - just collect them)
-    var headers = std.ArrayList(Header){};
+    var headers: std.ArrayList(Header) = .empty;
     var lines = std.mem.splitSequence(u8, header_section, "\r\n");
     _ = lines.next(); // Skip request line
 
@@ -409,14 +405,14 @@ test "MockUpstream loads case response" {
 }
 
 /// Main entry point for standalone mock upstream server
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+pub fn main(init: std.process.Init.Minimal) !void {
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
     // Parse command line arguments
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
+    const args = try init.args.toSlice(allocator);
+    defer allocator.free(args);
 
     if (args.len < 4) {
         std.log.err("Usage: mock-upstream <port> <provider_name> <case_name>", .{});

@@ -13,6 +13,8 @@
 // limitations under the License.
 
 const std = @import("std");
+const core = @import("zag-core");
+const env = core.env;
 const recorder = @import("recorder.zig");
 const MockClient = @import("mock_client.zig").MockClient;
 
@@ -160,7 +162,7 @@ fn sseEqual(allocator: std.mem.Allocator, left: []const u8, right: []const u8) !
 
 fn nextDataLine(lines: *std.mem.SplitIterator(u8, .scalar)) ?[]const u8 {
     while (lines.next()) |line| {
-        const trimmed = std.mem.trimRight(u8, line, "\r");
+        const trimmed = std.mem.trimEnd(u8, line, "\r");
         if (trimmed.len == 0) continue;
         if (std.mem.startsWith(u8, trimmed, "data: ")) {
             return trimmed["data: ".len..];
@@ -199,7 +201,7 @@ fn caseFileExists(allocator: std.mem.Allocator, cases_root: []const u8, case_nam
     const path = std.fmt.allocPrint(allocator, "{s}/{s}/{s}", .{ cases_root, case_name, filename }) catch return false;
     defer allocator.free(path);
 
-    const file = std.fs.cwd().openFile(path, .{}) catch return false;
+    const file = core.fs.cwd().openFile(path, .{}) catch return false;
     file.close();
     return true;
 }
@@ -212,7 +214,7 @@ pub const TestContext = struct {
     client: MockClient,
     upstream_process: ?std.process.Child,
     proxy_process: ?std.process.Child,
-    env_map: ?std.process.EnvMap,
+    env_map: ?std.process.Environ.Map,
     case_name: []const u8,
 
     pub fn init(allocator: std.mem.Allocator, case_name: []const u8) !*TestContext {
@@ -252,11 +254,12 @@ pub const TestContext = struct {
 
     pub fn deinit(self: *TestContext) void {
         const allocator = self.allocator;
+        const io = core.time.io();
         if (self.proxy_process) |*proc| {
-            _ = proc.kill() catch {};
+            if (proc.id != null) proc.kill(io);
         }
         if (self.upstream_process) |*proc| {
-            _ = proc.kill() catch {};
+            if (proc.id != null) proc.kill(io);
         }
         if (self.env_map) |*em| {
             em.deinit();
@@ -269,34 +272,36 @@ pub const TestContext = struct {
 
     /// Start mock upstream server
     pub fn startUpstreams(self: *TestContext) !void {
+        const io = core.time.io();
         var port_buf: [8]u8 = undefined;
         const port_str = try std.fmt.bufPrint(&port_buf, "{d}", .{self.config.upstream_port});
-        var child = std.process.Child.init(
-            &[_][]const u8{
+        const child = std.process.spawn(io, .{
+            .argv = &[_][]const u8{
                 "zig-out/bin/mock-upstream",
                 port_str,
                 "upstream",
                 self.case_name,
             },
-            self.allocator,
-        );
-        try child.spawn();
+        }) catch |err| return err;
         self.upstream_process = child;
         
         // Give server time to start and bind to port
-        std.Thread.sleep(500 * std.time.ns_per_ms);
+        core.time.sleep(500 * std.time.ns_per_ms);
     }
 
     /// Stop mock upstream server
     pub fn stopUpstreams(self: *TestContext) !void {
+        const io = core.time.io();
         if (self.upstream_process) |*proc| {
-            _ = try proc.kill();
-            _ = try proc.wait();
+            if (proc.id != null) {
+                proc.kill(io);
+            }
         }
     }
 
     /// Start the proxy server with test configuration
     pub fn startProxy(self: *TestContext) !void {
+        const io = core.time.io();
         // Build case-specific config path
         const case_dir = try recorder.resolveCaseDirFor(self.allocator, self.config.cases_dir, self.case_name);
         defer self.allocator.free(case_dir);
@@ -305,39 +310,38 @@ pub const TestContext = struct {
         defer self.allocator.free(config_path);
         
         // Get absolute path for the config
-        const cwd = try std.fs.cwd().realpathAlloc(self.allocator, ".");
-        defer self.allocator.free(cwd);
+        const cwd_path = try core.fs.cwd().realpathAlloc(self.allocator, ".");
+        defer self.allocator.free(cwd_path);
         
-        const abs_config_path = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ cwd, config_path });
+        const abs_config_path = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ cwd_path, config_path });
         defer self.allocator.free(abs_config_path);
         
-        self.env_map = std.process.EnvMap.init(self.allocator);
+        self.env_map = std.process.Environ.Map.init(self.allocator);
         try self.env_map.?.put("ZIG_ZAG_CONFIG", abs_config_path);
         // Inherit PATH for finding zig-out/bin
-        if (std.posix.getenv("PATH")) |path| {
+        if (env.get("PATH")) |path| {
             try self.env_map.?.put("PATH", path);
         }
         
-        var child = std.process.Child.init(
-            &[_][]const u8{
+        const child = std.process.spawn(io, .{
+            .argv = &[_][]const u8{
                 "zig-out/bin/zig-zag",
             },
-            self.allocator,
-        );
-        child.env_map = &self.env_map.?;
-        
-        try child.spawn();
+            .environ_map = &self.env_map.?,
+        }) catch |err| return err;
         self.proxy_process = child;
         
         // Give proxy time to start and bind to port
-        std.Thread.sleep(3000 * std.time.ns_per_ms);
+        core.time.sleep(3000 * std.time.ns_per_ms);
     }
 
     /// Stop the proxy server
     pub fn stopProxy(self: *TestContext) !void {
+        const io = core.time.io();
         if (self.proxy_process) |*proc| {
-            _ = try proc.kill();
-            _ = try proc.wait();
+            if (proc.id != null) {
+                proc.kill(io);
+            }
             self.proxy_process = null;
         }
     }
@@ -553,7 +557,7 @@ fn runCase(allocator: std.mem.Allocator, cases_root: []const u8, case_name: []co
 
 /// Main entry point for integration tests
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -562,7 +566,7 @@ pub fn main() !void {
     const cases_root = "test/cases";
 
     // Check if specific case is requested via env var
-    if (std.posix.getenv("CASE_FOLDER")) |case_name| {
+    if (env.get("CASE_FOLDER")) |case_name| {
         try runCase(allocator, cases_root, case_name);
         std.log.info("Test completed!", .{});
         return;

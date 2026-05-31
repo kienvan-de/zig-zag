@@ -15,6 +15,7 @@
 const std = @import("std");
 const build_options = @import("build_options");
 const core = @import("zag-core");
+const env = core.env;
 const core_config = core.config;
 const log = core.log;
 const token_cache = core.cache;
@@ -30,18 +31,19 @@ const server = @import("server.zig");
 
 const version = build_options.version;
 
-pub fn main() !void {
+pub fn main(init: std.process.Init.Minimal) !void {
     // Handle --version / -v flag
-    var args = std.process.args();
-    _ = args.next(); // skip program name
+    var args = init.args.iterate();
+    _ = args.skip(); // skip program name
     if (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-v")) {
-            _ = std.posix.write(std.posix.STDOUT_FILENO, "zig-zag " ++ version ++ "\n") catch {};
+            const msg = "zig-zag " ++ version ++ "\n";
+            _ = std.c.write(std.posix.STDOUT_FILENO, msg.ptr, msg.len);
             return;
         }
     }
 
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -109,18 +111,18 @@ pub fn main() !void {
 
 const builtin = @import("builtin");
 
-var resolved_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+var resolved_path_buf: [core.fs.max_path_bytes]u8 = undefined;
 
 /// Resolve config file path: $ZIG_ZAG_CONFIG env var, or OS-specific default.
 fn resolveConfigPath() []const u8 {
-    if (std.posix.getenv("ZIG_ZAG_CONFIG")) |env_path| {
+    if (env.get("ZIG_ZAG_CONFIG")) |env_path| {
         return env_path;
     }
     return defaultConfigPath() catch "config.json";
 }
 
 fn defaultConfigPath() ![]const u8 {
-    const home = std.posix.getenv("HOME") orelse return error.HomeNotFound;
+    const home = env.get("HOME") orelse return error.HomeNotFound;
     if (builtin.os.tag == .macos or builtin.os.tag == .linux) {
         return std.fmt.bufPrint(
             &resolved_path_buf,
@@ -128,7 +130,7 @@ fn defaultConfigPath() ![]const u8 {
             .{home},
         );
     } else if (builtin.os.tag == .windows) {
-        if (std.posix.getenv("LOCALAPPDATA")) |app_data| {
+        if (env.get("LOCALAPPDATA")) |app_data| {
             return std.fmt.bufPrint(
                 &resolved_path_buf,
                 "{s}\\zig-zag\\config.json",

@@ -52,7 +52,7 @@ pub const AppConfig = struct {
     /// `core.config.Config.parseFromJson`.  Wrapper sections (logging, server,
     /// statistics) are parsed here.
     pub fn loadFromFile(allocator: std.mem.Allocator, path: []const u8) !AppConfig {
-        const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+        const file = core.fs.cwd().openFile(path, .{}) catch |err| {
             log_facade.err("Failed to open config file: {s}", .{path});
             log_facade.err("Error: {}", .{err});
             return err;
