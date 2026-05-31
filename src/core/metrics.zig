@@ -252,7 +252,7 @@ fn getProcessStats() struct { rss_bytes: u64, cpu_time_us: u64 } {
         if (fs.openFileAbsolute("/proc/self/statm", .{})) |file| {
             defer file.close();
             var buf: [128]u8 = undefined;
-            if (file.read(&buf)) |bytes_read| {
+            if (file.readAll(&buf)) |bytes_read| {
                 const content = buf[0..bytes_read];
                 var iter = std.mem.splitScalar(u8, content, ' ');
                 _ = iter.next(); // skip size
