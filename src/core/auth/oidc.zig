@@ -39,6 +39,7 @@
 //! ```
 
 const std = @import("std");
+const time = @import("../time.zig");
 const Allocator = std.mem.Allocator;
 const app_cache = @import("../cache/app_cache.zig");
 const log = @import("../log.zig");
@@ -263,7 +264,7 @@ pub const OIDC = struct {
 
         // Generate random state for CSRF protection (32 bytes -> 43 chars base64url)
         var state_bytes: [32]u8 = undefined;
-        std.c.arc4random_buf(&state_bytes, state_bytes.len);
+        time.io().randomSecure(&state_bytes) catch {};
         const state = try allocator.alloc(u8, 43);
         errdefer allocator.free(state);
         _ = std.base64.url_safe_no_pad.Encoder.encode(state, &state_bytes);
