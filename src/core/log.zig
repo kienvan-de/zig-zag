@@ -21,6 +21,7 @@
 //! Default sink writes to stderr — works with zero configuration.
 
 const std = @import("std");
+const time = @import("time.zig");
 
 /// Sink function signature — receives a fully-formatted log line (with trailing newline).
 pub const SinkFn = *const fn ([]const u8) void;
@@ -130,12 +131,12 @@ fn logImpl(
 
 /// Default sink — write to stderr.
 fn stderrSink(msg: []const u8) void {
-    _ = std.posix.write(std.posix.STDERR_FILENO, msg) catch {};
+    _ = std.c.write(std.posix.STDERR_FILENO, msg.ptr, msg.len);
 }
 
 /// Get current timestamp as formatted string.
 fn getTimestamp(buf: []u8) []const u8 {
-    const ts = std.time.timestamp();
+    const ts = time.timestamp();
     const epoch_secs: u64 = @intCast(ts);
 
     const epoch_day = epoch_secs / 86400;

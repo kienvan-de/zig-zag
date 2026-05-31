@@ -182,10 +182,10 @@ pub fn createErrorResponse(
         },
     };
 
-    var buffer = std.ArrayList(u8){};
+    var buffer = std.ArrayList(u8).empty;
     errdefer buffer.deinit(allocator);
 
-    try buffer.writer(allocator).print("{f}", .{std.json.fmt(response, .{})});
+    try buffer.print(allocator, "{f}", .{std.json.fmt(response, .{})});
     return try buffer.toOwnedSlice(allocator);
 }
 

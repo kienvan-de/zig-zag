@@ -13,6 +13,7 @@
 // limitations under the License.
 
 const std = @import("std");
+const net = @import("zag-core").net;
 const chat_handler = @import("handlers/chat.zig");
 const messages_handler = @import("handlers/messages.zig");
 const models_handler = @import("handlers/models.zig");
@@ -25,7 +26,7 @@ pub const Route = struct {
     path: []const u8,
     handler: *const fn (
         allocator: std.mem.Allocator,
-        connection: std.net.Server.Connection,
+        connection: net.Connection,
         method: []const u8,
         path: []const u8,
         body: []const u8,

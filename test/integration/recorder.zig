@@ -13,6 +13,8 @@
 // limitations under the License.
 
 const std = @import("std");
+const core = @import("zag-core");
+const env = core.env;
 
 /// Records HTTP requests and responses to JSON files for test verification
 pub const Recorder = struct {
@@ -25,7 +27,7 @@ pub const Recorder = struct {
         errdefer allocator.free(output_dir_copy);
 
         // Ensure output directory exists
-        std.fs.cwd().makePath(output_dir_copy) catch |err| {
+        core.fs.cwd().makePath(output_dir_copy) catch |err| {
             if (err != error.PathAlreadyExists) {
                 allocator.free(output_dir_copy);
                 return err;
@@ -44,10 +46,10 @@ pub const Recorder = struct {
 
     /// Clean up recorded files (useful before test runs)
     pub fn clean(self: *Recorder) !void {
-        std.fs.cwd().makePath(self.output_dir) catch |err| {
+        core.fs.cwd().makePath(self.output_dir) catch |err| {
             if (err != error.PathAlreadyExists) return err;
         };
-        var dir = try std.fs.cwd().openDir(self.output_dir, .{ .iterate = true });
+        var dir = try core.fs.cwd().openDir(self.output_dir, .{ .iterate = true });
         defer dir.close();
 
         var it = dir.iterate();
@@ -62,7 +64,7 @@ pub const Recorder = struct {
 
 /// List all case directories in the cases root
 pub fn listCaseDirs(allocator: std.mem.Allocator, cases_root: []const u8) ![][]const u8 {
-    var case_dirs = std.ArrayList([]const u8){};
+    var case_dirs = std.ArrayList([]const u8).empty;
     errdefer {
         for (case_dirs.items) |dir| {
             allocator.free(dir);
@@ -70,7 +72,7 @@ pub fn listCaseDirs(allocator: std.mem.Allocator, cases_root: []const u8) ![][]c
         case_dirs.deinit(allocator);
     }
 
-    var dir = std.fs.cwd().openDir(cases_root, .{ .iterate = true }) catch |err| {
+    var dir = core.fs.cwd().openDir(cases_root, .{ .iterate = true }) catch |err| {
         if (err == error.FileNotFound) {
             return try case_dirs.toOwnedSlice(allocator);
         }
@@ -98,7 +100,7 @@ pub fn resolveCaseDirFor(
 }
 
 pub fn resolveCaseDir(allocator: std.mem.Allocator, cases_root: []const u8) ![]const u8 {
-    const case_name = std.posix.getenv("CASE_FOLDER") orelse "case-1";
+    const case_name = env.get("CASE_FOLDER") orelse "case-1";
     return try resolveCaseDirFor(allocator, cases_root, case_name);
 }
 
@@ -124,7 +126,7 @@ pub fn readCaseFile(
     const path = try buildCasePath(allocator, cases_root, case_name, filename);
     defer allocator.free(path);
 
-    return try std.fs.cwd().readFileAlloc(allocator, path, max_bytes);
+    return try core.fs.cwd().readFileAlloc(allocator, path, max_bytes);
 }
 
 pub fn writeCaseFile(
@@ -137,10 +139,10 @@ pub fn writeCaseFile(
     const path = try buildCasePath(allocator, cases_root, case_name, filename);
     defer allocator.free(path);
 
-    const file = try std.fs.cwd().createFile(path, .{ .truncate = true });
+    const file = try core.fs.cwd().createFile(path, .{ .truncate = true });
     defer file.close();
 
-    _ = try file.write(contents);
+    try file.writeAll(contents);
 }
 
 fn isFixtureFile(name: []const u8) bool {

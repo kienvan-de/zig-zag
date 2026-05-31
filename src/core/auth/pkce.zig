@@ -53,7 +53,7 @@ pub const PKCE = struct {
 pub fn generate(allocator: Allocator) !PKCE {
     // Step 1: Generate 32 cryptographically random bytes
     var random_bytes: [32]u8 = undefined;
-    std.crypto.random.bytes(&random_bytes);
+    std.c.arc4random_buf(&random_bytes, 32);
 
     // Step 2: Base64URL encode (no padding) → code_verifier
     // 32 bytes → 43 base64url characters

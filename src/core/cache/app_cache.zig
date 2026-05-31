@@ -23,12 +23,13 @@
 //! - Stores arbitrary byte slices as values
 
 const std = @import("std");
+const sync = @import("../sync.zig");
 const log = @import("../log.zig");
 
 /// Global app cache
 var cache: ?std.StringHashMap([]const u8) = null;
 var cache_allocator: ?std.mem.Allocator = null;
-var rwlock: std.Thread.RwLock = .{};
+var rwlock: sync.RwLock = .{};
 
 /// Initialize the global app cache
 pub fn init(allocator: std.mem.Allocator) void {

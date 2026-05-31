@@ -74,6 +74,21 @@ pub const cache = @import("cache/token_cache.zig");
 /// Application-level cache (e.g. server port for FFI).
 pub const app_cache = @import("cache/app_cache.zig");
 
+/// Environment variable access (replaces std.posix.getenv).
+pub const env = @import("env.zig");
+
+/// TCP networking primitives (replaces std.net).
+pub const net = @import("net.zig");
+
+/// Synchronization primitives (replaces std.Thread.Mutex/RwLock/Condition).
+pub const sync = @import("sync.zig");
+
+/// Time utilities (replaces std.time.timestamp/milliTimestamp/nanoTimestamp).
+pub const time = @import("time.zig");
+
+/// Filesystem utilities (replaces std.fs.cwd() operations).
+pub const fs = @import("fs.zig");
+
 // =========================================================================
 // Provider types — for callers building request/response structs
 // =========================================================================

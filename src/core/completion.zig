@@ -26,6 +26,8 @@
 //!   freeModels         — Free the slice returned by listModels
 
 const std = @import("std");
+const time = @import("time.zig");
+const sync = @import("sync.zig");
 const config_mod = @import("config.zig");
 const errors = @import("errors.zig");
 const log = @import("log.zig");
@@ -202,48 +204,48 @@ fn chatSync(
     provider_name: []const u8,
     provider_config: *const config_mod.ProviderConfig,
 ) !void {
-    const start_time = std.time.milliTimestamp();
+    const start_time = time.milliTimestamp();
     log.info("[SYNC] POST /v1/chat/completions - request received for model '{s}'", .{request.model});
 
     // Transform
-    const transform_start = std.time.milliTimestamp();
+    const transform_start = time.milliTimestamp();
     const provider_request = Transformer.transform(request, model, allocator) catch |err| {
         log.err("[SYNC] Transform request error: {} for model '{s}'", .{ err, request.model });
         return error.TransformFailed;
     };
     defer Transformer.cleanupRequest(provider_request, allocator);
-    const transform_request_time = std.time.milliTimestamp() - transform_start;
+    const transform_request_time = time.milliTimestamp() - transform_start;
     log.debug("[SYNC] Transform request completed in {d}ms", .{transform_request_time});
 
     // Init client
-    const client_init_start = std.time.milliTimestamp();
+    const client_init_start = time.milliTimestamp();
     var client = Client.init(allocator, provider_config) catch |err| {
         log.err("[SYNC] Client initialization error: {} for model '{s}'", .{ err, request.model });
         return error.ClientInitFailed;
     };
     defer client.deinit();
-    const client_init_time = std.time.milliTimestamp() - client_init_start;
+    const client_init_time = time.milliTimestamp() - client_init_start;
     log.debug("[SYNC] Client init completed in {d}ms", .{client_init_time});
 
     // Send request
-    const provider_request_start = std.time.milliTimestamp();
+    const provider_request_start = time.milliTimestamp();
     const provider_response = client.sendRequest(provider_request) catch |err| {
         log.err("[SYNC] Provider API error: {} for model '{s}'", .{ err, request.model });
         if (err == error.AuthRequired) return error.AuthRequired;
         return error.UpstreamError;
     };
     defer provider_response.deinit();
-    const provider_request_time = std.time.milliTimestamp() - provider_request_start;
+    const provider_request_time = time.milliTimestamp() - provider_request_start;
     log.debug("[SYNC] Provider request/response completed in {d}ms", .{provider_request_time});
 
     // Transform response
-    const transform_response_start = std.time.milliTimestamp();
+    const transform_response_start = time.milliTimestamp();
     const openai_response = Transformer.transformResponse(provider_response.value, allocator, request.model) catch |err| {
         log.err("[SYNC] Transform response error: {} for model '{s}'", .{ err, request.model });
         return error.TransformResponseFailed;
     };
     defer Transformer.cleanupResponse(openai_response, allocator);
-    const transform_response_time = std.time.milliTimestamp() - transform_response_start;
+    const transform_response_time = time.milliTimestamp() - transform_response_start;
     log.debug("[SYNC] Transform response completed in {d}ms", .{transform_response_time});
 
     // Track tokens and costs
@@ -260,16 +262,16 @@ fn chatSync(
     }
 
     // Serialize and write to writer
-    const serialize_start = std.time.milliTimestamp();
-    var response_buffer = std.ArrayList(u8){};
+    const serialize_start = time.milliTimestamp();
+    var response_buffer = std.ArrayList(u8).empty;
     defer response_buffer.deinit(allocator);
-    try response_buffer.writer(allocator).print("{f}", .{std.json.fmt(openai_response, .{})});
-    const serialize_time = std.time.milliTimestamp() - serialize_start;
+    try response_buffer.print(allocator, "{f}", .{std.json.fmt(openai_response, .{})});
+    const serialize_time = time.milliTimestamp() - serialize_start;
     log.debug("[SYNC] Response serialization completed in {d}ms", .{serialize_time});
 
     try writer.writeAll(response_buffer.items);
 
-    const total_elapsed = std.time.milliTimestamp() - start_time;
+    const total_elapsed = time.milliTimestamp() - start_time;
     log.info("[SYNC] POST /v1/chat/completions - completed | model='{s}' | total={d}ms | transform_req={d}ms | client_init={d}ms | provider_req={d}ms | transform_resp={d}ms | serialize={d}ms", .{
         request.model,
         total_elapsed,
@@ -291,38 +293,38 @@ fn chatStreaming(
     provider_name: []const u8,
     provider_config: *const config_mod.ProviderConfig,
 ) !void {
-    const start_time = std.time.milliTimestamp();
+    const start_time = time.milliTimestamp();
     log.info("[STREAM] POST /v1/chat/completions - request received for model '{s}'", .{request.model});
 
     // Transform
-    const transform_start = std.time.milliTimestamp();
+    const transform_start = time.milliTimestamp();
     const provider_request = Transformer.transform(request, model, allocator) catch |err| {
         log.err("[STREAM] Transform request error: {} for model '{s}'", .{ err, request.model });
         return error.TransformFailed;
     };
     defer Transformer.cleanupRequest(provider_request, allocator);
-    const transform_time = std.time.milliTimestamp() - transform_start;
+    const transform_time = time.milliTimestamp() - transform_start;
     log.debug("[STREAM] Transform request completed in {d}ms", .{transform_time});
 
     // Init client
-    const client_init_start = std.time.milliTimestamp();
+    const client_init_start = time.milliTimestamp();
     var client = Client.init(allocator, provider_config) catch |err| {
         log.err("[STREAM] Client initialization error: {} for model '{s}'", .{ err, request.model });
         return error.ClientInitFailed;
     };
     defer client.deinit();
-    const client_init_time = std.time.milliTimestamp() - client_init_start;
+    const client_init_time = time.milliTimestamp() - client_init_start;
     log.debug("[STREAM] Client init completed in {d}ms", .{client_init_time});
 
     // Start streaming
-    const stream_connect_start = std.time.milliTimestamp();
+    const stream_connect_start = time.milliTimestamp();
     const stream_result = client.sendStreamingRequest(provider_request) catch |err| {
         log.err("[STREAM] Provider streaming error: {} for model '{s}'", .{ err, request.model });
         if (err == error.AuthRequired) return error.AuthRequired;
         return error.UpstreamError;
     };
     defer client.freeStreamingResult(stream_result);
-    const stream_connect_time = std.time.milliTimestamp() - stream_connect_start;
+    const stream_connect_time = time.milliTimestamp() - stream_connect_start;
     log.debug("[STREAM] Stream connection established in {d}ms", .{stream_connect_time});
 
     // Initialize streaming state
@@ -330,7 +332,7 @@ fn chatStreaming(
     defer state.deinit();
 
     // Process chunks
-    const process_start = std.time.milliTimestamp();
+    const process_start = time.milliTimestamp();
     var chunk_count: u32 = 0;
     var first_chunk_time: ?i64 = null;
     var had_error = false;
@@ -346,9 +348,9 @@ fn chatStreaming(
             }
 
             // Write SSE error event to client
-            var buffer = std.ArrayList(u8){};
+            var buffer = std.ArrayList(u8).empty;
             defer buffer.deinit(allocator);
-            buffer.writer(allocator).print("data: {{\"error\":{{\"message\":\"Upstream connection lost while streaming response\",\"type\":\"server_error\",\"code\":null}}}}\n\n", .{}) catch break;
+            buffer.print(allocator, "data: {{\"error\":{{\"message\":\"Upstream connection lost while streaming response\",\"type\":\"server_error\",\"code\":null}}}}\n\n", .{}) catch break;
             writer.writeAll(buffer.items) catch {};
             break;
         };
@@ -368,7 +370,7 @@ fn chatStreaming(
                 defer chunk.deinit();
 
                 if (first_chunk_time == null) {
-                    first_chunk_time = std.time.milliTimestamp() - process_start;
+                    first_chunk_time = time.milliTimestamp() - process_start;
                     log.debug("[STREAM] Time to first chunk: {d}ms", .{first_chunk_time.?});
                 }
                 chunk_count += 1;
@@ -387,18 +389,18 @@ fn chatStreaming(
                 }
 
                 // Serialize chunk to SSE format — atomic writeAll
-                var buffer = std.ArrayList(u8){};
+                var buffer = std.ArrayList(u8).empty;
                 defer buffer.deinit(allocator);
-                buffer.writer(allocator).print("data: {f}\n\n", .{std.json.fmt(chunk.value, .{})}) catch continue;
+                buffer.print(allocator, "data: {f}\n\n", .{std.json.fmt(chunk.value, .{})}) catch continue;
                 try writer.writeAll(buffer.items);
             },
             .@"error" => |error_response| {
                 had_error = true;
                 log.warn("[STREAM] Provider returned error: {s}", .{error_response.@"error".message});
 
-                var buffer = std.ArrayList(u8){};
+                var buffer = std.ArrayList(u8).empty;
                 defer buffer.deinit(allocator);
-                buffer.writer(allocator).print("data: {f}\n\n", .{std.json.fmt(error_response, .{})}) catch break;
+                buffer.print(allocator, "data: {f}\n\n", .{std.json.fmt(error_response, .{})}) catch break;
                 try writer.writeAll(buffer.items);
                 break;
             },
@@ -409,10 +411,10 @@ fn chatStreaming(
     // Always send [DONE] marker (OpenAI format)
     try writer.writeAll("data: [DONE]\n\n");
 
-    const process_time = std.time.milliTimestamp() - process_start;
+    const process_time = time.milliTimestamp() - process_start;
     log.debug("[STREAM] Processed {d} chunks in {d}ms", .{ chunk_count, process_time });
 
-    const total_elapsed = std.time.milliTimestamp() - start_time;
+    const total_elapsed = time.milliTimestamp() - start_time;
     if (had_error) {
         log.warn("[STREAM] POST /v1/chat/completions - completed with error | model='{s}' | total={d}ms | transform_req={d}ms | client_init={d}ms | stream_connect={d}ms | process={d}ms | chunks={d}", .{
             request.model, total_elapsed, transform_time, client_init_time, stream_connect_time, process_time, chunk_count,
@@ -538,48 +540,48 @@ fn messagesSync(
     provider_name: []const u8,
     provider_config: *const config_mod.ProviderConfig,
 ) !void {
-    const start_time = std.time.milliTimestamp();
+    const start_time = time.milliTimestamp();
     log.info("[SYNC] POST /v1/messages - request received for model '{s}/{s}'", .{ provider_name, model });
 
     // Transform
-    const transform_start = std.time.milliTimestamp();
+    const transform_start = time.milliTimestamp();
     const provider_request = Transformer.transformFromAnthropic(request, model, allocator) catch |err| {
         log.err("[SYNC] Transform request error: {} for model '{s}/{s}'", .{ err, provider_name, model });
         return error.TransformFailed;
     };
     defer Transformer.cleanupFromAnthropicRequest(provider_request, allocator);
-    const transform_request_time = std.time.milliTimestamp() - transform_start;
+    const transform_request_time = time.milliTimestamp() - transform_start;
     log.debug("[SYNC] Transform request completed in {d}ms", .{transform_request_time});
 
     // Init client
-    const client_init_start = std.time.milliTimestamp();
+    const client_init_start = time.milliTimestamp();
     var client = Client.init(allocator, provider_config) catch |err| {
         log.err("[SYNC] Client initialization error: {} for model '{s}'", .{ err, request.model });
         return error.ClientInitFailed;
     };
     defer client.deinit();
-    const client_init_time = std.time.milliTimestamp() - client_init_start;
+    const client_init_time = time.milliTimestamp() - client_init_start;
     log.debug("[SYNC] Client init completed in {d}ms", .{client_init_time});
 
     // Send request
-    const provider_request_start = std.time.milliTimestamp();
+    const provider_request_start = time.milliTimestamp();
     const provider_response = client.sendRequest(provider_request) catch |err| {
         log.err("[SYNC] Provider API error: {} for model '{s}/{s}'", .{ err, provider_name, model });
         if (err == error.AuthRequired) return error.AuthRequired;
         return error.UpstreamError;
     };
     defer provider_response.deinit();
-    const provider_request_time = std.time.milliTimestamp() - provider_request_start;
+    const provider_request_time = time.milliTimestamp() - provider_request_start;
     log.debug("[SYNC] Provider request/response completed in {d}ms", .{provider_request_time});
 
     // Transform response
-    const transform_response_start = std.time.milliTimestamp();
+    const transform_response_start = time.milliTimestamp();
     const anthropic_response = Transformer.transformToAnthropicResponse(provider_response.value, allocator, request.model) catch |err| {
         log.err("[SYNC] Transform response error: {} for model '{s}/{s}'", .{ err, provider_name, model });
         return error.TransformResponseFailed;
     };
     defer Transformer.cleanupAnthropicResponse(anthropic_response, allocator);
-    const transform_response_time = std.time.milliTimestamp() - transform_response_start;
+    const transform_response_time = time.milliTimestamp() - transform_response_start;
     log.debug("[SYNC] Transform response completed in {d}ms", .{transform_response_time});
 
     // Track tokens and costs
@@ -595,16 +597,16 @@ fn messagesSync(
     }
 
     // Serialize and write
-    const serialize_start = std.time.milliTimestamp();
-    var response_buffer = std.ArrayList(u8){};
+    const serialize_start = time.milliTimestamp();
+    var response_buffer = std.ArrayList(u8).empty;
     defer response_buffer.deinit(allocator);
-    try response_buffer.writer(allocator).print("{f}", .{std.json.fmt(anthropic_response, .{})});
-    const serialize_time = std.time.milliTimestamp() - serialize_start;
+    try response_buffer.print(allocator, "{f}", .{std.json.fmt(anthropic_response, .{})});
+    const serialize_time = time.milliTimestamp() - serialize_start;
     log.debug("[SYNC] Response serialization completed in {d}ms", .{serialize_time});
 
     try writer.writeAll(response_buffer.items);
 
-    const total_elapsed = std.time.milliTimestamp() - start_time;
+    const total_elapsed = time.milliTimestamp() - start_time;
     log.info("[SYNC] POST /v1/messages - completed | model='{s}/{s}' | total={d}ms | transform_req={d}ms | client_init={d}ms | provider_req={d}ms | transform_resp={d}ms | serialize={d}ms", .{
         provider_name, model, total_elapsed, transform_request_time, client_init_time, provider_request_time, transform_response_time, serialize_time,
     });
@@ -620,11 +622,11 @@ fn messagesStreaming(
     provider_name: []const u8,
     provider_config: *const config_mod.ProviderConfig,
 ) !void {
-    const start_time = std.time.milliTimestamp();
+    const start_time = time.milliTimestamp();
     log.info("[STREAM] POST /v1/messages - request received for model '{s}/{s}'", .{ provider_name, model });
 
     // Transform (with stream=true)
-    const transform_start = std.time.milliTimestamp();
+    const transform_start = time.milliTimestamp();
     var mutable_request = request;
     mutable_request.stream = true;
     const provider_request = Transformer.transformFromAnthropic(mutable_request, model, allocator) catch |err| {
@@ -632,32 +634,32 @@ fn messagesStreaming(
         return error.TransformFailed;
     };
     defer Transformer.cleanupFromAnthropicRequest(provider_request, allocator);
-    const transform_time = std.time.milliTimestamp() - transform_start;
+    const transform_time = time.milliTimestamp() - transform_start;
     log.debug("[STREAM] Transform request completed in {d}ms", .{transform_time});
 
     // Init client
-    const client_init_start = std.time.milliTimestamp();
+    const client_init_start = time.milliTimestamp();
     var client = Client.init(allocator, provider_config) catch |err| {
         log.err("[STREAM] Client initialization error: {} for model '{s}'", .{ err, request.model });
         return error.ClientInitFailed;
     };
     defer client.deinit();
-    const client_init_time = std.time.milliTimestamp() - client_init_start;
+    const client_init_time = time.milliTimestamp() - client_init_start;
     log.debug("[STREAM] Client init completed in {d}ms", .{client_init_time});
 
     // Start streaming
-    const stream_connect_start = std.time.milliTimestamp();
+    const stream_connect_start = time.milliTimestamp();
     const stream_result = client.sendStreamingRequest(provider_request) catch |err| {
         log.err("[STREAM] Provider streaming error: {} for model '{s}/{s}'", .{ err, provider_name, model });
         if (err == error.AuthRequired) return error.AuthRequired;
         return error.UpstreamError;
     };
     defer client.freeStreamingResult(stream_result);
-    const stream_connect_time = std.time.milliTimestamp() - stream_connect_start;
+    const stream_connect_time = time.milliTimestamp() - stream_connect_start;
     log.debug("[STREAM] Stream connection established in {d}ms", .{stream_connect_time});
 
     // Process upstream SSE lines through transformer
-    const process_start = std.time.milliTimestamp();
+    const process_start = time.milliTimestamp();
     var chunk_count: u32 = 0;
     var had_error = false;
 
@@ -705,10 +707,10 @@ fn messagesStreaming(
         }
     }
 
-    const process_time = std.time.milliTimestamp() - process_start;
+    const process_time = time.milliTimestamp() - process_start;
     log.debug("[STREAM] Processed {d} chunks in {d}ms", .{ chunk_count, process_time });
 
-    const total_elapsed = std.time.milliTimestamp() - start_time;
+    const total_elapsed = time.milliTimestamp() - start_time;
     if (had_error) {
         log.warn("[STREAM] POST /v1/messages - completed with error | model='{s}/{s}' | total={d}ms | transform_req={d}ms | client_init={d}ms | stream_connect={d}ms | process={d}ms | chunks={d}", .{
             provider_name, model, total_elapsed, transform_time, client_init_time, stream_connect_time, process_time, chunk_count,
@@ -727,7 +729,7 @@ fn messagesStreaming(
 /// Thread-safe allocator wrapper for parallel model fetching
 const ThreadSafeAllocator = struct {
     backing_allocator: std.mem.Allocator,
-    mutex: std.Thread.Mutex = .{},
+    mutex: sync.Mutex = .{},
 
     pub fn allocator(self: *ThreadSafeAllocator) std.mem.Allocator {
         return .{
@@ -867,7 +869,7 @@ pub fn listModels(allocator: std.mem.Allocator) ![]openai_types.Model {
     wg.wait();
 
     // Aggregate results
-    var all_models = std.ArrayList(openai_types.Model){};
+    var all_models = std.ArrayList(openai_types.Model).empty;
     defer all_models.deinit(safe_allocator);
 
     for (results[0..provider_count]) |result| {
@@ -930,7 +932,7 @@ fn fetchTask(ctx_ptr: *anyopaque) void {
     const ctx: *FetchContext = @ptrCast(@alignCast(ctx_ptr));
     defer ctx.wg.done();
 
-    const start_time = std.time.milliTimestamp();
+    const start_time = time.milliTimestamp();
     ctx.result.provider_name = ctx.provider_name;
 
     ctx.result.models = fetchModelsForProvider(
@@ -939,30 +941,30 @@ fn fetchTask(ctx_ptr: *anyopaque) void {
         ctx.provider_config,
     ) catch |err| {
         ctx.result.err = err;
-        ctx.result.elapsed_ms = std.time.milliTimestamp() - start_time;
+        ctx.result.elapsed_ms = time.milliTimestamp() - start_time;
         return;
     };
 
-    ctx.result.elapsed_ms = std.time.milliTimestamp() - start_time;
+    ctx.result.elapsed_ms = time.milliTimestamp() - start_time;
 }
 
 fn listModelsSequential(allocator: std.mem.Allocator, cfg: *const config_mod.Config) ![]openai_types.Model {
-    var all_models = std.ArrayList(openai_types.Model){};
+    var all_models = std.ArrayList(openai_types.Model).empty;
     defer all_models.deinit(allocator);
 
     var provider_iter = cfg.providers.iterator();
     while (provider_iter.next()) |entry| {
         const pname = entry.key_ptr.*;
         const pconfig = entry.value_ptr;
-        const provider_start = std.time.milliTimestamp();
+        const provider_start = time.milliTimestamp();
 
         const models = fetchModelsForProvider(allocator, pname, pconfig) catch |err| {
-            const elapsed = std.time.milliTimestamp() - provider_start;
+            const elapsed = time.milliTimestamp() - provider_start;
             log.warn("Provider '{s}' failed after {d}ms: {}", .{ pname, elapsed, err });
             continue;
         };
 
-        const elapsed = std.time.milliTimestamp() - provider_start;
+        const elapsed = time.milliTimestamp() - provider_start;
 
         if (models) |model_list| {
             log.info("Provider '{s}' returned {d} models in {d}ms", .{ pname, model_list.len, elapsed });

@@ -22,7 +22,10 @@
 //! only client.zig needed, reuses OpenAI types and transformer.
 
 const std = @import("std");
+const fs = @import("../../fs.zig");
+const time = @import("../../time.zig");
 const Allocator = std.mem.Allocator;
+const env = @import("../../env.zig");
 const OpenAI = @import("../openai/types.zig");
 const config_mod = @import("../../config.zig");
 const http_client = @import("../../client.zig");
@@ -176,7 +179,7 @@ pub const CopilotClient = struct {
         defer parsed.deinit();
 
         // Persist api_token to global token_cache (thread-safe, survives across request instances)
-        const now = std.time.timestamp();
+        const now = time.timestamp();
         const expires_in = parsed.value.expires_at - now;
         try self.oauth.cacheTokens(parsed.value.token, null, expires_in);
 
@@ -201,12 +204,12 @@ pub const CopilotClient = struct {
     /// Looks for key "github.com:<client_id>" -> oauth_token
     /// Returns duplicated token string (caller must free)
     fn readGitHubToken(self: *CopilotClient) ![]const u8 {
-        const home = std.posix.getenv("HOME") orelse {
+        const home = env.get("HOME") orelse {
             log.err("[Copilot] HOME environment variable not set", .{});
             return error.HomeNotFound;
         };
 
-        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        var path_buf: [fs.max_path_bytes]u8 = undefined;
         const apps_path = std.fmt.bufPrint(
             &path_buf,
             "{s}/.config/github-copilot/apps.json",
@@ -214,7 +217,7 @@ pub const CopilotClient = struct {
         ) catch return error.PathTooLong;
 
         // Read file
-        const file = std.fs.cwd().openFile(apps_path, .{}) catch |err| {
+        const file = fs.cwd().openFile(apps_path, .{}) catch |err| {
             log.err("[Copilot] Failed to open {s}: {}", .{ apps_path, err });
             return error.TokenFileNotFound;
         };
@@ -355,16 +358,16 @@ pub const CopilotClient = struct {
     /// Read-modify-write: preserves other entries in the file.
     /// Uses an arena allocator internally so all temporary JSON work is freed in one shot.
     fn saveTokenToAppsJson(self: *CopilotClient, access_token: []const u8) !void {
-        const home = std.posix.getenv("HOME") orelse return error.HomeNotFound;
+        const home = env.get("HOME") orelse return error.HomeNotFound;
 
-        var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+        var dir_buf: [fs.max_path_bytes]u8 = undefined;
         const dir_path = std.fmt.bufPrint(
             &dir_buf,
             "{s}/.config/github-copilot",
             .{home},
         ) catch return error.PathTooLong;
 
-        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        var path_buf: [fs.max_path_bytes]u8 = undefined;
         const apps_path = std.fmt.bufPrint(
             &path_buf,
             "{s}/apps.json",
@@ -372,7 +375,7 @@ pub const CopilotClient = struct {
         ) catch return error.PathTooLong;
 
         // Ensure directory exists
-        std.fs.cwd().makePath(dir_path) catch |err| {
+        fs.cwd().makePath(dir_path) catch |err| {
             log.err("[Copilot] Failed to create directory {s}: {}", .{ dir_path, err });
             return error.FileWriteError;
         };
@@ -383,9 +386,9 @@ pub const CopilotClient = struct {
         const alloc = arena.allocator();
 
         // Read existing file or start with empty object
-        var root = std.json.Value{ .object = std.json.ObjectMap.init(alloc) };
+        var root = std.json.Value{ .object = std.json.ObjectMap{} };
 
-        if (std.fs.cwd().openFile(apps_path, .{})) |file| {
+        if (fs.cwd().openFile(apps_path, .{})) |file| {
             defer file.close();
             if (file.readToEndAlloc(alloc, 1024 * 1024)) |content| {
                 if (std.json.parseFromSlice(std.json.Value, alloc, content, .{})) |parsed| {
@@ -406,21 +409,21 @@ pub const CopilotClient = struct {
 
         // Build the entry value as JSON
         const key_dupe = try alloc.dupe(u8, lookup_key);
-        var entry_obj = std.json.ObjectMap.init(alloc);
-        try entry_obj.put("oauth_token", std.json.Value{ .string = access_token });
-        try entry_obj.put("githubAppId", std.json.Value{ .string = self.client_id });
-        try root.object.put(key_dupe, std.json.Value{ .object = entry_obj });
+        var entry_obj = std.json.ObjectMap{};
+        try entry_obj.put(alloc, "oauth_token", std.json.Value{ .string = access_token });
+        try entry_obj.put(alloc, "githubAppId", std.json.Value{ .string = self.client_id });
+        try root.object.put(alloc, key_dupe, std.json.Value{ .object = entry_obj });
 
         // Serialize to buffer
-        var json_buf = std.ArrayList(u8){};
+        var json_buf = std.ArrayList(u8).empty;
         defer json_buf.deinit(alloc);
-        json_buf.writer(alloc).print("{f}", .{std.json.fmt(root, .{ .whitespace = .indent_2 })}) catch |err| {
+        json_buf.print(alloc, "{f}", .{std.json.fmt(root, .{ .whitespace = .indent_2 })}) catch |err| {
             log.err("[Copilot] Failed to serialize apps.json: {}", .{err});
             return error.FileWriteError;
         };
 
         // Write back
-        const out_file = std.fs.cwd().createFile(apps_path, .{}) catch |err| {
+        const out_file = fs.cwd().createFile(apps_path, .{}) catch |err| {
             log.err("[Copilot] Failed to write {s}: {}", .{ apps_path, err });
             return error.FileWriteError;
         };
@@ -533,7 +536,7 @@ pub const CopilotClient = struct {
 
         // x-request-id: random UUIDv4
         var uuid_bytes: [16]u8 = undefined;
-        std.crypto.random.bytes(&uuid_bytes);
+        std.c.arc4random_buf(&uuid_bytes, uuid_bytes.len);
         // Set version (4) and variant bits
         uuid_bytes[6] = (uuid_bytes[6] & 0x0f) | 0x40;
         uuid_bytes[8] = (uuid_bytes[8] & 0x3f) | 0x80;
@@ -579,7 +582,7 @@ pub const CopilotClient = struct {
 
         // x-request-id: random UUIDv4
         var uuid_bytes: [16]u8 = undefined;
-        std.crypto.random.bytes(&uuid_bytes);
+        std.c.arc4random_buf(&uuid_bytes, uuid_bytes.len);
         uuid_bytes[6] = (uuid_bytes[6] & 0x0f) | 0x40;
         uuid_bytes[8] = (uuid_bytes[8] & 0x3f) | 0x80;
         const request_id = try std.fmt.bufPrint(
@@ -783,16 +786,16 @@ pub const CopilotClient = struct {
 
     /// Check if apps.json contains an entry for this client_id.
     fn appsJsonHasEntry(self: *CopilotClient) bool {
-        const home = std.posix.getenv("HOME") orelse return false;
+        const home = env.get("HOME") orelse return false;
 
-        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        var path_buf: [fs.max_path_bytes]u8 = undefined;
         const apps_path = std.fmt.bufPrint(
             &path_buf,
             "{s}/.config/github-copilot/apps.json",
             .{home},
         ) catch return false;
 
-        const file = std.fs.cwd().openFile(apps_path, .{}) catch return false;
+        const file = fs.cwd().openFile(apps_path, .{}) catch return false;
         defer file.close();
 
         const content = file.readToEndAlloc(self.allocator, 1024 * 1024) catch return false;
@@ -813,16 +816,16 @@ pub const CopilotClient = struct {
 
     /// Remove this client's entry from apps.json.
     fn removeAppsJsonEntry(self: *CopilotClient) !void {
-        const home = std.posix.getenv("HOME") orelse return error.HomeNotFound;
+        const home = env.get("HOME") orelse return error.HomeNotFound;
 
-        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        var path_buf: [fs.max_path_bytes]u8 = undefined;
         const apps_path = std.fmt.bufPrint(
             &path_buf,
             "{s}/.config/github-copilot/apps.json",
             .{home},
         ) catch return error.PathTooLong;
 
-        const file = std.fs.cwd().openFile(apps_path, .{}) catch return; // not an error if missing
+        const file = fs.cwd().openFile(apps_path, .{}) catch return; // not an error if missing
         const content = file.readToEndAlloc(self.allocator, 1024 * 1024) catch {
             file.close();
             return;
@@ -839,24 +842,24 @@ pub const CopilotClient = struct {
         const lookup_key = std.fmt.bufPrint(&key_buf, "github.com:{s}", .{self.client_id}) catch return;
 
         // Rebuild object without the entry
-        var new_obj = std.json.ObjectMap.init(self.allocator);
-        defer new_obj.deinit();
+        var new_obj = std.json.ObjectMap{};
+        defer new_obj.deinit(self.allocator);
         var it = parsed.value.object.iterator();
         while (it.next()) |kv| {
             if (!std.mem.eql(u8, kv.key_ptr.*, lookup_key)) {
-                try new_obj.put(kv.key_ptr.*, kv.value_ptr.*);
+                try new_obj.put(self.allocator, kv.key_ptr.*, kv.value_ptr.*);
             }
         }
 
-        var buf = std.ArrayList(u8){};
+        var buf = std.ArrayList(u8).empty;
         defer buf.deinit(self.allocator);
         const new_val = std.json.Value{ .object = new_obj };
-        buf.writer(self.allocator).print("{f}", .{std.json.fmt(new_val, .{ .whitespace = .indent_2 })}) catch |err| {
+        buf.print(self.allocator, "{f}", .{std.json.fmt(new_val, .{ .whitespace = .indent_2 })}) catch |err| {
             log.err("[Copilot] failed to serialize apps.json: {}", .{err});
             return error.FileWriteError;
         };
 
-        const out = std.fs.cwd().createFile(apps_path, .{ .truncate = true }) catch |err| {
+        const out = fs.cwd().createFile(apps_path, .{ .truncate = true }) catch |err| {
             log.err("[Copilot] Failed to write {s}: {}", .{ apps_path, err });
             return error.FileWriteError;
         };

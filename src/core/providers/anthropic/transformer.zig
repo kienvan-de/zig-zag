@@ -13,6 +13,7 @@
 // limitations under the License.
 
 const std = @import("std");
+const time = @import("../../time.zig");
 const testing = std.testing;
 const OpenAI = @import("../openai/types.zig");
 const Anthropic = @import("types.zig");
@@ -70,7 +71,7 @@ pub const StreamState = struct {
         return .{
             .allocator = allocator,
             .original_model = original_model,
-            .created = std.time.timestamp(),
+            .created = time.timestamp(),
         };
     }
 
@@ -338,8 +339,8 @@ fn buildOpenAIChunk(
     };
 
     // Serialize to JSON
-    var buffer = std.ArrayList(u8){};
-    buffer.writer(allocator).print("{f}", .{std.json.fmt(chunk, .{})}) catch return null;
+    var buffer = std.ArrayList(u8).empty;
+    buffer.print(allocator, "{f}", .{std.json.fmt(chunk, .{})}) catch return null;
     defer buffer.deinit(allocator);
 
     // Parse back to get Parsed that owns the data
@@ -362,7 +363,7 @@ pub fn extractSystemPrompt(
     messages: []const OpenAI.Message,
     allocator: std.mem.Allocator,
 ) !?[]const u8 {
-    var system_parts = std.ArrayList([]const u8){};
+    var system_parts = std.ArrayList([]const u8).empty;
     defer system_parts.deinit(allocator);
 
     for (messages) |msg| {
@@ -398,7 +399,7 @@ pub fn transformContent(
     content: MessageContent,
     allocator: std.mem.Allocator,
 ) ![]Anthropic.ContentBlockParam {
-    var blocks = std.ArrayList(Anthropic.ContentBlockParam){};
+    var blocks = std.ArrayList(Anthropic.ContentBlockParam).empty;
     errdefer blocks.deinit(allocator);
 
     switch (content) {
@@ -456,7 +457,7 @@ pub fn transformToolCalls(
     tool_calls: []const OpenAI.ToolCall,
     allocator: std.mem.Allocator,
 ) ![]Anthropic.ContentBlockParam {
-    var blocks = std.ArrayList(Anthropic.ContentBlockParam){};
+    var blocks = std.ArrayList(Anthropic.ContentBlockParam).empty;
     errdefer blocks.deinit(allocator);
 
     for (tool_calls) |tc| {
@@ -467,7 +468,7 @@ pub fn transformToolCalls(
                 .type = "tool_use",
                 .id = tc.id,
                 .name = tc.function.name,
-                .input = std.json.Value{ .object = std.json.ObjectMap.init(allocator) },
+                .input = std.json.Value{ .object = std.json.ObjectMap{} },
             } });
             continue;
         };
@@ -523,7 +524,7 @@ pub fn transformTools(
         anthro_tools[i] = .{
             .name = tool.function.name,
             .description = tool.function.description,
-            .input_schema = tool.function.parameters orelse std.json.Value{ .object = std.json.ObjectMap.init(allocator) },
+            .input_schema = tool.function.parameters orelse std.json.Value{ .object = std.json.ObjectMap{} },
         };
     }
 
@@ -570,7 +571,7 @@ pub fn normalizeMessages(
     messages: []const OpenAI.Message,
     allocator: std.mem.Allocator,
 ) ![]Anthropic.Message {
-    var normalized = std.ArrayList(Anthropic.Message){};
+    var normalized = std.ArrayList(Anthropic.Message).empty;
     errdefer {
         for (normalized.items) |msg| {
             switch (msg.content) {
@@ -582,7 +583,7 @@ pub fn normalizeMessages(
     }
 
     var last_role: ?Anthropic.Role = null;
-    var pending_content = std.ArrayList(Anthropic.ContentBlockParam){};
+    var pending_content = std.ArrayList(Anthropic.ContentBlockParam).empty;
     defer pending_content.deinit(allocator);
 
     for (messages) |msg| {
@@ -598,7 +599,7 @@ pub fn normalizeMessages(
         };
 
         // Transform content
-        var content_blocks = std.ArrayList(Anthropic.ContentBlockParam){};
+        var content_blocks = std.ArrayList(Anthropic.ContentBlockParam).empty;
         defer content_blocks.deinit(allocator);
 
         // Handle tool/function messages - these need tool_result blocks
@@ -737,7 +738,7 @@ pub fn transformStopReason(stop_reason: ?[]const u8) []const u8 {
 
 /// Extract text content from Anthropic ContentBlock array
 pub fn extractTextFromBlocks(blocks: []const Anthropic.ContentBlock, allocator: std.mem.Allocator) ![]const u8 {
-    var text_parts = std.ArrayList([]const u8){};
+    var text_parts = std.ArrayList([]const u8).empty;
     defer text_parts.deinit(allocator);
 
     for (blocks) |block| {
@@ -758,16 +759,16 @@ pub fn extractTextFromBlocks(blocks: []const Anthropic.ContentBlock, allocator: 
 
 /// Extract tool_use blocks from Anthropic ContentBlock array and convert to OpenAI ToolCall array
 pub fn extractToolCalls(blocks: []const Anthropic.ContentBlock, allocator: std.mem.Allocator) !?[]OpenAI.ToolCall {
-    var tool_calls = std.ArrayList(OpenAI.ToolCall){};
+    var tool_calls = std.ArrayList(OpenAI.ToolCall).empty;
     defer tool_calls.deinit(allocator);
 
     for (blocks) |block| {
         switch (block) {
             .tool_use => |tu| {
                 // Stringify the input JSON
-                var args_list = std.ArrayList(u8){};
+                var args_list = std.ArrayList(u8).empty;
                 defer args_list.deinit(allocator);
-                try args_list.writer(allocator).print("{f}", .{std.json.fmt(tu.input, .{})});
+                try args_list.print(allocator, "{f}", .{std.json.fmt(tu.input, .{})});
                 const args_str = try args_list.toOwnedSlice(allocator);
 
                 try tool_calls.append(allocator, .{
@@ -870,7 +871,7 @@ pub fn transformResponse(
     return OpenAI.Response{
         .id = id_str,
         .object = "chat.completion",
-        .created = std.time.timestamp(),
+        .created = time.timestamp(),
         .model = model_str,
         .choices = choices,
         .usage = usage,

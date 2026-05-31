@@ -32,7 +32,7 @@ const Task = struct {
 /// Global worker pool instance
 var pool_ptr: std.atomic.Value(?*WorkerPool) = std.atomic.Value(?*WorkerPool).init(null);
 var pool_allocator: ?std.mem.Allocator = null;
-var pool_mutex: std.Thread.Mutex = .{};
+var pool_mutex: core.sync.Mutex = .{};
 
 /// Worker Pool implementation
 pub const WorkerPool = struct {
@@ -40,8 +40,8 @@ pub const WorkerPool = struct {
     threads: []std.Thread,
     queue: std.ArrayList(Task),
     queue_head: usize,
-    queue_mutex: std.Thread.Mutex,
-    queue_not_empty: std.Thread.Condition,
+    queue_mutex: core.sync.Mutex,
+    queue_not_empty: core.sync.Condition,
     shutdown: bool,
     active_tasks: usize,
 
@@ -56,7 +56,7 @@ pub const WorkerPool = struct {
         self.* = .{
             .allocator = allocator,
             .threads = try allocator.alloc(std.Thread, size),
-            .queue = std.ArrayList(Task){},
+            .queue = std.ArrayList(Task).empty,
             .queue_head = 0,
             .queue_mutex = .{},
             .queue_not_empty = .{},

@@ -15,6 +15,7 @@
 const std = @import("std");
 const build_options = @import("build_options");
 const core = @import("zag-core");
+const env = core.env;
 const core_config = core.config;
 const log = core.log;
 const token_cache = core.cache;
@@ -36,7 +37,7 @@ const version = build_options.version;
 // ============================================================================
 
 const State = struct {
-    gpa: std.heap.GeneralPurposeAllocator(.{}),
+    gpa: std.heap.DebugAllocator(.{}),
     cfg: ?app_config.AppConfig, // null until loaded in serverThreadFn
     thread: std.Thread,
     port: u16,
@@ -44,7 +45,7 @@ const State = struct {
 };
 
 var state: ?*State = null;
-var state_mutex: std.Thread.Mutex = .{};
+var state_mutex: core.sync.Mutex = .{};
 
 // Server lifecycle status - accessed atomically, no mutex needed
 var server_status: std.atomic.Value(ServerStatus) = std.atomic.Value(ServerStatus).init(.stopped);
@@ -232,11 +233,11 @@ export fn startServer() bool {
 
     // Initialize GPA inside State
     s.* = .{
-        .gpa = std.heap.GeneralPurposeAllocator(.{}){},
+        .gpa = .init,
         .cfg = null,
         .thread = undefined,
         .port = 0,
-        .start_timestamp = std.time.timestamp(),
+        .start_timestamp = core.time.timestamp(),
     };
 
     // Spawn server thread - all initialization happens there (non-blocking)
@@ -323,7 +324,7 @@ export fn getServerStats() CServerStats {
         };
     };
 
-    const now = std.time.timestamp();
+    const now = core.time.timestamp();
     const uptime: u64 = if (now > s.start_timestamp)
         @intCast(now - s.start_timestamp)
     else
@@ -374,18 +375,18 @@ export fn getVersion() [*:0]const u8 {
 
 const builtin = @import("builtin");
 
-var resolved_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+var resolved_path_buf: [core.fs.max_path_bytes]u8 = undefined;
 
 /// Resolve config file path: $ZIG_ZAG_CONFIG env var, or OS-specific default.
 fn resolveConfigPath() []const u8 {
-    if (std.posix.getenv("ZIG_ZAG_CONFIG")) |env_path| {
+    if (env.get("ZIG_ZAG_CONFIG")) |env_path| {
         return env_path;
     }
     return defaultConfigPath() catch "config.json";
 }
 
 fn defaultConfigPath() ![]const u8 {
-    const home = std.posix.getenv("HOME") orelse return error.HomeNotFound;
+    const home = env.get("HOME") orelse return error.HomeNotFound;
     if (builtin.os.tag == .macos or builtin.os.tag == .linux) {
         return std.fmt.bufPrint(
             &resolved_path_buf,
@@ -393,7 +394,7 @@ fn defaultConfigPath() ![]const u8 {
             .{home},
         );
     } else if (builtin.os.tag == .windows) {
-        if (std.posix.getenv("LOCALAPPDATA")) |app_data| {
+        if (env.get("LOCALAPPDATA")) |app_data| {
             return std.fmt.bufPrint(
                 &resolved_path_buf,
                 "{s}\\zig-zag\\config.json",

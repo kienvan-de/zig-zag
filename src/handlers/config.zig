@@ -24,6 +24,7 @@
 //!   DELETE /v1/config/{provider}/auth        -> revoke provider auth
 
 const std = @import("std");
+const net = @import("zag-core").net;
 const core = @import("zag-core");
 const errors = core.errors;
 const config_mod = core.config;
@@ -37,7 +38,7 @@ const http = @import("../http.zig");
 
 pub fn handle(
     allocator: std.mem.Allocator,
-    connection: std.net.Server.Connection,
+    connection: net.Connection,
     method: []const u8,
     path: []const u8,
     body: []const u8,
@@ -68,7 +69,7 @@ pub fn handle(
 // Config data -- GET / POST
 // ============================================================================
 
-fn handleGet(allocator: std.mem.Allocator, connection: std.net.Server.Connection) !void {
+fn handleGet(allocator: std.mem.Allocator, connection: net.Connection) !void {
     const raw = config_mod.readRaw(allocator) catch |err| {
         log.err("Config read failed: {}", .{err});
         return http.sendInternalError(connection);
@@ -77,7 +78,7 @@ fn handleGet(allocator: std.mem.Allocator, connection: std.net.Server.Connection
     try http.sendJsonResponse(connection, .ok, raw);
 }
 
-fn handlePost(allocator: std.mem.Allocator, connection: std.net.Server.Connection, body: []const u8) !void {
+fn handlePost(allocator: std.mem.Allocator, connection: net.Connection, body: []const u8) !void {
     config_mod.writeRaw(allocator, body) catch |err| {
         log.err("Config write failed: {}", .{err});
         const msg = if (err == error.InvalidConfigFormat)
@@ -97,7 +98,7 @@ fn handlePost(allocator: std.mem.Allocator, connection: std.net.Server.Connectio
 
 fn dispatchProviderAuth(
     allocator: std.mem.Allocator,
-    connection: std.net.Server.Connection,
+    connection: net.Connection,
     method: []const u8,
     provider_name: []const u8,
 ) !void {

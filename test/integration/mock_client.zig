@@ -13,6 +13,7 @@
 // limitations under the License.
 
 const std = @import("std");
+const core = @import("zag-core");
 const recorder = @import("recorder.zig");
 
 /// Mock client that simulates an agent/tool sending OpenAI format requests to the proxy
@@ -33,7 +34,7 @@ pub const MockClient = struct {
             .allocator = allocator,
             .proxy_url = proxy_url,
             .recorder = rec,
-            .http_client = std.http.Client{ .allocator = allocator },
+            .http_client = std.http.Client{ .allocator = allocator, .io = core.time.io() },
             .case_name = case_name,
         };
     }
@@ -49,15 +50,14 @@ pub const MockClient = struct {
         messages: []const u8, // JSON string of messages array
     ) ![]u8 {
         // Build request body
-        var body_buffer = std.ArrayList(u8){};
+        var body_buffer = std.ArrayList(u8).empty;
         defer body_buffer.deinit(self.allocator);
 
-        const writer = body_buffer.writer(self.allocator);
-        try writer.writeAll("{\"model\":\"");
-        try writer.writeAll(model);
-        try writer.writeAll("\",\"messages\":");
-        try writer.writeAll(messages);
-        try writer.writeAll("}");
+        try body_buffer.appendSlice(self.allocator, "{\"model\":\"");
+        try body_buffer.appendSlice(self.allocator, model);
+        try body_buffer.appendSlice(self.allocator, "\",\"messages\":");
+        try body_buffer.appendSlice(self.allocator, messages);
+        try body_buffer.appendSlice(self.allocator, "}");
 
         const request_body = try body_buffer.toOwnedSlice(self.allocator);
         defer self.allocator.free(request_body);
@@ -98,7 +98,7 @@ pub const MockClient = struct {
         // Read response body
         var transfer_buf: [4096]u8 = undefined;
         const reader = response.reader(&transfer_buf);
-        const response_body = try reader.allocRemaining(self.allocator, std.io.Limit.limited(1024 * 1024));
+        const response_body = try reader.allocRemaining(self.allocator, std.Io.Limit.limited(1024 * 1024));
 
         return response_body;
     }
@@ -186,7 +186,7 @@ pub const MockClient = struct {
         // Read response body
         var transfer_buf: [4096]u8 = undefined;
         const reader = response.reader(&transfer_buf);
-        const response_body = try reader.allocRemaining(self.allocator, std.io.Limit.limited(1024 * 1024));
+        const response_body = try reader.allocRemaining(self.allocator, std.Io.Limit.limited(1024 * 1024));
 
         return response_body;
     }
@@ -206,7 +206,7 @@ pub const MockClient = struct {
 
         var transfer_buf: [4096]u8 = undefined;
         const reader = response.reader(&transfer_buf);
-        return reader.allocRemaining(self.allocator, std.io.Limit.limited(10 * 1024 * 1024));
+        return reader.allocRemaining(self.allocator, std.Io.Limit.limited(10 * 1024 * 1024));
     }
 
     /// Send an HTTP endpoint test case:
@@ -294,7 +294,7 @@ pub const MockClient = struct {
         // Read response body
         var transfer_buf: [4096]u8 = undefined;
         const reader = response.reader(&transfer_buf);
-        const response_body = try reader.allocRemaining(self.allocator, std.io.Limit.limited(1024 * 1024));
+        const response_body = try reader.allocRemaining(self.allocator, std.Io.Limit.limited(1024 * 1024));
 
         return response_body;
     }

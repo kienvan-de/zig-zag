@@ -42,7 +42,9 @@
 //! ```
 
 const std = @import("std");
+const time = @import("../time.zig");
 const Allocator = std.mem.Allocator;
+const net = @import("../net.zig");
 const log = @import("../log.zig");
 
 // ============================================================================
@@ -124,22 +126,21 @@ pub fn waitForCallback(allocator: Allocator, config: CallbackConfig) !CallbackRe
     log.info("Starting callback server on port {d}, path: {s}", .{ config.port, config.path });
 
     // Create server address and listen
-    const address = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, config.port);
-    var server = try address.listen(.{
+    var server = net.TcpServer.listen("127.0.0.1", config.port, .{
         .reuse_address = true,
-    });
+    }) catch return error.ServerError;
     errdefer server.deinit();
 
     // Calculate timeout
     const timeout_ns: i128 = @as(i128, config.timeout_ms) * std.time.ns_per_ms;
-    const deadline = std.time.nanoTimestamp() + timeout_ns;
+    const deadline = time.nanoTimestamp() + timeout_ns;
 
     log.info("Waiting for OAuth callback (timeout: {d}ms)...", .{config.timeout_ms});
 
     // Accept loop with timeout
     while (true) {
         // Check timeout
-        if (std.time.nanoTimestamp() > deadline) {
+        if (time.nanoTimestamp() > deadline) {
             log.err("Callback server timed out after {d}ms", .{config.timeout_ms});
             server.deinit();
             return error.Timeout;
@@ -148,7 +149,7 @@ pub fn waitForCallback(allocator: Allocator, config: CallbackConfig) !CallbackRe
         // Try to accept connection (non-blocking would be better, but this works)
         const conn = server.accept() catch |err| {
             if (err == error.WouldBlock) {
-                std.Thread.sleep(100 * std.time.ns_per_ms);
+                time.sleep(100 * std.time.ns_per_ms);
                 continue;
             }
             log.err("Server accept error: {}", .{err});
@@ -157,8 +158,8 @@ pub fn waitForCallback(allocator: Allocator, config: CallbackConfig) !CallbackRe
         };
 
         // Handle the connection
-        const result = handleConnection(allocator, conn.stream, config);
-        conn.stream.close();
+        const result = handleConnection(allocator, conn, config);
+        conn.close();
 
         if (result) |callback_result| {
             server.deinit();
@@ -179,18 +180,31 @@ pub fn waitForCallback(allocator: Allocator, config: CallbackConfig) !CallbackRe
 pub fn openBrowser(url: []const u8) !void {
     log.info("Opening browser: {s}", .{url});
 
-    // Use platform-specific command
-    const result = std.process.Child.run(.{
-        .allocator = std.heap.page_allocator,
+    // Use platform-specific command (fire and forget)
+    const io = time.io();
+    var child = std.process.spawn(io, .{
         .argv = &[_][]const u8{ "open", url },
     }) catch {
         log.err("Failed to open browser", .{});
         return error.BrowserOpenFailed;
     };
 
-    if (result.term.Exited != 0) {
-        log.err("Browser open command failed with code: {d}", .{result.term.Exited});
+    const result = child.wait(io) catch {
+        log.err("Failed to wait for browser open command", .{});
         return error.BrowserOpenFailed;
+    };
+
+    switch (result) {
+        .exited => |code| {
+            if (code != 0) {
+                log.err("Browser open command failed with code: {d}", .{code});
+                return error.BrowserOpenFailed;
+            }
+        },
+        else => {
+            log.err("Browser open command terminated abnormally", .{});
+            return error.BrowserOpenFailed;
+        },
     }
 }
 
@@ -201,7 +215,7 @@ pub fn openBrowser(url: []const u8) !void {
 /// Handle incoming HTTP connection
 fn handleConnection(
     allocator: Allocator,
-    stream: std.net.Stream,
+    stream: net.Connection,
     config: CallbackConfig,
 ) !CallbackResult {
     // Read HTTP request (simple parsing - just need the first line)
@@ -290,7 +304,7 @@ fn handleConnection(
 }
 
 /// Send HTTP response (raw)
-fn sendResponseRaw(stream: std.net.Stream, status: []const u8, body: []const u8) !void {
+fn sendResponseRaw(stream: net.Connection, status: []const u8, body: []const u8) !void {
     var response_buf: [8192]u8 = undefined;
     const response = std.fmt.bufPrint(&response_buf, "HTTP/1.1 {s}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n{s}", .{ status, body.len, body }) catch {
         log.err("Failed to format response", .{});
@@ -304,7 +318,7 @@ fn sendResponseRaw(stream: std.net.Stream, status: []const u8, body: []const u8)
 }
 
 /// Send error response with HTML (raw)
-fn sendErrorResponseRaw(stream: std.net.Stream, message: []const u8) !void {
+fn sendErrorResponseRaw(stream: net.Connection, message: []const u8) !void {
     // Build error HTML manually to avoid format string issues
     var html_buf: [4096]u8 = undefined;
     const prefix =
@@ -327,13 +341,20 @@ fn sendErrorResponseRaw(stream: std.net.Stream, message: []const u8) !void {
         \\</html>
     ;
 
-    var fbs = std.io.fixedBufferStream(&html_buf);
-    const writer = fbs.writer();
-    writer.writeAll(prefix) catch return sendResponseRaw(stream, "400 Bad Request", "Error");
-    writer.writeAll(message) catch return sendResponseRaw(stream, "400 Bad Request", "Error");
-    writer.writeAll(suffix) catch return sendResponseRaw(stream, "400 Bad Request", "Error");
+    // Build error HTML by concatenating prefix + message + suffix into buffer
+    var end: usize = 0;
+    if (prefix.len + message.len + suffix.len <= html_buf.len) {
+        @memcpy(html_buf[end..][0..prefix.len], prefix);
+        end += prefix.len;
+        @memcpy(html_buf[end..][0..message.len], message);
+        end += message.len;
+        @memcpy(html_buf[end..][0..suffix.len], suffix);
+        end += suffix.len;
+    } else {
+        return sendResponseRaw(stream, "400 Bad Request", "Error");
+    }
 
-    try sendResponseRaw(stream, "400 Bad Request", fbs.getWritten());
+    try sendResponseRaw(stream, "400 Bad Request", html_buf[0..end]);
 }
 
 // ============================================================================

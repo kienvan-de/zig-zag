@@ -24,6 +24,8 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const fs = @import("fs.zig");
+const time = @import("time.zig");
 const log = @import("log.zig");
 
 /// Curl client errors — defined in errors.zig
@@ -135,7 +137,7 @@ pub const CurlClient = struct {
         // -S: show errors
         // -w '\n%{http_code}': append status code after body
         // -X: method
-        var args = std.ArrayList([]const u8){};
+        var args = std.ArrayList([]const u8).empty;
         defer args.deinit(self.allocator);
 
         // Base arguments
@@ -150,7 +152,7 @@ pub const CurlClient = struct {
         }) catch return error.OutOfMemory;
 
         // Add headers from extra_headers
-        var header_strings = std.ArrayList([]const u8){};
+        var header_strings = std.ArrayList([]const u8).empty;
         defer {
             for (header_strings.items) |s| self.allocator.free(s);
             header_strings.deinit(self.allocator);
@@ -176,33 +178,34 @@ pub const CurlClient = struct {
         log.debug("curl: {s} {s}", .{ method, url });
 
         // Execute curl
-        var child = std.process.Child.init(args.items, self.allocator);
-        child.stdout_behavior = .Pipe;
-        child.stderr_behavior = .Pipe;
-
-        child.spawn() catch |err| {
+        const io = time.io();
+        var child = std.process.spawn(io, .{
+            .argv = args.items,
+            .stdout = .pipe,
+            .stderr = .pipe,
+        }) catch |err| {
             log.err("Failed to spawn curl: {}", .{err});
             return error.CurlNotFound;
         };
 
         // Read output
-        const output = child.stdout.?.readToEndAlloc(self.allocator, 10 * 1024 * 1024) catch |err| {
+        const output = if (child.stdout) |f| fs.readFdAlloc(self.allocator, f.handle, 10 * 1024 * 1024) catch |err| {
             log.err("Failed to read curl output: {}", .{err});
-            _ = child.wait() catch {};
+            _ = child.wait(io) catch {};
             return error.CurlFailed;
-        };
-        errdefer self.allocator.free(output);
+        } else null;
+        errdefer if (output) |o| self.allocator.free(o);
 
-        const stderr_output = child.stderr.?.readToEndAlloc(self.allocator, 64 * 1024) catch null;
+        const stderr_output = if (child.stderr) |f| fs.readFdAlloc(self.allocator, f.handle, 64 * 1024) catch null else null;
         defer if (stderr_output) |s| self.allocator.free(s);
 
-        const result = child.wait() catch |err| {
+        const result = child.wait(io) catch |err| {
             log.err("Failed to wait for curl: {}", .{err});
             return error.CurlFailed;
         };
 
         switch (result) {
-            .Exited => |code| {
+            .exited => |code| {
                 if (code != 0) {
                     log.err("curl failed with exit code {}: {s}", .{ code, stderr_output orelse "(no stderr)" });
                     return error.CurlFailed;
@@ -216,13 +219,14 @@ pub const CurlClient = struct {
 
         // Parse output: body + newline + status_code
         // Find last newline which separates body from status code
-        const last_newline = std.mem.lastIndexOf(u8, output, "\n") orelse {
+        const output_data = output orelse return error.CurlFailed;
+        const last_newline = std.mem.lastIndexOf(u8, output_data, "\n") orelse {
             log.err("Invalid curl output format (no newline)", .{});
             return error.CurlFailed;
         };
 
-        const body_part = output[0..last_newline];
-        const status_str = output[last_newline + 1 ..];
+        const body_part = output_data[0..last_newline];
+        const status_str = output_data[last_newline + 1 ..];
 
         const status_code = std.fmt.parseInt(u10, status_str, 10) catch {
             log.err("Invalid curl status code: {s}", .{status_str});
@@ -231,7 +235,7 @@ pub const CurlClient = struct {
 
         // Duplicate body since we need to free the full output
         const body_copy = self.allocator.dupe(u8, body_part) catch return error.OutOfMemory;
-        self.allocator.free(output);
+        self.allocator.free(output_data);
 
         return CurlResponse{
             .allocator = self.allocator,

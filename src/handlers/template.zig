@@ -21,6 +21,7 @@
 //!   /v1/html/<unknown>    => 404
 
 const std = @import("std");
+const net = @import("zag-core").net;
 const core = @import("zag-core");
 const log = core.log;
 const http = @import("../http.zig");
@@ -30,7 +31,7 @@ const HTML_PREFIX = "/v1/html/";
 
 pub fn handle(
     allocator: std.mem.Allocator,
-    connection: std.net.Server.Connection,
+    connection: net.Connection,
     method: []const u8,
     path: []const u8,
     body: []const u8,
@@ -68,7 +69,7 @@ pub fn handle(
 
 /// Serve device_flow.html with {{USER_CODE}} and {{VERIFICATION_URI}} replaced
 /// from query parameters: ?user_code=XXXX&verification_uri=https://...
-fn handleDeviceFlow(allocator: std.mem.Allocator, connection: std.net.Server.Connection, query_string: []const u8) !void {
+fn handleDeviceFlow(allocator: std.mem.Allocator, connection: net.Connection, query_string: []const u8) !void {
     var user_code: []const u8 = "";
     var verification_uri: []const u8 = "";
 
@@ -103,7 +104,7 @@ fn handleDeviceFlow(allocator: std.mem.Allocator, connection: std.net.Server.Con
 
 /// Simple percent-decoding for URL query values
 fn urlDecode(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
-    var result = std.ArrayList(u8){};
+    var result = std.ArrayList(u8).empty;
     try result.ensureTotalCapacity(allocator, input.len);
     errdefer result.deinit(allocator);
 
@@ -136,7 +137,7 @@ fn hexVal(c: u8) ?u8 {
     return null;
 }
 
-fn sendHtml(allocator: std.mem.Allocator, connection: std.net.Server.Connection, content: []const u8) !void {
+fn sendHtml(allocator: std.mem.Allocator, connection: net.Connection, content: []const u8) !void {
     const header = try std.fmt.allocPrint(
         allocator,
         "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n",
@@ -144,6 +145,6 @@ fn sendHtml(allocator: std.mem.Allocator, connection: std.net.Server.Connection,
     );
     defer allocator.free(header);
 
-    _ = try connection.stream.writeAll(header);
-    _ = try connection.stream.writeAll(content);
+    _ = try connection.writeAll(header);
+    _ = try connection.writeAll(content);
 }

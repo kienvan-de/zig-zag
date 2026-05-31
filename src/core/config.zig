@@ -13,6 +13,8 @@
 // limitations under the License.
 
 const std = @import("std");
+const fs = @import("fs.zig");
+const time = @import("time.zig");
 const Allocator = std.mem.Allocator;
 const provider_mod = @import("provider.zig");
 const log_mod = @import("log.zig");
@@ -28,7 +30,7 @@ const HaiClient = @import("providers/hai/client.zig").HaiClient;
 // ============================================================================
 
 var global_config: ?*const Config = null;
-var config_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+var config_path_buf: [fs.max_path_bytes]u8 = undefined;
 var config_path_len: usize = 0;
 
 /// Set the global config singleton reference and store the config file path.
@@ -343,7 +345,7 @@ pub const ConfigError = @import("errors.zig").ConfigError;
 pub fn readRaw(allocator: std.mem.Allocator) ![]const u8 {
     const config_path = getPath();
 
-    const file = std.fs.cwd().openFile(config_path, .{}) catch |err| {
+    const file = fs.cwd().openFile(config_path, .{}) catch |err| {
         log_mod.err("readRaw: failed to open config file: {s}", .{config_path});
         return err;
     };
@@ -371,21 +373,21 @@ pub fn writeRaw(allocator: std.mem.Allocator, json: []const u8) !void {
     const config_path = getPath();
 
     // Build .tmp path
-    var tmp_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var tmp_buf: [fs.max_path_bytes]u8 = undefined;
     const tmp_path = try std.fmt.bufPrint(&tmp_buf, "{s}.tmp", .{config_path});
 
     // Write to .tmp
-    const tmp_file = std.fs.cwd().createFile(tmp_path, .{ .truncate = true }) catch |err| {
+    const tmp_file = fs.cwd().createFile(tmp_path, .{ .truncate = true }) catch |err| {
         log_mod.err("writeRaw: failed to create tmp file: {s}", .{tmp_path});
         return err;
     };
-    errdefer std.fs.cwd().deleteFile(tmp_path) catch {};
+    errdefer fs.cwd().deleteFile(tmp_path) catch {};
 
     try tmp_file.writeAll(json);
     tmp_file.close();
 
     // Atomic rename .tmp → config file
-    std.fs.cwd().rename(tmp_path, config_path) catch |err| {
+    fs.cwd().rename(tmp_path, config_path) catch |err| {
         log_mod.err("writeRaw: failed to rename {s} → {s}", .{ tmp_path, config_path });
         return err;
     };
@@ -583,7 +585,7 @@ fn deviceFlowPollTask(ctx: *anyopaque) void {
     const args = args_ptr.*;
     defer std.heap.page_allocator.destroy(args_ptr);
 
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const thread_allocator = gpa.allocator();
 
@@ -711,7 +713,7 @@ fn initiateHaiAuth(allocator: Allocator, cfg: *const Config, provider_name: []co
         // Another thread is already running browserAuthFlow — wait for it
         log_mod.info("[auth/hai] auth already in progress, waiting...", .{});
         while (hai_auth_in_progress.load(.acquire)) {
-            std.Thread.sleep(100 * std.time.ns_per_ms);
+            time.sleep(100 * std.time.ns_per_ms);
         }
         // The other thread finished — check if it succeeded by verifying cache
         var check_client = HaiClient.init(allocator, provider_config) catch {

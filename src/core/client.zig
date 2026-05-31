@@ -13,6 +13,7 @@
 // limitations under the License.
 
 const std = @import("std");
+const time = @import("time.zig");
 const log = @import("log.zig");
 
 /// Allocate a decompression buffer sized for the given content encoding.
@@ -63,7 +64,7 @@ pub const SSEIterator = struct {
             .done = false,
             .delimiter = delimiter,
             .allocator = allocator,
-            .line_buffer = std.ArrayList(u8){},
+            .line_buffer = std.ArrayList(u8).empty,
         };
     }
 
@@ -184,7 +185,7 @@ pub const HttpClient = struct {
     pub fn init(allocator: std.mem.Allocator) HttpClient {
         return .{
             .allocator = allocator,
-            .client = std.http.Client{ .allocator = allocator },
+            .client = std.http.Client{ .allocator = allocator, .io = time.io() },
             .timeout_ms = DEFAULT_TIMEOUT_MS,
             .max_response_size = DEFAULT_MAX_RESPONSE_SIZE,
             .delimiter = DEFAULT_DELIMITER,
@@ -199,7 +200,7 @@ pub const HttpClient = struct {
     ) HttpClient {
         return .{
             .allocator = allocator,
-            .client = std.http.Client{ .allocator = allocator },
+            .client = std.http.Client{ .allocator = allocator, .io = time.io() },
             .timeout_ms = timeout_ms,
             .max_response_size = max_response_size,
             .delimiter = delimiter orelse DEFAULT_DELIMITER,
@@ -246,7 +247,7 @@ pub const HttpClient = struct {
         log.debug("HTTP GET: request created successfully", .{});
 
         if (req.connection) |conn| {
-            setSocketTimeout(conn.stream_reader.getStream().handle, self.timeout_ms);
+            setSocketTimeout(conn.stream_reader.stream.socket.handle, self.timeout_ms);
         }
 
         log.debug("HTTP GET: sending request...", .{});
@@ -268,7 +269,7 @@ pub const HttpClient = struct {
         const decompress_buf = try decompressBuffer(self.allocator, response.head.content_encoding);
         defer self.allocator.free(decompress_buf);
         const reader = response.readerDecompressing(&transfer_buf, &decompress, decompress_buf);
-        const body = try reader.allocRemaining(self.allocator, std.io.Limit.limited(self.max_response_size));
+        const body = try reader.allocRemaining(self.allocator, std.Io.Limit.limited(self.max_response_size));
 
         return .{
             .status = response.head.status,
@@ -335,7 +336,7 @@ pub const HttpClient = struct {
 
         // Apply socket timeout
         if (req.connection) |conn| {
-            setSocketTimeout(conn.stream_reader.getStream().handle, self.timeout_ms);
+            setSocketTimeout(conn.stream_reader.stream.socket.handle, self.timeout_ms);
         }
 
         // Set content length and send
@@ -374,7 +375,7 @@ pub const HttpClient = struct {
         const decompress_buf = try decompressBuffer(self.allocator, response.head.content_encoding);
         defer self.allocator.free(decompress_buf);
         const reader = response.readerDecompressing(&transfer_buf, &decompress, decompress_buf);
-        const body = try reader.allocRemaining(self.allocator, std.io.Limit.limited(self.max_response_size));
+        const body = try reader.allocRemaining(self.allocator, std.Io.Limit.limited(self.max_response_size));
 
         return .{
             .status = response.head.status,
@@ -416,10 +417,10 @@ pub const HttpClient = struct {
         json_body: anytype,
     ) !std.json.Parsed(T) {
         // Serialize request to JSON
-        var request_body = std.ArrayList(u8){};
+        var request_body = std.ArrayList(u8).empty;
         defer request_body.deinit(self.allocator);
 
-        try request_body.writer(self.allocator).print("{f}", .{std.json.fmt(json_body, .{ .emit_null_optional_fields = false })});
+        try request_body.print(self.allocator, "{f}", .{std.json.fmt(json_body, .{ .emit_null_optional_fields = false })});
 
         const uri = try std.Uri.parse(url);
 
@@ -430,7 +431,7 @@ pub const HttpClient = struct {
 
         // Apply socket timeout
         if (req.connection) |conn| {
-            setSocketTimeout(conn.stream_reader.getStream().handle, self.timeout_ms);
+            setSocketTimeout(conn.stream_reader.stream.socket.handle, self.timeout_ms);
         }
 
         // Set content length and send
@@ -457,7 +458,7 @@ pub const HttpClient = struct {
         defer self.allocator.free(decompress_buf);
         const reader = response.readerDecompressing(&transfer_buf, &decompress, decompress_buf);
 
-        const response_body = try reader.allocRemaining(self.allocator, std.io.Limit.limited(self.max_response_size));
+        const response_body = try reader.allocRemaining(self.allocator, std.Io.Limit.limited(self.max_response_size));
         defer self.allocator.free(response_body);
 
         // Parse response JSON
@@ -483,10 +484,10 @@ pub const HttpClient = struct {
         json_body: anytype,
     ) !*StreamingResult(Iterator) {
         // Serialize request to JSON
-        var request_body = std.ArrayList(u8){};
+        var request_body = std.ArrayList(u8).empty;
         defer request_body.deinit(self.allocator);
 
-        try request_body.writer(self.allocator).print("{f}", .{std.json.fmt(json_body, .{ .emit_null_optional_fields = false })});
+        try request_body.print(self.allocator, "{f}", .{std.json.fmt(json_body, .{ .emit_null_optional_fields = false })});
 
         const uri = try std.Uri.parse(url);
 
@@ -497,7 +498,7 @@ pub const HttpClient = struct {
 
         // Apply socket timeout
         if (req.connection) |conn| {
-            setSocketTimeout(conn.stream_reader.getStream().handle, self.timeout_ms);
+            setSocketTimeout(conn.stream_reader.stream.socket.handle, self.timeout_ms);
         }
 
         // Set content length and send

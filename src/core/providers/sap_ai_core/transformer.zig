@@ -281,6 +281,34 @@ pub fn transformErrorResponse(sap_error: SapAiCore.ErrorDetails) OpenAI.ErrorRes
     };
 }
 
+/// Same as transformErrorResponse but uses a pre-duplicated message (avoids use-after-free)
+fn transformErrorResponseDuped(sap_error: SapAiCore.ErrorDetails, duped_message: []const u8) OpenAI.ErrorResponse {
+    const code: ?[]const u8 = if (sap_error.code) |c| switch (c) {
+        400 => "bad_request",
+        401 => "invalid_api_key",
+        403 => "forbidden",
+        404 => "not_found",
+        429 => "rate_limit_exceeded",
+        500 => "server_error",
+        503 => "service_unavailable",
+        else => "unknown_error",
+    } else null;
+
+    const error_type: []const u8 = if (sap_error.code) |c|
+        if (c >= 400 and c < 500) "invalid_request_error" else "server_error"
+    else
+        "server_error";
+
+    return OpenAI.ErrorResponse{
+        .@"error" = OpenAI.ErrorDetails{
+            .message = duped_message,
+            .type = error_type,
+            .param = null,
+            .code = code,
+        },
+    };
+}
+
 /// Try to parse JSON as SAP AI Core error response
 fn tryParseError(json_part: []const u8, allocator: std.mem.Allocator) ?OpenAI.ErrorResponse {
     const parsed = std.json.parseFromSlice(
@@ -291,7 +319,11 @@ fn tryParseError(json_part: []const u8, allocator: std.mem.Allocator) ?OpenAI.Er
     ) catch return null;
     defer parsed.deinit();
 
-    return transformErrorResponse(parsed.value.@"error");
+    // Must dupe the message since parsed memory is freed by defer above
+    const msg = parsed.value.@"error".message orelse "Unknown error from SAP AI Core";
+    const duped_msg = allocator.dupe(u8, msg) catch return null;
+
+    return transformErrorResponseDuped(parsed.value.@"error", duped_msg);
 }
 
 /// Transform a single SSE line for streaming responses
@@ -347,8 +379,8 @@ pub fn transformStreamLine(
     };
 
     // Serialize to JSON
-    var buffer = std.ArrayList(u8){};
-    buffer.writer(allocator).print("{f}", .{std.json.fmt(openai_chunk, .{})}) catch return .{ .skip = {} };
+    var buffer = std.ArrayList(u8).empty;
+    buffer.print(allocator, "{f}", .{std.json.fmt(openai_chunk, .{})}) catch return .{ .skip = {} };
     defer buffer.deinit(allocator);
 
     // Parse back to get Parsed that owns the data
@@ -481,8 +513,8 @@ pub fn transformStreamLineToAnthropic(
 
             // Step 2: Re-serialize the OpenAI chunk as a "data: {...}" line
             // and feed it through the OpenAI→Anthropic transformer
-            var buf = std.ArrayList(u8){};
-            buf.writer(allocator).print("data: {f}", .{std.json.fmt(chunk.value, .{})}) catch return .{ .skip = {} };
+            var buf = std.ArrayList(u8).empty;
+            buf.print(allocator, "data: {f}", .{std.json.fmt(chunk.value, .{})}) catch return .{ .skip = {} };
             defer buf.deinit(allocator);
 
             return openai_transformer.transformStreamLineToAnthropic(buf.items, &state.inner, allocator);

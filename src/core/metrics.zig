@@ -25,7 +25,10 @@
 //! with atomic u64 operations.
 
 const std = @import("std");
+const fs = @import("fs.zig");
+const time = @import("time.zig");
 const builtin = @import("builtin");
+const env = @import("env.zig");
 const log = @import("log.zig");
 
 // ============================================================================
@@ -137,7 +140,7 @@ pub fn reset() void {
 ///
 /// Network I/O counters are **not** affected.
 ///
-/// After resetting, `period_start` is updated to `std.time.timestamp()` (seconds since
+/// After resetting, `period_start` is updated to `time.timestamp()` (seconds since
 /// epoch) so the next budget window begins immediately. The new values are subsequently
 /// written to disk by `persist()`.
 pub fn resetCosts() void {
@@ -145,7 +148,7 @@ pub fn resetCosts() void {
     output_tokens.store(0, .monotonic);
     input_cost_micros.store(0, .monotonic);
     output_cost_micros.store(0, .monotonic);
-    period_start.store(std.time.timestamp(), .monotonic);
+    period_start.store(time.timestamp(), .monotonic);
 }
 
 /// Return the budget period start timestamp as seconds since the Unix epoch.
@@ -232,7 +235,7 @@ fn getProcessStats() struct { rss_bytes: u64, cpu_time_us: u64 } {
         var basic_count: c.mach_msg_type_number_t = @sizeOf(MachTaskBasicInfo) / @sizeOf(u32);
         const basic_result = c.task_info(
             c.mach_task_self(),
-            c.MACH_TASK_BASIC_INFO,
+            c.MACH.TASK.BASIC.INFO,
             @ptrCast(&basic_info),
             &basic_count,
         );
@@ -246,7 +249,7 @@ fn getProcessStats() struct { rss_bytes: u64, cpu_time_us: u64 } {
     } else if (builtin.os.tag == .linux) {
         // Linux: Read /proc/self/statm for RSS
         var rss_bytes: u64 = 0;
-        if (std.fs.openFileAbsolute("/proc/self/statm", .{})) |file| {
+        if (fs.openFileAbsolute("/proc/self/statm", .{})) |file| {
             defer file.close();
             var buf: [128]u8 = undefined;
             if (file.read(&buf)) |bytes_read| {
@@ -365,7 +368,7 @@ const PersistedMetrics = struct {
 
 /// Get the metrics file path: ~/.config/zig-zag/metrics.json
 fn getMetricsPath(buf: []u8) ?[]const u8 {
-    const home = std.posix.getenv("HOME") orelse return null;
+    const home = env.get("HOME") orelse return null;
     return std.fmt.bufPrint(buf, "{s}/.config/zig-zag/{s}", .{ home, METRICS_FILENAME }) catch null;
 }
 
@@ -382,10 +385,10 @@ fn getMetricsPath(buf: []u8) ?[]const u8 {
 /// Network I/O counters (`network_rx_bytes`, `network_tx_bytes`) are **not**
 /// persisted and always start at zero on each process launch.
 pub fn load() void {
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var path_buf: [fs.max_path_bytes]u8 = undefined;
     const path = getMetricsPath(&path_buf) orelse return;
 
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+    const file = fs.cwd().openFile(path, .{}) catch |err| {
         switch (err) {
             error.FileNotFound => log.debug("No persisted metrics file, starting fresh", .{}),
             else => log.warn("Failed to open metrics file: {}", .{err}),
@@ -439,7 +442,7 @@ pub fn load() void {
 /// and the function returns silently — the next successful call will capture the
 /// latest values.
 pub fn persist() void {
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var path_buf: [fs.max_path_bytes]u8 = undefined;
     const path = getMetricsPath(&path_buf) orelse return;
 
     const data = PersistedMetrics{
@@ -451,33 +454,33 @@ pub fn persist() void {
     };
 
     var buf: [4096]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
-    fbs.writer().print("{f}", .{std.json.fmt(data, .{ .whitespace = .indent_2 })}) catch |err| {
+    var w: std.Io.Writer = .fixed(&buf);
+    std.json.Stringify.value(data, .{ .whitespace = .indent_2 }, &w) catch |err| {
         log.warn("Failed to serialize metrics: {}", .{err});
         return;
     };
-    const json_bytes = fbs.getWritten();
+    const json_bytes = buf[0..w.end];
 
     // Atomic write: write to temp file then rename
-    var tmp_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var tmp_path_buf: [fs.max_path_bytes]u8 = undefined;
     const tmp_path = std.fmt.bufPrint(&tmp_path_buf, "{s}.tmp", .{path}) catch return;
 
-    const file = std.fs.cwd().createFile(tmp_path, .{}) catch |err| {
+    const file = fs.cwd().createFile(tmp_path, .{}) catch |err| {
         log.warn("Failed to create metrics temp file: {}", .{err});
         return;
     };
 
     file.writeAll(json_bytes) catch |err| {
         file.close();
-        std.fs.cwd().deleteFile(tmp_path) catch {};
+        fs.cwd().deleteFile(tmp_path) catch {};
         log.warn("Failed to write metrics temp file: {}", .{err});
         return;
     };
     file.close();
 
-    std.fs.cwd().rename(tmp_path, path) catch |err| {
+    fs.cwd().rename(tmp_path, path) catch |err| {
         log.warn("Failed to rename metrics temp file: {}", .{err});
-        std.fs.cwd().deleteFile(tmp_path) catch {};
+        fs.cwd().deleteFile(tmp_path) catch {};
         return;
     };
 }

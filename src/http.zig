@@ -14,6 +14,7 @@
 
 const std = @import("std");
 const metrics = @import("zag-core").metrics;
+const net = @import("zag-core").net;
 
 /// Send SSE (Server-Sent Events) headers to initiate a streaming response.
 ///
@@ -31,7 +32,7 @@ const metrics = @import("zag-core").metrics;
 /// `ChunkedWriter`).
 ///
 /// Network TX metrics are updated with the header bytes written.
-pub fn sendSseHeaders(connection: std.net.Server.Connection) !void {
+pub fn sendSseHeaders(connection: net.Connection) !void {
     const headers =
         "HTTP/1.1 200 OK\r\n" ++
         "Content-Type: text/event-stream\r\n" ++
@@ -39,7 +40,7 @@ pub fn sendSseHeaders(connection: std.net.Server.Connection) !void {
         "Connection: keep-alive\r\n" ++
         "Transfer-Encoding: chunked\r\n" ++
         "\r\n";
-    _ = try connection.stream.writeAll(headers);
+    _ = try connection.writeAll(headers);
     metrics.addNetworkTx(headers.len);
 }
 
@@ -61,12 +62,12 @@ pub fn sendSseHeaders(connection: std.net.Server.Connection) !void {
 /// integrating with `std.io.Writer`-based APIs.
 ///
 /// Network TX metrics are updated with all bytes written (size line + data + trailing CRLF).
-pub fn sendSseChunk(connection: std.net.Server.Connection, data: []const u8) !void {
+pub fn sendSseChunk(connection: net.Connection, data: []const u8) !void {
     var size_buf: [16]u8 = undefined;
     const size_str = std.fmt.bufPrint(&size_buf, "{x}\r\n", .{data.len}) catch unreachable;
-    _ = try connection.stream.writeAll(size_str);
-    _ = try connection.stream.writeAll(data);
-    _ = try connection.stream.writeAll("\r\n");
+    _ = try connection.writeAll(size_str);
+    _ = try connection.writeAll(data);
+    _ = try connection.writeAll("\r\n");
     metrics.addNetworkTx(size_str.len + data.len + 2);
 }
 
@@ -81,9 +82,9 @@ pub fn sendSseChunk(connection: std.net.Server.Connection, data: []const u8) !vo
 /// more data.
 ///
 /// Network TX metrics are updated with the terminator bytes.
-pub fn sendSseEnd(connection: std.net.Server.Connection) !void {
+pub fn sendSseEnd(connection: net.Connection) !void {
     const terminator = "0\r\n\r\n";
-    _ = try connection.stream.writeAll(terminator);
+    _ = try connection.writeAll(terminator);
     metrics.addNetworkTx(terminator.len);
 }
 
@@ -100,7 +101,7 @@ pub fn sendSseEnd(connection: std.net.Server.Connection) !void {
 /// in a streaming context.
 ///
 /// Use `sendSseDone` to emit the final `data: [DONE]\n\n` sentinel event.
-pub fn sendSseEvent(connection: std.net.Server.Connection, data: []const u8) !void {
+pub fn sendSseEvent(connection: net.Connection, data: []const u8) !void {
     var buf: [8192]u8 = undefined;
     const event = std.fmt.bufPrint(&buf, "data: {s}\n\n", .{data}) catch return;
     try sendSseChunk(connection, event);
@@ -113,7 +114,7 @@ pub fn sendSseEvent(connection: std.net.Server.Connection, data: []const u8) !vo
 ///
 /// **Call order**: Send this *after* the last real data event and *before*
 /// `sendSseEnd` (which closes the HTTP chunked encoding).
-pub fn sendSseDone(connection: std.net.Server.Connection) !void {
+pub fn sendSseDone(connection: net.Connection) !void {
     try sendSseChunk(connection, "data: [DONE]\n\n");
 }
 
@@ -140,7 +141,7 @@ pub fn sendSseDone(connection: std.net.Server.Connection) !void {
 ///
 /// Network TX metrics are updated with all bytes written (headers + body).
 pub fn sendJsonResponse(
-    connection: std.net.Server.Connection,
+    connection: net.Connection,
     status: std.http.Status,
     json_body: []const u8,
 ) !void {
@@ -161,8 +162,8 @@ pub fn sendJsonResponse(
         .{ status_line, json_body.len },
     );
 
-    _ = try connection.stream.writeAll(headers);
-    _ = try connection.stream.writeAll(json_body);
+    _ = try connection.writeAll(headers);
+    _ = try connection.writeAll(json_body);
     metrics.addNetworkTx(headers.len + json_body.len);
 }
 
@@ -174,7 +175,7 @@ pub fn sendJsonResponse(
 ///
 /// Convenience helper that sends `{"error":"Not Found"}` with a 404 status.
 /// Typically used by the router when no handler matches the request path.
-pub fn sendNotFound(connection: std.net.Server.Connection) !void {
+pub fn sendNotFound(connection: net.Connection) !void {
     try sendJsonResponse(connection, .not_found, "{\"error\":\"Not Found\"}");
 }
 
@@ -183,7 +184,7 @@ pub fn sendNotFound(connection: std.net.Server.Connection) !void {
 /// Convenience helper that sends `{"error":"Internal Server Error"}` with a
 /// 500 status. Used as a catch-all when an unexpected error occurs during
 /// request handling.
-pub fn sendInternalError(connection: std.net.Server.Connection) !void {
+pub fn sendInternalError(connection: net.Connection) !void {
     try sendJsonResponse(connection, .internal_server_error, "{\"error\":\"Internal Server Error\"}");
 }
 
@@ -191,7 +192,7 @@ pub fn sendInternalError(connection: std.net.Server.Connection) !void {
 // ChunkedWriter — wraps a stream to add HTTP chunked transfer encoding
 // ============================================================================
 
-/// A writer adapter that wraps a raw `std.net.Stream` with HTTP/1.1 chunked
+/// A writer adapter that wraps a raw `net.Connection` with HTTP/1.1 chunked
 /// transfer encoding (RFC 7230 §4.1).
 ///
 /// **Purpose**: Allows any code that accepts a `std.io.GenericWriter` (e.g.
@@ -213,10 +214,10 @@ pub fn sendInternalError(connection: std.net.Server.Connection) !void {
 /// Network TX metrics are tracked automatically for every chunk and the
 /// terminating frame.
 pub const ChunkedWriter = struct {
-    stream: std.net.Stream,
+    stream: net.Connection,
 
     /// Create a new `ChunkedWriter` wrapping the given TCP stream.
-    pub fn init(stream: std.net.Stream) ChunkedWriter {
+    pub fn init(stream: net.Connection) ChunkedWriter {
         return .{ .stream = stream };
     }
 
@@ -237,13 +238,10 @@ pub const ChunkedWriter = struct {
         return data.len;
     }
 
-    /// Return a `std.io.GenericWriter` backed by this chunked writer.
-    ///
-    /// The returned writer can be passed to any API that accepts a generic
-    /// writer (e.g. `std.json.stringify`, `std.fmt.format`). Each `write`
-    /// call on the returned writer produces one HTTP chunked frame.
-    pub fn writer(self: *ChunkedWriter) std.io.GenericWriter(*ChunkedWriter, anyerror, write) {
-        return .{ .context = self };
+    /// Write all bytes as a single chunked frame (convenience wrapper).
+    pub fn writeAll(self: *ChunkedWriter, data: []const u8) anyerror!void {
+        if (data.len == 0) return;
+        _ = try self.write(data);
     }
 
     /// Send the zero-length terminating chunk (`0\r\n\r\n`) to finalize the
@@ -256,6 +254,22 @@ pub const ChunkedWriter = struct {
         const terminator = "0\r\n\r\n";
         try self.stream.writeAll(terminator);
         metrics.addNetworkTx(terminator.len);
+    }
+};
+
+// ============================================================================
+// ArrayList Writer Adapter
+// ============================================================================
+
+/// A writer adapter that wraps an `ArrayList(u8)` + allocator and provides
+/// a `.writeAll()` method, suitable for passing as `writer: anytype` to
+/// functions like `chatComplete` / `messagesComplete`.
+pub const ArrayListWriter = struct {
+    list: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+
+    pub fn writeAll(self: *ArrayListWriter, data: []const u8) !void {
+        try self.list.appendSlice(self.allocator, data);
     }
 };
 

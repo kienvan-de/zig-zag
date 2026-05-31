@@ -18,6 +18,7 @@
 //! Handles POST /v1/chat/completions requests.
 
 const std = @import("std");
+const net = @import("zag-core").net;
 const core = @import("zag-core");
 const OpenAI = core.openai_types;
 const errors = core.errors;
@@ -27,7 +28,7 @@ const http = @import("../http.zig");
 /// Handle POST /v1/chat/completions requests
 pub fn handle(
     allocator: std.mem.Allocator,
-    connection: std.net.Server.Connection,
+    connection: net.Connection,
     method: []const u8,
     path: []const u8,
     body: []const u8,
@@ -61,8 +62,8 @@ pub fn handle(
     if (is_streaming) {
         // Streaming: send SSE headers first, then use ChunkedWriter
         try http.sendSseHeaders(connection);
-        var chunked = http.ChunkedWriter.init(connection.stream);
-        core.completion.chatComplete(chunked.writer(), allocator, openai_request.value) catch |err| {
+        var chunked = http.ChunkedWriter.init(connection);
+        core.completion.chatComplete(&chunked, allocator, openai_request.value) catch |err| {
             // For streaming, errors after headers are sent as SSE error events
             try handleStreamingError(&chunked, allocator, err);
         };
@@ -72,9 +73,10 @@ pub fn handle(
         };
     } else {
         // Non-streaming: buffer response, then send as JSON
-        var buf = std.ArrayList(u8){};
+        var buf = std.ArrayList(u8).empty;
         defer buf.deinit(allocator);
-        core.completion.chatComplete(buf.writer(allocator), allocator, openai_request.value) catch |err| {
+        var list_writer = http.ArrayListWriter{ .list = &buf, .allocator = allocator };
+        core.completion.chatComplete(&list_writer, allocator, openai_request.value) catch |err| {
             try handleSyncError(allocator, connection, err);
             return;
         };
@@ -93,16 +95,16 @@ fn handleStreamingError(chunked: *http.ChunkedWriter, allocator: std.mem.Allocat
     ) catch return;
     defer allocator.free(error_json);
 
-    var buffer = std.ArrayList(u8){};
+    var buffer = std.ArrayList(u8).empty;
     defer buffer.deinit(allocator);
-    buffer.writer(allocator).print("data: {s}\n\n", .{error_json}) catch return;
-    chunked.writer().writeAll(buffer.items) catch {};
+    buffer.print(allocator, "data: {s}\n\n", .{error_json}) catch return;
+    chunked.writeAll(buffer.items) catch {};
 }
 
 /// Handle errors during non-streaming (before any response sent)
 fn handleSyncError(
     allocator: std.mem.Allocator,
-    connection: std.net.Server.Connection,
+    connection: net.Connection,
     err: anyerror,
 ) !void {
     const error_json = try errors.createErrorResponse(
