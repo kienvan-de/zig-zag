@@ -536,7 +536,7 @@ pub const CopilotClient = struct {
 
         // x-request-id: random UUIDv4
         var uuid_bytes: [16]u8 = undefined;
-        std.c.arc4random_buf(&uuid_bytes, uuid_bytes.len);
+        time.io().randomSecure(&uuid_bytes) catch {};
         // Set version (4) and variant bits
         uuid_bytes[6] = (uuid_bytes[6] & 0x0f) | 0x40;
         uuid_bytes[8] = (uuid_bytes[8] & 0x3f) | 0x80;
@@ -582,7 +582,7 @@ pub const CopilotClient = struct {
 
         // x-request-id: random UUIDv4
         var uuid_bytes: [16]u8 = undefined;
-        std.c.arc4random_buf(&uuid_bytes, uuid_bytes.len);
+        time.io().randomSecure(&uuid_bytes) catch {};
         uuid_bytes[6] = (uuid_bytes[6] & 0x0f) | 0x40;
         uuid_bytes[8] = (uuid_bytes[8] & 0x3f) | 0x80;
         const request_id = try std.fmt.bufPrint(

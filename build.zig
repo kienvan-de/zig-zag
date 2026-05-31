@@ -36,6 +36,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/core/root.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
     });
     core_module.addOptions("build_options", build_options);
 
@@ -44,6 +45,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/core/root.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
     });
     exported_core.addOptions("build_options", build_options);
 

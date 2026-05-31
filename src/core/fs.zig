@@ -67,11 +67,12 @@ pub const File = struct {
         }
     }
 
-    /// Stat the file to get its size.
+    /// Stat the file to get its size (cross-platform via std.Io.File).
     pub fn stat(self: File) !Stat {
-        var s: std.c.Stat = undefined;
-        if (std.c.fstat(self.fd, &s) < 0) return error.StatFailed;
-        return .{ .size = @intCast(s.size) };
+        const time = @import("time.zig");
+        const io_file = std.Io.File{ .handle = self.fd, .flags = .{ .nonblocking = false } };
+        const s = io_file.stat(time.io()) catch return error.StatFailed;
+        return .{ .size = s.size };
     }
 
     /// Seek to a position relative to the end of the file.

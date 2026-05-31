@@ -24,6 +24,7 @@
 //! 4. Base64URL encode hash (no padding) → code_challenge (43 chars)
 
 const std = @import("std");
+const time = @import("../time.zig");
 const Allocator = std.mem.Allocator;
 const Sha256 = std.crypto.hash.sha2.Sha256;
 const base64url = std.base64.url_safe_no_pad;
@@ -53,7 +54,7 @@ pub const PKCE = struct {
 pub fn generate(allocator: Allocator) !PKCE {
     // Step 1: Generate 32 cryptographically random bytes
     var random_bytes: [32]u8 = undefined;
-    std.c.arc4random_buf(&random_bytes, 32);
+    time.io().randomSecure(&random_bytes) catch {};
 
     // Step 2: Base64URL encode (no padding) → code_verifier
     // 32 bytes → 43 base64url characters
