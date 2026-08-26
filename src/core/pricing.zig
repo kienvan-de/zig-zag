@@ -20,6 +20,7 @@ const builtin = @import("builtin");
 const env = @import("env.zig");
 const log = @import("log.zig");
 const worker_pool = @import("worker_pool.zig");
+const platform = @import("platform.zig");
 
 // ============================================================================
 // Constants
@@ -60,6 +61,9 @@ var provider_tables: std.StringHashMap(PricingTable) = undefined;
 var initialized: bool = false;
 var rwlock: sync.RwLock = .{};
 
+var curl_path: ?[]const u8 = null;
+var tar_path: ?[]const u8 = null;
+
 /// Provider names stored for reload after auto-update
 var stored_provider_names: std.ArrayList([]const u8) = undefined;
 
@@ -82,6 +86,16 @@ pub fn init(allocator: std.mem.Allocator, provider_names: []const []const u8) vo
         };
     }
 
+    // Resolve tool paths eagerly so spawn failures are caught at startup.
+    curl_path = platform.resolveCurl(allocator) catch |err| blk: {
+        log.warn("curl not found ({}); pricing auto-update will be disabled", .{err});
+        break :blk null;
+    };
+    tar_path = platform.resolveTar(allocator) catch |err| blk: {
+        log.warn("tar not found ({}); pricing auto-update will be disabled", .{err});
+        break :blk null;
+    };
+
     // Load tables from local files
     loadAllTables();
 
@@ -102,6 +116,9 @@ pub fn deinit() void {
         alloc.free(name);
     }
     stored_provider_names.deinit(alloc);
+
+    if (curl_path) |p| { alloc.free(p); curl_path = null; }
+    if (tar_path) |p| { alloc.free(p); tar_path = null; }
 
     initialized = false;
 }
@@ -282,9 +299,10 @@ fn autoUpdate() void {
 
 /// Download a URL to a local file path using curl
 fn downloadFile(url: []const u8, dest: []const u8) bool {
+    const curl = curl_path orelse return false;
     const io = time.io();
     var child = std.process.spawn(io, .{
-        .argv = &[_][]const u8{ "curl", "-sL", "--max-time", "30", "-o", dest, url },
+        .argv = &[_][]const u8{ curl, "-sL", "--max-time", "30", "-o", dest, url },
         .stdout = .ignore,
         .stderr = .pipe,
     }) catch |err| {
@@ -308,9 +326,10 @@ fn downloadFile(url: []const u8, dest: []const u8) bool {
 
 /// Extract a single file from a tar.gz archive using tar -xzf <archive> -O <filename>
 fn extractFileFromArchive(archive_path: []const u8, filename: []const u8) ?[]const u8 {
+    const tar = tar_path orelse return null;
     const io = time.io();
     var child = std.process.spawn(io, .{
-        .argv = &[_][]const u8{ "tar", "xzf", archive_path, "-O", filename },
+        .argv = &[_][]const u8{ tar, "xzf", archive_path, "-O", filename },
         .stdout = .pipe,
         .stderr = .ignore,
     }) catch return null;
@@ -339,9 +358,10 @@ fn extractFileFromArchive(archive_path: []const u8, filename: []const u8) ?[]con
 
 /// Extract all files from a tar.gz archive to a directory
 fn extractArchive(archive_path: []const u8, dest_dir: []const u8) bool {
+    const tar = tar_path orelse return false;
     const io = time.io();
     var child = std.process.spawn(io, .{
-        .argv = &[_][]const u8{ "tar", "xzf", archive_path, "-C", dest_dir },
+        .argv = &[_][]const u8{ tar, "xzf", archive_path, "-C", dest_dir },
         .stdout = .ignore,
         .stderr = .pipe,
     }) catch |err| {

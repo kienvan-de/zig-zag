@@ -110,6 +110,10 @@ fn serverThreadFn(s: *State) void {
     // Initialize subsystems in dependency order (same as main.zig).
     // All initialization happens in this thread to avoid blocking UI.
 
+    // Initialize Threaded I/O backend first (uses page_allocator internally)
+    core.time.init(allocator, null);
+    // No defer for deinit() - it's a no-op
+
     // 1. Initialize caches (before config so loadFromFile can cache values)
     app_cache.init(allocator);
     defer app_cache.deinit();
@@ -139,6 +143,22 @@ fn serverThreadFn(s: *State) void {
         state_mutex.unlock();
     }
 
+    // Initialize pricing engine (load cost CSVs for configured providers)
+    // Declare init/deinit BEFORE worker_pool so defer runs AFTER pool shutdown
+    var provider_names_buf: [32][]const u8 = undefined;
+    var provider_name_count: usize = 0;
+    {
+        var piter = cfg.core.providers.keyIterator();
+        while (piter.next()) |key_ptr| {
+            if (provider_name_count < provider_names_buf.len) {
+                provider_names_buf[provider_name_count] = key_ptr.*;
+                provider_name_count += 1;
+            }
+        }
+    }
+    pricing.init(allocator, provider_names_buf[0..provider_name_count]);
+    defer pricing.deinit();
+
     // 3. Initialize worker pool
     worker_pool.init(allocator, @intCast(cfg.server.io_pool_size)) catch |err| {
         log.err("Failed to init worker pool: {}", .{err});
@@ -147,6 +167,9 @@ fn serverThreadFn(s: *State) void {
         return;
     };
     defer worker_pool.deinit();
+
+    // Now schedule auto-update (pool exists)
+    pricing.scheduleAutoUpdate();
 
     // 4. Initialize logging
     var lib_log_config = cfg.log;
@@ -161,22 +184,6 @@ fn serverThreadFn(s: *State) void {
 
     // 5. Log configured providers (auth is lazy, on first request)
     provider.logConfiguredProviders(&cfg.core);
-
-    // 6. Initialize pricing engine (load cost CSVs for configured providers)
-    var provider_names_buf: [32][]const u8 = undefined;
-    var provider_name_count: usize = 0;
-    {
-        var piter = cfg.core.providers.keyIterator();
-        while (piter.next()) |key_ptr| {
-            if (provider_name_count < provider_names_buf.len) {
-                provider_names_buf[provider_name_count] = key_ptr.*;
-                provider_name_count += 1;
-            }
-        }
-    }
-    pricing.init(allocator, provider_names_buf[0..provider_name_count]);
-    defer pricing.deinit();
-    pricing.scheduleAutoUpdate();
 
     // Check if budget period expired while the proxy was offline and reset costs/tokens if so.
     utils.checkBudgetPeriodOnStartup(&cfg.core);
@@ -218,6 +225,10 @@ export fn startServer() bool {
     // Set status to starting immediately
     server_status.store(.starting, .release);
     server_error_code.store(.none, .release);
+
+    // Ignore SIGPIPE so writes to sockets closed by the peer return EPIPE
+    // instead of terminating the process.
+    core.net.ignoreSigpipe();
 
     // Load persisted metrics (tokens, costs, period_start) from previous session
     metrics.load();

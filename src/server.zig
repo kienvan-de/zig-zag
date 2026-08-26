@@ -142,6 +142,7 @@ pub fn start(allocator: std.mem.Allocator, cfg: *const app_config.AppConfig) !vo
 fn workerThread(ctx: *WorkerContext) void {
     log.debug("Worker thread started", .{});
 
+    var fail_streak: u32 = 0;
     while (!ctx.shutdown.load(.acquire)) {
         const connection = ctx.listener.accept() catch |err| {
             // Any error after shutdown is expected (socket closed).
@@ -153,9 +154,13 @@ fn workerThread(ctx: *WorkerContext) void {
                 listener_mutex.unlock();
                 if (!still_valid) break;
             }
-            log.warn("Failed to accept connection: {}", .{err});
+            fail_streak += 1;
+            const backoff_ms: u64 = @min(50 * (@as(u64, 1) << @min(fail_streak, 3)), 200);
+            log.warn("Failed to accept connection: {} (backoff {}ms)", .{ err, backoff_ms });
+            core.time.sleep(backoff_ms * std.time.ns_per_ms);
             continue;
         };
+        fail_streak = 0;
 
         handleConnection(ctx.allocator, connection, ctx.server_cfg) catch |err| {
             log.warn("Error handling connection: {}", .{err});
@@ -280,8 +285,10 @@ fn handleConnection(allocator: std.mem.Allocator, connection: net.Connection, se
 
 fn parseContentLength(headers: []const u8) ?usize {
     // Case-insensitive search for Content-Length header.
-    var it = std.mem.splitSequence(u8, headers, "\r\n");
-    while (it.next()) |line| {
+    // Split on \n and trim \r to handle both CRLF and LF-only line endings.
+    var it = std.mem.splitScalar(u8, headers, '\n');
+    while (it.next()) |raw_line| {
+        const line = std.mem.trimEnd(u8, raw_line, "\r");
         if (line.len < 16) continue;
         if (std.ascii.startsWithIgnoreCase(line, "content-length:")) {
             const value = std.mem.trim(u8, line[15..], " \t");

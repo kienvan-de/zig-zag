@@ -95,16 +95,14 @@ pub fn sendSseEnd(connection: net.Connection) !void {
 /// ```
 /// data: {"id":"chatcmpl-...","choices":[...]}\n\n
 /// ```
-/// The formatted event must fit within an 8 KiB internal buffer. If the
-/// formatted output exceeds the buffer, the event is silently dropped
-/// (returns without error) — this guards against unexpectedly large payloads
-/// in a streaming context.
+/// The event is dynamically allocated, so events of any size are supported.
 ///
 /// Use `sendSseDone` to emit the final `data: [DONE]\n\n` sentinel event.
-pub fn sendSseEvent(connection: net.Connection, data: []const u8) !void {
-    var buf: [8192]u8 = undefined;
-    const event = std.fmt.bufPrint(&buf, "data: {s}\n\n", .{data}) catch return;
-    try sendSseChunk(connection, event);
+pub fn sendSseEvent(connection: net.Connection, allocator: std.mem.Allocator, data: []const u8) !void {
+    var buf = std.ArrayList(u8).empty;
+    defer buf.deinit(allocator);
+    try buf.print(allocator, "data: {s}\n\n", .{data});
+    try sendSseChunk(connection, buf.items);
 }
 
 /// Send the SSE stream termination sentinel `data: [DONE]\n\n` as a chunked frame.

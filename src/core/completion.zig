@@ -337,7 +337,12 @@ fn chatStreaming(
     var first_chunk_time: ?i64 = null;
     var had_error = false;
 
+    var scratch = std.heap.ArenaAllocator.init(allocator);
+    defer scratch.deinit();
+
     while (true) {
+        _ = scratch.reset(.free_all);
+        const sa = scratch.allocator();
         const maybe_line = stream_result.iterator.next() catch |err| {
             had_error = true;
             const body_err = stream_result.response.bodyErr();
@@ -349,8 +354,8 @@ fn chatStreaming(
 
             // Write SSE error event to client
             var buffer = std.ArrayList(u8).empty;
-            defer buffer.deinit(allocator);
-            buffer.print(allocator, "data: {{\"error\":{{\"message\":\"Upstream connection lost while streaming response\",\"type\":\"server_error\",\"code\":null}}}}\n\n", .{}) catch break;
+            defer buffer.deinit(sa);
+            buffer.print(sa, "data: {{\"error\":{{\"message\":\"Upstream connection lost while streaming response\",\"type\":\"server_error\",\"code\":null}}}}\n\n", .{}) catch break;
             writer.writeAll(buffer.items) catch {};
             break;
         };
@@ -390,8 +395,8 @@ fn chatStreaming(
 
                 // Serialize chunk to SSE format — atomic writeAll
                 var buffer = std.ArrayList(u8).empty;
-                defer buffer.deinit(allocator);
-                buffer.print(allocator, "data: {f}\n\n", .{std.json.fmt(chunk.value, .{})}) catch continue;
+                defer buffer.deinit(sa);
+                buffer.print(sa, "data: {f}\n\n", .{std.json.fmt(chunk.value, .{})}) catch continue;
                 try writer.writeAll(buffer.items);
             },
             .@"error" => |error_response| {
@@ -399,8 +404,8 @@ fn chatStreaming(
                 log.warn("[STREAM] Provider returned error: {s}", .{error_response.@"error".message});
 
                 var buffer = std.ArrayList(u8).empty;
-                defer buffer.deinit(allocator);
-                buffer.print(allocator, "data: {f}\n\n", .{std.json.fmt(error_response, .{})}) catch break;
+                defer buffer.deinit(sa);
+                buffer.print(sa, "data: {f}\n\n", .{std.json.fmt(error_response, .{})}) catch break;
                 try writer.writeAll(buffer.items);
                 break;
             },

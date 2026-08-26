@@ -42,6 +42,7 @@
 //! ```
 
 const std = @import("std");
+const builtin = @import("builtin");
 const time = @import("../time.zig");
 const Allocator = std.mem.Allocator;
 const net = @import("../net.zig");
@@ -176,14 +177,20 @@ pub fn waitForCallback(allocator: Allocator, config: CallbackConfig) !CallbackRe
     }
 }
 
-/// Open URL in default browser
+/// Open URL in default browser using the platform-appropriate command.
 pub fn openBrowser(url: []const u8) !void {
     log.info("Opening browser: {s}", .{url});
 
-    // Use platform-specific command (fire and forget)
+    const argv: []const []const u8 = switch (builtin.os.tag) {
+        .macos => &.{ "open", url },
+        .linux => &.{ "xdg-open", url },
+        .windows => &.{ "cmd.exe", "/c", "start", url },
+        else => return error.BrowserOpenFailed,
+    };
+
     const io = time.io();
     var child = std.process.spawn(io, .{
-        .argv = &[_][]const u8{ "open", url },
+        .argv = argv,
     }) catch {
         log.err("Failed to open browser", .{});
         return error.BrowserOpenFailed;

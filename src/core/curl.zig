@@ -27,6 +27,7 @@ const Allocator = std.mem.Allocator;
 const fs = @import("fs.zig");
 const time = @import("time.zig");
 const log = @import("log.zig");
+const platform = @import("platform.zig");
 
 /// Curl client errors — defined in errors.zig
 pub const CurlError = @import("errors.zig").CurlError;
@@ -48,13 +49,17 @@ pub const CurlResponse = struct {
 /// Interface mirrors HttpClient for comptime switching
 pub const CurlClient = struct {
     allocator: Allocator,
+    curl_path: []const u8,
 
-    pub fn init(allocator: Allocator) CurlClient {
-        return .{ .allocator = allocator };
+    pub fn init(allocator: Allocator) !CurlClient {
+        return .{
+            .allocator = allocator,
+            .curl_path = try platform.resolveCurl(allocator),
+        };
     }
 
-    pub fn deinit(_: *CurlClient) void {
-        // No resources to free
+    pub fn deinit(self: *CurlClient) void {
+        self.allocator.free(self.curl_path);
     }
 
     /// Perform a GET request using curl
@@ -142,7 +147,7 @@ pub const CurlClient = struct {
 
         // Base arguments
         args.appendSlice(self.allocator, &[_][]const u8{
-            "curl",
+            self.curl_path,
             "-s",
             "-S",
             "-w",
@@ -252,7 +257,7 @@ pub const CurlClient = struct {
 test "CurlClient GET request" {
     const allocator = std.testing.allocator;
 
-    var client = CurlClient.init(allocator);
+    var client = try CurlClient.init(allocator);
     defer client.deinit();
 
     var response = try client.getJson("https://httpbin.org/get", &[_]std.http.Header{});
@@ -265,7 +270,7 @@ test "CurlClient GET request" {
 test "CurlClient POST request" {
     const allocator = std.testing.allocator;
 
-    var client = CurlClient.init(allocator);
+    var client = try CurlClient.init(allocator);
     defer client.deinit();
 
     var response = try client.postForm(
