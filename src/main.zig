@@ -43,9 +43,17 @@ pub fn main(init: std.process.Init.Minimal) !void {
         }
     }
 
+    // Ignore SIGPIPE so writes to sockets closed by the peer return EPIPE
+    // instead of terminating the process.
+    core.net.ignoreSigpipe();
+
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
+
+    // Initialize Threaded I/O backend first (uses page_allocator internally)
+    core.time.init(allocator, init.environ);
+    // No defer for deinit() - it's a no-op
 
     // Initialize caches before config loading
     app_cache.init(allocator);
@@ -61,9 +69,28 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var cfg = try app_config.AppConfig.loadFromFile(allocator, config_path);
     defer cfg.deinit();
 
+    // Initialize pricing engine (load cost CSVs for configured providers)
+    // Declare init/deinit BEFORE worker_pool so defer runs AFTER pool shutdown
+    var provider_names_buf: [32][]const u8 = undefined;
+    var provider_name_count: usize = 0;
+    {
+        var piter = cfg.core.providers.keyIterator();
+        while (piter.next()) |key_ptr| {
+            if (provider_name_count < provider_names_buf.len) {
+                provider_names_buf[provider_name_count] = key_ptr.*;
+                provider_name_count += 1;
+            }
+        }
+    }
+    pricing.init(allocator, provider_names_buf[0..provider_name_count]);
+    defer pricing.deinit();
+
     // Initialize IO worker pool (before logging so async writes work)
     try worker_pool.init(allocator, @intCast(cfg.server.io_pool_size));
     defer worker_pool.deinit();
+
+    // Now schedule auto-update (pool exists)
+    pricing.scheduleAutoUpdate();
 
     // Initialize logging (after worker pool for async writes)
     try log_impl.init(cfg.log, allocator);
@@ -84,22 +111,6 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
     // Log configured providers (auth is lazy, on first request)
     provider.logConfiguredProviders(&cfg.core);
-
-    // Initialize pricing engine (load cost CSVs for configured providers)
-    var provider_names_buf: [32][]const u8 = undefined;
-    var provider_name_count: usize = 0;
-    {
-        var piter = cfg.core.providers.keyIterator();
-        while (piter.next()) |key_ptr| {
-            if (provider_name_count < provider_names_buf.len) {
-                provider_names_buf[provider_name_count] = key_ptr.*;
-                provider_name_count += 1;
-            }
-        }
-    }
-    pricing.init(allocator, provider_names_buf[0..provider_name_count]);
-    defer pricing.deinit();
-    pricing.scheduleAutoUpdate();
 
     // Start the HTTP server
     try server.start(allocator, &cfg);

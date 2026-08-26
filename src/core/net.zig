@@ -6,6 +6,7 @@
 //! work in Zig 0.16's synchronous blocking model.
 
 const std = @import("std");
+const builtin = @import("builtin");
 
 /// A TCP connection — wraps a socket fd with read/write/close helpers.
 /// Drop-in replacement for the old `std.net.Server.Connection` + `std.net.Stream`.
@@ -19,11 +20,16 @@ pub const Connection = struct {
     }
 
     /// Write all bytes to the connection. Loops until all data is sent.
+    /// Retries on EINTR; maps EAGAIN/EWOULDBLOCK to WriteFailed.
     pub fn writeAll(self: Connection, data: []const u8) !void {
         var remaining = data;
         while (remaining.len > 0) {
             const n = std.c.write(self.handle, remaining.ptr, remaining.len);
-            if (n < 0) return error.WriteFailed;
+            if (n < 0) {
+                const err = std.posix.errno(n);
+                if (err == .INTR) continue;
+                return error.WriteFailed;
+            }
             if (n == 0) return error.WriteFailed;
             remaining = remaining[@intCast(n)..];
         }
@@ -89,7 +95,10 @@ pub const TcpServer = struct {
 
     /// Close the listening socket.
     pub fn deinit(self: *TcpServer) void {
-        _ = std.c.close(self.fd);
+        if (self.fd >= 0) {
+            _ = std.c.close(self.fd);
+            self.fd = -1;
+        }
     }
 
     /// Parse a dotted-quad IPv4 address string to a u32 in network byte order.
@@ -120,3 +129,22 @@ pub const TcpServer = struct {
         return @bitCast(parts);
     }
 };
+
+/// Ignore SIGPIPE so writes to sockets closed by the peer return EPIPE
+/// (error.BrokenPipe) instead of terminating the process.
+///
+/// Zig ≤0.15 installed this automatically from std.start; in 0.16 the handler
+/// install moved into Io backend init(), which we bypass (see core/time.zig),
+/// so we must install it ourselves.
+pub fn ignoreSigpipe() void {
+    const posix = std.posix;
+    if (builtin.os.tag == .windows) return;
+    if (posix.SIG != void and @hasField(posix.SIG, "PIPE")) {
+        const act = posix.Sigaction{
+            .handler = .{ .handler = posix.SIG.IGN },
+            .mask = posix.sigemptyset(),
+            .flags = 0,
+        };
+        _ = posix.sigaction(.PIPE, &act, null);
+    }
+}

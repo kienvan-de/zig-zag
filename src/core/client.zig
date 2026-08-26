@@ -355,7 +355,8 @@ pub const HttpClient = struct {
             log.err("HTTP POST body_writer.end() failed: {} for URL: {s}", .{ err, url });
             return err;
         };
-        req.connection.?.flush() catch |err| {
+        const flush_conn = req.connection orelse return error.UpstreamError;
+        flush_conn.flush() catch |err| {
             log.err("HTTP POST flush failed: {} for URL: {s}", .{ err, url });
             return err;
         };
@@ -440,13 +441,11 @@ pub const HttpClient = struct {
         var body_writer = try req.sendBodyUnflushed(&buf);
         try body_writer.writer.writeAll(request_body.items);
         try body_writer.end();
-        try req.connection.?.flush();
+        (req.connection orelse return error.UpstreamError).flush() catch |err| return err;
 
         // Wait for response
         const redirect_buffer: [0]u8 = undefined;
         var response = try req.receiveHead(&redirect_buffer);
-
-        // Check status code
         if (response.head.status != .ok) {
             return error.HttpRequestFailed;
         }
@@ -507,7 +506,7 @@ pub const HttpClient = struct {
         var body_writer = try req.sendBodyUnflushed(&buf);
         try body_writer.writer.writeAll(request_body.items);
         try body_writer.end();
-        try req.connection.?.flush();
+        (req.connection orelse return error.UpstreamError).flush() catch |err| return err;
 
         // Allocate result on heap to ensure stable pointers for reader
         const result = try self.allocator.create(StreamingResult(Iterator));

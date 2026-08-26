@@ -19,9 +19,19 @@ const std = @import("std");
 var global_io_instance: std.Io.Threaded = std.Io.Threaded.init_single_threaded;
 var global_io_initialized: bool = false;
 
+/// Initialize the global I/O backend with the given allocator.
+/// The `environ` parameter is accepted for API compatibility but unused at
+/// this level — the init_single_threaded backend does not support it.
+/// Safe to call multiple times; subsequent calls are no-ops.
+pub fn init(allocator: std.mem.Allocator, environ: anytype) void {
+    _ = environ;
+    if (global_io_initialized) return;
+    global_io_instance.allocator = allocator;
+    global_io_initialized = true;
+}
+
 /// Get a usable `std.Io` instance for operations that require one.
-/// This uses `page_allocator` internally (suitable for short-lived I/O ops
-/// like process spawning, HTTP client connections, etc.).
+/// If init() was not called, falls back to page_allocator.
 pub fn io() std.Io {
     if (!global_io_initialized) {
         global_io_instance.allocator = std.heap.page_allocator;

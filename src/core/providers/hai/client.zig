@@ -136,7 +136,7 @@ pub const HaiClient = struct {
                 @intCast(max_response_size_mb * 1024 * 1024),
                 null,
             ),
-            .curl_client = curl.CurlClient.init(allocator),
+            .curl_client = try curl.CurlClient.init(allocator),
             .oidc = auth.OIDC.init(allocator, auth_domain, oidc_config_path),
             .oauth = auth.OAuth.init(allocator, "hai", client_id),
             .api_url = api_url,
@@ -151,6 +151,7 @@ pub const HaiClient = struct {
     pub fn deinit(self: *HaiClient) void {
         self.oidc.deinit();
         self.client.deinit();
+        self.curl_client.deinit();
     }
 
     // ========================================================================
