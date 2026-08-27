@@ -109,7 +109,33 @@ pub fn transform(
     model: []const u8,
     allocator: std.mem.Allocator,
 ) !SapAiCore.Request {
-    _ = allocator;
+    // Build model params from OpenAI request fields (S1 — model params forwarding)
+    var params_obj: std.json.ObjectMap = .{};
+    defer params_obj.deinit(allocator);
+
+    if (request.temperature) |v| try params_obj.put(allocator, "temperature", .{ .float = v });
+    if (request.max_tokens) |v| try params_obj.put(allocator, "max_tokens", .{ .integer = v });
+    if (request.max_completion_tokens) |v| try params_obj.put(allocator, "max_completion_tokens", .{ .integer = v });
+    if (request.top_p) |v| try params_obj.put(allocator, "top_p", .{ .float = v });
+    if (request.n) |v| try params_obj.put(allocator, "n", .{ .integer = v });
+    if (request.presence_penalty) |v| try params_obj.put(allocator, "presence_penalty", .{ .float = v });
+    if (request.frequency_penalty) |v| try params_obj.put(allocator, "frequency_penalty", .{ .float = v });
+    if (request.seed) |v| try params_obj.put(allocator, "seed", .{ .integer = v });
+    if (request.logprobs) |v| try params_obj.put(allocator, "logprobs", .{ .bool = v });
+    if (request.top_logprobs) |v| try params_obj.put(allocator, "top_logprobs", .{ .integer = v });
+    if (request.logit_bias) |v| try params_obj.put(allocator, "logit_bias", v);
+    if (request.stop) |seqs| {
+        var arr = std.json.Array.init(allocator);
+        for (seqs) |s| try arr.append(.{ .string = s });
+        try params_obj.put(allocator, "stop", .{ .array = arr });
+    }
+
+    const params: ?std.json.Value = if (params_obj.count() > 0)
+        .{ .object = try params_obj.clone(allocator) }
+    else
+        null;
+
+    const is_streaming = request.stream orelse false;
 
     return SapAiCore.Request{
         .config = .{
@@ -118,26 +144,32 @@ pub fn transform(
                     .prompt = .{
                         .template = request.messages,
                         .tools = request.tools,
+                        .tool_choice = request.tool_choice, // S2
+                        .response_format = request.response_format, // S3
                     },
                     .model = .{
                         .name = model,
                         .version = "latest",
+                        .params = params, // S1
                     },
                 },
             },
-            .stream = if (request.stream) |s|
-                .{ .enabled = s, .chunk_size = null }
-            else
-                .{ .enabled = false, .chunk_size = null },
+            .stream = .{
+                .enabled = is_streaming,
+                // Inject include_usage into chunk_size workaround is not applicable here;
+                // SAP AI Core's stream.enabled drives token usage in the final chunk (S19)
+                .chunk_size = null,
+            },
         },
     };
 }
 
-/// Cleanup transformed request
+/// Cleanup transformed request — frees the params object if allocated
 pub fn cleanupRequest(request: SapAiCore.Request, allocator: std.mem.Allocator) void {
-    _ = request;
-    _ = allocator;
-    // No cleanup needed - request uses references from original
+    if (request.config.modules.prompt_templating.model.params) |p| {
+        var obj = p.object;
+        obj.deinit(allocator);
+    }
 }
 
 // ============================================================================
@@ -423,21 +455,17 @@ pub fn transformFromAnthropic(
 ) !SapAiCore.Request {
     // Step 1: Anthropic -> OpenAI
     const openai_request = try openai_transformer.transformFromAnthropic(request, model, allocator);
-    // NOTE: Do NOT cleanup openai_request here — the SapAiCore.Request borrows
-    // its messages/tools slices from the OpenAI request. Cleanup happens in
-    // cleanupFromAnthropicRequest below, which frees the OpenAI-level allocations.
-
-    // Step 2: OpenAI -> SapAiCore (borrows slices from openai_request)
     errdefer openai_transformer.cleanupFromAnthropicRequest(openai_request, allocator);
+
+    // Step 2: OpenAI -> SapAiCore (borrows slices from openai_request; params are cloned)
     return try transform(openai_request, model, allocator);
 }
 
 /// Cleanup a request created by transformFromAnthropic.
-/// Must free both the SapAiCore wrapper AND the underlying OpenAI messages/tools
-/// that were allocated by the Anthropic→OpenAI step.
 pub fn cleanupFromAnthropicRequest(request: SapAiCore.Request, allocator: std.mem.Allocator) void {
+    // Free the params clone if present
+    cleanupRequest(request, allocator);
     // The template messages and tools were allocated by openai_transformer.transformFromAnthropic.
-    // Reconstruct a minimal OpenAI.Request so we can reuse the existing cleanup function.
     const openai_request = OpenAI.Request{
         .model = request.config.modules.prompt_templating.model.name,
         .messages = request.config.modules.prompt_templating.prompt.template,
