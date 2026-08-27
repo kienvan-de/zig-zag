@@ -387,6 +387,7 @@ pub fn transformFromAnthropic(
     const tool_choice: ?std.json.Value = if (request.tool_choice) |tc| switch (tc) {
         .auto => std.json.Value{ .string = "auto" },
         .any => std.json.Value{ .string = "required" },
+        .none => std.json.Value{ .string = "none" },
         .tool => |t| blk: {
             // Build {"type": "function", "function": {"name": "..."}}
             var obj = std.json.ObjectMap{};
@@ -547,6 +548,7 @@ pub fn cleanupAnthropicResponse(response: Anthropic.Response, allocator: std.mem
                 allocator.free(tu.name);
                 // input is a parsed JSON value — its arena is not tracked here
             },
+            .thinking, .redacted_thinking => {},
         }
     }
     allocator.free(response.id);

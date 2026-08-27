@@ -283,6 +283,7 @@ fn handleContentBlockDelta(json_part: []const u8, state: *StreamState, allocator
             return buildOpenAIChunk(state, .{ .tool_calls = &tool_calls }, null, null, allocator);
         }
     }
+    // thinking_delta and signature_delta are silently skipped in OpenAI path (GAP-15)
     return null;
 }
 
@@ -744,9 +745,9 @@ pub fn extractTextFromBlocks(blocks: []const Anthropic.ContentBlock, allocator: 
     for (blocks) |block| {
         switch (block) {
             .text => |t| {
-                try text_parts.append(allocator, t.text);
+                if (t.text.len > 0) try text_parts.append(allocator, t.text);
             },
-            .tool_use => {},
+            .tool_use, .thinking, .redacted_thinking => {},
         }
     }
 
@@ -780,7 +781,7 @@ pub fn extractToolCalls(blocks: []const Anthropic.ContentBlock, allocator: std.m
                     },
                 });
             },
-            .text => {},
+            .text, .thinking, .redacted_thinking => {},
         }
     }
 
@@ -906,6 +907,12 @@ pub fn transformFromAnthropic(
         .tools = request.tools,
         .tool_choice = request.tool_choice,
         .metadata = request.metadata,
+        .thinking = request.thinking,
+        .betas = request.betas,
+        .service_tier = request.service_tier,
+        .output_config = request.output_config,
+        .container = request.container,
+        .inference_geo = request.inference_geo,
     };
 }
 

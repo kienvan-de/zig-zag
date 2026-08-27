@@ -66,11 +66,42 @@ pub const AnthropicClient = struct {
         self.client.deinit();
     }
 
-    /// Build headers for Anthropic API
+    /// Build headers for Anthropic API. Returns slice into headers_buf.
+    /// If request has betas, appends anthropic-beta header (buf must have len >= 4).
     fn buildHeaders(self: *AnthropicClient, headers_buf: []std.http.Header) []std.http.Header {
         headers_buf[0] = .{ .name = "x-api-key", .value = self.api_key };
         headers_buf[1] = .{ .name = "anthropic-version", .value = self.api_version };
         headers_buf[2] = .{ .name = "Content-Type", .value = "application/json" };
+        return headers_buf[0..3];
+    }
+
+    /// Build headers including optional anthropic-beta for a specific request.
+    fn buildRequestHeaders(
+        self: *AnthropicClient,
+        headers_buf: []std.http.Header,
+        betas: ?[]const []const u8,
+        beta_value_buf: []u8,
+    ) []std.http.Header {
+        headers_buf[0] = .{ .name = "x-api-key", .value = self.api_key };
+        headers_buf[1] = .{ .name = "anthropic-version", .value = self.api_version };
+        headers_buf[2] = .{ .name = "Content-Type", .value = "application/json" };
+        if (betas) |bs| {
+            if (bs.len > 0) {
+                var pos: usize = 0;
+                for (bs, 0..) |b, i| {
+                    if (i > 0 and pos + 1 < beta_value_buf.len) {
+                        beta_value_buf[pos] = ',';
+                        pos += 1;
+                    }
+                    const remaining = beta_value_buf.len - pos;
+                    const copy_len = @min(b.len, remaining);
+                    @memcpy(beta_value_buf[pos..pos + copy_len], b[0..copy_len]);
+                    pos += copy_len;
+                }
+                headers_buf[3] = .{ .name = "anthropic-beta", .value = beta_value_buf[0..pos] };
+                return headers_buf[0..4];
+            }
+        }
         return headers_buf[0..3];
     }
 
@@ -149,9 +180,10 @@ pub const AnthropicClient = struct {
         var url_buffer: [512]u8 = undefined;
         const url = try std.fmt.bufPrint(&url_buffer, "{s}/v1/messages", .{self.api_url});
 
-        // Build headers
-        var headers_buf: [3]std.http.Header = undefined;
-        const headers = self.buildHeaders(&headers_buf);
+        // Build headers (up to 4: base 3 + optional anthropic-beta)
+        var headers_buf: [4]std.http.Header = undefined;
+        var beta_value_buf: [512]u8 = undefined;
+        const headers = self.buildRequestHeaders(&headers_buf, request.betas, &beta_value_buf);
 
         // Make POST request with JSON body and parse response
         return self.client.postJson(Anthropic.Response, url, headers, request) catch |err| {
@@ -183,9 +215,10 @@ pub const AnthropicClient = struct {
         var url_buffer: [512]u8 = undefined;
         const url = try std.fmt.bufPrint(&url_buffer, "{s}/v1/messages", .{self.api_url});
 
-        // Build headers
-        var headers_buf: [3]std.http.Header = undefined;
-        const headers = self.buildHeaders(&headers_buf);
+        // Build headers (up to 4: base 3 + optional anthropic-beta)
+        var headers_buf: [4]std.http.Header = undefined;
+        var beta_value_buf: [512]u8 = undefined;
+        const headers = self.buildRequestHeaders(&headers_buf, request.betas, &beta_value_buf);
 
         // Make streaming POST request
         const result = try self.client.postStreaming(SSEIterator, url, headers, request);
