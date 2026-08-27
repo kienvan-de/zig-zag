@@ -152,13 +152,20 @@ fn dupeResponseMessage(allocator: std.mem.Allocator, msg: OpenAI.ResponseMessage
         .tool_calls = if (msg.tool_calls) |tcs| blk: {
             const duped = try allocator.alloc(OpenAI.ToolCall, tcs.len);
             for (tcs, 0..) |tc, i| {
-                duped[i] = OpenAI.ToolCall{
-                    .id = try allocator.dupe(u8, tc.id),
-                    .type = try allocator.dupe(u8, tc.type),
-                    .function = OpenAI.ToolCallFunction{
-                        .name = try allocator.dupe(u8, tc.function.name),
-                        .arguments = try allocator.dupe(u8, tc.function.arguments),
-                    },
+                duped[i] = switch (tc) {
+                    .function => |f| OpenAI.ToolCall{ .function = .{
+                        .id = try allocator.dupe(u8, f.id),
+                        .type = try allocator.dupe(u8, f.type),
+                        .function = OpenAI.ToolCallFunction{
+                            .name = try allocator.dupe(u8, f.function.name),
+                            .arguments = try allocator.dupe(u8, f.function.arguments),
+                        },
+                    } },
+                    .custom => |c| OpenAI.ToolCall{ .custom = .{
+                        .id = try allocator.dupe(u8, c.id),
+                        .type = try allocator.dupe(u8, c.type),
+                        .custom = c.custom,
+                    } },
                 };
             }
             break :blk duped;
@@ -218,10 +225,18 @@ fn freeResponseMessage(allocator: std.mem.Allocator, msg: OpenAI.ResponseMessage
     if (msg.content) |c| allocator.free(c);
     if (msg.tool_calls) |tcs| {
         for (tcs) |tc| {
-            allocator.free(tc.id);
-            allocator.free(tc.type);
-            allocator.free(tc.function.name);
-            allocator.free(tc.function.arguments);
+            switch (tc) {
+                .function => |f| {
+                    allocator.free(f.id);
+                    allocator.free(f.type);
+                    allocator.free(f.function.name);
+                    allocator.free(f.function.arguments);
+                },
+                .custom => |c| {
+                    allocator.free(c.id);
+                    allocator.free(c.type);
+                },
+            }
         }
         allocator.free(tcs);
     }

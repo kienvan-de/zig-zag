@@ -327,14 +327,14 @@ pub fn transformFromAnthropic(
                             try args_list.print(allocator, "{f}", .{std.json.fmt(tu.input, .{})});
                             const args_str = try allocator.dupe(u8, args_list.items);
 
-                            try tool_use_blocks.append(allocator, .{
+                            try tool_use_blocks.append(allocator, .{ .function = .{
                                 .id = tu.id,
                                 .type = "function",
                                 .function = .{
                                     .name = tu.name,
                                     .arguments = args_str,
                                 },
-                            });
+                            } });
                         },
                         .tool_result => |tr| {
                             try tool_results.append(allocator, .{
@@ -386,7 +386,7 @@ pub fn transformFromAnthropic(
     const tools: ?[]const OpenAI.Tool = if (request.tools) |anthro_tools| blk: {
         const oai_tools = try allocator.alloc(OpenAI.Tool, anthro_tools.len);
         for (anthro_tools, 0..) |at, i| {
-            oai_tools[i] = .{
+            oai_tools[i] = .{ .function = .{
                 .type = "function",
                 .function = .{
                     .name = at.name,
@@ -394,7 +394,7 @@ pub fn transformFromAnthropic(
                     .parameters = at.input_schema,
                     .strict = null,
                 },
-            };
+            } };
         }
         break :blk oai_tools;
     } else null;
@@ -457,7 +457,10 @@ fn freeAnthropicTransformedMessage(msg: OpenAI.Message, allocator: std.mem.Alloc
     }
     if (msg.tool_calls) |tool_calls| {
         for (tool_calls) |tc| {
-            allocator.free(tc.function.arguments);
+            switch (tc) {
+                .function => |f| allocator.free(f.function.arguments),
+                .custom => {},
+            }
         }
         allocator.free(tool_calls);
     }
@@ -493,25 +496,29 @@ pub fn transformToAnthropicResponse(
         // Add tool_use content blocks if present
         if (choice.message.tool_calls) |tool_calls| {
             for (tool_calls) |tc| {
-                // Parse arguments string back to JSON value
-                const input = std.json.parseFromSlice(
-                    std.json.Value,
-                    allocator,
-                    tc.function.arguments,
-                    .{},
-                ) catch blk: {
-                    break :blk std.json.Parsed(std.json.Value){
-                        .value = .{ .object = std.json.ObjectMap{} },
-                        .arena = undefined,
-                    };
-                };
+                switch (tc) {
+                    .function => |f| {
+                        const input = std.json.parseFromSlice(
+                            std.json.Value,
+                            allocator,
+                            f.function.arguments,
+                            .{},
+                        ) catch blk: {
+                            break :blk std.json.Parsed(std.json.Value){
+                                .value = .{ .object = std.json.ObjectMap{} },
+                                .arena = undefined,
+                            };
+                        };
 
-                try content_blocks.append(allocator, .{ .tool_use = .{
-                    .type = "tool_use",
-                    .id = try allocator.dupe(u8, tc.id),
-                    .name = try allocator.dupe(u8, tc.function.name),
-                    .input = input.value,
-                } });
+                        try content_blocks.append(allocator, .{ .tool_use = .{
+                            .type = "tool_use",
+                            .id = try allocator.dupe(u8, f.id),
+                            .name = try allocator.dupe(u8, f.function.name),
+                            .input = input.value,
+                        } });
+                    },
+                    .custom => {}, // No Anthropic equivalent
+                }
             }
         }
     }

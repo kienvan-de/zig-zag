@@ -188,10 +188,67 @@ pub const ToolCallFunction = struct {
 };
 
 /// Tool call in assistant message
-pub const ToolCall = struct {
-    id: []const u8,
-    type: []const u8, // "function"
-    function: ToolCallFunction,
+pub const ToolCall = union(enum) {
+    function: struct {
+        id: []const u8,
+        type: []const u8 = "function",
+        function: ToolCallFunction,
+    },
+    custom: struct {
+        id: []const u8,
+        type: []const u8 = "custom",
+        custom: std.json.Value,
+    },
+
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        switch (self) {
+            .function => |v| try jw.write(v),
+            .custom => |v| {
+                try jw.beginObject();
+                try jw.objectField("id"); try jw.write(v.id);
+                try jw.objectField("type"); try jw.write(v.type);
+                try jw.objectField("custom"); try jw.write(v.custom);
+                try jw.endObject();
+            },
+        }
+    }
+
+    pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
+        const json_value = try std.json.innerParse(std.json.Value, allocator, source, options);
+        return jsonParseFromValue(allocator, json_value, options);
+    }
+
+    pub fn jsonParseFromValue(_: std.mem.Allocator, source: std.json.Value, _: std.json.ParseOptions) !@This() {
+        if (source != .object) return error.UnexpectedToken;
+        const obj = source.object;
+        const type_val = obj.get("type") orelse return error.MissingField;
+        if (type_val != .string) return error.UnexpectedToken;
+        const id_val = obj.get("id") orelse return error.MissingField;
+        if (id_val != .string) return error.UnexpectedToken;
+
+        if (std.mem.eql(u8, type_val.string, "function")) {
+            const func_val = obj.get("function") orelse return error.MissingField;
+            if (func_val != .object) return error.UnexpectedToken;
+            const name_val = func_val.object.get("name") orelse return error.MissingField;
+            if (name_val != .string) return error.UnexpectedToken;
+            const args_val = func_val.object.get("arguments") orelse return error.MissingField;
+            if (args_val != .string) return error.UnexpectedToken;
+            return .{ .function = .{
+                .id = id_val.string,
+                .type = type_val.string,
+                .function = .{ .name = name_val.string, .arguments = args_val.string },
+            } };
+        } else if (std.mem.eql(u8, type_val.string, "custom")) {
+            const custom_val = obj.get("custom") orelse return error.MissingField;
+            return .{ .custom = .{
+                .id = id_val.string,
+                .type = type_val.string,
+                .custom = custom_val,
+            } };
+        } else {
+            return error.UnexpectedToken;
+        }
+    }
 };
 
 /// Streaming tool call function (partial, for delta chunks)
@@ -269,17 +326,54 @@ pub const ToolFunction = struct {
 };
 
 /// Tool definition
-pub const Tool = struct {
-    type: []const u8, // "function"
-    function: ToolFunction,
+pub const Tool = union(enum) {
+    function: struct {
+        type: []const u8 = "function",
+        function: ToolFunction,
+    },
+    custom: struct {
+        type: []const u8 = "custom",
+        custom: std.json.Value, // { name, description?, format? }
+    },
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
-        try jw.beginObject();
-        try jw.objectField("type");
-        try jw.write(self.type);
-        try jw.objectField("function");
-        try self.function.jsonStringify(jw);
-        try jw.endObject();
+        switch (self) {
+            .function => |v| {
+                try jw.beginObject();
+                try jw.objectField("type"); try jw.write(v.type);
+                try jw.objectField("function"); try v.function.jsonStringify(jw);
+                try jw.endObject();
+            },
+            .custom => |v| {
+                try jw.beginObject();
+                try jw.objectField("type"); try jw.write(v.type);
+                try jw.objectField("custom"); try jw.write(v.custom);
+                try jw.endObject();
+            },
+        }
+    }
+
+    pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
+        const json_value = try std.json.innerParse(std.json.Value, allocator, source, options);
+        return jsonParseFromValue(allocator, json_value, options);
+    }
+
+    pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, options: std.json.ParseOptions) !@This() {
+        if (source != .object) return error.UnexpectedToken;
+        const obj = source.object;
+        const type_val = obj.get("type") orelse return error.MissingField;
+        if (type_val != .string) return error.UnexpectedToken;
+
+        if (std.mem.eql(u8, type_val.string, "function")) {
+            const func_val = obj.get("function") orelse return error.MissingField;
+            const func = try std.json.parseFromValueLeaky(ToolFunction, allocator, func_val, options);
+            return .{ .function = .{ .type = type_val.string, .function = func } };
+        } else if (std.mem.eql(u8, type_val.string, "custom")) {
+            const custom_val = obj.get("custom") orelse return error.MissingField;
+            return .{ .custom = .{ .type = type_val.string, .custom = custom_val } };
+        } else {
+            return error.UnexpectedToken;
+        }
     }
 };
 
@@ -422,7 +516,7 @@ pub const Message = struct {
             if (tc == .array) blk: {
                 const calls = try allocator.alloc(ToolCall, tc.array.items.len);
                 for (tc.array.items, 0..) |item, i| {
-                    calls[i] = try std.json.innerParseFromValue(ToolCall, allocator, item, options);
+                    calls[i] = try ToolCall.jsonParseFromValue(allocator, item, options);
                 }
                 break :blk calls;
             } else null
@@ -706,7 +800,7 @@ pub const Request = struct {
                 const tools_arr = v.array.items;
                 const tools = try allocator.alloc(Tool, tools_arr.len);
                 for (tools_arr, 0..) |tool_val, i| {
-                    tools[i] = try std.json.parseFromValueLeaky(Tool, allocator, tool_val, .{});
+                    tools[i] = try Tool.jsonParseFromValue(allocator, tool_val, .{});
                 }
                 result.tools = tools;
             }

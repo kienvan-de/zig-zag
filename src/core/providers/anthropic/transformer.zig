@@ -465,24 +465,26 @@ pub fn transformToolCalls(
     errdefer blocks.deinit(allocator);
 
     for (tool_calls) |tc| {
-        // Parse the arguments JSON string into a std.json.Value
-        const parsed = std.json.parseFromSlice(std.json.Value, allocator, tc.function.arguments, .{}) catch {
-            // If parsing fails, use empty object
-            try blocks.append(allocator, .{ .tool_use = .{
-                .type = "tool_use",
-                .id = tc.id,
-                .name = tc.function.name,
-                .input = std.json.Value{ .object = std.json.ObjectMap{} },
-            } });
-            continue;
-        };
-
-        try blocks.append(allocator, .{ .tool_use = .{
-            .type = "tool_use",
-            .id = tc.id,
-            .name = tc.function.name,
-            .input = parsed.value,
-        } });
+        switch (tc) {
+            .function => |f| {
+                const parsed = std.json.parseFromSlice(std.json.Value, allocator, f.function.arguments, .{}) catch {
+                    try blocks.append(allocator, .{ .tool_use = .{
+                        .type = "tool_use",
+                        .id = f.id,
+                        .name = f.function.name,
+                        .input = std.json.Value{ .object = std.json.ObjectMap{} },
+                    } });
+                    continue;
+                };
+                try blocks.append(allocator, .{ .tool_use = .{
+                    .type = "tool_use",
+                    .id = f.id,
+                    .name = f.function.name,
+                    .input = parsed.value,
+                } });
+            },
+            .custom => {}, // No Anthropic equivalent for custom tool calls
+        }
     }
 
     return try blocks.toOwnedSlice(allocator);
@@ -521,18 +523,23 @@ pub fn transformTools(
     tools: []const OpenAI.Tool,
     allocator: std.mem.Allocator,
 ) ![]Anthropic.Tool {
-    var anthro_tools = try allocator.alloc(Anthropic.Tool, tools.len);
-    errdefer allocator.free(anthro_tools);
+    var anthro_tools = std.ArrayList(Anthropic.Tool).empty;
+    errdefer anthro_tools.deinit(allocator);
 
-    for (tools, 0..) |tool, i| {
-        anthro_tools[i] = .{
-            .name = tool.function.name,
-            .description = tool.function.description,
-            .input_schema = tool.function.parameters orelse std.json.Value{ .object = std.json.ObjectMap{} },
-        };
+    for (tools) |tool| {
+        switch (tool) {
+            .function => |f| {
+                try anthro_tools.append(allocator, .{
+                    .name = f.function.name,
+                    .description = f.function.description,
+                    .input_schema = f.function.parameters orelse std.json.Value{ .object = std.json.ObjectMap{} },
+                });
+            },
+            .custom => {}, // No Anthropic equivalent for custom tools
+        }
     }
 
-    return anthro_tools;
+    return try anthro_tools.toOwnedSlice(allocator);
 }
 
 /// Transform OpenAI tool_choice (std.json.Value) to Anthropic tool_choice
@@ -776,14 +783,14 @@ pub fn extractToolCalls(blocks: []const Anthropic.ContentBlock, allocator: std.m
                 try args_list.print(allocator, "{f}", .{std.json.fmt(tu.input, .{})});
                 const args_str = try args_list.toOwnedSlice(allocator);
 
-                try tool_calls.append(allocator, .{
+                try tool_calls.append(allocator, .{ .function = .{
                     .id = tu.id,
                     .type = "function",
                     .function = .{
                         .name = tu.name,
                         .arguments = args_str,
                     },
-                });
+                } });
             },
             .text, .thinking, .redacted_thinking => {},
         }
@@ -818,7 +825,10 @@ pub fn cleanupResponse(response: OpenAI.Response, allocator: std.mem.Allocator) 
         }
         if (response.choices[0].message.tool_calls) |tool_calls| {
             for (tool_calls) |tc| {
-                allocator.free(tc.function.arguments);
+                switch (tc) {
+                    .function => |f| allocator.free(f.function.arguments),
+                    .custom => {},
+                }
             }
             allocator.free(tool_calls);
         }
