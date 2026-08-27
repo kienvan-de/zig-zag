@@ -93,6 +93,8 @@ pub fn start(allocator: std.mem.Allocator, cfg: *const app_config.AppConfig) !vo
     log.info("Listening on http://{s}:{d}", .{ host, port });
     log.info("Endpoints:", .{});
     log.info("  POST /v1/chat/completions", .{});
+    log.info("  POST /v1/responses", .{});
+    log.info("  POST /v1/messages", .{});
     log.info("  GET  /v1/models", .{});
 
     log.info("Server started on {s}:{d} with {d} HTTP workers", .{ host, port, pool_size });

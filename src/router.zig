@@ -16,6 +16,7 @@ const std = @import("std");
 const net = @import("zag-core").net;
 const chat_handler = @import("handlers/chat.zig");
 const messages_handler = @import("handlers/messages.zig");
+const responses_handler = @import("handlers/responses.zig");
 const models_handler = @import("handlers/models.zig");
 const template_handler = @import("handlers/template.zig");
 const config_handler = @import("handlers/config.zig");
@@ -48,6 +49,10 @@ pub fn match(request_data: []const u8) ?Route {
 
     if (std.mem.eql(u8, method, "POST") and std.mem.eql(u8, path, "/v1/chat/completions")) {
         return Route{ .method = method, .path = path, .handler = chat_handler.handle };
+    }
+
+    if (std.mem.eql(u8, method, "POST") and std.mem.eql(u8, path, "/v1/responses")) {
+        return Route{ .method = method, .path = path, .handler = responses_handler.handle };
     }
 
     if (std.mem.eql(u8, method, "POST") and std.mem.eql(u8, path, "/v1/messages")) {

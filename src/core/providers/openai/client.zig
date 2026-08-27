@@ -13,7 +13,8 @@
 // limitations under the License.
 
 const std = @import("std");
-const OpenAI = @import("completion_types.zig");
+const OpenAI = @import("chat_types.zig");
+const ResponsesTypes = @import("responses_types.zig");
 const config_mod = @import("../../config.zig");
 const http_client = @import("../../client.zig");
 const log = @import("../../log.zig");
@@ -30,6 +31,8 @@ pub const OpenAIClient = struct {
     api_key: []const u8,
     api_url: []const u8,
     organization: ?[]const u8,
+    /// "legacy" (default) → /v1/chat/completions; "latest" → /v1/responses
+    api_schema: []const u8,
     config: *const config_mod.ProviderConfig,
     client: http_client.HttpClient,
 
@@ -43,6 +46,7 @@ pub const OpenAIClient = struct {
 
         const api_url = provider_config.getString("api_url") orelse DEFAULT_API_URL;
         const organization = provider_config.getString("organization");
+        const api_schema = provider_config.getString("api_schema") orelse "legacy";
         const timeout_ms = provider_config.getInt("timeout_ms") orelse config_mod.defaults.provider_timeout_ms;
         const max_response_size_mb = provider_config.getInt("max_response_size_mb") orelse config_mod.defaults.provider_max_response_size_mb;
 
@@ -51,6 +55,7 @@ pub const OpenAIClient = struct {
             .api_key = api_key,
             .api_url = api_url,
             .organization = organization,
+            .api_schema = api_schema,
             .config = provider_config,
             .client = http_client.HttpClient.initWithOptions(
                 allocator,
@@ -212,6 +217,40 @@ pub const OpenAIClient = struct {
     /// Free a streaming result allocated by sendStreamingRequest
     pub fn freeStreamingResult(self: *OpenAIClient, result: *StreamingResult) void {
         self.client.freeStreamingResult(SSEIterator, result);
+    }
+
+    /// Send a request to OpenAI Responses API (non-streaming, api_schema=latest)
+    pub fn sendResponsesRequest(
+        self: *OpenAIClient,
+        request: ResponsesTypes.ResponsesRequest,
+    ) !std.json.Parsed(ResponsesTypes.ResponsesResponse) {
+        var url_buffer: [512]u8 = undefined;
+        const url = try std.fmt.bufPrint(&url_buffer, "{s}/v1/responses", .{self.api_url});
+        var auth_buffer: [512]u8 = undefined;
+        var headers_buf: [3]std.http.Header = undefined;
+        const headers = try self.buildHeaders(&auth_buffer, &headers_buf);
+        return self.client.postJson(ResponsesTypes.ResponsesResponse, url, headers, request) catch |err| {
+            log.err("Failed to send OpenAI responses request: {}", .{err});
+            return err;
+        };
+    }
+
+    /// Send a streaming request to OpenAI Responses API (api_schema=latest)
+    pub fn sendStreamingResponsesRequest(
+        self: *OpenAIClient,
+        request: ResponsesTypes.ResponsesRequest,
+    ) !*StreamingResult {
+        var url_buffer: [512]u8 = undefined;
+        const url = try std.fmt.bufPrint(&url_buffer, "{s}/v1/responses", .{self.api_url});
+        var auth_buffer: [512]u8 = undefined;
+        var headers_buf: [3]std.http.Header = undefined;
+        const headers = try self.buildHeaders(&auth_buffer, &headers_buf);
+        const result = try self.client.postStreaming(SSEIterator, url, headers, request);
+        if (result.response.head.status != .ok) {
+            self.client.freeStreamingResult(SSEIterator, result);
+            return self.handleErrorResponse(result.response.head.status);
+        }
+        return result;
     }
 };
 

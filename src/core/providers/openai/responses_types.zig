@@ -108,6 +108,9 @@ pub const ResponsesRequest = struct {
     prompt_cache_key: ?[]const u8 = null,
     prompt_cache_options: ?std.json.Value = null,
     user: ?[]const u8 = null,
+    // Anthropic-specific fields (used when bridging to Anthropic upstream)
+    thinking: ?@import("../anthropic/types.zig").ThinkingConfig = null,
+    betas: ?[]const []const u8 = null,
 
     pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
         const val = try std.json.Value.jsonParse(allocator, source, options);

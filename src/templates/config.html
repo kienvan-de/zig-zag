@@ -819,6 +819,7 @@ var PROVIDER_SCHEMAS = {
   openai: [
     { name: 'api_key',              label: 'API Key',              type: 'text', required: true },
     { name: 'api_url',              label: 'API URL',              type: 'text', placeholder: 'https://api.openai.com' },
+    { name: 'api_schema',           label: 'API Schema',           type: 'select', options: ['legacy','latest'], placeholder: 'legacy' },
     { name: 'organization',         label: 'Organization',         type: 'text' },
     { name: 'timeout_ms',           label: 'Timeout (ms)',         type: 'number', placeholder: '60000' },
     { name: 'max_response_size_mb', label: 'Max Response Size (MB)', type: 'number', placeholder: '10' },
@@ -865,6 +866,7 @@ var PROVIDER_SCHEMAS = {
   compatible: [
     { name: 'api_key',              label: 'API Key',              type: 'text', required: true },
     { name: 'api_url',              label: 'API URL',              type: 'text', required: true },
+    { name: 'api_schema',           label: 'API Schema',           type: 'select', options: ['legacy','latest'], placeholder: 'legacy' },
     { name: 'timeout_ms',           label: 'Timeout (ms)',         type: 'number', placeholder: '60000' },
     { name: 'max_response_size_mb', label: 'Max Response Size (MB)', type: 'number', placeholder: '10' },
   ],
@@ -913,6 +915,14 @@ function renderFieldHtml(providerKey, field, value) {
       '" data-field="' + escHtml(field.name) + '" value="' + escHtml(val) + '"' + ph + '>';
     html += '<button type="button" class="secret-toggle" data-target="' + id + '" title="Toggle visibility">\u{1F441}</button>';
     html += '</div>';
+  } else if (field.type === 'select') {
+    html += '<select id="' + id + '" data-provider="' + escHtml(providerKey) +
+      '" data-field="' + escHtml(field.name) + '">';
+    (field.options || []).forEach(function (opt) {
+      var selected = (val === opt || (!val && opt === field.placeholder)) ? ' selected' : '';
+      html += '<option value="' + escHtml(opt) + '"' + selected + '>' + escHtml(opt) + '</option>';
+    });
+    html += '</select>';
   } else if (field.type === 'number') {
     html += '<input type="number" id="' + id + '" data-provider="' + escHtml(providerKey) +
       '" data-field="' + escHtml(field.name) + '" value="' + escHtml(val) + '"' + ph + '>';
@@ -1010,8 +1020,9 @@ function renderProviderForm(key) {
   $mainPanel.innerHTML = html;
 
   // Wire up input handlers
-  $mainPanel.querySelectorAll('input[data-provider]').forEach(function (input) {
-    input.addEventListener('input', function () {
+  $mainPanel.querySelectorAll('input[data-provider], select[data-provider]').forEach(function (input) {
+    var evtName = input.tagName === 'SELECT' ? 'change' : 'input';
+    input.addEventListener(evtName, function () {
       var pk = input.dataset.provider;
       var fn = input.dataset.field;
       var val = input.value;

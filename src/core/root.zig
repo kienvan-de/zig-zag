@@ -97,7 +97,7 @@ pub const platform = @import("platform.zig");
 // =========================================================================
 
 /// OpenAI chat/completions type definitions.
-pub const openai_types = @import("providers/openai/completion_types.zig");
+pub const openai_types = @import("providers/openai/chat_types.zig");
 
 /// OpenAI /v1/responses type definitions.
 pub const openai_responses_types = @import("providers/openai/responses_types.zig");
