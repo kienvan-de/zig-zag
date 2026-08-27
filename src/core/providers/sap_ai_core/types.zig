@@ -15,7 +15,7 @@
 const std = @import("std");
 
 // Reuse OpenAI types for the inner content
-pub const OpenAI = @import("../openai/types.zig");
+pub const OpenAI = @import("../openai/completion_types.zig");
 
 // ============================================================================
 // SAP AI Core Orchestration API Data Structures

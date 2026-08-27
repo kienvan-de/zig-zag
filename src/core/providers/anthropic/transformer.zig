@@ -15,7 +15,7 @@
 const std = @import("std");
 const time = @import("../../time.zig");
 const testing = std.testing;
-const OpenAI = @import("../openai/types.zig");
+const OpenAI = @import("../openai/completion_types.zig");
 const Anthropic = @import("types.zig");
 const log = @import("../../log.zig");
 

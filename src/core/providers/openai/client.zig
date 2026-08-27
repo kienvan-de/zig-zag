@@ -13,7 +13,7 @@
 // limitations under the License.
 
 const std = @import("std");
-const OpenAI = @import("types.zig");
+const OpenAI = @import("completion_types.zig");
 const config_mod = @import("../../config.zig");
 const http_client = @import("../../client.zig");
 const log = @import("../../log.zig");
