@@ -651,11 +651,238 @@ pub fn cleanupToChatResponse(resp: Completion.Response, allocator: std.mem.Alloc
 
 pub const StreamState = struct {
     original_model: []const u8,
+    allocator: std.mem.Allocator,
     response_id: []const u8 = "",
+    finish_reason: ?[]const u8 = null,
     input_tokens: u32 = 0,
+    output_tokens: u32 = 0,
 
-    pub fn init(_: std.mem.Allocator, original_model: []const u8) StreamState {
-        return .{ .original_model = original_model };
+    pub fn init(a: std.mem.Allocator, original_model: []const u8) StreamState {
+        return .{ .allocator = a, .original_model = original_model };
     }
-    pub fn deinit(_: *StreamState) void {}
+    pub fn deinit(self: *StreamState) void {
+        if (self.response_id.len > 0) self.allocator.free(self.response_id);
+    }
 };
+
+// ============================================================================
+// Streaming: chat chunk → ResponsesStreamEvent SSE lines
+// ============================================================================
+
+/// Convert a single chat SSE line (data: {...choices[].delta...}) into
+/// Responses API SSE event lines (response.output_text.delta, etc.)
+/// Returns an owned slice that the caller must free, or null to skip.
+pub fn fromChatStreamLine(
+    line: []const u8,
+    state: *StreamState,
+    allocator: std.mem.Allocator,
+) ?[]const u8 {
+    if (!std.mem.startsWith(u8, line, "data: ")) return null;
+    const json_part = line["data: ".len..];
+
+    // Parse the chat chunk
+    const parsed = std.json.parseFromSlice(
+        Completion.StreamChunk,
+        allocator,
+        json_part,
+        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+    ) catch return null;
+    defer parsed.deinit();
+
+    const chunk = parsed.value;
+
+    // Capture response id from first real chunk — dupe so it outlives parsed
+    if (chunk.id.len > 0 and state.response_id.len == 0) {
+        state.response_id = state.allocator.dupe(u8, chunk.id) catch chunk.id;
+    }
+
+    // Capture usage from final chunk
+    if (chunk.usage) |u| {
+        state.input_tokens = u.prompt_tokens;
+        state.output_tokens = u.completion_tokens;
+    }
+
+    if (chunk.choices.len == 0) return null;
+    const choice = chunk.choices[0];
+    const delta = choice.delta;
+
+    // Text delta → response.output_text.delta event
+    if (delta.content) |text| {
+        if (text.len == 0) return null;
+        var buf = std.ArrayList(u8).empty;
+        buf.print(allocator,
+            "event: response.output_text.delta\ndata: {{\"type\":\"response.output_text.delta\",\"item_id\":\"{s}\",\"output_index\":0,\"content_index\":0,\"delta\":{f}}}\n\n",
+            .{ state.response_id, std.json.fmt(text, .{}) },
+        ) catch return null;
+        return buf.toOwnedSlice(allocator) catch null;
+    }
+
+    // Tool call delta → response.function_call_arguments.delta event
+    if (delta.tool_calls) |tcs| {
+        if (tcs.len == 0) return null;
+        const tc = tcs[0];
+        const args = if (tc.function) |f| f.arguments orelse "" else "";
+        if (args.len == 0) return null;
+        var buf = std.ArrayList(u8).empty;
+        buf.print(allocator,
+            "event: response.function_call_arguments.delta\ndata: {{\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"{s}\",\"output_index\":0,\"delta\":{f}}}\n\n",
+            .{ state.response_id, std.json.fmt(args, .{}) },
+        ) catch return null;
+        return buf.toOwnedSlice(allocator) catch null;
+    }
+
+    // finish_reason present → store it in state; terminal events emitted by fromChatStreamFlush
+    if (choice.finish_reason) |reason| {
+        if (reason.len > 0) {
+            state.finish_reason = reason;
+        }
+    }
+
+    return null;
+}
+
+/// Emit the terminal response.output_item.done + response.completed events.
+/// Call this after the stream loop ends, once usage is fully captured.
+pub fn fromChatStreamFlush(state: *StreamState, allocator: std.mem.Allocator) ?[]const u8 {
+    const reason = state.finish_reason orelse return null;
+    const status: []const u8 = if (std.mem.eql(u8, reason, "length")) "incomplete" else "completed";
+    const input_tok = state.input_tokens;
+    const output_tok = state.output_tokens;
+    var buf = std.ArrayList(u8).empty;
+    buf.print(allocator,
+        "event: response.output_item.done\ndata: {{\"type\":\"response.output_item.done\",\"item\":{{\"id\":\"{s}\",\"type\":\"message\",\"role\":\"assistant\",\"status\":\"{s}\"}}}}\n\nevent: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":{{\"id\":\"{s}\",\"object\":\"response\",\"model\":\"{s}\",\"status\":\"{s}\",\"usage\":{{\"input_tokens\":{d},\"output_tokens\":{d},\"total_tokens\":{d}}}}}}}\n\n",
+        .{ state.response_id, status, state.response_id, state.original_model, status, input_tok, output_tok, input_tok + output_tok },
+    ) catch return null;
+    return buf.toOwnedSlice(allocator) catch null;
+}
+
+// ============================================================================
+// Streaming: Anthropic SSE line → ResponsesStreamEvent SSE lines
+// ============================================================================
+
+pub const MessagesStreamState = struct {
+    original_model: []const u8,
+    allocator: std.mem.Allocator,
+    response_id: []const u8 = "",
+    finish_reason: ?[]const u8 = null,
+    input_tokens: u32 = 0,
+    output_tokens: u32 = 0,
+
+    pub fn init(a: std.mem.Allocator, original_model: []const u8) MessagesStreamState {
+        return .{ .allocator = a, .original_model = original_model };
+    }
+    pub fn deinit(self: *MessagesStreamState) void {
+        if (self.response_id.len > 0) self.allocator.free(self.response_id);
+    }
+};
+
+/// Convert a single Anthropic SSE line into Responses API SSE event lines.
+/// Returns an owned slice to write, or null to skip.
+pub fn fromMessagesStreamLine(
+    line: []const u8,
+    state: *MessagesStreamState,
+    allocator: std.mem.Allocator,
+) ?[]const u8 {
+    if (!std.mem.startsWith(u8, line, "data: ")) return null;
+    const json_part = line["data: ".len..];
+
+    // Parse just the type field
+    const TypeOnly = struct { type: []const u8 = "" };
+    const type_parsed = std.json.parseFromSlice(TypeOnly, allocator, json_part, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    }) catch return null;
+    defer type_parsed.deinit();
+    const event_type = type_parsed.value.type;
+
+    // message_start — capture id and input_tokens
+    if (std.mem.eql(u8, event_type, "message_start")) {
+        const MsgStart = struct {
+            message: struct {
+                id: []const u8 = "",
+                usage: struct { input_tokens: u32 = 0 } = .{},
+            } = .{},
+        };
+        if (std.json.parseFromSlice(MsgStart, allocator, json_part, .{
+            .allocate = .alloc_always, .ignore_unknown_fields = true,
+        })) |parsed| {
+            defer parsed.deinit();
+            if (parsed.value.message.id.len > 0 and state.response_id.len == 0) {
+                state.response_id = state.allocator.dupe(u8, parsed.value.message.id) catch "";
+            }
+            state.input_tokens = parsed.value.message.usage.input_tokens;
+        } else |_| {}
+        return null;
+    }
+
+    // content_block_delta with text_delta → response.output_text.delta
+    if (std.mem.eql(u8, event_type, "content_block_delta")) {
+        const Delta = struct {
+            index: u32 = 0,
+            delta: struct {
+                type: []const u8 = "",
+                text: []const u8 = "",
+                partial_json: []const u8 = "",
+            } = .{},
+        };
+        const parsed = std.json.parseFromSlice(Delta, allocator, json_part, .{
+            .allocate = .alloc_always, .ignore_unknown_fields = true,
+        }) catch return null;
+        defer parsed.deinit();
+
+        if (std.mem.eql(u8, parsed.value.delta.type, "text_delta")) {
+            const text = parsed.value.delta.text;
+            if (text.len == 0) return null;
+            var buf = std.ArrayList(u8).empty;
+            buf.print(allocator,
+                "event: response.output_text.delta\ndata: {{\"type\":\"response.output_text.delta\",\"item_id\":\"{s}\",\"output_index\":0,\"content_index\":0,\"delta\":{f}}}\n\n",
+                .{ state.response_id, std.json.fmt(text, .{}) },
+            ) catch return null;
+            return buf.toOwnedSlice(allocator) catch null;
+        } else if (std.mem.eql(u8, parsed.value.delta.type, "input_json_delta")) {
+            const args = parsed.value.delta.partial_json;
+            if (args.len == 0) return null;
+            var buf = std.ArrayList(u8).empty;
+            buf.print(allocator,
+                "event: response.function_call_arguments.delta\ndata: {{\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"{s}\",\"output_index\":0,\"delta\":{f}}}\n\n",
+                .{ state.response_id, std.json.fmt(args, .{}) },
+            ) catch return null;
+            return buf.toOwnedSlice(allocator) catch null;
+        }
+        return null;
+    }
+
+    // message_delta — capture output_tokens and stop_reason
+    if (std.mem.eql(u8, event_type, "message_delta")) {
+        const MsgDelta = struct {
+            delta: struct { stop_reason: []const u8 = "" } = .{},
+            usage: struct { output_tokens: u32 = 0 } = .{},
+        };
+        if (std.json.parseFromSlice(MsgDelta, allocator, json_part, .{
+            .allocate = .alloc_always, .ignore_unknown_fields = true,
+        })) |parsed| {
+            defer parsed.deinit();
+            state.output_tokens = parsed.value.usage.output_tokens;
+            if (parsed.value.delta.stop_reason.len > 0) {
+                state.finish_reason = parsed.value.delta.stop_reason;
+            }
+        } else |_| {}
+        return null;
+    }
+
+    return null;
+}
+
+/// Emit terminal Responses events after the Anthropic stream loop ends.
+pub fn fromMessagesStreamFlush(state: *MessagesStreamState, allocator: std.mem.Allocator) ?[]const u8 {
+    const reason = state.finish_reason orelse return null;
+    const status: []const u8 = if (std.mem.eql(u8, reason, "max_tokens")) "incomplete" else "completed";
+    const input_tok = state.input_tokens;
+    const output_tok = state.output_tokens;
+    var buf = std.ArrayList(u8).empty;
+    buf.print(allocator,
+        "event: response.output_item.done\ndata: {{\"type\":\"response.output_item.done\",\"item\":{{\"id\":\"{s}\",\"type\":\"message\",\"role\":\"assistant\",\"status\":\"{s}\"}}}}\n\nevent: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":{{\"id\":\"{s}\",\"object\":\"response\",\"model\":\"{s}\",\"status\":\"{s}\",\"usage\":{{\"input_tokens\":{d},\"output_tokens\":{d},\"total_tokens\":{d}}}}}}}\n\n",
+        .{ state.response_id, status, state.response_id, state.original_model, status, input_tok, output_tok, input_tok + output_tok },
+    ) catch return null;
+    return buf.toOwnedSlice(allocator) catch null;
+}
