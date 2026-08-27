@@ -37,6 +37,7 @@ pub const Role = enum {
     system,
     user,
     assistant,
+    developer,
     function,
     tool,
 
@@ -62,6 +63,7 @@ pub const ContentPart = union(enum) {
     text: struct {
         type: []const u8 = "text",
         text: []const u8,
+        prompt_cache_breakpoint: ?std.json.Value = null, // GAP-G16
     },
     image_url: struct {
         type: []const u8 = "image_url",
@@ -69,6 +71,21 @@ pub const ContentPart = union(enum) {
             url: []const u8,
             detail: ?[]const u8 = null, // "auto", "low", "high"
         },
+        prompt_cache_breakpoint: ?std.json.Value = null, // GAP-G16
+    },
+    input_audio: struct { // GAP-G2
+        type: []const u8 = "input_audio",
+        input_audio: std.json.Value, // { data: base64, format: "wav"|"mp3" }
+        prompt_cache_breakpoint: ?std.json.Value = null,
+    },
+    file: struct { // GAP-G3
+        type: []const u8 = "file",
+        file: std.json.Value, // { filename?, file_data?, file_id? }
+        prompt_cache_breakpoint: ?std.json.Value = null,
+    },
+    refusal: struct { // GAP-G4: assistant content part
+        type: []const u8 = "refusal",
+        refusal: []const u8,
     },
 
     pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
@@ -87,7 +104,8 @@ pub const ContentPart = union(enum) {
         if (std.mem.eql(u8, type_str, "text")) {
             const text_value = obj.get("text") orelse return error.MissingField;
             if (text_value != .string) return error.UnexpectedToken;
-            return .{ .text = .{ .type = "text", .text = text_value.string } };
+            const pcc = obj.get("prompt_cache_breakpoint");
+            return .{ .text = .{ .type = "text", .text = text_value.string, .prompt_cache_breakpoint = pcc } };
         } else if (std.mem.eql(u8, type_str, "image_url")) {
             const image_url_obj = obj.get("image_url") orelse return error.MissingField;
             if (image_url_obj != .object) return error.UnexpectedToken;
@@ -97,15 +115,27 @@ pub const ContentPart = union(enum) {
                 if (d == .string) d.string else null
             else
                 null;
+            const pcc = obj.get("prompt_cache_breakpoint");
             return .{ .image_url = .{
                 .type = "image_url",
-                .image_url = .{
-                    .url = url_value.string,
-                    .detail = detail,
-                },
+                .image_url = .{ .url = url_value.string, .detail = detail },
+                .prompt_cache_breakpoint = pcc,
             } };
+        } else if (std.mem.eql(u8, type_str, "input_audio")) {
+            const audio_val = obj.get("input_audio") orelse return error.MissingField;
+            const pcc = obj.get("prompt_cache_breakpoint");
+            return .{ .input_audio = .{ .type = "input_audio", .input_audio = audio_val, .prompt_cache_breakpoint = pcc } };
+        } else if (std.mem.eql(u8, type_str, "file")) {
+            const file_val = obj.get("file") orelse return error.MissingField;
+            const pcc = obj.get("prompt_cache_breakpoint");
+            return .{ .file = .{ .type = "file", .file = file_val, .prompt_cache_breakpoint = pcc } };
+        } else if (std.mem.eql(u8, type_str, "refusal")) {
+            const refusal_val = obj.get("refusal") orelse return error.MissingField;
+            if (refusal_val != .string) return error.UnexpectedToken;
+            return .{ .refusal = .{ .type = "refusal", .refusal = refusal_val.string } };
         } else {
-            return error.UnexpectedToken;
+            // Unknown content part type — degrade to empty text to avoid crashing
+            return .{ .text = .{ .type = type_str, .text = "" } };
         }
     }
 
@@ -113,23 +143,32 @@ pub const ContentPart = union(enum) {
         try jw.beginObject();
         switch (self) {
             .text => |t| {
-                try jw.objectField("type");
-                try jw.write("text");
-                try jw.objectField("text");
-                try jw.write(t.text);
+                try jw.objectField("type"); try jw.write("text");
+                try jw.objectField("text"); try jw.write(t.text);
+                if (t.prompt_cache_breakpoint) |v| { try jw.objectField("prompt_cache_breakpoint"); try jw.write(v); }
             },
             .image_url => |img| {
-                try jw.objectField("type");
-                try jw.write("image_url");
+                try jw.objectField("type"); try jw.write("image_url");
                 try jw.objectField("image_url");
                 try jw.beginObject();
-                try jw.objectField("url");
-                try jw.write(img.image_url.url);
-                if (img.image_url.detail) |d| {
-                    try jw.objectField("detail");
-                    try jw.write(d);
-                }
+                try jw.objectField("url"); try jw.write(img.image_url.url);
+                if (img.image_url.detail) |d| { try jw.objectField("detail"); try jw.write(d); }
                 try jw.endObject();
+                if (img.prompt_cache_breakpoint) |v| { try jw.objectField("prompt_cache_breakpoint"); try jw.write(v); }
+            },
+            .input_audio => |a| {
+                try jw.objectField("type"); try jw.write("input_audio");
+                try jw.objectField("input_audio"); try jw.write(a.input_audio);
+                if (a.prompt_cache_breakpoint) |v| { try jw.objectField("prompt_cache_breakpoint"); try jw.write(v); }
+            },
+            .file => |f| {
+                try jw.objectField("type"); try jw.write("file");
+                try jw.objectField("file"); try jw.write(f.file);
+                if (f.prompt_cache_breakpoint) |v| { try jw.objectField("prompt_cache_breakpoint"); try jw.write(v); }
+            },
+            .refusal => |r| {
+                try jw.objectField("type"); try jw.write("refusal");
+                try jw.objectField("refusal"); try jw.write(r.refusal);
             },
         }
         try jw.endObject();
@@ -251,14 +290,23 @@ pub const Function = struct {
     parameters: ?std.json.Value = null, // JSON schema
 };
 
-/// Response format
+/// Response format — supports text, json_object, and json_schema (Structured Outputs)
 pub const ResponseFormat = struct {
-    type: []const u8, // "text" or "json_object"
+    type: []const u8, // "text" | "json_object" | "json_schema"
+    json_schema: ?std.json.Value = null, // present when type == "json_schema"
+
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        if (self.json_schema) |v| { try jw.objectField("json_schema"); try jw.write(v); }
+        try jw.endObject();
+    }
 };
 
 /// Stream options
 pub const StreamOptions = struct {
-    include_usage: ?bool = null, // If true, sends a final chunk with usage stats
+    include_usage: ?bool = null,
+    include_obfuscation: ?bool = null, // GAP-G9
 };
 
 /// Content union type for messages
@@ -272,6 +320,8 @@ pub const Message = struct {
     role: Role,
     content: ?MessageContent = .{ .text = "" },
     name: ?[]const u8 = null,
+    refusal: ?[]const u8 = null, // GAP-G21: assistant message refusal
+    audio: ?std.json.Value = null, // GAP-G21: assistant message audio reference { id }
     tool_calls: ?[]const ToolCall = null,
     tool_call_id: ?[]const u8 = null,
     function_call: ?FunctionCall = null,
@@ -301,6 +351,16 @@ pub const Message = struct {
         if (self.name) |n| {
             try jw.objectField("name");
             try jw.write(n);
+        }
+
+        if (self.refusal) |r| {
+            try jw.objectField("refusal");
+            try jw.write(r);
+        }
+
+        if (self.audio) |a| {
+            try jw.objectField("audio");
+            try jw.write(a);
         }
 
         if (self.tool_calls) |tc| {
@@ -351,6 +411,13 @@ pub const Message = struct {
         else
             null;
 
+        const refusal = if (obj.get("refusal")) |r|
+            if (r == .string) r.string else null
+        else
+            null;
+
+        const audio = obj.get("audio");
+
         const tool_calls = if (obj.get("tool_calls")) |tc|
             if (tc == .array) blk: {
                 const calls = try allocator.alloc(ToolCall, tc.array.items.len);
@@ -376,6 +443,8 @@ pub const Message = struct {
             .role = role,
             .content = content,
             .name = name,
+            .refusal = refusal,
+            .audio = audio,
             .tool_calls = tool_calls,
             .tool_call_id = tool_call_id,
             .function_call = function_call,
@@ -397,10 +466,10 @@ pub const Request = struct {
     presence_penalty: ?f32 = null,
     frequency_penalty: ?f32 = null,
     tools: ?[]const Tool = null,
-    tool_choice: ?std.json.Value = null, // "none", "auto", "required", or object
+    tool_choice: ?std.json.Value = null,
     parallel_tool_calls: ?bool = null,
     functions: ?[]const Function = null,
-    function_call: ?[]const u8 = null, // "none", "auto", or JSON (deprecated)
+    function_call: ?[]const u8 = null,
     response_format: ?ResponseFormat = null,
     stop: ?[]const []const u8 = null,
     logit_bias: ?std.json.Value = null,
@@ -408,6 +477,29 @@ pub const Request = struct {
     top_logprobs: ?u8 = null,
     user: ?[]const u8 = null,
     seed: ?i64 = null,
+    // GAP-G7
+    reasoning_effort: ?[]const u8 = null,
+    // GAP-G8
+    modalities: ?[]const []const u8 = null,
+    audio: ?std.json.Value = null,
+    // GAP-G11
+    store: ?bool = null,
+    // GAP-G12
+    moderation: ?std.json.Value = null,
+    // GAP-G13
+    web_search_options: ?std.json.Value = null,
+    // GAP-G14
+    metadata: ?std.json.Value = null,
+    // GAP-G15
+    prediction: ?std.json.Value = null,
+    // GAP-G17
+    safety_identifier: ?[]const u8 = null,
+    prompt_cache_key: ?[]const u8 = null,
+    prompt_cache_options: ?std.json.Value = null,
+    prompt_cache_retention: ?[]const u8 = null,
+    // GAP-G18
+    service_tier: ?[]const u8 = null,
+    verbosity: ?[]const u8 = null,
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         try jw.beginObject();
@@ -506,6 +598,20 @@ pub const Request = struct {
             try jw.objectField("seed");
             try jw.write(v);
         }
+        if (self.reasoning_effort) |v| { try jw.objectField("reasoning_effort"); try jw.write(v); }
+        if (self.modalities) |v| { try jw.objectField("modalities"); try jw.write(v); }
+        if (self.audio) |v| { try jw.objectField("audio"); try jw.write(v); }
+        if (self.store) |v| { try jw.objectField("store"); try jw.write(v); }
+        if (self.moderation) |v| { try jw.objectField("moderation"); try jw.write(v); }
+        if (self.web_search_options) |v| { try jw.objectField("web_search_options"); try jw.write(v); }
+        if (self.metadata) |v| { try jw.objectField("metadata"); try jw.write(v); }
+        if (self.prediction) |v| { try jw.objectField("prediction"); try jw.write(v); }
+        if (self.safety_identifier) |v| { try jw.objectField("safety_identifier"); try jw.write(v); }
+        if (self.prompt_cache_key) |v| { try jw.objectField("prompt_cache_key"); try jw.write(v); }
+        if (self.prompt_cache_options) |v| { try jw.objectField("prompt_cache_options"); try jw.write(v); }
+        if (self.prompt_cache_retention) |v| { try jw.objectField("prompt_cache_retention"); try jw.write(v); }
+        if (self.service_tier) |v| { try jw.objectField("service_tier"); try jw.write(v); }
+        if (self.verbosity) |v| { try jw.objectField("verbosity"); try jw.write(v); }
 
         try jw.endObject();
     }
@@ -632,20 +738,29 @@ pub const Request = struct {
         }
         if (obj.get("response_format")) |v| {
             if (v == .object) {
-                result.response_format = try std.json.parseFromValueLeaky(ResponseFormat, allocator, v, .{});
+                const rf_type = if (v.object.get("type")) |t| (if (t == .string) t.string else "text") else "text";
+                const rf_schema = v.object.get("json_schema");
+                result.response_format = .{ .type = rf_type, .json_schema = rf_schema };
             }
         }
         if (obj.get("stop")) |v| {
-            if (v == .array) {
-                const stop_arr = v.array.items;
-                const stop = try allocator.alloc([]const u8, stop_arr.len);
-                for (stop_arr, 0..) |stop_val, i| {
-                    stop[i] = switch (stop_val) {
-                        .string => |s| s,
-                        else => return error.UnexpectedToken,
-                    };
-                }
-                result.stop = stop;
+            switch (v) {
+                .string => |s| {
+                    const stop = try allocator.alloc([]const u8, 1);
+                    stop[0] = s;
+                    result.stop = stop;
+                },
+                .array => |arr| {
+                    const stop = try allocator.alloc([]const u8, arr.items.len);
+                    for (arr.items, 0..) |stop_val, i| {
+                        stop[i] = switch (stop_val) {
+                            .string => |s| s,
+                            else => return error.UnexpectedToken,
+                        };
+                    }
+                    result.stop = stop;
+                },
+                else => {},
             }
         }
         if (obj.get("logit_bias")) |v| {
@@ -675,6 +790,27 @@ pub const Request = struct {
                 else => null,
             };
         }
+        if (obj.get("reasoning_effort")) |v| { result.reasoning_effort = if (v == .string) v.string else null; }
+        if (obj.get("modalities")) |v| {
+            if (v == .array) {
+                const arr = v.array.items;
+                const m = try allocator.alloc([]const u8, arr.len);
+                for (arr, 0..) |item, i| { m[i] = if (item == .string) item.string else "text"; }
+                result.modalities = m;
+            }
+        }
+        if (obj.get("audio")) |v| { result.audio = v; }
+        if (obj.get("store")) |v| { result.store = if (v == .bool) v.bool else null; }
+        if (obj.get("moderation")) |v| { result.moderation = v; }
+        if (obj.get("web_search_options")) |v| { result.web_search_options = v; }
+        if (obj.get("metadata")) |v| { result.metadata = v; }
+        if (obj.get("prediction")) |v| { result.prediction = v; }
+        if (obj.get("safety_identifier")) |v| { result.safety_identifier = if (v == .string) v.string else null; }
+        if (obj.get("prompt_cache_key")) |v| { result.prompt_cache_key = if (v == .string) v.string else null; }
+        if (obj.get("prompt_cache_options")) |v| { result.prompt_cache_options = v; }
+        if (obj.get("prompt_cache_retention")) |v| { result.prompt_cache_retention = if (v == .string) v.string else null; }
+        if (obj.get("service_tier")) |v| { result.service_tier = if (v == .string) v.string else null; }
+        if (obj.get("verbosity")) |v| { result.verbosity = if (v == .string) v.string else null; }
 
         return result;
     }
@@ -751,6 +887,8 @@ pub const StreamChunk = struct {
     usage: ?Usage = null,
     system_fingerprint: ?[]const u8 = null,
     service_tier: ?[]const u8 = null,
+    obfuscation: ?[]const u8 = null,   // GAP-G10
+    moderation: ?std.json.Value = null, // GAP-G12
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         try jw.beginObject();
@@ -780,6 +918,8 @@ pub const StreamChunk = struct {
             try jw.objectField("service_tier");
             try jw.write(st);
         }
+        if (self.obfuscation) |v| { try jw.objectField("obfuscation"); try jw.write(v); }
+        if (self.moderation) |v| { try jw.objectField("moderation"); try jw.write(v); }
         try jw.endObject();
     }
 };
@@ -900,6 +1040,8 @@ pub const Response = struct {
     usage: ?Usage = null,
     system_fingerprint: ?[]const u8 = null,
     service_tier: ?[]const u8 = null,
+    metadata: ?std.json.Value = null,   // GAP-G14
+    moderation: ?std.json.Value = null, // GAP-G12
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         try jw.beginObject();
@@ -937,6 +1079,9 @@ pub const Response = struct {
             try jw.objectField("service_tier");
             try jw.write(st);
         }
+
+        if (self.metadata) |v| { try jw.objectField("metadata"); try jw.write(v); }
+        if (self.moderation) |v| { try jw.objectField("moderation"); try jw.write(v); }
 
         try jw.endObject();
     }

@@ -368,7 +368,7 @@ pub fn extractSystemPrompt(
     defer system_parts.deinit(allocator);
 
     for (messages) |msg| {
-        if (msg.role == .system) {
+        if (msg.role == .system or msg.role == .developer) {
             const content_text = if (msg.content) |content| switch (content) {
                 .text => |s| s,
                 .parts => |parts| blk: {
@@ -444,6 +444,9 @@ pub fn transformContent(
                                 } },
                             } });
                         }
+                    },
+                    .input_audio, .file, .refusal => {
+                        // Audio/file/refusal parts have no Anthropic equivalent — skip silently
                     },
                 }
             }
@@ -590,12 +593,13 @@ pub fn normalizeMessages(
     for (messages) |msg| {
         // Skip system messages
         if (msg.role == .system) continue;
+        if (msg.role == .developer) continue; // developer role treated as system — extracted above
 
         // Map role
         const anthro_role: Anthropic.Role = switch (msg.role) {
             .user => .user,
             .assistant => .assistant,
-            .system => unreachable, // Already filtered
+            .system, .developer => unreachable, // Already filtered above
             .tool, .function => .user, // Tool responses become user messages
         };
 
