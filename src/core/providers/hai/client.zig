@@ -38,7 +38,7 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const OpenAI = @import("../openai/completion_types.zig");
+const OpenAI = @import("../openai/chat_types.zig");
 const Anthropic = @import("../anthropic/types.zig");
 const config_mod = @import("../../config.zig");
 const http_client = @import("../../client.zig");

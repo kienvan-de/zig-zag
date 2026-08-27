@@ -13,10 +13,10 @@
 // limitations under the License.
 
 const std = @import("std");
-const OpenAI = @import("../openai/completion_types.zig");
+const OpenAI = @import("../openai/chat_types.zig");
 const Anthropic = @import("../anthropic/types.zig");
 const SapAiCore = @import("types.zig");
-const openai_transformer = @import("../openai/transformer.zig");
+const openai_transformer = @import("../openai/chat_transformer.zig");
 const log = @import("../../log.zig");
 
 /// Check if a model has orchestration scenario

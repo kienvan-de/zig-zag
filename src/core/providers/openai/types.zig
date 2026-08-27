@@ -16,7 +16,7 @@ const std = @import("std");
 
 // ============================================================================
 // OpenAI Common Types
-// Shared between /v1/chat/completions (completion_types.zig)
+// Shared between /v1/chat/completions (chat_types.zig)
 // and /v1/responses (responses_types.zig).
 // ============================================================================
 
