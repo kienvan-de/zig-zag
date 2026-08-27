@@ -1233,26 +1233,25 @@ fn responsesViaChat(
         };
         defer client.freeStreamingResult(stream_result);
 
-        // Stream lines through as-is (chat format) — responses streaming is handled at handler level
+        const responses_rt = openai.responses_transformer;
+        var stream_state = responses_rt.StreamState.init(allocator, request.model);
+        defer stream_state.deinit();
+
         while (true) {
             const maybe_line = stream_result.iterator.next() catch break;
             const line = maybe_line orelse break;
             if (std.mem.startsWith(u8, line, "data: [DONE]")) break;
-            var state = Transformer.StreamState.init(allocator, request.model);
-            defer state.deinit();
-            const result = Transformer.transformStreamLine(line, &state, allocator);
-            switch (result) {
-                .chunk => |parsed| {
-                    var chunk = parsed;
-                    defer chunk.deinit();
-                    var buf = std.ArrayList(u8).empty;
-                    defer buf.deinit(allocator);
-                    buf.print(allocator, "data: {f}\n\n", .{std.json.fmt(chunk.value, .{})}) catch continue;
-                    writer.writeAll(buf.items) catch {};
-                },
-                .@"error", .skip => {},
+            if (responses_rt.fromChatStreamLine(line, &stream_state, allocator)) |out| {
+                defer allocator.free(out);
+                writer.writeAll(out) catch {};
             }
         }
+        // Emit terminal events with final usage (deferred until after usage chunk arrives)
+        if (responses_rt.fromChatStreamFlush(&stream_state, allocator)) |out| {
+            defer allocator.free(out);
+            writer.writeAll(out) catch {};
+        }
+        // Final [DONE] sentinel
         try writer.writeAll("data: [DONE]\n\n");
     } else {
         const provider_response = client.sendRequest(provider_req) catch |err| {
@@ -1333,22 +1332,24 @@ fn responsesViaMessages(
         };
         defer client.freeStreamingResult(stream_result);
 
-        var stream_state = Transformer.AnthropicStreamState.init(allocator, request.model);
-        defer stream_state.deinit();
+        const responses_rt = openai.responses_transformer;
+        var msg_stream_state = responses_rt.MessagesStreamState.init(allocator, request.model);
+        defer msg_stream_state.deinit();
 
         while (true) {
             const maybe_line = stream_result.iterator.next() catch break;
             const line = maybe_line orelse break;
             if (std.mem.startsWith(u8, line, "data: [DONE]")) break;
-            const result = Transformer.transformStreamLineToAnthropic(line, &stream_state, allocator);
-            switch (result) {
-                .output => |out| {
-                    defer allocator.free(out);
-                    writer.writeAll(out) catch {};
-                },
-                .skip => {},
+            if (responses_rt.fromMessagesStreamLine(line, &msg_stream_state, allocator)) |out| {
+                defer allocator.free(out);
+                writer.writeAll(out) catch {};
             }
         }
+        if (responses_rt.fromMessagesStreamFlush(&msg_stream_state, allocator)) |out| {
+            defer allocator.free(out);
+            writer.writeAll(out) catch {};
+        }
+        try writer.writeAll("data: [DONE]\n\n");
     } else {
         const provider_response = client.sendRequest(provider_req) catch |err| {
             if (err == error.AuthRequired and tryAutoReauth(allocator, provider_name)) {
@@ -1422,22 +1423,31 @@ fn responsesViaSap(
         };
         defer client.freeStreamingResult(stream_result);
 
-        var state = Transformer.StreamState.init(allocator, request.model);
-        defer state.deinit();
+        var sap_state = Transformer.StreamState.init(allocator, request.model);
+        defer sap_state.deinit();
+
+        const responses_rt = openai.responses_transformer;
+        var stream_state = responses_rt.StreamState.init(allocator, request.model);
+        defer stream_state.deinit();
 
         while (true) {
             const maybe_line = stream_result.iterator.next() catch break;
             const line = maybe_line orelse break;
             if (std.mem.startsWith(u8, line, "data: [DONE]")) break;
-            const result = Transformer.transformStreamLine(line, &state, allocator);
+            // Unwrap SAP envelope → chat chunk
+            const result = Transformer.transformStreamLine(line, &sap_state, allocator);
             switch (result) {
                 .chunk => |parsed| {
                     var chunk = parsed;
                     defer chunk.deinit();
-                    var buf = std.ArrayList(u8).empty;
-                    defer buf.deinit(allocator);
-                    buf.print(allocator, "data: {f}\n\n", .{std.json.fmt(chunk.value, .{})}) catch continue;
-                    writer.writeAll(buf.items) catch {};
+                    // Serialize chat chunk back to SSE line for responses converter
+                    var chat_line = std.ArrayList(u8).empty;
+                    defer chat_line.deinit(allocator);
+                    chat_line.print(allocator, "data: {f}", .{std.json.fmt(chunk.value, .{})}) catch continue;
+                    if (responses_rt.fromChatStreamLine(chat_line.items, &stream_state, allocator)) |out| {
+                        defer allocator.free(out);
+                        writer.writeAll(out) catch {};
+                    }
                 },
                 .@"error", .skip => {},
             }
