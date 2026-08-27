@@ -102,6 +102,20 @@ pub fn transform(
         .top_logprobs = request.top_logprobs,
         .user = request.user,
         .seed = request.seed,
+        .reasoning_effort = request.reasoning_effort,
+        .modalities = request.modalities,
+        .audio = request.audio,
+        .store = request.store,
+        .moderation = request.moderation,
+        .web_search_options = request.web_search_options,
+        .metadata = request.metadata,
+        .prediction = request.prediction,
+        .safety_identifier = request.safety_identifier,
+        .prompt_cache_key = request.prompt_cache_key,
+        .prompt_cache_options = request.prompt_cache_options,
+        .prompt_cache_retention = request.prompt_cache_retention,
+        .service_tier = request.service_tier,
+        .verbosity = request.verbosity,
     };
 }
 
@@ -124,6 +138,8 @@ pub fn transformResponse(
         .usage = response.usage,
         .system_fingerprint = response.system_fingerprint,
         .service_tier = response.service_tier,
+        .metadata = response.metadata,
+        .moderation = response.moderation,
     };
 }
 
