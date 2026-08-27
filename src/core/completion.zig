@@ -36,7 +36,7 @@ const pricing = @import("pricing.zig");
 const provider_mod = @import("provider.zig");
 const utils = @import("utils.zig");
 const worker_pool = @import("worker_pool.zig");
-const openai_types = @import("providers/openai/types.zig");
+const openai_types = @import("providers/openai/completion_types.zig");
 const anthropic_types = @import("providers/anthropic/types.zig");
 
 // Provider modules — direct imports for comptime dispatch

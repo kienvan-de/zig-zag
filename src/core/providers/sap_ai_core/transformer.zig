@@ -13,7 +13,7 @@
 // limitations under the License.
 
 const std = @import("std");
-const OpenAI = @import("../openai/types.zig");
+const OpenAI = @import("../openai/completion_types.zig");
 const Anthropic = @import("../anthropic/types.zig");
 const SapAiCore = @import("types.zig");
 const openai_transformer = @import("../openai/transformer.zig");
