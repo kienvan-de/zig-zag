@@ -726,6 +726,7 @@ function detectProviderType(key, obj) {
   if (key === 'sap_ai_core') return 'sap_ai_core';
   if (key === 'hai') return 'hai';
   if (key === 'copilot') return 'copilot';
+  if (key === 'google_ai_studio') return 'google_ai_studio';
   if ('compatible' in obj) return 'compatible';
   if ('oauth_client_secret' in obj || 'oauth_domain' in obj) return 'sap_ai_core';
   if ('auth_domain' in obj || 'oidc_config_path' in obj) return 'hai';
@@ -892,6 +893,7 @@ function providerDisplayName(type) {
   var names = {
     openai: 'OpenAI', anthropic: 'Anthropic', sap_ai_core: 'SAP AI Core',
     hai: 'SAP Hyperspace AI', copilot: 'Copilot', compatible: 'Compatible',
+    google_ai_studio: 'Google AI Studio',
   };
   return names[type] || type;
 }
@@ -899,7 +901,7 @@ function providerDisplayName(type) {
 function providerLabel(key) {
   var known = {
     openai: 'OpenAI', anthropic: 'Anthropic', sap_ai_core: 'SAP AI Core',
-    hai: 'SAP Hyperspace AI', copilot: 'Copilot',
+    hai: 'SAP Hyperspace AI', copilot: 'Copilot', google_ai_studio: 'Google AI Studio',
   };
   if (known[key]) return known[key];
   // Custom provider: capitalize first char, replace underscores with spaces
@@ -1433,11 +1435,12 @@ function renderSettingsPanel(key) {
 function renderAddProviderPanel() {
   var providers = (state.dirty && state.dirty.providers) || {};
   var nativeTypes = [
-    { value: 'openai',      label: 'OpenAI' },
-    { value: 'anthropic',   label: 'Anthropic' },
-    { value: 'sap_ai_core', label: 'SAP AI Core' },
-    { value: 'hai',         label: 'HAI' },
-    { value: 'copilot',     label: 'Copilot' },
+    { value: 'openai',            label: 'OpenAI' },
+    { value: 'anthropic',         label: 'Anthropic' },
+    { value: 'google_ai_studio',  label: 'Google AI Studio' },
+    { value: 'sap_ai_core',       label: 'SAP AI Core' },
+    { value: 'hai',               label: 'HAI' },
+    { value: 'copilot',           label: 'Copilot' },
   ];
   var options = '<option value="">Select\u2026</option>';
   for (var i = 0; i < nativeTypes.length; i++) {
@@ -1475,7 +1478,7 @@ function renderAddProviderPanel() {
       return;
     }
     // Native providers have fixed keys; compatible needs a custom name
-    var isNative = ['openai','anthropic','sap_ai_core','hai','copilot'].indexOf(v) !== -1;
+    var isNative = ['openai','anthropic','google_ai_studio','sap_ai_core','hai','copilot'].indexOf(v) !== -1;
     if (isNative) {
       $nameGroup.style.display = 'none';
       $name.value = v;
@@ -1490,7 +1493,7 @@ function renderAddProviderPanel() {
   $create.addEventListener('click', function () {
     var v = $type.value;
     if (!v) return;
-    var isNative = ['openai','anthropic','sap_ai_core','hai','copilot'].indexOf(v) !== -1;
+    var isNative = ['openai','anthropic','google_ai_studio','sap_ai_core','hai','copilot'].indexOf(v) !== -1;
     var key = isNative ? v : $name.value.trim();
     if (!key) {
       $name.classList.add('invalid');
