@@ -38,7 +38,7 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const OpenAI = @import("../openai/chat_types.zig");
+const OpenAIChat = @import("../openai/chat_types.zig");
 const Anthropic = @import("../anthropic/types.zig");
 const config_mod = @import("../../config.zig");
 const http_client = @import("../../client.zig");
@@ -315,7 +315,7 @@ pub const HaiClient = struct {
     }
 
     /// Fetch list of available models from HAI API
-    pub fn listModels(self: *HaiClient) !std.json.Parsed(OpenAI.ModelsResponse) {
+    pub fn listModels(self: *HaiClient) !std.json.Parsed(OpenAIChat.ModelsResponse) {
         // Build cache key using provider name from config
         var cache_key_buf: [128]u8 = undefined;
         const cache_key = std.fmt.bufPrint(&cache_key_buf, "models:{s}", .{self.config.name}) catch "models:hai";
@@ -326,7 +326,7 @@ pub const HaiClient = struct {
             log.debug("[HAI] Models cache hit for '{s}'", .{self.config.name});
 
             if (std.json.parseFromSlice(
-                OpenAI.ModelsResponse,
+                OpenAIChat.ModelsResponse,
                 self.allocator,
                 cached_body,
                 .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
@@ -375,7 +375,7 @@ pub const HaiClient = struct {
 
         // Parse response
         return std.json.parseFromSlice(
-            OpenAI.ModelsResponse,
+            OpenAIChat.ModelsResponse,
             self.allocator,
             response.body,
             .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
@@ -388,7 +388,7 @@ pub const HaiClient = struct {
     /// Send a request to HAI Chat Completions API (non-streaming)
     /// Send a non-streaming request to HAI.
     /// Dispatches URL by request type at comptime:
-    ///   - OpenAI.Request    → chat_completions_path, returns OpenAI.Response
+    ///   - OpenAIChat.Request    → chat_completions_path, returns OpenAIChat.Response
     ///   - Anthropic.Request → messages_path,          returns Anthropic.Response
     pub fn sendRequest(self: *HaiClient, request: anytype) !std.json.Parsed(ResponseType(@TypeOf(request))) {
         const Req = @TypeOf(request);
@@ -462,21 +462,21 @@ pub const HaiClient = struct {
 
     /// Map request type to response type at comptime
     fn ResponseType(comptime Req: type) type {
-        if (Req == OpenAI.Request) return OpenAI.Response;
+        if (Req == OpenAIChat.Request) return OpenAIChat.Response;
         if (Req == Anthropic.Request) return Anthropic.Response;
-        @compileError("HaiClient: unsupported request type — expected OpenAI.Request or Anthropic.Request");
+        @compileError("HaiClient: unsupported request type — expected OpenAIChat.Request or Anthropic.Request");
     }
 
     /// Pick the URL path based on request type
     fn pathForRequest(self: *HaiClient, comptime Req: type) []const u8 {
-        if (Req == OpenAI.Request) return self.chat_completions_path;
+        if (Req == OpenAIChat.Request) return self.chat_completions_path;
         if (Req == Anthropic.Request) return self.messages_path;
         @compileError("HaiClient: unsupported request type");
     }
 
     /// Human-readable label for log messages
     fn requestLabel(comptime Req: type) []const u8 {
-        if (Req == OpenAI.Request) return "sendRequest(OpenAI)";
+        if (Req == OpenAIChat.Request) return "sendRequest(OpenAI)";
         if (Req == Anthropic.Request) return "sendRequest(Anthropic)";
         @compileError("HaiClient: unsupported request type");
     }

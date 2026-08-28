@@ -14,8 +14,8 @@
 
 const std = @import("std");
 const testing = std.testing;
-const OpenAI = @import("chat_types.zig");
-const Responses = @import("responses_types.zig");
+const OpenAIChat = @import("chat_types.zig");
+const OpenAIResponses = @import("responses_types.zig");
 const Anthropic = @import("../anthropic/types.zig");
 const log = @import("../../log.zig");
 const rt = @import("responses_transformer.zig");
@@ -41,20 +41,20 @@ pub const StreamState = struct {
     }
 };
 
-/// Transform OpenAI ModelsResponse to OpenAI.Model array with provider prefix
+/// Transform OpenAI ModelsResponse to OpenAIChat.Model array with provider prefix
 pub fn transformModelsResponse(
     allocator: std.mem.Allocator,
-    response: std.json.Parsed(OpenAI.ModelsResponse),
+    response: std.json.Parsed(OpenAIChat.ModelsResponse),
     provider_name: []const u8,
-) ![]OpenAI.Model {
-    var models = try allocator.alloc(OpenAI.Model, response.value.data.len);
+) ![]OpenAIChat.Model {
+    var models = try allocator.alloc(OpenAIChat.Model, response.value.data.len);
     errdefer allocator.free(models);
 
     for (response.value.data, 0..) |upstream_model, i| {
         // Create prefixed model ID: {provider_name}/{model_id}
         const prefixed_id = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ provider_name, upstream_model.id });
 
-        models[i] = OpenAI.Model{
+        models[i] = OpenAIChat.Model{
             .id = prefixed_id,
             .object = "model",
             .created = upstream_model.created,
@@ -70,19 +70,19 @@ pub fn transformModelsResponse(
 /// For streaming requests, always injects `stream_options: { include_usage: true }`
 /// so the upstream returns usage data in the final chunk — required for token/cost tracking.
 pub fn transform(
-    request: OpenAI.Request,
+    request: OpenAIChat.Request,
     model: []const u8,
     allocator: std.mem.Allocator,
-) !OpenAI.Request {
+) !OpenAIChat.Request {
     _ = allocator; // No allocation needed for pass-through
 
     // Create a copy with the correct model name (without provider prefix)
-    return OpenAI.Request{
+    return OpenAIChat.Request{
         .model = model,
         .messages = request.messages,
         .stream = request.stream,
         .stream_options = if (request.stream orelse false)
-            OpenAI.StreamOptions{ .include_usage = true }
+            OpenAIChat.StreamOptions{ .include_usage = true }
         else
             request.stream_options,
         .temperature = request.temperature,
@@ -124,14 +124,14 @@ pub fn transform(
 /// Transform OpenAI response to OpenAI format
 /// For compatible providers, we need to set the model back to the original format
 pub fn transformResponse(
-    response: OpenAI.Response,
+    response: OpenAIChat.Response,
     allocator: std.mem.Allocator,
     original_model: []const u8,
-) !OpenAI.Response {
+) !OpenAIChat.Response {
     // Allocate model string to return original_model (e.g., "groq/llama-3.1-70b")
     const model_str = try allocator.dupe(u8, original_model);
 
-    return OpenAI.Response{
+    return OpenAIChat.Response{
         .id = response.id,
         .object = response.object,
         .created = response.created,
@@ -146,14 +146,14 @@ pub fn transformResponse(
 }
 
 /// Cleanup transformed request (no-op for pass-through)
-pub fn cleanupRequest(request: OpenAI.Request, allocator: std.mem.Allocator) void {
+pub fn cleanupRequest(request: OpenAIChat.Request, allocator: std.mem.Allocator) void {
     _ = request;
     _ = allocator;
     // No cleanup needed - request is just a shallow copy of the original
 }
 
 /// Cleanup transformed response
-pub fn cleanupResponse(response: OpenAI.Response, allocator: std.mem.Allocator) void {
+pub fn cleanupResponse(response: OpenAIChat.Response, allocator: std.mem.Allocator) void {
     // Free the model string allocated in transformResponse
     allocator.free(response.model);
 }
@@ -163,14 +163,14 @@ pub fn cleanupResponse(response: OpenAI.Response, allocator: std.mem.Allocator) 
 // ============================================================================
 
 /// Transform OpenAI error response (pass-through, already in correct format)
-pub fn transformErrorResponse(error_response: OpenAI.ErrorResponse) OpenAI.ErrorResponse {
+pub fn transformErrorResponse(error_response: OpenAIChat.ErrorResponse) OpenAIChat.ErrorResponse {
     return error_response;
 }
 
 /// Try to parse JSON as OpenAI error response
-fn tryParseError(json_part: []const u8, allocator: std.mem.Allocator) ?OpenAI.ErrorResponse {
+fn tryParseError(json_part: []const u8, allocator: std.mem.Allocator) ?OpenAIChat.ErrorResponse {
     const parsed = std.json.parseFromSlice(
-        OpenAI.ErrorResponse,
+        OpenAIChat.ErrorResponse,
         allocator,
         json_part,
         .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
@@ -178,8 +178,8 @@ fn tryParseError(json_part: []const u8, allocator: std.mem.Allocator) ?OpenAI.Er
     defer parsed.deinit();
 
     // Copy the error details since parsed will be freed
-    return OpenAI.ErrorResponse{
-        .@"error" = OpenAI.ErrorDetails{
+    return OpenAIChat.ErrorResponse{
+        .@"error" = OpenAIChat.ErrorDetails{
             .message = parsed.value.@"error".message,
             .type = parsed.value.@"error".type,
             .param = parsed.value.@"error".param,
@@ -196,7 +196,7 @@ pub fn transformStreamLine(
     line: []const u8,
     state: *StreamState,
     allocator: std.mem.Allocator,
-) OpenAI.StreamLineResult {
+) OpenAIChat.StreamLineResult {
     const original_model = state.original_model;
 
     // Check if this is a data line
@@ -209,7 +209,7 @@ pub fn transformStreamLine(
 
     // Parse the JSON chunk
     const parsed = std.json.parseFromSlice(
-        OpenAI.StreamChunk,
+        OpenAIChat.StreamChunk,
         allocator,
         json_part,
         .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
@@ -225,7 +225,7 @@ pub fn transformStreamLine(
 
     // Create new chunk with original model, serialize, then parse back
     // This ensures consistent ownership model (Parsed owns all data)
-    const new_chunk = OpenAI.StreamChunk{
+    const new_chunk = OpenAIChat.StreamChunk{
         .id = parsed.value.id,
         .object = parsed.value.object,
         .created = parsed.value.created,
@@ -246,7 +246,7 @@ pub fn transformStreamLine(
 
     // Parse back to get new Parsed that owns the data
     const new_parsed = std.json.parseFromSlice(
-        OpenAI.StreamChunk,
+        OpenAIChat.StreamChunk,
         allocator,
         buffer.items,
         .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
@@ -272,9 +272,9 @@ pub fn transformFromAnthropic(
     request: Anthropic.Request,
     model: []const u8,
     allocator: std.mem.Allocator,
-) !OpenAI.Request {
+) !OpenAIChat.Request {
     // Build OpenAI messages array
-    var messages = std.ArrayList(OpenAI.Message).empty;
+    var messages = std.ArrayList(OpenAIChat.Message).empty;
     errdefer {
         for (messages.items) |msg| {
             freeAnthropicTransformedMessage(msg, allocator);
@@ -292,7 +292,7 @@ pub fn transformFromAnthropic(
 
     // Convert Anthropic messages to OpenAI messages
     for (request.messages) |msg| {
-        const role: OpenAI.Role = switch (msg.role) {
+        const role: OpenAIChat.Role = switch (msg.role) {
             .user => .user,
             .assistant => .assistant,
         };
@@ -311,7 +311,7 @@ pub fn transformFromAnthropic(
                 var text_parts = std.ArrayList([]const u8).empty;
                 defer text_parts.deinit(allocator);
 
-                var tool_use_blocks = std.ArrayList(OpenAI.ToolCall).empty;
+                var tool_use_blocks = std.ArrayList(OpenAIChat.ToolCall).empty;
                 defer tool_use_blocks.deinit(allocator);
 
                 var tool_results = std.ArrayList(struct { id: []const u8, content: ?[]const u8 }).empty;
@@ -362,12 +362,12 @@ pub fn transformFromAnthropic(
 
                 // Emit assistant message with text + tool_calls
                 if (text_parts.items.len > 0 or tool_use_blocks.items.len > 0) {
-                    const content_text: ?OpenAI.MessageContent = if (text_parts.items.len > 0) blk: {
+                    const content_text: ?OpenAIChat.MessageContent = if (text_parts.items.len > 0) blk: {
                         const joined = try std.mem.join(allocator, "", text_parts.items);
                         break :blk .{ .text = joined };
                     } else null;
 
-                    const tool_calls: ?[]const OpenAI.ToolCall = if (tool_use_blocks.items.len > 0)
+                    const tool_calls: ?[]const OpenAIChat.ToolCall = if (tool_use_blocks.items.len > 0)
                         try tool_use_blocks.toOwnedSlice(allocator)
                     else
                         null;
@@ -385,8 +385,8 @@ pub fn transformFromAnthropic(
     const owned_messages = try messages.toOwnedSlice(allocator);
 
     // Transform tools if present
-    const tools: ?[]const OpenAI.Tool = if (request.tools) |anthro_tools| blk: {
-        const oai_tools = try allocator.alloc(OpenAI.Tool, anthro_tools.len);
+    const tools: ?[]const OpenAIChat.Tool = if (request.tools) |anthro_tools| blk: {
+        const oai_tools = try allocator.alloc(OpenAIChat.Tool, anthro_tools.len);
         for (anthro_tools, 0..) |at, i| {
             oai_tools[i] = .{ .function = .{
                 .type = "function",
@@ -417,12 +417,12 @@ pub fn transformFromAnthropic(
         },
     } else null;
 
-    return OpenAI.Request{
+    return OpenAIChat.Request{
         .model = model,
         .messages = owned_messages,
         .stream = request.stream,
         .stream_options = if (request.stream orelse false)
-            OpenAI.StreamOptions{ .include_usage = true }
+            OpenAIChat.StreamOptions{ .include_usage = true }
         else
             null,
         .temperature = request.temperature,
@@ -436,7 +436,7 @@ pub fn transformFromAnthropic(
 }
 
 /// Cleanup a request created by transformFromAnthropic
-pub fn cleanupFromAnthropicRequest(request: OpenAI.Request, allocator: std.mem.Allocator) void {
+pub fn cleanupFromAnthropicRequest(request: OpenAIChat.Request, allocator: std.mem.Allocator) void {
     for (request.messages) |msg| {
         freeAnthropicTransformedMessage(msg, allocator);
     }
@@ -445,7 +445,7 @@ pub fn cleanupFromAnthropicRequest(request: OpenAI.Request, allocator: std.mem.A
 }
 
 /// Free allocated fields in a message created by transformFromAnthropic
-fn freeAnthropicTransformedMessage(msg: OpenAI.Message, allocator: std.mem.Allocator) void {
+fn freeAnthropicTransformedMessage(msg: OpenAIChat.Message, allocator: std.mem.Allocator) void {
     // Free text content — all text is now owned (duped or joined) except system messages
     if (msg.content) |content| {
         switch (content) {
@@ -471,7 +471,7 @@ fn freeAnthropicTransformedMessage(msg: OpenAI.Message, allocator: std.mem.Alloc
 /// Transform OpenAI response to Anthropic response
 /// Used when the provider returned an OpenAI response but the client expects Anthropic format.
 pub fn transformToAnthropicResponse(
-    response: OpenAI.Response,
+    response: OpenAIChat.Response,
     allocator: std.mem.Allocator,
     original_model: []const u8,
 ) !Anthropic.Response {
@@ -772,26 +772,26 @@ fn emitClosingEvents(state: *AnthropicStreamState, allocator: std.mem.Allocator)
 pub const ResponsesStreamState = rt.StreamState;
 
 pub fn transformFromResponses(
-    request: Responses.ResponsesRequest,
+    request: OpenAIResponses.Request,
     model: []const u8,
     allocator: std.mem.Allocator,
-) !OpenAI.Request {
+) !OpenAIChat.Request {
     return rt.toChat(request, model, allocator);
 }
 
-pub fn cleanupFromResponsesRequest(request: OpenAI.Request, allocator: std.mem.Allocator) void {
+pub fn cleanupFromRequest(request: OpenAIChat.Request, allocator: std.mem.Allocator) void {
     rt.cleanupToChat(request, allocator);
 }
 
 pub fn transformToResponsesResponse(
-    response: OpenAI.Response,
-    original_req: Responses.ResponsesRequest,
+    response: OpenAIChat.Response,
+    original_req: OpenAIResponses.Request,
     allocator: std.mem.Allocator,
-) !Responses.ResponsesResponse {
+) !OpenAIResponses.ResponsesResponse {
     return rt.fromChatResponse(response, original_req, allocator);
 }
 
-pub fn cleanupResponsesResponse(resp: Responses.ResponsesResponse, allocator: std.mem.Allocator) void {
+pub fn cleanupResponsesResponse(resp: OpenAIResponses.ResponsesResponse, allocator: std.mem.Allocator) void {
     rt.cleanupFromChatResponse(resp, allocator);
 }
 

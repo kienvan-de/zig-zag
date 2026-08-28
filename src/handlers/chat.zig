@@ -20,7 +20,7 @@
 const std = @import("std");
 const net = @import("zag-core").net;
 const core = @import("zag-core");
-const OpenAI = core.openai_types;
+const OpenAIChat = core.openai_types;
 const errors = core.errors;
 const log = core.log;
 const http = @import("../http.zig");
@@ -38,7 +38,7 @@ pub fn handle(
 
     // Parse OpenAI request
     const openai_request = std.json.parseFromSlice(
-        OpenAI.Request,
+        OpenAIChat.Request,
         allocator,
         body,
         .{},

@@ -15,7 +15,7 @@
 const std = @import("std");
 
 // Reuse OpenAI types for the inner content
-pub const OpenAI = @import("../openai/chat_types.zig");
+pub const OpenAIChat = @import("../openai/chat_types.zig");
 
 // ============================================================================
 // SAP AI Core Orchestration API Data Structures
@@ -53,13 +53,13 @@ pub const ModelConfig = struct {
 
 /// Inline prompt template configuration
 pub const PromptConfig = struct {
-    template: []const OpenAI.Message,
-    tools: ?[]const OpenAI.Tool = null,
+    template: []const OpenAIChat.Message,
+    tools: ?[]const OpenAIChat.Tool = null,
     tool_choice: ?std.json.Value = null,
     /// Default values for template {{placeholders}}
     defaults: ?std.json.Value = null,
     /// Output format constraint (text, json_object, json_schema)
-    response_format: ?OpenAI.ResponseFormat = null,
+    response_format: ?OpenAIChat.ResponseFormat = null,
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         try jw.beginObject();
@@ -301,7 +301,7 @@ pub const Request = struct {
     /// Template variable substitution values  e.g. {"user_query": "Hello"}
     placeholder_values: ?std.json.Value = null,
     /// Prior conversation context merged with template messages
-    messages_history: ?[]const OpenAI.Message = null,
+    messages_history: ?[]const OpenAIChat.Message = null,
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         try jw.beginObject();
@@ -336,7 +336,7 @@ pub const GenericModuleResult = struct {
 
 /// Intermediate results from all orchestration modules
 pub const IntermediateResults = struct {
-    templating: ?[]const OpenAI.Message = null,
+    templating: ?[]const OpenAIChat.Message = null,
     llm: ?std.json.Value = null,
     grounding: ?GenericModuleResult = null,
     input_translation: ?std.json.Value = null,
@@ -351,7 +351,7 @@ pub const IntermediateResults = struct {
 pub const Response = struct {
     request_id: []const u8,
     intermediate_results: ?IntermediateResults = null,
-    final_result: OpenAI.Response,
+    final_result: OpenAIChat.Response,
     intermediate_failures: ?std.json.Value = null,
 };
 
@@ -359,7 +359,7 @@ pub const Response = struct {
 pub const StreamChunk = struct {
     request_id: []const u8,
     intermediate_results: ?IntermediateResults = null,
-    final_result: OpenAI.StreamChunk,
+    final_result: OpenAIChat.StreamChunk,
 };
 
 // ============================================================================

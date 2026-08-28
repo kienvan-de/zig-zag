@@ -15,8 +15,8 @@
 const std = @import("std");
 const time = @import("../../time.zig");
 const testing = std.testing;
-const OpenAI = @import("../openai/chat_types.zig");
-const Responses = @import("../openai/responses_types.zig");
+const OpenAIChat = @import("../openai/chat_types.zig");
+const OpenAIResponses = @import("../openai/responses_types.zig");
 const Anthropic = @import("types.zig");
 const log = @import("../../log.zig");
 const rt = @import("../openai/responses_transformer.zig");
@@ -25,22 +25,22 @@ const rt = @import("../openai/responses_transformer.zig");
 // Models Response Transformation
 // ============================================================================
 
-/// Transform Anthropic AnthropicModelsResponse to OpenAI.Model array with provider prefix
+/// Transform Anthropic AnthropicModelsResponse to OpenAIChat.Model array with provider prefix
 pub fn transformModelsResponse(
     allocator: std.mem.Allocator,
     response: std.json.Parsed(Anthropic.AnthropicModelsResponse),
     provider_name: []const u8,
-) ![]OpenAI.Model {
+) ![]OpenAIChat.Model {
     const data = response.value.data;
 
-    var models = try allocator.alloc(OpenAI.Model, data.len);
+    var models = try allocator.alloc(OpenAIChat.Model, data.len);
     errdefer allocator.free(models);
 
     for (data, 0..) |anthropic_model, i| {
         // Create prefixed model ID: {provider_name}/{model_id}
         const prefixed_id = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ provider_name, anthropic_model.id });
 
-        models[i] = OpenAI.Model{
+        models[i] = OpenAIChat.Model{
             .id = prefixed_id,
             .object = "model",
             .created = 0,
@@ -88,7 +88,7 @@ pub const StreamState = struct {
 // ============================================================================
 
 /// Transform Anthropic error response to OpenAI error format
-pub fn transformErrorResponse(anthro_error: Anthropic.ErrorResponse) OpenAI.ErrorResponse {
+pub fn transformErrorResponse(anthro_error: Anthropic.ErrorResponse) OpenAIChat.ErrorResponse {
     // Map Anthropic error type to OpenAI error type
     const error_type: []const u8 = if (std.mem.eql(u8, anthro_error.@"error".type, "invalid_request_error"))
         "invalid_request_error"
@@ -105,8 +105,8 @@ pub fn transformErrorResponse(anthro_error: Anthropic.ErrorResponse) OpenAI.Erro
     else
         "server_error";
 
-    return OpenAI.ErrorResponse{
-        .@"error" = OpenAI.ErrorDetails{
+    return OpenAIChat.ErrorResponse{
+        .@"error" = OpenAIChat.ErrorDetails{
             .message = anthro_error.@"error".message,
             .type = error_type,
             .param = null,
@@ -116,7 +116,7 @@ pub fn transformErrorResponse(anthro_error: Anthropic.ErrorResponse) OpenAI.Erro
 }
 
 /// Try to parse JSON as Anthropic error response
-fn tryParseError(json_part: []const u8, allocator: std.mem.Allocator) ?OpenAI.ErrorResponse {
+fn tryParseError(json_part: []const u8, allocator: std.mem.Allocator) ?OpenAIChat.ErrorResponse {
     const parsed = std.json.parseFromSlice(
         Anthropic.ErrorResponse,
         allocator,
@@ -135,7 +135,7 @@ pub fn transformStreamLine(
     line: []const u8,
     state: *StreamState,
     allocator: std.mem.Allocator,
-) OpenAI.StreamLineResult {
+) OpenAIChat.StreamLineResult {
     // Check if this is a data line
     if (!std.mem.startsWith(u8, line, "data: ")) {
         return .{ .skip = {} };
@@ -191,7 +191,7 @@ pub fn transformStreamLine(
     return .{ .skip = {} };
 }
 
-fn handleMessageStart(json_part: []const u8, state: *StreamState, allocator: std.mem.Allocator) ?std.json.Parsed(OpenAI.StreamChunk) {
+fn handleMessageStart(json_part: []const u8, state: *StreamState, allocator: std.mem.Allocator) ?std.json.Parsed(OpenAIChat.StreamChunk) {
     const parsed = std.json.parseFromSlice(
         Anthropic.MessageStart,
         allocator,
@@ -212,7 +212,7 @@ fn handleMessageStart(json_part: []const u8, state: *StreamState, allocator: std
     return buildOpenAIChunk(state, .{ .role = .assistant }, null, null, allocator);
 }
 
-fn handleContentBlockStart(json_part: []const u8, state: *StreamState, allocator: std.mem.Allocator) ?std.json.Parsed(OpenAI.StreamChunk) {
+fn handleContentBlockStart(json_part: []const u8, state: *StreamState, allocator: std.mem.Allocator) ?std.json.Parsed(OpenAIChat.StreamChunk) {
     const parsed = std.json.parseFromSlice(
         Anthropic.ContentBlockStart,
         allocator,
@@ -232,7 +232,7 @@ fn handleContentBlockStart(json_part: []const u8, state: *StreamState, allocator
         state.current_tool_call_id = parsed.value.content_block.id;
         state.current_tool_call_name = parsed.value.content_block.name;
 
-        const tool_call = OpenAI.DeltaToolCall{
+        const tool_call = OpenAIChat.DeltaToolCall{
             .index = parsed.value.index,
             .id = parsed.value.content_block.id,
             .type = "function",
@@ -242,14 +242,14 @@ fn handleContentBlockStart(json_part: []const u8, state: *StreamState, allocator
             },
         };
 
-        var tool_calls: [1]OpenAI.DeltaToolCall = .{tool_call};
+        var tool_calls: [1]OpenAIChat.DeltaToolCall = .{tool_call};
         return buildOpenAIChunk(state, .{ .tool_calls = &tool_calls }, null, null, allocator);
     }
     // For text blocks, we wait for content_block_delta
     return null;
 }
 
-fn handleContentBlockDelta(json_part: []const u8, state: *StreamState, allocator: std.mem.Allocator) ?std.json.Parsed(OpenAI.StreamChunk) {
+fn handleContentBlockDelta(json_part: []const u8, state: *StreamState, allocator: std.mem.Allocator) ?std.json.Parsed(OpenAIChat.StreamChunk) {
     const parsed = std.json.parseFromSlice(
         Anthropic.ContentBlockDelta,
         allocator,
@@ -271,7 +271,7 @@ fn handleContentBlockDelta(json_part: []const u8, state: *StreamState, allocator
     } else if (std.mem.eql(u8, delta_type, "input_json_delta")) {
         // Tool call arguments
         if (parsed.value.delta.partial_json) |partial| {
-            const tool_call = OpenAI.DeltaToolCall{
+            const tool_call = OpenAIChat.DeltaToolCall{
                 .index = parsed.value.index,
                 .id = null,
                 .type = null,
@@ -281,7 +281,7 @@ fn handleContentBlockDelta(json_part: []const u8, state: *StreamState, allocator
                 },
             };
 
-            var tool_calls: [1]OpenAI.DeltaToolCall = .{tool_call};
+            var tool_calls: [1]OpenAIChat.DeltaToolCall = .{tool_call};
             return buildOpenAIChunk(state, .{ .tool_calls = &tool_calls }, null, null, allocator);
         }
     }
@@ -289,7 +289,7 @@ fn handleContentBlockDelta(json_part: []const u8, state: *StreamState, allocator
     return null;
 }
 
-fn handleMessageDelta(json_part: []const u8, state: *StreamState, allocator: std.mem.Allocator) ?std.json.Parsed(OpenAI.StreamChunk) {
+fn handleMessageDelta(json_part: []const u8, state: *StreamState, allocator: std.mem.Allocator) ?std.json.Parsed(OpenAIChat.StreamChunk) {
     const parsed = std.json.parseFromSlice(
         Anthropic.MessageDelta,
         allocator,
@@ -304,7 +304,7 @@ fn handleMessageDelta(json_part: []const u8, state: *StreamState, allocator: std
     // Build usage from input_tokens (from message_start) and output_tokens (from message_delta)
     const output_tokens = parsed.value.usage.output_tokens;
     const input_tokens = state.input_tokens orelse 0;
-    const usage = OpenAI.Usage{
+    const usage = OpenAIChat.Usage{
         .prompt_tokens = input_tokens,
         .completion_tokens = output_tokens,
         .total_tokens = input_tokens + output_tokens,
@@ -319,20 +319,20 @@ fn handleMessageDelta(json_part: []const u8, state: *StreamState, allocator: std
 /// Returns Parsed(StreamChunk) for consistent ownership model
 fn buildOpenAIChunk(
     state: *StreamState,
-    delta: OpenAI.Delta,
+    delta: OpenAIChat.Delta,
     finish_reason: ?[]const u8,
-    usage: ?OpenAI.Usage,
+    usage: ?OpenAIChat.Usage,
     allocator: std.mem.Allocator,
-) ?std.json.Parsed(OpenAI.StreamChunk) {
-    const choice = OpenAI.StreamChoice{
+) ?std.json.Parsed(OpenAIChat.StreamChunk) {
+    const choice = OpenAIChat.StreamChoice{
         .index = 0,
         .delta = delta,
         .finish_reason = finish_reason,
     };
 
-    var choices: [1]OpenAI.StreamChoice = .{choice};
+    var choices: [1]OpenAIChat.StreamChoice = .{choice};
 
-    const chunk = OpenAI.StreamChunk{
+    const chunk = OpenAIChat.StreamChunk{
         .id = state.message_id orelse "msg_unknown",
         .object = "chat.completion.chunk",
         .created = state.created,
@@ -348,7 +348,7 @@ fn buildOpenAIChunk(
 
     // Parse back to get Parsed that owns the data
     const parsed = std.json.parseFromSlice(
-        OpenAI.StreamChunk,
+        OpenAIChat.StreamChunk,
         allocator,
         buffer.items,
         .{ .allocate = .alloc_always },
@@ -358,12 +358,12 @@ fn buildOpenAIChunk(
 }
 
 // Type alias for OpenAI message content union
-const MessageContent = OpenAI.MessageContent;
+const MessageContent = OpenAIChat.MessageContent;
 
 /// Extract system prompt from OpenAI messages
 /// System messages are removed from the message list and concatenated
 pub fn extractSystemPrompt(
-    messages: []const OpenAI.Message,
+    messages: []const OpenAIChat.Message,
     allocator: std.mem.Allocator,
 ) !?[]const u8 {
     var system_parts = std.ArrayList([]const u8).empty;
@@ -460,7 +460,7 @@ pub fn transformContent(
 
 /// Transform OpenAI tool calls to Anthropic tool_use content blocks
 pub fn transformToolCalls(
-    tool_calls: []const OpenAI.ToolCall,
+    tool_calls: []const OpenAIChat.ToolCall,
     allocator: std.mem.Allocator,
 ) ![]Anthropic.ContentBlockParam {
     var blocks = std.ArrayList(Anthropic.ContentBlockParam).empty;
@@ -522,7 +522,7 @@ pub fn transformToolResult(
 
 /// Transform OpenAI tools to Anthropic tools
 pub fn transformTools(
-    tools: []const OpenAI.Tool,
+    tools: []const OpenAIChat.Tool,
     allocator: std.mem.Allocator,
 ) ![]Anthropic.Tool {
     var anthro_tools = std.ArrayList(Anthropic.Tool).empty;
@@ -581,7 +581,7 @@ pub fn transformToolChoice(
 
 /// Normalize messages: remove system, merge consecutive same-role, ensure alternation
 pub fn normalizeMessages(
-    messages: []const OpenAI.Message,
+    messages: []const OpenAIChat.Message,
     allocator: std.mem.Allocator,
 ) ![]Anthropic.Message {
     var normalized = std.ArrayList(Anthropic.Message).empty;
@@ -698,7 +698,7 @@ pub fn normalizeMessages(
 
 /// Main transformation function
 pub fn transform(
-    request: OpenAI.Request,
+    request: OpenAIChat.Request,
     target_model: []const u8,
     allocator: std.mem.Allocator,
 ) !Anthropic.Request {
@@ -772,8 +772,8 @@ pub fn extractTextFromBlocks(blocks: []const Anthropic.ContentBlock, allocator: 
 }
 
 /// Extract tool_use blocks from Anthropic ContentBlock array and convert to OpenAI ToolCall array
-pub fn extractToolCalls(blocks: []const Anthropic.ContentBlock, allocator: std.mem.Allocator) !?[]OpenAI.ToolCall {
-    var tool_calls = std.ArrayList(OpenAI.ToolCall).empty;
+pub fn extractToolCalls(blocks: []const Anthropic.ContentBlock, allocator: std.mem.Allocator) !?[]OpenAIChat.ToolCall {
+    var tool_calls = std.ArrayList(OpenAIChat.ToolCall).empty;
     defer tool_calls.deinit(allocator);
 
     for (blocks) |block| {
@@ -819,8 +819,8 @@ pub fn cleanupRequest(request: Anthropic.Request, allocator: std.mem.Allocator) 
     if (request.tools) |tools| allocator.free(tools);
 }
 
-/// Cleanup function for OpenAI.Response
-pub fn cleanupResponse(response: OpenAI.Response, allocator: std.mem.Allocator) void {
+/// Cleanup function for OpenAIChat.Response
+pub fn cleanupResponse(response: OpenAIChat.Response, allocator: std.mem.Allocator) void {
     if (response.choices.len > 0) {
         if (response.choices[0].message.content) |content| {
             allocator.free(content);
@@ -845,7 +845,7 @@ pub fn transformResponse(
     anthropic_response: Anthropic.Response,
     allocator: std.mem.Allocator,
     original_model: []const u8,
-) !OpenAI.Response {
+) !OpenAIChat.Response {
     // Extract text content from content blocks
     const content_text = try extractTextFromBlocks(anthropic_response.content, allocator);
 
@@ -853,7 +853,7 @@ pub fn transformResponse(
     const tool_calls = try extractToolCalls(anthropic_response.content, allocator);
 
     // Create message
-    const message = OpenAI.ResponseMessage{
+    const message = OpenAIChat.ResponseMessage{
         .role = .assistant,
         .content = if (content_text.len > 0) content_text else null,
         .tool_calls = tool_calls,
@@ -861,18 +861,18 @@ pub fn transformResponse(
     };
 
     // Create choice
-    const choice = OpenAI.ResponseChoice{
+    const choice = OpenAIChat.ResponseChoice{
         .index = 0,
         .message = message,
         .finish_reason = transformStopReason(anthropic_response.stop_reason),
         .logprobs = null,
     };
 
-    var choices = try allocator.alloc(OpenAI.ResponseChoice, 1);
+    var choices = try allocator.alloc(OpenAIChat.ResponseChoice, 1);
     choices[0] = choice;
 
     // Map usage
-    const usage = OpenAI.Usage{
+    const usage = OpenAIChat.Usage{
         .prompt_tokens = anthropic_response.usage.input_tokens,
         .completion_tokens = anthropic_response.usage.output_tokens,
         .total_tokens = anthropic_response.usage.input_tokens + anthropic_response.usage.output_tokens,
@@ -885,7 +885,7 @@ pub fn transformResponse(
     // Duplicate id string to avoid dangling pointer after response is freed
     const id_str = try allocator.dupe(u8, anthropic_response.id);
 
-    return OpenAI.Response{
+    return OpenAIChat.Response{
         .id = id_str,
         .object = "chat.completion",
         .created = time.timestamp(),
@@ -1052,26 +1052,26 @@ pub fn transformStreamLineToAnthropic(
 pub const ResponsesStreamState = rt.MessagesStreamState;
 
 pub fn transformFromResponses(
-    request: Responses.ResponsesRequest,
+    request: OpenAIResponses.Request,
     model: []const u8,
     allocator: std.mem.Allocator,
 ) !Anthropic.Request {
     return rt.toMessages(request, model, allocator);
 }
 
-pub fn cleanupFromResponsesRequest(request: Anthropic.Request, allocator: std.mem.Allocator) void {
+pub fn cleanupFromRequest(request: Anthropic.Request, allocator: std.mem.Allocator) void {
     rt.cleanupToMessages(request, allocator);
 }
 
 pub fn transformToResponsesResponse(
     response: Anthropic.Response,
-    original_req: Responses.ResponsesRequest,
+    original_req: OpenAIResponses.Request,
     allocator: std.mem.Allocator,
-) !Responses.ResponsesResponse {
+) !OpenAIResponses.ResponsesResponse {
     return rt.fromMessagesResponse(response, original_req, allocator);
 }
 
-pub fn cleanupResponsesResponse(resp: Responses.ResponsesResponse, allocator: std.mem.Allocator) void {
+pub fn cleanupResponsesResponse(resp: OpenAIResponses.ResponsesResponse, allocator: std.mem.Allocator) void {
     rt.cleanupFromMessagesResponse(resp, allocator);
 }
 

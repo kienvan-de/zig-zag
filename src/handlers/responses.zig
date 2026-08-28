@@ -20,7 +20,7 @@
 const std = @import("std");
 const net = @import("zag-core").net;
 const core = @import("zag-core");
-const ResponsesTypes = core.openai_responses_types;
+const OpenAIResponses = core.openai_responses_types;
 const errors = core.errors;
 const log = core.log;
 const http = @import("../http.zig");
@@ -37,7 +37,7 @@ pub fn handle(
     _ = path;
 
     const request = std.json.parseFromSlice(
-        ResponsesTypes.ResponsesRequest,
+        OpenAIResponses.Request,
         allocator,
         body,
         .{ .ignore_unknown_fields = true },

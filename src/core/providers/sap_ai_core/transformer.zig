@@ -13,8 +13,8 @@
 // limitations under the License.
 
 const std = @import("std");
-const OpenAI = @import("../openai/chat_types.zig");
-const Responses = @import("../openai/responses_types.zig");
+const OpenAIChat = @import("../openai/chat_types.zig");
+const OpenAIResponses = @import("../openai/responses_types.zig");
 const Anthropic = @import("../anthropic/types.zig");
 const SapAiCore = @import("types.zig");
 const openai_transformer = @import("../openai/chat_transformer.zig");
@@ -41,7 +41,7 @@ fn hasValidLatestVersion(sap_model: SapAiCore.SapModel) bool {
     return false;
 }
 
-/// Transform SAP AI Core SapModelsResponse to OpenAI.Model array with provider prefix
+/// Transform SAP AI Core SapModelsResponse to OpenAIChat.Model array with provider prefix
 /// Filters to only include models with:
 /// - isLatest = true and deprecated = false (in versions)
 /// - scenarioId = "orchestration" (in allowedScenarios)
@@ -49,7 +49,7 @@ pub fn transformModelsResponse(
     allocator: std.mem.Allocator,
     response: std.json.Parsed(SapAiCore.SapModelsResponse),
     provider_name: []const u8,
-) ![]OpenAI.Model {
+) ![]OpenAIChat.Model {
     const resources = response.value.resources;
 
     // First pass: count valid models
@@ -60,7 +60,7 @@ pub fn transformModelsResponse(
         }
     }
 
-    var models = try allocator.alloc(OpenAI.Model, valid_count);
+    var models = try allocator.alloc(OpenAIChat.Model, valid_count);
     errdefer allocator.free(models);
 
     // Second pass: populate valid models
@@ -70,7 +70,7 @@ pub fn transformModelsResponse(
             // Create prefixed model ID: {provider_name}/{model_id}
             const prefixed_id = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ provider_name, sap_model.model });
 
-            models[idx] = OpenAI.Model{
+            models[idx] = OpenAIChat.Model{
                 .id = prefixed_id,
                 .object = "model",
                 .created = 0,
@@ -107,7 +107,7 @@ pub const StreamState = struct {
 
 /// Transform OpenAI request to SAP AI Core orchestration format
 pub fn transform(
-    request: OpenAI.Request,
+    request: OpenAIChat.Request,
     model: []const u8,
     allocator: std.mem.Allocator,
 ) !SapAiCore.Request {
@@ -179,23 +179,23 @@ pub fn cleanupRequest(request: SapAiCore.Request, allocator: std.mem.Allocator) 
 // ============================================================================
 
 /// Deep copy a ResponseMessage
-fn dupeResponseMessage(allocator: std.mem.Allocator, msg: OpenAI.ResponseMessage) !OpenAI.ResponseMessage {
-    return OpenAI.ResponseMessage{
+fn dupeResponseMessage(allocator: std.mem.Allocator, msg: OpenAIChat.ResponseMessage) !OpenAIChat.ResponseMessage {
+    return OpenAIChat.ResponseMessage{
         .role = msg.role,
         .content = if (msg.content) |c| try allocator.dupe(u8, c) else null,
         .tool_calls = if (msg.tool_calls) |tcs| blk: {
-            const duped = try allocator.alloc(OpenAI.ToolCall, tcs.len);
+            const duped = try allocator.alloc(OpenAIChat.ToolCall, tcs.len);
             for (tcs, 0..) |tc, i| {
                 duped[i] = switch (tc) {
-                    .function => |f| OpenAI.ToolCall{ .function = .{
+                    .function => |f| OpenAIChat.ToolCall{ .function = .{
                         .id = try allocator.dupe(u8, f.id),
                         .type = try allocator.dupe(u8, f.type),
-                        .function = OpenAI.ToolCallFunction{
+                        .function = OpenAIChat.ToolCallFunction{
                             .name = try allocator.dupe(u8, f.function.name),
                             .arguments = try allocator.dupe(u8, f.function.arguments),
                         },
                     } },
-                    .custom => |c| OpenAI.ToolCall{ .custom = .{
+                    .custom => |c| OpenAIChat.ToolCall{ .custom = .{
                         .id = try allocator.dupe(u8, c.id),
                         .type = try allocator.dupe(u8, c.type),
                         .custom = c.custom,
@@ -204,7 +204,7 @@ fn dupeResponseMessage(allocator: std.mem.Allocator, msg: OpenAI.ResponseMessage
             }
             break :blk duped;
         } else null,
-        .function_call = if (msg.function_call) |fc| OpenAI.FunctionCall{
+        .function_call = if (msg.function_call) |fc| OpenAIChat.FunctionCall{
             .name = try allocator.dupe(u8, fc.name),
             .arguments = try allocator.dupe(u8, fc.arguments),
         } else null,
@@ -212,8 +212,8 @@ fn dupeResponseMessage(allocator: std.mem.Allocator, msg: OpenAI.ResponseMessage
 }
 
 /// Deep copy a ResponseChoice
-fn dupeResponseChoice(allocator: std.mem.Allocator, choice: OpenAI.ResponseChoice) !OpenAI.ResponseChoice {
-    return OpenAI.ResponseChoice{
+fn dupeResponseChoice(allocator: std.mem.Allocator, choice: OpenAIChat.ResponseChoice) !OpenAIChat.ResponseChoice {
+    return OpenAIChat.ResponseChoice{
         .index = choice.index,
         .message = try dupeResponseMessage(allocator, choice.message),
         .finish_reason = try allocator.dupe(u8, choice.finish_reason),
@@ -226,25 +226,25 @@ pub fn transformResponse(
     response: SapAiCore.Response,
     allocator: std.mem.Allocator,
     original_model: []const u8,
-) !OpenAI.Response {
+) !OpenAIChat.Response {
     const final_result = response.final_result;
 
     // Allocate model string with provider prefix
     const model_str = try allocator.dupe(u8, original_model);
 
     // Deep copy choices since response may be freed
-    const choices = try allocator.alloc(OpenAI.ResponseChoice, final_result.choices.len);
+    const choices = try allocator.alloc(OpenAIChat.ResponseChoice, final_result.choices.len);
     for (final_result.choices, 0..) |choice, i| {
         choices[i] = try dupeResponseChoice(allocator, choice);
     }
 
-    return OpenAI.Response{
+    return OpenAIChat.Response{
         .id = try allocator.dupe(u8, final_result.id),
         .object = try allocator.dupe(u8, final_result.object),
         .created = final_result.created,
         .model = model_str,
         .choices = choices,
-        .usage = final_result.usage orelse OpenAI.Usage{
+        .usage = final_result.usage orelse OpenAIChat.Usage{
             .prompt_tokens = 0,
             .completion_tokens = 0,
             .total_tokens = 0,
@@ -255,7 +255,7 @@ pub fn transformResponse(
 }
 
 /// Free a ResponseMessage's allocated fields
-fn freeResponseMessage(allocator: std.mem.Allocator, msg: OpenAI.ResponseMessage) void {
+fn freeResponseMessage(allocator: std.mem.Allocator, msg: OpenAIChat.ResponseMessage) void {
     if (msg.content) |c| allocator.free(c);
     if (msg.tool_calls) |tcs| {
         for (tcs) |tc| {
@@ -281,7 +281,7 @@ fn freeResponseMessage(allocator: std.mem.Allocator, msg: OpenAI.ResponseMessage
 }
 
 /// Cleanup transformed response
-pub fn cleanupResponse(response: OpenAI.Response, allocator: std.mem.Allocator) void {
+pub fn cleanupResponse(response: OpenAIChat.Response, allocator: std.mem.Allocator) void {
     allocator.free(response.id);
     allocator.free(response.object);
     allocator.free(response.model);
@@ -301,7 +301,7 @@ pub fn cleanupResponse(response: OpenAI.Response, allocator: std.mem.Allocator) 
 // ============================================================================
 
 /// Transform SAP AI Core error response to OpenAI error format
-pub fn transformErrorResponse(sap_error: SapAiCore.ErrorDetails) OpenAI.ErrorResponse {
+pub fn transformErrorResponse(sap_error: SapAiCore.ErrorDetails) OpenAIChat.ErrorResponse {
     // Map SAP numeric code to OpenAI string code
     const code: ?[]const u8 = if (sap_error.code) |c| switch (c) {
         400 => "bad_request",
@@ -320,8 +320,8 @@ pub fn transformErrorResponse(sap_error: SapAiCore.ErrorDetails) OpenAI.ErrorRes
     else
         "server_error";
 
-    return OpenAI.ErrorResponse{
-        .@"error" = OpenAI.ErrorDetails{
+    return OpenAIChat.ErrorResponse{
+        .@"error" = OpenAIChat.ErrorDetails{
             .message = sap_error.message orelse "Unknown error from SAP AI Core",
             .type = error_type,
             .param = null,
@@ -331,7 +331,7 @@ pub fn transformErrorResponse(sap_error: SapAiCore.ErrorDetails) OpenAI.ErrorRes
 }
 
 /// Same as transformErrorResponse but uses a pre-duplicated message (avoids use-after-free)
-fn transformErrorResponseDuped(sap_error: SapAiCore.ErrorDetails, duped_message: []const u8) OpenAI.ErrorResponse {
+fn transformErrorResponseDuped(sap_error: SapAiCore.ErrorDetails, duped_message: []const u8) OpenAIChat.ErrorResponse {
     const code: ?[]const u8 = if (sap_error.code) |c| switch (c) {
         400 => "bad_request",
         401 => "invalid_api_key",
@@ -348,8 +348,8 @@ fn transformErrorResponseDuped(sap_error: SapAiCore.ErrorDetails, duped_message:
     else
         "server_error";
 
-    return OpenAI.ErrorResponse{
-        .@"error" = OpenAI.ErrorDetails{
+    return OpenAIChat.ErrorResponse{
+        .@"error" = OpenAIChat.ErrorDetails{
             .message = duped_message,
             .type = error_type,
             .param = null,
@@ -359,7 +359,7 @@ fn transformErrorResponseDuped(sap_error: SapAiCore.ErrorDetails, duped_message:
 }
 
 /// Try to parse JSON as SAP AI Core error response
-fn tryParseError(json_part: []const u8, allocator: std.mem.Allocator) ?OpenAI.ErrorResponse {
+fn tryParseError(json_part: []const u8, allocator: std.mem.Allocator) ?OpenAIChat.ErrorResponse {
     const parsed = std.json.parseFromSlice(
         SapAiCore.ErrorResponse,
         allocator,
@@ -383,7 +383,7 @@ pub fn transformStreamLine(
     line: []const u8,
     state: *StreamState,
     allocator: std.mem.Allocator,
-) OpenAI.StreamLineResult {
+) OpenAIChat.StreamLineResult {
     const original_model = state.original_model;
 
     // Check if this is a data line
@@ -418,7 +418,7 @@ pub fn transformStreamLine(
     }
 
     // Create OpenAI chunk with original model (including provider prefix)
-    const openai_chunk = OpenAI.StreamChunk{
+    const openai_chunk = OpenAIChat.StreamChunk{
         .id = final_result.id,
         .object = final_result.object,
         .created = final_result.created,
@@ -434,7 +434,7 @@ pub fn transformStreamLine(
 
     // Parse back to get Parsed that owns the data
     const new_parsed = std.json.parseFromSlice(
-        OpenAI.StreamChunk,
+        OpenAIChat.StreamChunk,
         allocator,
         buffer.items,
         .{ .allocate = .alloc_always },
@@ -468,7 +468,7 @@ pub fn cleanupFromAnthropicRequest(request: SapAiCore.Request, allocator: std.me
     // Free the params clone if present
     cleanupRequest(request, allocator);
     // The template messages and tools were allocated by openai_transformer.transformFromAnthropic.
-    const openai_request = OpenAI.Request{
+    const openai_request = OpenAIChat.Request{
         .model = request.config.modules.prompt_templating.model.name,
         .messages = request.config.modules.prompt_templating.prompt.template,
         .tools = request.config.modules.prompt_templating.prompt.tools,
@@ -598,26 +598,26 @@ pub const ResponsesStreamState = struct {
 };
 
 pub fn transformFromResponses(
-    request: Responses.ResponsesRequest,
+    request: OpenAIResponses.Request,
     model: []const u8,
     allocator: std.mem.Allocator,
 ) !SapAiCore.Request {
     return rt.toSap(request, model, allocator);
 }
 
-pub fn cleanupFromResponsesRequest(request: SapAiCore.Request, allocator: std.mem.Allocator) void {
+pub fn cleanupFromRequest(request: SapAiCore.Request, allocator: std.mem.Allocator) void {
     rt.cleanupToSap(request, allocator);
 }
 
 pub fn transformToResponsesResponse(
     response: SapAiCore.Response,
-    original_req: Responses.ResponsesRequest,
+    original_req: OpenAIResponses.Request,
     allocator: std.mem.Allocator,
-) !Responses.ResponsesResponse {
+) !OpenAIResponses.ResponsesResponse {
     return rt.fromSapResponse(response, original_req, allocator);
 }
 
-pub fn cleanupResponsesResponse(resp: Responses.ResponsesResponse, allocator: std.mem.Allocator) void {
+pub fn cleanupResponsesResponse(resp: OpenAIResponses.ResponsesResponse, allocator: std.mem.Allocator) void {
     rt.cleanupFromSapResponse(resp, allocator);
 }
 
