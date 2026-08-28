@@ -61,6 +61,11 @@ const hai = struct {
 const copilot = struct {
     const client = @import("providers/copilot/client.zig");
 };
+const google_ai_studio = struct {
+    const client = @import("providers/google_ai_studio/client.zig");
+    const transformer = @import("providers/google_ai_studio/transformer.zig");
+};
+
 
 /// Re-exported OpenAI type definitions (`Request`, `Response`, `Model`, etc.).
 /// Callers use `completion.OpenAIChat.Request` instead of importing the provider types directly.
@@ -143,6 +148,7 @@ pub fn chatComplete(
             .sap_ai_core => try dispatchChat(sap_ai_core.client.SapAiCoreClient, sap_ai_core.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
             .hai => try dispatchChat(hai.client.HaiClient, openai.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
             .copilot => try dispatchChat(copilot.client.CopilotClient, openai.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
+            .google_ai_studio => try dispatchChat(google_ai_studio.client.GoogleAiStudioClient, google_ai_studio.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
         }
     } else |_| {
         const compatible = provider_config.getString("compatible") orelse {
@@ -513,6 +519,7 @@ pub fn messagesComplete(
             },
             .copilot => try dispatchMessages(copilot.client.CopilotClient, openai.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
             .sap_ai_core => try dispatchMessages(sap_ai_core.client.SapAiCoreClient, sap_ai_core.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
+            .google_ai_studio => try dispatchMessages(google_ai_studio.client.GoogleAiStudioClient, google_ai_studio.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
         }
     } else |_| {
         const compatible = provider_config.getString("compatible") orelse {
@@ -1058,6 +1065,7 @@ fn fetchModelsForProviderInner(
             .sap_ai_core => try fetchModels(sap_ai_core.client.SapAiCoreClient, sap_ai_core.transformer, allocator, provider_name, provider_config),
             .hai => try fetchModels(hai.client.HaiClient, openai.transformer, allocator, provider_name, provider_config),
             .copilot => try fetchModels(copilot.client.CopilotClient, openai.transformer, allocator, provider_name, provider_config),
+            .google_ai_studio => try fetchModels(google_ai_studio.client.GoogleAiStudioClient, google_ai_studio.transformer, allocator, provider_name, provider_config),
         };
     } else |_| {
         return null;
@@ -1145,6 +1153,7 @@ pub fn responsesComplete(
             .sap_ai_core => try dispatchResponses(sap_ai_core.client.SapAiCoreClient, sap_ai_core.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
             .hai => try dispatchResponses(hai.client.HaiClient, openai.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
             .copilot => try dispatchResponses(copilot.client.CopilotClient, openai.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
+            .google_ai_studio => try dispatchResponses(google_ai_studio.client.GoogleAiStudioClient, google_ai_studio.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
         }
     } else |_| {
         const compatible = provider_config.getString("compatible") orelse {
