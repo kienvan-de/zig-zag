@@ -477,9 +477,9 @@ pub const ResponseMessage = struct {
 
 /// Choice in non-streaming response
 pub const ResponseChoice = struct {
-    index: u32,
+    index: u32 = 0,
     message: ResponseMessage,
-    finish_reason: []const u8,
+    finish_reason: []const u8 = "stop",
     logprobs: ?std.json.Value = null,
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
