@@ -37,7 +37,7 @@ const provider_mod = @import("provider.zig");
 const utils = @import("utils.zig");
 const worker_pool = @import("worker_pool.zig");
 const openai_types = @import("providers/openai/chat_types.zig");
-const responses_types = @import("providers/openai/responses_types.zig");
+const openai_responses_types = @import("providers/openai/responses_types.zig");
 const anthropic_types = @import("providers/anthropic/types.zig");
 
 // Provider modules — direct imports for comptime dispatch
@@ -63,11 +63,11 @@ const copilot = struct {
 };
 
 /// Re-exported OpenAI type definitions (`Request`, `Response`, `Model`, etc.).
-/// Callers use `completion.OpenAI.Request` instead of importing the provider types directly.
+/// Callers use `completion.OpenAIChat.Request` instead of importing the provider types directly.
 pub const OpenAI = openai_types;
 
 /// Re-exported OpenAI Responses API type definitions.
-pub const ResponsesAPI = responses_types;
+pub const ResponsesAPI = openai_responses_types;
 
 /// Re-exported Anthropic type definitions (`Request`, `Response`, etc.).
 /// Callers use `completion.Anthropic.Request` instead of importing the provider types directly.
@@ -1112,7 +1112,7 @@ fn fetchModels(
 pub fn responsesComplete(
     writer: anytype,
     allocator: std.mem.Allocator,
-    request: responses_types.ResponsesRequest,
+    request: openai_responses_types.Request,
 ) !void {
     const cfg = config_mod.get();
     try utils.enforceBudget(cfg);
@@ -1168,15 +1168,15 @@ pub fn responsesComplete(
     }
 }
 
-/// api_schema=latest: send ResponsesRequest directly to upstream /v1/responses.
-/// OpenAIClient.sendRequest sees ResponsesRequest at comptime → routes to /v1/responses.
+/// api_schema=latest: send Request directly to upstream /v1/responses.
+/// OpenAIClient.sendRequest sees Request at comptime → routes to /v1/responses.
 /// The response is already in ResponsesResponse format — write directly.
 fn dispatchResponsesNative(
     comptime Client: type,
     writer: anytype,
     is_streaming: bool,
     allocator: std.mem.Allocator,
-    request: responses_types.ResponsesRequest,
+    request: openai_responses_types.Request,
     model: []const u8,
     provider_name: []const u8,
     provider_config: *const config_mod.ProviderConfig,
@@ -1226,8 +1226,8 @@ fn dispatchResponsesNative(
     }
 }
 
-/// api_schema=latest: convert OpenAI.Request → ResponsesRequest, send to /v1/responses,
-/// convert ResponsesResponse → OpenAI.Response for the chat response path.
+/// api_schema=latest: convert OpenAIChat.Request → Request, send to /v1/responses,
+/// convert ResponsesResponse → OpenAIChat.Response for the chat response path.
 fn chatViaResponses(
     comptime Client: type,
     comptime Transformer: type,
@@ -1305,7 +1305,7 @@ fn chatViaResponses(
     }
 }
 
-/// api_schema=latest: convert Anthropic.Request → ResponsesRequest, send to /v1/responses,
+/// api_schema=latest: convert Anthropic.Request → Request, send to /v1/responses,
 /// convert ResponsesResponse → Anthropic.Response for the messages response path.
 fn messagesViaResponses(
     comptime Client: type,
@@ -1389,7 +1389,7 @@ fn messagesViaResponses(
 }
 
 /// Dispatch a /v1/responses request through a provider's responses method set.
-/// Transformer must implement: transformFromResponses, cleanupFromResponsesRequest,
+/// Transformer must implement: transformFromResponses, cleanupFromRequest,
 /// transformToResponsesResponse, cleanupResponsesResponse,
 /// ResponsesStreamState (init/deinit), transformStreamLineToResponses, flushResponsesStream.
 fn dispatchResponses(
@@ -1398,17 +1398,17 @@ fn dispatchResponses(
     writer: anytype,
     is_streaming: bool,
     allocator: std.mem.Allocator,
-    request: responses_types.ResponsesRequest,
+    request: openai_responses_types.Request,
     model: []const u8,
     provider_name: []const u8,
     provider_config: *const config_mod.ProviderConfig,
 ) !void {
-    // Transform ResponsesRequest → provider wire format
+    // Transform Request → provider wire format
     const provider_req = Transformer.transformFromResponses(request, model, allocator) catch |err| {
         log.err("[RESPONSES] transformFromResponses failed: {}", .{err});
         return error.TransformFailed;
     };
-    defer Transformer.cleanupFromResponsesRequest(provider_req, allocator);
+    defer Transformer.cleanupFromRequest(provider_req, allocator);
 
     var client = Client.init(allocator, provider_config) catch |err| {
         log.err("[RESPONSES] Client init failed: {}", .{err});

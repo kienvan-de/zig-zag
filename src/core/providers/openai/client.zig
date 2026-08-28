@@ -13,8 +13,8 @@
 // limitations under the License.
 
 const std = @import("std");
-const OpenAI = @import("chat_types.zig");
-const ResponsesTypes = @import("responses_types.zig");
+const OpenAIChat = @import("chat_types.zig");
+const OpenAIResponses = @import("responses_types.zig");
 const config_mod = @import("../../config.zig");
 const http_client = @import("../../client.zig");
 const log = @import("../../log.zig");
@@ -83,21 +83,21 @@ pub const OpenAIClient = struct {
     }
 
     /// Pick the upstream URL based on request type at comptime.
-    /// OpenAI.Request → /v1/chat/completions
-    /// ResponsesTypes.ResponsesRequest → /v1/responses
+    /// OpenAIChat.Request → /v1/chat/completions
+    /// OpenAIResponses.Request → /v1/responses
     fn urlForRequest(self: *OpenAIClient, buf: []u8, comptime Req: type) ![]const u8 {
-        const path = if (Req == ResponsesTypes.ResponsesRequest) "/v1/responses" else "/v1/chat/completions";
+        const path = if (Req == OpenAIResponses.Request) "/v1/responses" else "/v1/chat/completions";
         return std.fmt.bufPrint(buf, "{s}{s}", .{ self.api_url, path });
     }
 
     /// Response type for a given request type
     fn ResponseType(comptime Req: type) type {
-        if (Req == ResponsesTypes.ResponsesRequest) return ResponsesTypes.ResponsesResponse;
-        return OpenAI.Response;
+        if (Req == OpenAIResponses.Request) return OpenAIResponses.ResponsesResponse;
+        return OpenAIChat.Response;
     }
 
     /// Fetch list of available models from OpenAI API
-    pub fn listModels(self: *OpenAIClient) !std.json.Parsed(OpenAI.ModelsResponse) {
+    pub fn listModels(self: *OpenAIClient) !std.json.Parsed(OpenAIChat.ModelsResponse) {
         var cache_key_buf: [128]u8 = undefined;
         const cache_key = std.fmt.bufPrint(&cache_key_buf, "models:{s}", .{self.config.name}) catch "models:openai";
 
@@ -105,7 +105,7 @@ pub const OpenAIClient = struct {
             defer self.allocator.free(cached_body);
             log.debug("Models cache hit for '{s}'", .{self.config.name});
             if (std.json.parseFromSlice(
-                OpenAI.ModelsResponse,
+                OpenAIChat.ModelsResponse,
                 self.allocator,
                 cached_body,
                 .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
@@ -132,7 +132,7 @@ pub const OpenAIClient = struct {
         };
 
         return std.json.parseFromSlice(
-            OpenAI.ModelsResponse,
+            OpenAIChat.ModelsResponse,
             self.allocator,
             response.body,
             .{ .allocate = .alloc_always, .ignore_unknown_fields = true },

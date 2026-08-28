@@ -26,7 +26,7 @@ const fs = @import("../../fs.zig");
 const time = @import("../../time.zig");
 const Allocator = std.mem.Allocator;
 const env = @import("../../env.zig");
-const OpenAI = @import("../openai/chat_types.zig");
+const OpenAIChat = @import("../openai/chat_types.zig");
 const config_mod = @import("../../config.zig");
 const http_client = @import("../../client.zig");
 const log = @import("../../log.zig");
@@ -509,7 +509,7 @@ pub const CopilotClient = struct {
     /// - "agent" if last message is from assistant or tool (autonomous follow-up, free)
     /// - "user" otherwise (user-initiated, consumes premium request)
     /// See: https://docs.github.com/en/copilot/concepts/billing/copilot-requests
-    fn determineInitiator(request: OpenAI.Request) []const u8 {
+    fn determineInitiator(request: OpenAIChat.Request) []const u8 {
         if (request.messages.len == 0) return "user";
         const last_role = request.messages[request.messages.len - 1].role;
         return switch (last_role) {
@@ -526,7 +526,7 @@ pub const CopilotClient = struct {
     fn buildHeaders(
         self: *CopilotClient,
         access_token: []const u8,
-        request: OpenAI.Request,
+        request: OpenAIChat.Request,
         auth_buf: []u8,
         uuid_buf: []u8,
         headers_buf: []std.http.Header,
@@ -609,7 +609,7 @@ pub const CopilotClient = struct {
     }
 
     /// Send a non-streaming request to Copilot Chat Completions API
-    pub fn sendRequest(self: *CopilotClient, request: OpenAI.Request) !std.json.Parsed(OpenAI.Response) {
+    pub fn sendRequest(self: *CopilotClient, request: OpenAIChat.Request) !std.json.Parsed(OpenAIChat.Response) {
         log.debug("[Copilot] [SYNC] sendRequest - getting access token...", .{});
         const access_token = try self.getAccessToken();
         defer self.allocator.free(access_token);
@@ -625,14 +625,14 @@ pub const CopilotClient = struct {
         var headers_buf: [10]std.http.Header = undefined;
         const headers = try self.buildHeaders(access_token, request, &auth_buf, &uuid_buf, &headers_buf);
 
-        return self.client.postJson(OpenAI.Response, url, headers, request) catch |err| {
+        return self.client.postJson(OpenAIChat.Response, url, headers, request) catch |err| {
             log.err("[Copilot] [SYNC] sendRequest failed: {}", .{err});
             return err;
         };
     }
 
     /// Send a streaming request to Copilot Chat Completions API
-    pub fn sendStreamingRequest(self: *CopilotClient, request: OpenAI.Request) !*StreamingResult {
+    pub fn sendStreamingRequest(self: *CopilotClient, request: OpenAIChat.Request) !*StreamingResult {
         log.debug("[Copilot] [STREAM] sendStreamingRequest - getting access token...", .{});
         const access_token = try self.getAccessToken();
         defer self.allocator.free(access_token);
@@ -672,7 +672,7 @@ pub const CopilotClient = struct {
 
     /// Fetch list of available models from Copilot API.
     /// Results are cached via app_cache. Models are prefixed with "copilot/".
-    pub fn listModels(self: *CopilotClient) !std.json.Parsed(OpenAI.ModelsResponse) {
+    pub fn listModels(self: *CopilotClient) !std.json.Parsed(OpenAIChat.ModelsResponse) {
         // Build cache key
         var cache_key_buf: [128]u8 = undefined;
         const cache_key = std.fmt.bufPrint(&cache_key_buf, "models:{s}", .{self.config.name}) catch "models:copilot";
@@ -683,7 +683,7 @@ pub const CopilotClient = struct {
             log.debug("[Copilot] Models cache hit for '{s}'", .{self.config.name});
 
             if (std.json.parseFromSlice(
-                OpenAI.ModelsResponse,
+                OpenAIChat.ModelsResponse,
                 self.allocator,
                 cached_body,
                 .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
@@ -733,7 +733,7 @@ pub const CopilotClient = struct {
 
         // Parse response
         const parsed = std.json.parseFromSlice(
-            OpenAI.ModelsResponse,
+            OpenAIChat.ModelsResponse,
             self.allocator,
             response.body,
             .{ .allocate = .alloc_always, .ignore_unknown_fields = true },

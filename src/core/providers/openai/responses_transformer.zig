@@ -1,22 +1,22 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Responses API transformer — bridges between all inbound schemas and the
-//! canonical ResponsesRequest/ResponsesResponse format, and between the
+//! canonical Request/ResponsesResponse format, and between the
 //! canonical format and each upstream provider's wire format.
 
 const std = @import("std");
 const Completion = @import("chat_types.zig");
-const Responses = @import("responses_types.zig");
+const OpenAIResponses = @import("responses_types.zig");
 const Anthropic = @import("../anthropic/types.zig");
 const SapAiCore = @import("../sap_ai_core/types.zig");
 const log = @import("../../log.zig");
 
 // ============================================================================
-// Inbound bridge: legacy schemas → canonical ResponsesRequest
+// Inbound bridge: legacy schemas → canonical Request
 // ============================================================================
 
-/// Convert a /v1/chat/completions request into a ResponsesRequest.
+/// Convert a /v1/chat/completions request into a Request.
 /// Called by chatComplete before delegating to responsesComplete.
-pub fn fromChat(req: Completion.Request, allocator: std.mem.Allocator) !Responses.ResponsesRequest {
+pub fn fromChat(req: Completion.Request, allocator: std.mem.Allocator) !OpenAIResponses.Request {
     // Build input[] from messages — system messages become instructions
     var instructions_parts = std.ArrayList([]const u8).empty;
     defer instructions_parts.deinit(allocator);
@@ -45,12 +45,12 @@ pub fn fromChat(req: Completion.Request, allocator: std.mem.Allocator) !Response
     else
         null;
 
-    const input: Responses.InputParam = if (input_items.items.len > 0)
+    const input: OpenAIResponses.InputParam = if (input_items.items.len > 0)
         .{ .items = try input_items.toOwnedSlice(allocator) }
     else
         .{ .text = "" };
 
-    return Responses.ResponsesRequest{
+    return OpenAIResponses.Request{
         .model = req.model,
         .input = input,
         .instructions = instructions,
@@ -86,7 +86,7 @@ pub fn fromChat(req: Completion.Request, allocator: std.mem.Allocator) !Response
     };
 }
 
-pub fn cleanupFromChat(req: Responses.ResponsesRequest, allocator: std.mem.Allocator) void {
+pub fn cleanupFromChat(req: OpenAIResponses.Request, allocator: std.mem.Allocator) void {
     if (req.instructions) |s| allocator.free(s);
     switch (req.input) {
         .items => |items| allocator.free(items),
@@ -98,8 +98,8 @@ pub fn cleanupFromChat(req: Responses.ResponsesRequest, allocator: std.mem.Alloc
     }
 }
 
-/// Convert an Anthropic /v1/messages request into a ResponsesRequest.
-pub fn fromMessages(req: Anthropic.Request, allocator: std.mem.Allocator) !Responses.ResponsesRequest {
+/// Convert an Anthropic /v1/messages request into a Request.
+pub fn fromMessages(req: Anthropic.Request, allocator: std.mem.Allocator) !OpenAIResponses.Request {
     // Build input[] from Anthropic messages
     var input_items = std.ArrayList(std.json.Value).empty;
     defer input_items.deinit(allocator);
@@ -113,12 +113,12 @@ pub fn fromMessages(req: Anthropic.Request, allocator: std.mem.Allocator) !Respo
         try input_items.append(allocator, parsed.value);
     }
 
-    const input: Responses.InputParam = if (input_items.items.len > 0)
+    const input: OpenAIResponses.InputParam = if (input_items.items.len > 0)
         .{ .items = try input_items.toOwnedSlice(allocator) }
     else
         .{ .text = "" };
 
-    return Responses.ResponsesRequest{
+    return OpenAIResponses.Request{
         .model = req.model,
         .input = input,
         .instructions = req.system,
@@ -139,7 +139,7 @@ pub fn fromMessages(req: Anthropic.Request, allocator: std.mem.Allocator) !Respo
     };
 }
 
-pub fn cleanupFromMessages(req: Responses.ResponsesRequest, allocator: std.mem.Allocator) void {
+pub fn cleanupFromMessages(req: OpenAIResponses.Request, allocator: std.mem.Allocator) void {
     switch (req.input) {
         .items => |items| allocator.free(items),
         .text => {},
@@ -147,11 +147,11 @@ pub fn cleanupFromMessages(req: Responses.ResponsesRequest, allocator: std.mem.A
 }
 
 // ============================================================================
-// Outbound: ResponsesRequest → upstream wire formats
+// Outbound: Request → upstream wire formats
 // ============================================================================
 
-/// ResponsesRequest → completion_types.Request (for legacy /v1/chat/completions upstream)
-pub fn toChat(req: Responses.ResponsesRequest, model: []const u8, allocator: std.mem.Allocator) !Completion.Request {
+/// Request → completion_types.Request (for legacy /v1/chat/completions upstream)
+pub fn toChat(req: OpenAIResponses.Request, model: []const u8, allocator: std.mem.Allocator) !Completion.Request {
     // Build messages[] from input + instructions
     var messages = std.ArrayList(Completion.Message).empty;
     errdefer messages.deinit(allocator);
@@ -227,10 +227,10 @@ pub fn cleanupToChat(req: Completion.Request, allocator: std.mem.Allocator) void
 /// completion_types.Response → ResponsesResponse
 pub fn fromChatResponse(
     resp: Completion.Response,
-    original_req: Responses.ResponsesRequest,
+    original_req: OpenAIResponses.Request,
     allocator: std.mem.Allocator,
-) !Responses.ResponsesResponse {
-    var output_items = std.ArrayList(Responses.OutputItem).empty;
+) !OpenAIResponses.ResponsesResponse {
+    var output_items = std.ArrayList(OpenAIResponses.OutputItem).empty;
     errdefer output_items.deinit(allocator);
 
     if (resp.choices.len > 0) {
@@ -238,7 +238,7 @@ pub fn fromChatResponse(
         const msg = choice.message;
 
         // Build content array
-        var content = std.ArrayList(Responses.OutputContent).empty;
+        var content = std.ArrayList(OpenAIResponses.OutputContent).empty;
         errdefer content.deinit(allocator);
 
         if (msg.content) |c| {
@@ -283,13 +283,13 @@ pub fn fromChatResponse(
         else
             "completed";
 
-        const usage = Responses.ResponsesUsage{
+        const usage = OpenAIResponses.ResponsesUsage{
             .input_tokens = if (resp.usage) |u| u.prompt_tokens else 0,
             .output_tokens = if (resp.usage) |u| u.completion_tokens else 0,
             .total_tokens = if (resp.usage) |u| u.total_tokens else 0,
         };
 
-        return Responses.ResponsesResponse{
+        return OpenAIResponses.ResponsesResponse{
             .id = try allocator.dupe(u8, resp.id),
             .object = "response",
             .created_at = @floatFromInt(resp.created),
@@ -310,7 +310,7 @@ pub fn fromChatResponse(
     }
 
     // Empty response fallback
-    return Responses.ResponsesResponse{
+    return OpenAIResponses.ResponsesResponse{
         .id = try allocator.dupe(u8, resp.id),
         .object = "response",
         .created_at = @floatFromInt(resp.created),
@@ -321,7 +321,7 @@ pub fn fromChatResponse(
     };
 }
 
-pub fn cleanupFromChatResponse(resp: Responses.ResponsesResponse, allocator: std.mem.Allocator) void {
+pub fn cleanupFromChatResponse(resp: OpenAIResponses.ResponsesResponse, allocator: std.mem.Allocator) void {
     allocator.free(resp.id);
     allocator.free(resp.model);
     for (resp.output) |item| {
@@ -347,8 +347,8 @@ pub fn cleanupFromChatResponse(resp: Responses.ResponsesResponse, allocator: std
     allocator.free(resp.output);
 }
 
-/// ResponsesRequest → Anthropic.Request (for anthropic upstream)
-pub fn toMessages(req: Responses.ResponsesRequest, model: []const u8, allocator: std.mem.Allocator) !Anthropic.Request {
+/// Request → Anthropic.Request (for anthropic upstream)
+pub fn toMessages(req: OpenAIResponses.Request, model: []const u8, allocator: std.mem.Allocator) !Anthropic.Request {
     var messages = std.ArrayList(Anthropic.Message).empty;
     errdefer messages.deinit(allocator);
 
@@ -404,13 +404,13 @@ pub fn cleanupToMessages(req: Anthropic.Request, allocator: std.mem.Allocator) v
 /// Anthropic.Response → ResponsesResponse
 pub fn fromMessagesResponse(
     resp: Anthropic.Response,
-    original_req: Responses.ResponsesRequest,
+    original_req: OpenAIResponses.Request,
     allocator: std.mem.Allocator,
-) !Responses.ResponsesResponse {
-    var output_items = std.ArrayList(Responses.OutputItem).empty;
+) !OpenAIResponses.ResponsesResponse {
+    var output_items = std.ArrayList(OpenAIResponses.OutputItem).empty;
     errdefer output_items.deinit(allocator);
 
-    var content = std.ArrayList(Responses.OutputContent).empty;
+    var content = std.ArrayList(OpenAIResponses.OutputContent).empty;
     errdefer content.deinit(allocator);
 
     for (resp.content) |block| {
@@ -451,7 +451,7 @@ pub fn fromMessagesResponse(
     else
         "completed";
 
-    return Responses.ResponsesResponse{
+    return OpenAIResponses.ResponsesResponse{
         .id = try allocator.dupe(u8, resp.id),
         .object = "response",
         .created_at = 0,
@@ -472,12 +472,12 @@ pub fn fromMessagesResponse(
     };
 }
 
-pub fn cleanupFromMessagesResponse(resp: Responses.ResponsesResponse, allocator: std.mem.Allocator) void {
+pub fn cleanupFromMessagesResponse(resp: OpenAIResponses.ResponsesResponse, allocator: std.mem.Allocator) void {
     cleanupFromChatResponse(resp, allocator);
 }
 
-/// ResponsesRequest → SapAiCore.Request
-pub fn toSap(req: Responses.ResponsesRequest, model: []const u8, allocator: std.mem.Allocator) !SapAiCore.Request {
+/// Request → SapAiCore.Request
+pub fn toSap(req: OpenAIResponses.Request, model: []const u8, allocator: std.mem.Allocator) !SapAiCore.Request {
     // Bridge through Chat then into SAP format
     const chat_req = try toChat(req, model, allocator);
     defer cleanupToChat(chat_req, allocator);
@@ -495,7 +495,7 @@ pub fn toSap(req: Responses.ResponsesRequest, model: []const u8, allocator: std.
         null;
 
     // Need to dupe messages since chat_req is about to be freed
-    const duped_messages = try allocator.dupe(SapAiCore.OpenAI.Message, chat_req.messages);
+    const duped_messages = try allocator.dupe(SapAiCore.OpenAIChat.Message, chat_req.messages);
 
     return SapAiCore.Request{
         .config = .{
@@ -530,13 +530,13 @@ pub fn cleanupToSap(req: SapAiCore.Request, allocator: std.mem.Allocator) void {
 /// SapAiCore.Response → ResponsesResponse
 pub fn fromSapResponse(
     resp: SapAiCore.Response,
-    original_req: Responses.ResponsesRequest,
+    original_req: OpenAIResponses.Request,
     allocator: std.mem.Allocator,
-) !Responses.ResponsesResponse {
+) !OpenAIResponses.ResponsesResponse {
     return fromChatResponse(resp.final_result, original_req, allocator);
 }
 
-pub fn cleanupFromSapResponse(resp: Responses.ResponsesResponse, allocator: std.mem.Allocator) void {
+pub fn cleanupFromSapResponse(resp: OpenAIResponses.ResponsesResponse, allocator: std.mem.Allocator) void {
     cleanupFromChatResponse(resp, allocator);
 }
 
@@ -546,7 +546,7 @@ pub fn cleanupFromSapResponse(resp: Responses.ResponsesResponse, allocator: std.
 
 /// ResponsesResponse → completion_types.Response
 pub fn toChatResponse(
-    resp: Responses.ResponsesResponse,
+    resp: OpenAIResponses.ResponsesResponse,
     allocator: std.mem.Allocator,
 ) !Completion.Response {
     // Collect text and tool calls from output items

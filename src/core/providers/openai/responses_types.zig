@@ -71,7 +71,7 @@ pub const InputParam = union(enum) {
 };
 
 /// POST /v1/responses request body
-pub const ResponsesRequest = struct {
+pub const Request = struct {
     model: []const u8,
     input: InputParam,
     // System/developer instructions (replaces system message in messages[])
@@ -129,7 +129,7 @@ pub const ResponsesRequest = struct {
         const input_val = obj.get("input") orelse return error.MissingField;
         const input = try InputParam.jsonParseFromValue(allocator, input_val, options);
 
-        var result = ResponsesRequest{ .model = model, .input = input };
+        var result = Request{ .model = model, .input = input };
 
         if (obj.get("instructions")) |v| { result.instructions = if (v == .string) v.string else null; }
         if (obj.get("previous_response_id")) |v| { result.previous_response_id = if (v == .string) v.string else null; }
