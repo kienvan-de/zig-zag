@@ -166,7 +166,7 @@ pub fn transformModelsResponse(
             .id = prefixed_id,
             .object = "model",
             .created = 0,
-            .owned_by = "google",
+            .owned_by = try allocator.dupe(u8, "google"),
         });
     }
 

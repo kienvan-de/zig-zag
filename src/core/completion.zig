@@ -945,28 +945,17 @@ pub fn listModels(allocator: std.mem.Allocator) ![]openai_types.Model {
 }
 
 /// Free a model slice previously returned by `listModels`.
-///
-/// Releases every heap-allocated `id` (and non-static `owned_by`) string
-/// inside each `Model`, then frees the slice itself. Safe to call with a
-/// zero-length slice.
 pub fn freeModels(allocator: std.mem.Allocator, models: []openai_types.Model) void {
     for (models) |m| {
         allocator.free(m.id);
-        if (!isStaticOwnedBy(m.owned_by)) {
-            allocator.free(m.owned_by);
-        }
+        allocator.free(m.owned_by);
     }
     allocator.free(models);
 }
 
 fn isStaticOwnedBy(owned_by: []const u8) bool {
-    const static_values = [_][]const u8{ "anthropic", "model", "openai", "system" };
-    for (static_values) |static_val| {
-        if (std.mem.eql(u8, owned_by, static_val)) {
-            return true;
-        }
-    }
-    return false;
+    _ = owned_by;
+    return false; // all owned_by strings are now heap-allocated
 }
 
 fn fetchTask(ctx_ptr: *anyopaque) void {
