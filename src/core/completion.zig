@@ -132,7 +132,14 @@ pub fn chatComplete(
     if (provider_mod.Provider.fromString(model_info.provider)) |native_provider| {
         switch (native_provider) {
             .anthropic => try dispatchChat(anthropic.client.AnthropicClient, anthropic.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
-            .openai => try dispatchChat(openai.client.OpenAIClient, openai.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
+            .openai => {
+                const schema = provider_config.getString("api_schema") orelse "legacy";
+                if (std.mem.eql(u8, schema, "latest")) {
+                    try chatViaResponses(openai.client.OpenAIClient, openai.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
+                } else {
+                    try dispatchChat(openai.client.OpenAIClient, openai.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
+                }
+            },
             .sap_ai_core => try dispatchChat(sap_ai_core.client.SapAiCoreClient, sap_ai_core.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
             .hai => try dispatchChat(hai.client.HaiClient, openai.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
             .copilot => try dispatchChat(copilot.client.CopilotClient, openai.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
@@ -142,9 +149,14 @@ pub fn chatComplete(
             log.err("Provider '{s}' not supported and no 'compatible' field specified", .{model_info.provider});
             return error.CompatibleFieldMissing;
         };
+        const schema = provider_config.getString("api_schema") orelse "legacy";
 
         if (std.mem.eql(u8, compatible, "openai")) {
-            try dispatchChat(openai.client.OpenAIClient, openai.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
+            if (std.mem.eql(u8, schema, "latest")) {
+                try chatViaResponses(openai.client.OpenAIClient, openai.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
+            } else {
+                try dispatchChat(openai.client.OpenAIClient, openai.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
+            }
         } else if (std.mem.eql(u8, compatible, "anthropic")) {
             try dispatchChat(anthropic.client.AnthropicClient, anthropic.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
         } else {
@@ -491,7 +503,14 @@ pub fn messagesComplete(
         switch (native_provider) {
             .anthropic => try dispatchMessages(anthropic.client.AnthropicClient, anthropic.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
             .hai => try dispatchMessages(hai.client.HaiClient, anthropic.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
-            .openai => try dispatchMessages(openai.client.OpenAIClient, openai.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
+            .openai => {
+                const schema = provider_config.getString("api_schema") orelse "legacy";
+                if (std.mem.eql(u8, schema, "latest")) {
+                    try messagesViaResponses(openai.client.OpenAIClient, openai.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
+                } else {
+                    try dispatchMessages(openai.client.OpenAIClient, openai.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
+                }
+            },
             .copilot => try dispatchMessages(copilot.client.CopilotClient, openai.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
             .sap_ai_core => try dispatchMessages(sap_ai_core.client.SapAiCoreClient, sap_ai_core.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
         }
@@ -500,11 +519,16 @@ pub fn messagesComplete(
             log.err("Provider '{s}' not supported and no 'compatible' field specified", .{model_info.provider});
             return error.CompatibleFieldMissing;
         };
+        const schema = provider_config.getString("api_schema") orelse "legacy";
 
         if (std.mem.eql(u8, compatible, "anthropic")) {
             try dispatchMessages(anthropic.client.AnthropicClient, anthropic.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
         } else if (std.mem.eql(u8, compatible, "openai")) {
-            try dispatchMessages(openai.client.OpenAIClient, openai.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
+            if (std.mem.eql(u8, schema, "latest")) {
+                try messagesViaResponses(openai.client.OpenAIClient, openai.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
+            } else {
+                try dispatchMessages(openai.client.OpenAIClient, openai.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
+            }
         } else {
             log.err("Unknown compatible provider type: '{s}'", .{compatible});
             return error.UnknownCompatibleType;
@@ -1113,7 +1137,7 @@ pub fn responsesComplete(
             .openai => {
                 const schema = provider_config.getString("api_schema") orelse "legacy";
                 if (std.mem.eql(u8, schema, "latest")) {
-                    try responsesPassthrough(writer, is_streaming, allocator, request, model_info.model, provider_config);
+                    try dispatchResponsesNative(openai.client.OpenAIClient, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
                 } else {
                     try dispatchResponses(openai.client.OpenAIClient, openai.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
                 }
@@ -1131,7 +1155,7 @@ pub fn responsesComplete(
 
         if (std.mem.eql(u8, compatible, "openai")) {
             if (std.mem.eql(u8, schema, "latest")) {
-                try responsesPassthrough(writer, is_streaming, allocator, request, model_info.model, provider_config);
+                try dispatchResponsesNative(openai.client.OpenAIClient, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
             } else {
                 try dispatchResponses(openai.client.OpenAIClient, openai.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
             }
@@ -1144,16 +1168,20 @@ pub fn responsesComplete(
     }
 }
 
-/// Pass-through: forward ResponsesRequest directly to upstream /v1/responses (api_schema=latest)
-fn responsesPassthrough(
+/// api_schema=latest: send ResponsesRequest directly to upstream /v1/responses.
+/// OpenAIClient.sendRequest sees ResponsesRequest at comptime → routes to /v1/responses.
+/// The response is already in ResponsesResponse format — write directly.
+fn dispatchResponsesNative(
+    comptime Client: type,
     writer: anytype,
     is_streaming: bool,
     allocator: std.mem.Allocator,
     request: responses_types.ResponsesRequest,
     model: []const u8,
+    provider_name: []const u8,
     provider_config: *const config_mod.ProviderConfig,
 ) !void {
-    var client = openai.client.OpenAIClient.init(allocator, provider_config) catch |err| {
+    var client = Client.init(allocator, provider_config) catch |err| {
         log.err("[RESPONSES] Client init failed: {}", .{err});
         return error.ClientInitFailed;
     };
@@ -1163,12 +1191,14 @@ fn responsesPassthrough(
     req.model = model;
 
     if (is_streaming) {
-        const stream_result = client.sendStreamingResponsesRequest(req) catch |err| {
-            log.err("[RESPONSES] Streaming request failed: {}", .{err});
+        const stream_result = client.sendStreamingRequest(req) catch |err| {
+            if (err == error.AuthRequired and tryAutoReauth(allocator, provider_name)) {
+                const retry = client.sendStreamingRequest(req) catch return error.UpstreamError;
+                _ = retry;
+            }
             return error.UpstreamError;
         };
         defer client.freeStreamingResult(stream_result);
-
         while (true) {
             const maybe_line = stream_result.iterator.next() catch break;
             const line = maybe_line orelse break;
@@ -1177,15 +1207,183 @@ fn responsesPassthrough(
             writer.writeAll("\n\n") catch {};
         }
     } else {
-        const response = client.sendResponsesRequest(req) catch |err| {
-            log.err("[RESPONSES] Request failed: {}", .{err});
+        const response = client.sendRequest(req) catch |err| {
+            if (err == error.AuthRequired and tryAutoReauth(allocator, provider_name)) {
+                const retry_resp = client.sendRequest(req) catch return error.UpstreamError;
+                defer retry_resp.deinit();
+                var buf = std.ArrayList(u8).empty;
+                defer buf.deinit(allocator);
+                try buf.print(allocator, "{f}", .{std.json.fmt(retry_resp.value, .{})});
+                return writer.writeAll(buf.items);
+            }
             return error.UpstreamError;
         };
         defer response.deinit();
-
         var buf = std.ArrayList(u8).empty;
         defer buf.deinit(allocator);
         try buf.print(allocator, "{f}", .{std.json.fmt(response.value, .{})});
+        try writer.writeAll(buf.items);
+    }
+}
+
+/// api_schema=latest: convert OpenAI.Request → ResponsesRequest, send to /v1/responses,
+/// convert ResponsesResponse → OpenAI.Response for the chat response path.
+fn chatViaResponses(
+    comptime Client: type,
+    comptime Transformer: type,
+    writer: anytype,
+    is_streaming: bool,
+    allocator: std.mem.Allocator,
+    request: openai_types.Request,
+    model: []const u8,
+    provider_name: []const u8,
+    provider_config: *const config_mod.ProviderConfig,
+) !void {
+    _ = Transformer;
+    const rt = openai.responses_transformer;
+
+    const responses_req = rt.fromChat(request, allocator) catch |err| {
+        log.err("[CHAT→RESPONSES] fromChat failed: {}", .{err});
+        return error.TransformFailed;
+    };
+    defer rt.cleanupFromChat(responses_req, allocator);
+
+    var responses_req_with_model = responses_req;
+    responses_req_with_model.model = model;
+
+    var client = Client.init(allocator, provider_config) catch |err| {
+        log.err("[CHAT→RESPONSES] Client init failed: {}", .{err});
+        return error.ClientInitFailed;
+    };
+    defer client.deinit();
+
+    if (is_streaming) {
+        const stream_result = client.sendStreamingRequest(responses_req_with_model) catch |err| {
+            if (err == error.AuthRequired and tryAutoReauth(allocator, provider_name)) {
+                const retry = client.sendStreamingRequest(responses_req_with_model) catch return error.UpstreamError;
+                _ = retry;
+            }
+            return error.UpstreamError;
+        };
+        defer client.freeStreamingResult(stream_result);
+        // Upstream sends ResponsesStreamEvent lines; convert back to chat chunks
+        var stream_state = openai.transformer.StreamState.init(allocator, request.model);
+        defer stream_state.deinit();
+        while (true) {
+            const maybe_line = stream_result.iterator.next() catch break;
+            const line = maybe_line orelse break;
+            if (std.mem.startsWith(u8, line, "data: [DONE]")) break;
+            // For now pass through — full reverse streaming transform is a follow-up
+            writer.writeAll(line) catch {};
+            writer.writeAll("\n\n") catch {};
+        }
+        try writer.writeAll("data: [DONE]\n\n");
+    } else {
+        const resp = client.sendRequest(responses_req_with_model) catch |err| {
+            if (err == error.AuthRequired and tryAutoReauth(allocator, provider_name)) {
+                const retry_resp = client.sendRequest(responses_req_with_model) catch return error.UpstreamError;
+                defer retry_resp.deinit();
+                const chat_resp = rt.toChatResponse(retry_resp.value, allocator) catch return error.TransformResponseFailed;
+                defer rt.cleanupToChatResponse(chat_resp, allocator);
+                var buf = std.ArrayList(u8).empty;
+                defer buf.deinit(allocator);
+                try buf.print(allocator, "{f}", .{std.json.fmt(chat_resp, .{})});
+                return writer.writeAll(buf.items);
+            }
+            return error.UpstreamError;
+        };
+        defer resp.deinit();
+        const chat_resp = rt.toChatResponse(resp.value, allocator) catch |err| {
+            log.err("[CHAT→RESPONSES] toChatResponse failed: {}", .{err});
+            return error.TransformResponseFailed;
+        };
+        defer rt.cleanupToChatResponse(chat_resp, allocator);
+        var buf = std.ArrayList(u8).empty;
+        defer buf.deinit(allocator);
+        try buf.print(allocator, "{f}", .{std.json.fmt(chat_resp, .{})});
+        try writer.writeAll(buf.items);
+    }
+}
+
+/// api_schema=latest: convert Anthropic.Request → ResponsesRequest, send to /v1/responses,
+/// convert ResponsesResponse → Anthropic.Response for the messages response path.
+fn messagesViaResponses(
+    comptime Client: type,
+    comptime Transformer: type,
+    writer: anytype,
+    is_streaming: bool,
+    allocator: std.mem.Allocator,
+    request: anthropic_types.Request,
+    model: []const u8,
+    provider_name: []const u8,
+    provider_config: *const config_mod.ProviderConfig,
+) !void {
+    _ = Transformer;
+    const rt = openai.responses_transformer;
+
+    const responses_req = rt.fromMessages(request, allocator) catch |err| {
+        log.err("[MESSAGES→RESPONSES] fromMessages failed: {}", .{err});
+        return error.TransformFailed;
+    };
+    defer rt.cleanupFromMessages(responses_req, allocator);
+
+    var responses_req_with_model = responses_req;
+    responses_req_with_model.model = model;
+
+    var client = Client.init(allocator, provider_config) catch |err| {
+        log.err("[MESSAGES→RESPONSES] Client init failed: {}", .{err});
+        return error.ClientInitFailed;
+    };
+    defer client.deinit();
+
+    if (is_streaming) {
+        const stream_result = client.sendStreamingRequest(responses_req_with_model) catch |err| {
+            if (err == error.AuthRequired and tryAutoReauth(allocator, provider_name)) {
+                const retry = client.sendStreamingRequest(responses_req_with_model) catch return error.UpstreamError;
+                _ = retry;
+            }
+            return error.UpstreamError;
+        };
+        defer client.freeStreamingResult(stream_result);
+        // Pass through responses SSE lines — full reverse streaming transform is a follow-up
+        while (true) {
+            const maybe_line = stream_result.iterator.next() catch break;
+            const line = maybe_line orelse break;
+            if (std.mem.startsWith(u8, line, "data: [DONE]")) break;
+            writer.writeAll(line) catch {};
+            writer.writeAll("\n\n") catch {};
+        }
+        try writer.writeAll("data: [DONE]\n\n");
+    } else {
+        const resp = client.sendRequest(responses_req_with_model) catch |err| {
+            if (err == error.AuthRequired and tryAutoReauth(allocator, provider_name)) {
+                const retry_resp = client.sendRequest(responses_req_with_model) catch return error.UpstreamError;
+                defer retry_resp.deinit();
+                const chat_resp = rt.toChatResponse(retry_resp.value, allocator) catch return error.TransformResponseFailed;
+                defer rt.cleanupToChatResponse(chat_resp, allocator);
+                const anthro_resp = openai.transformer.transformToAnthropicResponse(chat_resp, allocator, request.model) catch return error.TransformResponseFailed;
+                defer openai.transformer.cleanupAnthropicResponse(anthro_resp, allocator);
+                var buf = std.ArrayList(u8).empty;
+                defer buf.deinit(allocator);
+                try buf.print(allocator, "{f}", .{std.json.fmt(anthro_resp, .{})});
+                return writer.writeAll(buf.items);
+            }
+            return error.UpstreamError;
+        };
+        defer resp.deinit();
+        const chat_resp = rt.toChatResponse(resp.value, allocator) catch |err| {
+            log.err("[MESSAGES→RESPONSES] toChatResponse failed: {}", .{err});
+            return error.TransformResponseFailed;
+        };
+        defer rt.cleanupToChatResponse(chat_resp, allocator);
+        const anthro_resp = openai.transformer.transformToAnthropicResponse(chat_resp, allocator, request.model) catch |err| {
+            log.err("[MESSAGES→RESPONSES] transformToAnthropicResponse failed: {}", .{err});
+            return error.TransformResponseFailed;
+        };
+        defer openai.transformer.cleanupAnthropicResponse(anthro_resp, allocator);
+        var buf = std.ArrayList(u8).empty;
+        defer buf.deinit(allocator);
+        try buf.print(allocator, "{f}", .{std.json.fmt(anthro_resp, .{})});
         try writer.writeAll(buf.items);
     }
 }

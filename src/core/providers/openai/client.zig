@@ -31,8 +31,6 @@ pub const OpenAIClient = struct {
     api_key: []const u8,
     api_url: []const u8,
     organization: ?[]const u8,
-    /// "legacy" (default) → /v1/chat/completions; "latest" → /v1/responses
-    api_schema: []const u8,
     config: *const config_mod.ProviderConfig,
     client: http_client.HttpClient,
 
@@ -46,7 +44,6 @@ pub const OpenAIClient = struct {
 
         const api_url = provider_config.getString("api_url") orelse DEFAULT_API_URL;
         const organization = provider_config.getString("organization");
-        const api_schema = provider_config.getString("api_schema") orelse "legacy";
         const timeout_ms = provider_config.getInt("timeout_ms") orelse config_mod.defaults.provider_timeout_ms;
         const max_response_size_mb = provider_config.getInt("max_response_size_mb") orelse config_mod.defaults.provider_max_response_size_mb;
 
@@ -55,7 +52,6 @@ pub const OpenAIClient = struct {
             .api_key = api_key,
             .api_url = api_url,
             .organization = organization,
-            .api_schema = api_schema,
             .config = provider_config,
             .client = http_client.HttpClient.initWithOptions(
                 allocator,
@@ -86,17 +82,28 @@ pub const OpenAIClient = struct {
         return headers_buf[0..headers_count];
     }
 
+    /// Pick the upstream URL based on request type at comptime.
+    /// OpenAI.Request → /v1/chat/completions
+    /// ResponsesTypes.ResponsesRequest → /v1/responses
+    fn urlForRequest(self: *OpenAIClient, buf: []u8, comptime Req: type) ![]const u8 {
+        const path = if (Req == ResponsesTypes.ResponsesRequest) "/v1/responses" else "/v1/chat/completions";
+        return std.fmt.bufPrint(buf, "{s}{s}", .{ self.api_url, path });
+    }
+
+    /// Response type for a given request type
+    fn ResponseType(comptime Req: type) type {
+        if (Req == ResponsesTypes.ResponsesRequest) return ResponsesTypes.ResponsesResponse;
+        return OpenAI.Response;
+    }
+
     /// Fetch list of available models from OpenAI API
     pub fn listModels(self: *OpenAIClient) !std.json.Parsed(OpenAI.ModelsResponse) {
-        // Build cache key using provider name from config
         var cache_key_buf: [128]u8 = undefined;
         const cache_key = std.fmt.bufPrint(&cache_key_buf, "models:{s}", .{self.config.name}) catch "models:openai";
 
-        // Check cache
         if (app_cache.get(self.allocator, cache_key)) |cached_body| {
             defer self.allocator.free(cached_body);
             log.debug("Models cache hit for '{s}'", .{self.config.name});
-
             if (std.json.parseFromSlice(
                 OpenAI.ModelsResponse,
                 self.allocator,
@@ -109,30 +116,21 @@ pub const OpenAIClient = struct {
             }
         }
 
-        // Build URL
         var url_buffer: [512]u8 = undefined;
         const url = try std.fmt.bufPrint(&url_buffer, "{s}/v1/models", .{self.api_url});
-
-        // Build headers
         var auth_buffer: [512]u8 = undefined;
         var headers_buf: [3]std.http.Header = undefined;
         const headers = try self.buildHeaders(&auth_buffer, &headers_buf);
 
-        // Make GET request
         var response = try self.client.getJson(url, headers);
         defer response.deinit();
 
-        // Check status code
-        if (response.status != .ok) {
-            return self.handleErrorResponse(response.status);
-        }
+        if (response.status != .ok) return self.handleErrorResponse(response.status);
 
-        // Cache the response body (best-effort)
         app_cache.put(cache_key, response.body) catch |err| {
             log.warn("Failed to cache models for '{s}': {}", .{ self.config.name, err });
         };
 
-        // Parse response
         return std.json.parseFromSlice(
             OpenAI.ModelsResponse,
             self.allocator,
@@ -144,31 +142,17 @@ pub const OpenAIClient = struct {
         };
     }
 
-    /// Send a request to OpenAI Chat Completions API (non-streaming)
-    /// Returns parsed OpenAI.Response
-    pub fn sendRequest(
-        self: *OpenAIClient,
-        request: OpenAI.Request,
-    ) !std.json.Parsed(OpenAI.Response) {
-        return self.sendRequestOnce(request);
-    }
-
-    /// Internal method to send a single request without retry logic
-    fn sendRequestOnce(
-        self: *OpenAIClient,
-        request: OpenAI.Request,
-    ) !std.json.Parsed(OpenAI.Response) {
-        // Build URL
+    /// Send a non-streaming request. Routes to /v1/chat/completions or /v1/responses
+    /// based on request type at comptime.
+    pub fn sendRequest(self: *OpenAIClient, request: anytype) !std.json.Parsed(ResponseType(@TypeOf(request))) {
+        const Req = @TypeOf(request);
+        const Resp = ResponseType(Req);
         var url_buffer: [512]u8 = undefined;
-        const url = try std.fmt.bufPrint(&url_buffer, "{s}/v1/chat/completions", .{self.api_url});
-
-        // Build headers
+        const url = try self.urlForRequest(&url_buffer, Req);
         var auth_buffer: [512]u8 = undefined;
         var headers_buf: [3]std.http.Header = undefined;
         const headers = try self.buildHeaders(&auth_buffer, &headers_buf);
-
-        // Make POST request with JSON body and parse response
-        return self.client.postJson(OpenAI.Response, url, headers, request) catch |err| {
+        return self.client.postJson(Resp, url, headers, request) catch |err| {
             log.err("Failed to send OpenAI request: {}", .{err});
             return err;
         };
@@ -186,71 +170,26 @@ pub const OpenAIClient = struct {
         };
     }
 
-    /// Send a streaming request to OpenAI Chat Completions API
-    /// Returns a StreamingResult with an iterator for processing chunks
-    /// Reads from socket on-demand - does not buffer full response
-    pub fn sendStreamingRequest(
-        self: *OpenAIClient,
-        request: OpenAI.Request,
-    ) !*StreamingResult {
-        // Build URL
+    /// Send a streaming request. Routes to /v1/chat/completions or /v1/responses
+    /// based on request type at comptime.
+    pub fn sendStreamingRequest(self: *OpenAIClient, request: anytype) !*StreamingResult {
+        const Req = @TypeOf(request);
         var url_buffer: [512]u8 = undefined;
-        const url = try std.fmt.bufPrint(&url_buffer, "{s}/v1/chat/completions", .{self.api_url});
-
-        // Build headers
+        const url = try self.urlForRequest(&url_buffer, Req);
         var auth_buffer: [512]u8 = undefined;
         var headers_buf: [3]std.http.Header = undefined;
         const headers = try self.buildHeaders(&auth_buffer, &headers_buf);
-
-        // Make streaming POST request
         const result = try self.client.postStreaming(SSEIterator, url, headers, request);
-
-        // Check status code
         if (result.response.head.status != .ok) {
             self.client.freeStreamingResult(SSEIterator, result);
             return self.handleErrorResponse(result.response.head.status);
         }
-
         return result;
     }
 
-    /// Free a streaming result allocated by sendStreamingRequest
+    /// Free a streaming result
     pub fn freeStreamingResult(self: *OpenAIClient, result: *StreamingResult) void {
         self.client.freeStreamingResult(SSEIterator, result);
-    }
-
-    /// Send a request to OpenAI Responses API (non-streaming, api_schema=latest)
-    pub fn sendResponsesRequest(
-        self: *OpenAIClient,
-        request: ResponsesTypes.ResponsesRequest,
-    ) !std.json.Parsed(ResponsesTypes.ResponsesResponse) {
-        var url_buffer: [512]u8 = undefined;
-        const url = try std.fmt.bufPrint(&url_buffer, "{s}/v1/responses", .{self.api_url});
-        var auth_buffer: [512]u8 = undefined;
-        var headers_buf: [3]std.http.Header = undefined;
-        const headers = try self.buildHeaders(&auth_buffer, &headers_buf);
-        return self.client.postJson(ResponsesTypes.ResponsesResponse, url, headers, request) catch |err| {
-            log.err("Failed to send OpenAI responses request: {}", .{err});
-            return err;
-        };
-    }
-
-    /// Send a streaming request to OpenAI Responses API (api_schema=latest)
-    pub fn sendStreamingResponsesRequest(
-        self: *OpenAIClient,
-        request: ResponsesTypes.ResponsesRequest,
-    ) !*StreamingResult {
-        var url_buffer: [512]u8 = undefined;
-        const url = try std.fmt.bufPrint(&url_buffer, "{s}/v1/responses", .{self.api_url});
-        var auth_buffer: [512]u8 = undefined;
-        var headers_buf: [3]std.http.Header = undefined;
-        const headers = try self.buildHeaders(&auth_buffer, &headers_buf);
-        const result = try self.client.postStreaming(SSEIterator, url, headers, request);
-        if (result.response.head.status != .ok) {
-            self.client.freeStreamingResult(SSEIterator, result);
-            return self.handleErrorResponse(result.response.head.status);
-        }
-        return result;
     }
 };
 
