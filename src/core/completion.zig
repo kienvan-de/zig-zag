@@ -1109,18 +1109,18 @@ pub fn responsesComplete(
 
     if (provider_mod.Provider.fromString(model_info.provider)) |native_provider| {
         switch (native_provider) {
-            .anthropic => try responsesViaMessages(anthropic.client.AnthropicClient, anthropic.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
+            .anthropic => try dispatchResponses(anthropic.client.AnthropicClient, anthropic.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
             .openai => {
                 const schema = provider_config.getString("api_schema") orelse "legacy";
                 if (std.mem.eql(u8, schema, "latest")) {
                     try responsesPassthrough(writer, is_streaming, allocator, request, model_info.model, provider_config);
                 } else {
-                    try responsesViaChat(openai.client.OpenAIClient, openai.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
+                    try dispatchResponses(openai.client.OpenAIClient, openai.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
                 }
             },
-            .sap_ai_core => try responsesViaSap(sap_ai_core.client.SapAiCoreClient, sap_ai_core.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
-            .hai => try responsesViaChat(hai.client.HaiClient, openai.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
-            .copilot => try responsesViaChat(copilot.client.CopilotClient, openai.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
+            .sap_ai_core => try dispatchResponses(sap_ai_core.client.SapAiCoreClient, sap_ai_core.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
+            .hai => try dispatchResponses(hai.client.HaiClient, openai.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
+            .copilot => try dispatchResponses(copilot.client.CopilotClient, openai.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
         }
     } else |_| {
         const compatible = provider_config.getString("compatible") orelse {
@@ -1133,10 +1133,10 @@ pub fn responsesComplete(
             if (std.mem.eql(u8, schema, "latest")) {
                 try responsesPassthrough(writer, is_streaming, allocator, request, model_info.model, provider_config);
             } else {
-                try responsesViaChat(openai.client.OpenAIClient, openai.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
+                try dispatchResponses(openai.client.OpenAIClient, openai.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
             }
         } else if (std.mem.eql(u8, compatible, "anthropic")) {
-            try responsesViaMessages(anthropic.client.AnthropicClient, anthropic.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
+            try dispatchResponses(anthropic.client.AnthropicClient, anthropic.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
         } else {
             log.err("Unknown compatible provider type: '{s}'", .{compatible});
             return error.UnknownCompatibleType;
@@ -1144,7 +1144,7 @@ pub fn responsesComplete(
     }
 }
 
-/// Pass-through: forward ResponsesRequest directly to upstream /v1/responses
+/// Pass-through: forward ResponsesRequest directly to upstream /v1/responses (api_schema=latest)
 fn responsesPassthrough(
     writer: anytype,
     is_streaming: bool,
@@ -1159,7 +1159,6 @@ fn responsesPassthrough(
     };
     defer client.deinit();
 
-    // Replace model with stripped version (no provider prefix)
     var req = request;
     req.model = model;
 
@@ -1191,8 +1190,11 @@ fn responsesPassthrough(
     }
 }
 
-/// Bridge: ResponsesRequest → Chat → upstream → ResponsesResponse
-fn responsesViaChat(
+/// Dispatch a /v1/responses request through a provider's responses method set.
+/// Transformer must implement: transformFromResponses, cleanupFromResponsesRequest,
+/// transformToResponsesResponse, cleanupResponsesResponse,
+/// ResponsesStreamState (init/deinit), transformStreamLineToResponses, flushResponsesStream.
+fn dispatchResponses(
     comptime Client: type,
     comptime Transformer: type,
     writer: anytype,
@@ -1203,25 +1205,18 @@ fn responsesViaChat(
     provider_name: []const u8,
     provider_config: *const config_mod.ProviderConfig,
 ) !void {
-    const rt = openai.responses_transformer;
-
-    const chat_req = rt.toChat(request, model, allocator) catch |err| {
-        log.err("[RESPONSES] toChat transform failed: {}", .{err});
+    // Transform ResponsesRequest → provider wire format
+    const provider_req = Transformer.transformFromResponses(request, model, allocator) catch |err| {
+        log.err("[RESPONSES] transformFromResponses failed: {}", .{err});
         return error.TransformFailed;
     };
-    defer rt.cleanupToChat(chat_req, allocator);
+    defer Transformer.cleanupFromResponsesRequest(provider_req, allocator);
 
     var client = Client.init(allocator, provider_config) catch |err| {
         log.err("[RESPONSES] Client init failed: {}", .{err});
         return error.ClientInitFailed;
     };
     defer client.deinit();
-
-    const provider_req = Transformer.transform(chat_req, model, allocator) catch |err| {
-        log.err("[RESPONSES] Provider transform failed: {}", .{err});
-        return error.TransformFailed;
-    };
-    defer Transformer.cleanupRequest(provider_req, allocator);
 
     if (is_streaming) {
         const stream_result = client.sendStreamingRequest(provider_req) catch |err| {
@@ -1233,119 +1228,19 @@ fn responsesViaChat(
         };
         defer client.freeStreamingResult(stream_result);
 
-        const responses_rt = openai.responses_transformer;
-        var stream_state = responses_rt.StreamState.init(allocator, request.model);
+        var stream_state = Transformer.ResponsesStreamState.init(allocator, request.model);
         defer stream_state.deinit();
 
         while (true) {
             const maybe_line = stream_result.iterator.next() catch break;
             const line = maybe_line orelse break;
             if (std.mem.startsWith(u8, line, "data: [DONE]")) break;
-            if (responses_rt.fromChatStreamLine(line, &stream_state, allocator)) |out| {
+            if (Transformer.transformStreamLineToResponses(line, &stream_state, allocator)) |out| {
                 defer allocator.free(out);
                 writer.writeAll(out) catch {};
             }
         }
-        // Emit terminal events with final usage (deferred until after usage chunk arrives)
-        if (responses_rt.fromChatStreamFlush(&stream_state, allocator)) |out| {
-            defer allocator.free(out);
-            writer.writeAll(out) catch {};
-        }
-        // Final [DONE] sentinel
-        try writer.writeAll("data: [DONE]\n\n");
-    } else {
-        const provider_response = client.sendRequest(provider_req) catch |err| {
-            if (err == error.AuthRequired and tryAutoReauth(allocator, provider_name)) {
-                const retry_resp = client.sendRequest(provider_req) catch return error.UpstreamError;
-                defer retry_resp.deinit();
-                const openai_resp = Transformer.transformResponse(retry_resp.value, allocator, request.model) catch return error.TransformResponseFailed;
-                defer Transformer.cleanupResponse(openai_resp, allocator);
-                const resp = rt.fromChatResponse(openai_resp, request, allocator) catch return error.TransformResponseFailed;
-                defer rt.cleanupFromChatResponse(resp, allocator);
-                var buf = std.ArrayList(u8).empty;
-                defer buf.deinit(allocator);
-                try buf.print(allocator, "{f}", .{std.json.fmt(resp, .{})});
-                return writer.writeAll(buf.items);
-            }
-            return error.UpstreamError;
-        };
-        defer provider_response.deinit();
-
-        const openai_resp = Transformer.transformResponse(provider_response.value, allocator, request.model) catch |err| {
-            log.err("[RESPONSES] transformResponse failed: {}", .{err});
-            return error.TransformResponseFailed;
-        };
-        defer Transformer.cleanupResponse(openai_resp, allocator);
-
-        const resp = rt.fromChatResponse(openai_resp, request, allocator) catch |err| {
-            log.err("[RESPONSES] fromChatResponse failed: {}", .{err});
-            return error.TransformResponseFailed;
-        };
-        defer rt.cleanupFromChatResponse(resp, allocator);
-
-        var buf = std.ArrayList(u8).empty;
-        defer buf.deinit(allocator);
-        try buf.print(allocator, "{f}", .{std.json.fmt(resp, .{})});
-        try writer.writeAll(buf.items);
-    }
-}
-
-/// Bridge: ResponsesRequest → Anthropic messages → upstream → ResponsesResponse
-fn responsesViaMessages(
-    comptime Client: type,
-    comptime Transformer: type,
-    writer: anytype,
-    is_streaming: bool,
-    allocator: std.mem.Allocator,
-    request: responses_types.ResponsesRequest,
-    model: []const u8,
-    provider_name: []const u8,
-    provider_config: *const config_mod.ProviderConfig,
-) !void {
-    const rt = openai.responses_transformer;
-
-    const anthro_req = rt.toMessages(request, model, allocator) catch |err| {
-        log.err("[RESPONSES] toMessages transform failed: {}", .{err});
-        return error.TransformFailed;
-    };
-    defer rt.cleanupToMessages(anthro_req, allocator);
-
-    var client = Client.init(allocator, provider_config) catch |err| {
-        log.err("[RESPONSES] Client init failed: {}", .{err});
-        return error.ClientInitFailed;
-    };
-    defer client.deinit();
-
-    const provider_req = Transformer.transformFromAnthropic(anthro_req, model, allocator) catch |err| {
-        log.err("[RESPONSES] Provider transform failed: {}", .{err});
-        return error.TransformFailed;
-    };
-    defer Transformer.cleanupFromAnthropicRequest(provider_req, allocator);
-
-    if (is_streaming) {
-        const stream_result = client.sendStreamingRequest(provider_req) catch |err| {
-            if (err == error.AuthRequired and tryAutoReauth(allocator, provider_name)) {
-                const retry = client.sendStreamingRequest(provider_req) catch return error.UpstreamError;
-                _ = retry;
-            }
-            return error.UpstreamError;
-        };
-        defer client.freeStreamingResult(stream_result);
-
-        const responses_rt = openai.responses_transformer;
-        var msg_stream_state = responses_rt.MessagesStreamState.init(allocator, request.model);
-        defer msg_stream_state.deinit();
-
-        while (true) {
-            const maybe_line = stream_result.iterator.next() catch break;
-            const line = maybe_line orelse break;
-            if (std.mem.startsWith(u8, line, "data: [DONE]")) break;
-            if (responses_rt.fromMessagesStreamLine(line, &msg_stream_state, allocator)) |out| {
-                defer allocator.free(out);
-                writer.writeAll(out) catch {};
-            }
-        }
-        if (responses_rt.fromMessagesStreamFlush(&msg_stream_state, allocator)) |out| {
+        if (Transformer.flushResponsesStream(&stream_state, allocator)) |out| {
             defer allocator.free(out);
             writer.writeAll(out) catch {};
         }
@@ -1355,10 +1250,8 @@ fn responsesViaMessages(
             if (err == error.AuthRequired and tryAutoReauth(allocator, provider_name)) {
                 const retry_resp = client.sendRequest(provider_req) catch return error.UpstreamError;
                 defer retry_resp.deinit();
-                const anthro_resp = Transformer.transformToAnthropicResponse(retry_resp.value, allocator, request.model) catch return error.TransformResponseFailed;
-                defer Transformer.cleanupAnthropicResponse(anthro_resp, allocator);
-                const resp = rt.fromMessagesResponse(anthro_resp, request, allocator) catch return error.TransformResponseFailed;
-                defer rt.cleanupFromMessagesResponse(resp, allocator);
+                const resp = Transformer.transformToResponsesResponse(retry_resp.value, request, allocator) catch return error.TransformResponseFailed;
+                defer Transformer.cleanupResponsesResponse(resp, allocator);
                 var buf = std.ArrayList(u8).empty;
                 defer buf.deinit(allocator);
                 try buf.print(allocator, "{f}", .{std.json.fmt(resp, .{})});
@@ -1368,112 +1261,11 @@ fn responsesViaMessages(
         };
         defer provider_response.deinit();
 
-        const anthro_resp = Transformer.transformToAnthropicResponse(provider_response.value, allocator, request.model) catch |err| {
-            log.err("[RESPONSES] transformToAnthropicResponse failed: {}", .{err});
+        const resp = Transformer.transformToResponsesResponse(provider_response.value, request, allocator) catch |err| {
+            log.err("[RESPONSES] transformToResponsesResponse failed: {}", .{err});
             return error.TransformResponseFailed;
         };
-        defer Transformer.cleanupAnthropicResponse(anthro_resp, allocator);
-
-        const resp = rt.fromMessagesResponse(anthro_resp, request, allocator) catch |err| {
-            log.err("[RESPONSES] fromMessagesResponse failed: {}", .{err});
-            return error.TransformResponseFailed;
-        };
-        defer rt.cleanupFromMessagesResponse(resp, allocator);
-
-        var buf = std.ArrayList(u8).empty;
-        defer buf.deinit(allocator);
-        try buf.print(allocator, "{f}", .{std.json.fmt(resp, .{})});
-        try writer.writeAll(buf.items);
-    }
-}
-
-/// Bridge: ResponsesRequest → SAP Orchestration → ResponsesResponse
-fn responsesViaSap(
-    comptime Client: type,
-    comptime Transformer: type,
-    writer: anytype,
-    is_streaming: bool,
-    allocator: std.mem.Allocator,
-    request: responses_types.ResponsesRequest,
-    model: []const u8,
-    provider_name: []const u8,
-    provider_config: *const config_mod.ProviderConfig,
-) !void {
-    const rt = openai.responses_transformer;
-
-    const sap_req = rt.toSap(request, model, allocator) catch |err| {
-        log.err("[RESPONSES] toSap transform failed: {}", .{err});
-        return error.TransformFailed;
-    };
-    defer rt.cleanupToSap(sap_req, allocator);
-
-    var client = Client.init(allocator, provider_config) catch |err| {
-        log.err("[RESPONSES] Client init failed: {}", .{err});
-        return error.ClientInitFailed;
-    };
-    defer client.deinit();
-
-    if (is_streaming) {
-        const stream_result = client.sendStreamingRequest(sap_req) catch |err| {
-            if (err == error.AuthRequired and tryAutoReauth(allocator, provider_name)) {
-                const retry = client.sendStreamingRequest(sap_req) catch return error.UpstreamError;
-                _ = retry;
-            }
-            return error.UpstreamError;
-        };
-        defer client.freeStreamingResult(stream_result);
-
-        var sap_state = Transformer.StreamState.init(allocator, request.model);
-        defer sap_state.deinit();
-
-        const responses_rt = openai.responses_transformer;
-        var stream_state = responses_rt.StreamState.init(allocator, request.model);
-        defer stream_state.deinit();
-
-        while (true) {
-            const maybe_line = stream_result.iterator.next() catch break;
-            const line = maybe_line orelse break;
-            if (std.mem.startsWith(u8, line, "data: [DONE]")) break;
-            // Unwrap SAP envelope → chat chunk
-            const result = Transformer.transformStreamLine(line, &sap_state, allocator);
-            switch (result) {
-                .chunk => |parsed| {
-                    var chunk = parsed;
-                    defer chunk.deinit();
-                    // Serialize chat chunk back to SSE line for responses converter
-                    var chat_line = std.ArrayList(u8).empty;
-                    defer chat_line.deinit(allocator);
-                    chat_line.print(allocator, "data: {f}", .{std.json.fmt(chunk.value, .{})}) catch continue;
-                    if (responses_rt.fromChatStreamLine(chat_line.items, &stream_state, allocator)) |out| {
-                        defer allocator.free(out);
-                        writer.writeAll(out) catch {};
-                    }
-                },
-                .@"error", .skip => {},
-            }
-        }
-        try writer.writeAll("data: [DONE]\n\n");
-    } else {
-        const provider_response = client.sendRequest(sap_req) catch |err| {
-            if (err == error.AuthRequired and tryAutoReauth(allocator, provider_name)) {
-                const retry_resp = client.sendRequest(sap_req) catch return error.UpstreamError;
-                defer retry_resp.deinit();
-                const resp = rt.fromSapResponse(retry_resp.value, request, allocator) catch return error.TransformResponseFailed;
-                defer rt.cleanupFromSapResponse(resp, allocator);
-                var buf = std.ArrayList(u8).empty;
-                defer buf.deinit(allocator);
-                try buf.print(allocator, "{f}", .{std.json.fmt(resp, .{})});
-                return writer.writeAll(buf.items);
-            }
-            return error.UpstreamError;
-        };
-        defer provider_response.deinit();
-
-        const resp = rt.fromSapResponse(provider_response.value, request, allocator) catch |err| {
-            log.err("[RESPONSES] fromSapResponse failed: {}", .{err});
-            return error.TransformResponseFailed;
-        };
-        defer rt.cleanupFromSapResponse(resp, allocator);
+        defer Transformer.cleanupResponsesResponse(resp, allocator);
 
         var buf = std.ArrayList(u8).empty;
         defer buf.deinit(allocator);
