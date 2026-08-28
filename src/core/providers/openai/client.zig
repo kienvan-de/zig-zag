@@ -92,7 +92,7 @@ pub const OpenAIClient = struct {
 
     /// Response type for a given request type
     fn ResponseType(comptime Req: type) type {
-        if (Req == OpenAIResponses.Request) return OpenAIResponses.ResponsesResponse;
+        if (Req == OpenAIResponses.Request) return OpenAIResponses.Response;
         return OpenAIChat.Response;
     }
 

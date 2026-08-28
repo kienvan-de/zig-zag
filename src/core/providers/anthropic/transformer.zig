@@ -1063,15 +1063,15 @@ pub fn cleanupFromRequest(request: Anthropic.Request, allocator: std.mem.Allocat
     rt.cleanupToMessages(request, allocator);
 }
 
-pub fn transformToResponsesResponse(
+pub fn transformToResponse(
     response: Anthropic.Response,
     original_req: OpenAIResponses.Request,
     allocator: std.mem.Allocator,
-) !OpenAIResponses.ResponsesResponse {
+) !OpenAIResponses.Response {
     return rt.fromMessagesResponse(response, original_req, allocator);
 }
 
-pub fn cleanupResponsesResponse(resp: OpenAIResponses.ResponsesResponse, allocator: std.mem.Allocator) void {
+pub fn cleanupResponsesResp(resp: OpenAIResponses.Response, allocator: std.mem.Allocator) void {
     rt.cleanupFromMessagesResponse(resp, allocator);
 }
 
