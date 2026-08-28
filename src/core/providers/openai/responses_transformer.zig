@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Responses API transformer — bridges between all inbound schemas and the
-//! canonical Request/ResponsesResponse format, and between the
+//! canonical Request/Response format, and between the
 //! canonical format and each upstream provider's wire format.
 
 const std = @import("std");
@@ -224,12 +224,12 @@ pub fn cleanupToChat(req: Completion.Request, allocator: std.mem.Allocator) void
     allocator.free(req.messages);
 }
 
-/// completion_types.Response → ResponsesResponse
+/// completion_types.Response → Response
 pub fn fromChatResponse(
     resp: Completion.Response,
     original_req: OpenAIResponses.Request,
     allocator: std.mem.Allocator,
-) !OpenAIResponses.ResponsesResponse {
+) !OpenAIResponses.Response {
     var output_items = std.ArrayList(OpenAIResponses.OutputItem).empty;
     errdefer output_items.deinit(allocator);
 
@@ -283,13 +283,13 @@ pub fn fromChatResponse(
         else
             "completed";
 
-        const usage = OpenAIResponses.ResponsesUsage{
+        const usage = OpenAIResponses.Usage{
             .input_tokens = if (resp.usage) |u| u.prompt_tokens else 0,
             .output_tokens = if (resp.usage) |u| u.completion_tokens else 0,
             .total_tokens = if (resp.usage) |u| u.total_tokens else 0,
         };
 
-        return OpenAIResponses.ResponsesResponse{
+        return OpenAIResponses.Response{
             .id = try allocator.dupe(u8, resp.id),
             .object = "response",
             .created_at = @floatFromInt(resp.created),
@@ -310,7 +310,7 @@ pub fn fromChatResponse(
     }
 
     // Empty response fallback
-    return OpenAIResponses.ResponsesResponse{
+    return OpenAIResponses.Response{
         .id = try allocator.dupe(u8, resp.id),
         .object = "response",
         .created_at = @floatFromInt(resp.created),
@@ -321,7 +321,7 @@ pub fn fromChatResponse(
     };
 }
 
-pub fn cleanupFromChatResponse(resp: OpenAIResponses.ResponsesResponse, allocator: std.mem.Allocator) void {
+pub fn cleanupFromChatResponse(resp: OpenAIResponses.Response, allocator: std.mem.Allocator) void {
     allocator.free(resp.id);
     allocator.free(resp.model);
     for (resp.output) |item| {
@@ -401,12 +401,12 @@ pub fn cleanupToMessages(req: Anthropic.Request, allocator: std.mem.Allocator) v
     allocator.free(req.messages);
 }
 
-/// Anthropic.Response → ResponsesResponse
+/// Anthropic.Response → Response
 pub fn fromMessagesResponse(
     resp: Anthropic.Response,
     original_req: OpenAIResponses.Request,
     allocator: std.mem.Allocator,
-) !OpenAIResponses.ResponsesResponse {
+) !OpenAIResponses.Response {
     var output_items = std.ArrayList(OpenAIResponses.OutputItem).empty;
     errdefer output_items.deinit(allocator);
 
@@ -451,7 +451,7 @@ pub fn fromMessagesResponse(
     else
         "completed";
 
-    return OpenAIResponses.ResponsesResponse{
+    return OpenAIResponses.Response{
         .id = try allocator.dupe(u8, resp.id),
         .object = "response",
         .created_at = 0,
@@ -472,7 +472,7 @@ pub fn fromMessagesResponse(
     };
 }
 
-pub fn cleanupFromMessagesResponse(resp: OpenAIResponses.ResponsesResponse, allocator: std.mem.Allocator) void {
+pub fn cleanupFromMessagesResponse(resp: OpenAIResponses.Response, allocator: std.mem.Allocator) void {
     cleanupFromChatResponse(resp, allocator);
 }
 
@@ -527,16 +527,16 @@ pub fn cleanupToSap(req: SapAiCore.Request, allocator: std.mem.Allocator) void {
     }
 }
 
-/// SapAiCore.Response → ResponsesResponse
+/// SapAiCore.Response → Response
 pub fn fromSapResponse(
     resp: SapAiCore.Response,
     original_req: OpenAIResponses.Request,
     allocator: std.mem.Allocator,
-) !OpenAIResponses.ResponsesResponse {
+) !OpenAIResponses.Response {
     return fromChatResponse(resp.final_result, original_req, allocator);
 }
 
-pub fn cleanupFromSapResponse(resp: OpenAIResponses.ResponsesResponse, allocator: std.mem.Allocator) void {
+pub fn cleanupFromSapResponse(resp: OpenAIResponses.Response, allocator: std.mem.Allocator) void {
     cleanupFromChatResponse(resp, allocator);
 }
 
@@ -544,9 +544,9 @@ pub fn cleanupFromSapResponse(resp: OpenAIResponses.ResponsesResponse, allocator
 // Response → Chat (for chatComplete response path when upstream is responses)
 // ============================================================================
 
-/// ResponsesResponse → completion_types.Response
+/// Response → completion_types.Response
 pub fn toChatResponse(
-    resp: OpenAIResponses.ResponsesResponse,
+    resp: OpenAIResponses.Response,
     allocator: std.mem.Allocator,
 ) !Completion.Response {
     // Collect text and tool calls from output items
@@ -666,7 +666,7 @@ pub const StreamState = struct {
 };
 
 // ============================================================================
-// Streaming: chat chunk → ResponsesStreamEvent SSE lines
+// Streaming: chat chunk → StreamEvent SSE lines
 // ============================================================================
 
 /// Convert a single chat SSE line (data: {...choices[].delta...}) into
@@ -757,7 +757,7 @@ pub fn fromChatStreamFlush(state: *StreamState, allocator: std.mem.Allocator) ?[
 }
 
 // ============================================================================
-// Streaming: Anthropic SSE line → ResponsesStreamEvent SSE lines
+// Streaming: Anthropic SSE line → StreamEvent SSE lines
 // ============================================================================
 
 pub const MessagesStreamState = struct {

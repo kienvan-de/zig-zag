@@ -783,15 +783,15 @@ pub fn cleanupFromRequest(request: OpenAIChat.Request, allocator: std.mem.Alloca
     rt.cleanupToChat(request, allocator);
 }
 
-pub fn transformToResponsesResponse(
+pub fn transformToResponse(
     response: OpenAIChat.Response,
     original_req: OpenAIResponses.Request,
     allocator: std.mem.Allocator,
-) !OpenAIResponses.ResponsesResponse {
+) !OpenAIResponses.Response {
     return rt.fromChatResponse(response, original_req, allocator);
 }
 
-pub fn cleanupResponsesResponse(resp: OpenAIResponses.ResponsesResponse, allocator: std.mem.Allocator) void {
+pub fn cleanupResponsesResp(resp: OpenAIResponses.Response, allocator: std.mem.Allocator) void {
     rt.cleanupFromChatResponse(resp, allocator);
 }
 

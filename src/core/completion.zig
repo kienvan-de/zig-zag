@@ -1170,7 +1170,7 @@ pub fn responsesComplete(
 
 /// api_schema=latest: send Request directly to upstream /v1/responses.
 /// OpenAIClient.sendRequest sees Request at comptime → routes to /v1/responses.
-/// The response is already in ResponsesResponse format — write directly.
+/// The response is already in Response format — write directly.
 fn dispatchResponsesNative(
     comptime Client: type,
     writer: anytype,
@@ -1227,7 +1227,7 @@ fn dispatchResponsesNative(
 }
 
 /// api_schema=latest: convert OpenAIChat.Request → Request, send to /v1/responses,
-/// convert ResponsesResponse → OpenAIChat.Response for the chat response path.
+/// convert Response → OpenAIChat.Response for the chat response path.
 fn chatViaResponses(
     comptime Client: type,
     comptime Transformer: type,
@@ -1306,7 +1306,7 @@ fn chatViaResponses(
 }
 
 /// api_schema=latest: convert Anthropic.Request → Request, send to /v1/responses,
-/// convert ResponsesResponse → Anthropic.Response for the messages response path.
+/// convert Response → Anthropic.Response for the messages response path.
 fn messagesViaResponses(
     comptime Client: type,
     comptime Transformer: type,
@@ -1390,7 +1390,7 @@ fn messagesViaResponses(
 
 /// Dispatch a /v1/responses request through a provider's responses method set.
 /// Transformer must implement: transformFromResponses, cleanupFromRequest,
-/// transformToResponsesResponse, cleanupResponsesResponse,
+/// transformToResponse, cleanupResponse,
 /// ResponsesStreamState (init/deinit), transformStreamLineToResponses, flushResponsesStream.
 fn dispatchResponses(
     comptime Client: type,
@@ -1448,8 +1448,8 @@ fn dispatchResponses(
             if (err == error.AuthRequired and tryAutoReauth(allocator, provider_name)) {
                 const retry_resp = client.sendRequest(provider_req) catch return error.UpstreamError;
                 defer retry_resp.deinit();
-                const resp = Transformer.transformToResponsesResponse(retry_resp.value, request, allocator) catch return error.TransformResponseFailed;
-                defer Transformer.cleanupResponsesResponse(resp, allocator);
+                const resp = Transformer.transformToResponse(retry_resp.value, request, allocator) catch return error.TransformResponseFailed;
+                defer Transformer.cleanupResponsesResp(resp, allocator);
                 var buf = std.ArrayList(u8).empty;
                 defer buf.deinit(allocator);
                 try buf.print(allocator, "{f}", .{std.json.fmt(resp, .{})});
@@ -1459,11 +1459,11 @@ fn dispatchResponses(
         };
         defer provider_response.deinit();
 
-        const resp = Transformer.transformToResponsesResponse(provider_response.value, request, allocator) catch |err| {
-            log.err("[RESPONSES] transformToResponsesResponse failed: {}", .{err});
+        const resp = Transformer.transformToResponse(provider_response.value, request, allocator) catch |err| {
+            log.err("[RESPONSES] transformToResponse failed: {}", .{err});
             return error.TransformResponseFailed;
         };
-        defer Transformer.cleanupResponsesResponse(resp, allocator);
+        defer Transformer.cleanupResponsesResp(resp, allocator);
 
         var buf = std.ArrayList(u8).empty;
         defer buf.deinit(allocator);

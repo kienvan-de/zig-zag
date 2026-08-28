@@ -609,15 +609,15 @@ pub fn cleanupFromRequest(request: SapAiCore.Request, allocator: std.mem.Allocat
     rt.cleanupToSap(request, allocator);
 }
 
-pub fn transformToResponsesResponse(
+pub fn transformToResponse(
     response: SapAiCore.Response,
     original_req: OpenAIResponses.Request,
     allocator: std.mem.Allocator,
-) !OpenAIResponses.ResponsesResponse {
+) !OpenAIResponses.Response {
     return rt.fromSapResponse(response, original_req, allocator);
 }
 
-pub fn cleanupResponsesResponse(resp: OpenAIResponses.ResponsesResponse, allocator: std.mem.Allocator) void {
+pub fn cleanupResponsesResp(resp: OpenAIResponses.Response, allocator: std.mem.Allocator) void {
     rt.cleanupFromSapResponse(resp, allocator);
 }
 

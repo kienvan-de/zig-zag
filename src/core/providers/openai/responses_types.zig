@@ -385,7 +385,7 @@ pub const OutputItem = union(enum) {
 // Usage (responses API renames prompt→input, completion→output)
 // ============================================================================
 
-pub const ResponsesUsage = struct {
+pub const Usage = struct {
     input_tokens: u32 = 0,
     output_tokens: u32 = 0,
     total_tokens: u32 = 0,
@@ -408,14 +408,14 @@ pub const ResponsesUsage = struct {
 // ============================================================================
 
 /// POST /v1/responses response body (`object: "response"`)
-pub const ResponsesResponse = struct {
+pub const Response = struct {
     id: []const u8,
     object: []const u8 = "response",
     created_at: f64 = 0,
     model: []const u8,
     status: []const u8 = "completed", // completed | failed | in_progress | cancelled | queued | incomplete
     output: []const OutputItem,
-    usage: ResponsesUsage = .{},
+    usage: Usage = .{},
     incomplete_details: ?std.json.Value = null,
     @"error": ?std.json.Value = null,
     metadata: ?std.json.Value = null,
@@ -472,9 +472,9 @@ pub const ResponsesResponse = struct {
 // ============================================================================
 
 /// A single SSE event from the responses streaming API
-pub const ResponsesStreamEvent = union(enum) {
+pub const StreamEvent = union(enum) {
     /// response.created — initial response shell
-    response_created: ResponsesResponse,
+    response_created: Response,
     /// response.output_text.delta — incremental text
     output_text_delta: struct {
         type: []const u8 = "response.output_text.delta",
@@ -492,7 +492,7 @@ pub const ResponsesStreamEvent = union(enum) {
         text: []const u8 = "",
     },
     /// response.completed — final response with all output
-    response_completed: ResponsesResponse,
+    response_completed: Response,
     /// response.failed
     response_failed: std.json.Value,
     /// error event
@@ -514,8 +514,8 @@ pub const ResponsesStreamEvent = union(enum) {
 };
 
 /// Result type for responses stream line transformation
-pub const ResponsesStreamLineResult = union(enum) {
-    event: ResponsesStreamEvent,
+pub const StreamLineResult = union(enum) {
+    event: StreamEvent,
     @"error": common.ErrorResponse,
     skip: void,
 };
