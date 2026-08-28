@@ -863,6 +863,12 @@ var PROVIDER_SCHEMAS = {
     { name: 'timeout_ms',           label: 'Timeout (ms)',         type: 'number', placeholder: '60000' },
     { name: 'max_response_size_mb', label: 'Max Response Size (MB)', type: 'number', placeholder: '10' },
   ],
+  google_ai_studio: [
+    { name: 'api_key',              label: 'API Key',              type: 'text', required: true },
+    { name: 'api_url',              label: 'API URL',              type: 'text', placeholder: 'https://generativelanguage.googleapis.com' },
+    { name: 'timeout_ms',           label: 'Timeout (ms)',         type: 'number', placeholder: '60000' },
+    { name: 'max_response_size_mb', label: 'Max Response Size (MB)', type: 'number', placeholder: '10' },
+  ],
   compatible: [
     { name: 'api_key',              label: 'API Key',              type: 'text', required: true },
     { name: 'api_url',              label: 'API URL',              type: 'text', required: true },

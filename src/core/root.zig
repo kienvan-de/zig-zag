@@ -105,3 +105,6 @@ pub const openai_responses_types = @import("providers/openai/responses_types.zig
 /// Anthropic request/response type definitions.
 pub const anthropic_types = @import("providers/anthropic/types.zig");
 
+/// Google AI Studio (Gemini) request/response type definitions.
+pub const google_ai_studio_types = @import("providers/google_ai_studio/types.zig");
+

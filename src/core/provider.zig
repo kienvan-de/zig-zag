@@ -26,6 +26,7 @@ pub const Provider = enum {
     sap_ai_core,
     hai,
     copilot,
+    google_ai_studio,
 
     /// Parse provider name from string (case-insensitive)
     pub fn fromString(name: []const u8) !Provider {
@@ -39,6 +40,7 @@ pub const Provider = enum {
         if (std.mem.eql(u8, lower, "sap_ai_core")) return .sap_ai_core;
         if (std.mem.eql(u8, lower, "hai")) return .hai;
         if (std.mem.eql(u8, lower, "copilot")) return .copilot;
+        if (std.mem.eql(u8, lower, "google_ai_studio")) return .google_ai_studio;
 
         return error.UnsupportedProvider;
     }
@@ -55,6 +57,7 @@ pub fn isSupported(p: Provider) bool {
         .sap_ai_core => true,
         .hai => true,
         .copilot => true,
+        .google_ai_studio => true,
     };
 }
 
