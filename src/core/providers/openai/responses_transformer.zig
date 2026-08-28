@@ -177,11 +177,30 @@ pub fn toChat(req: OpenAIResponses.Request, model: []const u8, allocator: std.me
                 const role_val = item.object.get("role") orelse continue;
                 if (role_val != .string) continue;
                 const role = std.meta.stringToEnum(Completion.Role, role_val.string) orelse continue;
-                const content: ?Completion.MessageContent = if (item.object.get("content")) |cv| switch (cv) {
-                    .string => |s| .{ .text = s },
-                    .null => null,
-                    else => null,
+
+                // content can be: string | array of typed parts | null
+                const content: ?Completion.MessageContent = if (item.object.get("content")) |cv| blk: {
+                    switch (cv) {
+                        .string => |s| break :blk .{ .text = s },
+                        .array => |arr| {
+                            // Extract text from typed content parts: {"type":"input_text","text":"..."}
+                            // Take first non-empty text part — no allocation needed
+                            var first_text: ?[]const u8 = null;
+                            for (arr.items) |part| {
+                                if (part != .object) continue;
+                                const text_val = part.object.get("text") orelse continue;
+                                if (text_val == .string and text_val.string.len > 0) {
+                                    first_text = text_val.string;
+                                    break;
+                                }
+                            }
+                            break :blk if (first_text) |t| .{ .text = t } else null;
+                        },
+                        .null => break :blk null,
+                        else => break :blk null,
+                    }
                 } else null;
+
                 try messages.append(allocator, .{
                     .role = role,
                     .content = content,
@@ -371,8 +390,17 @@ pub fn toMessages(req: OpenAIResponses.Request, model: []const u8, allocator: st
                 const content_val = item.object.get("content") orelse continue;
                 const content_text: []const u8 = switch (content_val) {
                     .string => |s| s,
+                    .array => |arr| blk: {
+                        for (arr.items) |part| {
+                            if (part != .object) continue;
+                            const tv = part.object.get("text") orelse continue;
+                            if (tv == .string and tv.string.len > 0) break :blk tv.string;
+                        }
+                        break :blk "";
+                    },
                     else => continue,
                 };
+                if (content_text.len == 0) continue;
                 try messages.append(allocator, .{
                     .role = anthro_role,
                     .content = .{ .text = content_text },
