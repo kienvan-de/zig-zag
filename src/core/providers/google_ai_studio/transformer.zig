@@ -318,6 +318,45 @@ fn buildContents(
     };
 }
 
+/// Recursively strip JSON Schema fields unsupported by Gemini.
+/// Gemini accepts: type, properties, required, description, items, enum, anyOf, allOf.
+/// Rejects: $schema, $ref, $defs, format, minimum, maximum, default, examples, title, additionalProperties.
+fn sanitizeSchema(value: std.json.Value, allocator: std.mem.Allocator) !std.json.Value {
+    switch (value) {
+        .object => |obj| {
+            var new_obj: std.json.ObjectMap = .{};
+            var it = obj.iterator();
+            while (it.next()) |entry| {
+                const key = entry.key_ptr.*;
+                // Skip unsupported fields
+                if (std.mem.eql(u8, key, "$schema") or
+                    std.mem.eql(u8, key, "$ref") or
+                    std.mem.eql(u8, key, "$defs") or
+                    std.mem.eql(u8, key, "format") or
+                    std.mem.eql(u8, key, "minimum") or
+                    std.mem.eql(u8, key, "maximum") or
+                    std.mem.eql(u8, key, "exclusiveMinimum") or
+                    std.mem.eql(u8, key, "exclusiveMaximum") or
+                    std.mem.eql(u8, key, "default") or
+                    std.mem.eql(u8, key, "examples") or
+                    std.mem.eql(u8, key, "title") or
+                    std.mem.eql(u8, key, "additionalProperties")) continue;
+                const sanitized = try sanitizeSchema(entry.value_ptr.*, allocator);
+                try new_obj.put(allocator, key, sanitized);
+            }
+            return .{ .object = new_obj };
+        },
+        .array => |arr| {
+            var new_arr = std.json.Array.init(allocator);
+            for (arr.items) |item| {
+                try new_arr.append(try sanitizeSchema(item, allocator));
+            }
+            return .{ .array = new_arr };
+        },
+        else => return value,
+    }
+}
+
 /// Build a Gemini tool array from OpenAI tools.
 fn buildTools(
     tools: []const OpenAIChat.Tool,
@@ -329,10 +368,14 @@ fn buildTools(
     for (tools) |tool| {
         switch (tool) {
             .function => |f| {
+                const params = if (f.function.parameters) |p|
+                    try sanitizeSchema(p, allocator)
+                else
+                    null;
                 try declarations.append(allocator, .{
                     .name = f.function.name,
                     .description = f.function.description,
-                    .parameters = f.function.parameters,
+                    .parameters = params,
                 });
             },
             else => {},
@@ -406,6 +449,13 @@ pub fn transform(
         .max_output_tokens = max_tokens,
         .stop_sequences = request.stop,
     };
+
+    log.debug("[Google] transform: model={s} contents={d} tools={?} max_tokens={?}", .{
+        target_model,
+        built.contents.len,
+        if (tools) |t| t.len else null,
+        max_tokens,
+    });
 
     return Google.Request{
         .model = target_model,
