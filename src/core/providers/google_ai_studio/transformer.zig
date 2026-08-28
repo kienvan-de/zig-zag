@@ -396,10 +396,14 @@ pub fn transform(
     else
         null;
 
+    const raw_max_tokens = request.max_tokens orelse request.max_completion_tokens;
+    // Gemini models have a max output of 65536 tokens — clamp to avoid 400 errors
+    const max_tokens: ?u32 = if (raw_max_tokens) |m| @min(m, 65536) else null;
+
     const generation_config = Google.GenerationConfig{
         .temperature = request.temperature,
         .top_p = request.top_p,
-        .max_output_tokens = request.max_tokens orelse request.max_completion_tokens,
+        .max_output_tokens = max_tokens,
         .stop_sequences = request.stop,
     };
 
@@ -706,7 +710,7 @@ pub fn transformFromAnthropic(
         .temperature = request.temperature,
         .top_p = request.top_p,
         .top_k = request.top_k,
-        .max_output_tokens = request.max_tokens,
+        .max_output_tokens = @min(request.max_tokens, 65536),
         .stop_sequences = request.stop_sequences,
     };
 
