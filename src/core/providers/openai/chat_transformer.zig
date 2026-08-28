@@ -15,8 +15,10 @@
 const std = @import("std");
 const testing = std.testing;
 const OpenAI = @import("chat_types.zig");
+const Responses = @import("responses_types.zig");
 const Anthropic = @import("../anthropic/types.zig");
 const log = @import("../../log.zig");
+const rt = @import("responses_transformer.zig");
 
 /// OpenAI transformer is a pass-through since the proxy accepts OpenAI format
 /// and the OpenAI API also expects OpenAI format - no transformation needed!
@@ -759,6 +761,50 @@ fn emitClosingEvents(state: *AnthropicStreamState, allocator: std.mem.Allocator)
         buf.deinit(allocator);
         return .{ .skip = {} };
     } };
+}
+
+// ============================================================================
+// Responses method set — /v1/responses endpoint
+// OpenAI provider: delegate to responses_transformer helpers since the upstream
+// is OpenAI-compatible chat completions or native /v1/responses.
+// ============================================================================
+
+pub const ResponsesStreamState = rt.StreamState;
+
+pub fn transformFromResponses(
+    request: Responses.ResponsesRequest,
+    model: []const u8,
+    allocator: std.mem.Allocator,
+) !OpenAI.Request {
+    return rt.toChat(request, model, allocator);
+}
+
+pub fn cleanupFromResponsesRequest(request: OpenAI.Request, allocator: std.mem.Allocator) void {
+    rt.cleanupToChat(request, allocator);
+}
+
+pub fn transformToResponsesResponse(
+    response: OpenAI.Response,
+    original_req: Responses.ResponsesRequest,
+    allocator: std.mem.Allocator,
+) !Responses.ResponsesResponse {
+    return rt.fromChatResponse(response, original_req, allocator);
+}
+
+pub fn cleanupResponsesResponse(resp: Responses.ResponsesResponse, allocator: std.mem.Allocator) void {
+    rt.cleanupFromChatResponse(resp, allocator);
+}
+
+pub fn transformStreamLineToResponses(
+    line: []const u8,
+    state: *ResponsesStreamState,
+    allocator: std.mem.Allocator,
+) ?[]const u8 {
+    return rt.fromChatStreamLine(line, state, allocator);
+}
+
+pub fn flushResponsesStream(state: *ResponsesStreamState, allocator: std.mem.Allocator) ?[]const u8 {
+    return rt.fromChatStreamFlush(state, allocator);
 }
 
 // ============================================================================

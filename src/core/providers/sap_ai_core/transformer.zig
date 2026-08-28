@@ -14,10 +14,12 @@
 
 const std = @import("std");
 const OpenAI = @import("../openai/chat_types.zig");
+const Responses = @import("../openai/responses_types.zig");
 const Anthropic = @import("../anthropic/types.zig");
 const SapAiCore = @import("types.zig");
 const openai_transformer = @import("../openai/chat_transformer.zig");
 const log = @import("../../log.zig");
+const rt = @import("../openai/responses_transformer.zig");
 
 /// Check if a model has orchestration scenario
 fn hasOrchestrationScenario(sap_model: SapAiCore.SapModel) bool {
@@ -569,4 +571,76 @@ pub fn transformStreamLineToAnthropic(
             return .{ .skip = {} };
         },
     }
+}
+
+// ============================================================================
+// Responses method set — /v1/responses endpoint
+// SAP provider: delegate to responses_transformer SAP helpers.
+// Streaming unwraps the SAP envelope first (same as Anthropic path above),
+// then converts the inner chat chunk to a Responses SSE event.
+// ============================================================================
+
+pub const ResponsesStreamState = struct {
+    sap_state: StreamState,
+    chat_state: rt.StreamState,
+
+    pub fn init(allocator: std.mem.Allocator, original_model: []const u8) ResponsesStreamState {
+        return .{
+            .sap_state = StreamState.init(allocator, original_model),
+            .chat_state = rt.StreamState.init(allocator, original_model),
+        };
+    }
+
+    pub fn deinit(self: *ResponsesStreamState) void {
+        self.sap_state.deinit();
+        self.chat_state.deinit();
+    }
+};
+
+pub fn transformFromResponses(
+    request: Responses.ResponsesRequest,
+    model: []const u8,
+    allocator: std.mem.Allocator,
+) !SapAiCore.Request {
+    return rt.toSap(request, model, allocator);
+}
+
+pub fn cleanupFromResponsesRequest(request: SapAiCore.Request, allocator: std.mem.Allocator) void {
+    rt.cleanupToSap(request, allocator);
+}
+
+pub fn transformToResponsesResponse(
+    response: SapAiCore.Response,
+    original_req: Responses.ResponsesRequest,
+    allocator: std.mem.Allocator,
+) !Responses.ResponsesResponse {
+    return rt.fromSapResponse(response, original_req, allocator);
+}
+
+pub fn cleanupResponsesResponse(resp: Responses.ResponsesResponse, allocator: std.mem.Allocator) void {
+    rt.cleanupFromSapResponse(resp, allocator);
+}
+
+/// Unwrap SAP envelope → chat chunk → Responses SSE event
+pub fn transformStreamLineToResponses(
+    line: []const u8,
+    state: *ResponsesStreamState,
+    allocator: std.mem.Allocator,
+) ?[]const u8 {
+    const sap_result = transformStreamLine(line, &state.sap_state, allocator);
+    switch (sap_result) {
+        .chunk => |parsed| {
+            var chunk = parsed;
+            defer chunk.deinit();
+            var buf = std.ArrayList(u8).empty;
+            defer buf.deinit(allocator);
+            buf.print(allocator, "data: {f}", .{std.json.fmt(chunk.value, .{})}) catch return null;
+            return rt.fromChatStreamLine(buf.items, &state.chat_state, allocator);
+        },
+        .@"error", .skip => return null,
+    }
+}
+
+pub fn flushResponsesStream(state: *ResponsesStreamState, allocator: std.mem.Allocator) ?[]const u8 {
+    return rt.fromChatStreamFlush(&state.chat_state, allocator);
 }

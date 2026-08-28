@@ -16,8 +16,10 @@ const std = @import("std");
 const time = @import("../../time.zig");
 const testing = std.testing;
 const OpenAI = @import("../openai/chat_types.zig");
+const Responses = @import("../openai/responses_types.zig");
 const Anthropic = @import("types.zig");
 const log = @import("../../log.zig");
+const rt = @import("../openai/responses_transformer.zig");
 
 // ============================================================================
 // Models Response Transformation
@@ -1039,6 +1041,50 @@ pub fn transformStreamLineToAnthropic(
     // Non-data line (shouldn't happen with SSEIterator, but handle gracefully)
     const output = std.fmt.allocPrint(allocator, "{s}\n", .{line}) catch return .{ .skip = {} };
     return .{ .output = output };
+}
+
+
+// ============================================================================
+// Responses method set — /v1/responses endpoint
+// Anthropic provider: delegate to responses_transformer Anthropic helpers.
+// ============================================================================
+
+pub const ResponsesStreamState = rt.MessagesStreamState;
+
+pub fn transformFromResponses(
+    request: Responses.ResponsesRequest,
+    model: []const u8,
+    allocator: std.mem.Allocator,
+) !Anthropic.Request {
+    return rt.toMessages(request, model, allocator);
+}
+
+pub fn cleanupFromResponsesRequest(request: Anthropic.Request, allocator: std.mem.Allocator) void {
+    rt.cleanupToMessages(request, allocator);
+}
+
+pub fn transformToResponsesResponse(
+    response: Anthropic.Response,
+    original_req: Responses.ResponsesRequest,
+    allocator: std.mem.Allocator,
+) !Responses.ResponsesResponse {
+    return rt.fromMessagesResponse(response, original_req, allocator);
+}
+
+pub fn cleanupResponsesResponse(resp: Responses.ResponsesResponse, allocator: std.mem.Allocator) void {
+    rt.cleanupFromMessagesResponse(resp, allocator);
+}
+
+pub fn transformStreamLineToResponses(
+    line: []const u8,
+    state: *ResponsesStreamState,
+    allocator: std.mem.Allocator,
+) ?[]const u8 {
+    return rt.fromMessagesStreamLine(line, state, allocator);
+}
+
+pub fn flushResponsesStream(state: *ResponsesStreamState, allocator: std.mem.Allocator) ?[]const u8 {
+    return rt.fromMessagesStreamFlush(state, allocator);
 }
 
 // ============================================================================
