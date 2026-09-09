@@ -27,9 +27,8 @@ const std = @import("std");
 
 const Messages = @import("../anthropic/types.zig"); // Anthropic Messages wire types
 const Chat = @import("../openai/chat_types.zig"); // inbound chat schema (shapes only)
+const common = @import("../openai/types.zig"); // shared primitives (ToolFunction)
 const Google = @import("types.zig"); // Gemini wire types
-
-const MessageContent = Chat.MessageContent;
 
 // ============================================================================
 // Request mapping: inbound schemas → Gemini wire
@@ -139,28 +138,23 @@ pub fn cleanupTools(tools: []const Google.GeminiTool, allocator: std.mem.Allocat
 }
 
 pub fn transformTools(
-    tools: []const Chat.Tool,
+    tools: []const common.ToolFunction,
     allocator: std.mem.Allocator,
 ) ![]Google.GeminiTool {
     var declarations: std.ArrayList(Google.FunctionDeclaration) = .empty;
     errdefer declarations.deinit(allocator);
 
-    for (tools) |tool| {
-        switch (tool) {
-            .function => |f| {
-                const params = if (f.function.parameters) |p|
-                    try sanitizeSchema(p, allocator)
-                else
-                    null;
-                errdefer if (params) |p| freeSanitizedSchema(p, allocator);
-                try declarations.append(allocator, .{
-                    .name = f.function.name,
-                    .description = f.function.description,
-                    .parameters = params,
-                });
-            },
-            else => {},
-        }
+    for (tools) |f| {
+        const params = if (f.parameters) |p|
+            try sanitizeSchema(p, allocator)
+        else
+            null;
+        errdefer if (params) |p| freeSanitizedSchema(p, allocator);
+        try declarations.append(allocator, .{
+            .name = f.name,
+            .description = f.description,
+            .parameters = params,
+        });
     }
 
     // Gemini wraps all declarations in exactly one GeminiTool object.
@@ -243,21 +237,16 @@ pub fn buildContents(
                 // Assistant tool_calls → function_call parts. The arguments JSON
                 // string is re-parsed into an owned tree (leaky: frees manually).
                 if (msg.tool_calls) |tool_calls| for (tool_calls) |tc| {
-                    switch (tc) {
-                        .function => |f| {
-                            const args_val: std.json.Value = std.json.parseFromSliceLeaky(
-                                std.json.Value,
-                                allocator,
-                                f.function.arguments,
-                                .{},
-                            ) catch .null;
-                            try parts.append(allocator, .{ .function_call = .{
-                                .name = f.function.name,
-                                .args = args_val,
-                            } });
-                        },
-                        else => {},
-                    }
+                    const args_val: std.json.Value = std.json.parseFromSliceLeaky(
+                        std.json.Value,
+                        allocator,
+                        tc.function.arguments,
+                        .{},
+                    ) catch .null;
+                    try parts.append(allocator, .{ .function_call = .{
+                        .name = tc.function.name,
+                        .args = args_val,
+                    } });
                 };
 
                 if (parts.items.len == 0) {
@@ -265,7 +254,7 @@ pub fn buildContents(
                 }
                 try contents.append(allocator, .{ .role = "model", .parts = try parts.toOwnedSlice(allocator) });
             },
-            .tool, .function => {
+            .tool => {
                 // Tool results become user turns with function_response parts.
                 var parts: std.ArrayList(Google.Part) = .empty;
                 errdefer parts.deinit(allocator);
@@ -446,17 +435,12 @@ pub fn buildChatChunk(
     return buf.toOwnedSlice(allocator) catch null;
 }
 
-/// Free a tool-call list as built by `extractToolCalls`: each function
-/// variant owns its id and arguments string; the slice itself is owned.
+/// Free a tool-call list as built by `extractToolCalls`: id and arguments
+/// strings are owned; the slice itself is owned.
 pub fn freeToolCallList(tool_calls: []const Chat.ToolCall, allocator: std.mem.Allocator) void {
     for (tool_calls) |tc| {
-        switch (tc) {
-            .function => |f| {
-                allocator.free(f.id);
-                allocator.free(f.function.arguments);
-            },
-            .custom => {},
-        }
+        allocator.free(tc.id);
+        allocator.free(tc.function.arguments);
     }
     allocator.free(tool_calls);
 }
@@ -498,10 +482,8 @@ pub fn extractToolCalls(
     var tool_calls: std.ArrayList(Chat.ToolCall) = .empty;
     errdefer {
         for (tool_calls.items) |tc| {
-            if (tc == .function) {
-                allocator.free(tc.function.id);
-                allocator.free(tc.function.function.arguments);
-            }
+            allocator.free(tc.id);
+            allocator.free(tc.function.arguments);
         }
         tool_calls.deinit(allocator);
     }
@@ -514,14 +496,14 @@ pub fn extractToolCalls(
                 defer args_buf.deinit(allocator);
                 try args_buf.print(allocator, "{f}", .{std.json.fmt(fc.args, .{})});
 
-                try tool_calls.append(allocator, .{ .function = .{
+                try tool_calls.append(allocator, .{
                     .id = try std.fmt.allocPrint(allocator, "call_{s}", .{fc.name}),
                     .type = "function",
                     .function = .{
                         .name = fc.name,
                         .arguments = try args_buf.toOwnedSlice(allocator),
                     },
-                } });
+                });
             },
             else => {},
         }

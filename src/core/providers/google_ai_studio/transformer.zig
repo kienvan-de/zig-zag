@@ -25,6 +25,7 @@ const std = @import("std");
 const Chat = @import("../openai/chat_types.zig"); // inbound chat schema (shapes only)
 const Messages = @import("../anthropic/types.zig"); // Anthropic Messages wire types
 const Responses = @import("../openai/responses_types.zig"); // inbound responses schema (shapes only)
+const common = @import("../openai/types.zig"); // shared primitives (ToolFunction)
 const Google = @import("types.zig"); // Gemini wire types
 const content = @import("content.zig"); // own mapping internals
 const log = @import("../../log.zig");
@@ -56,8 +57,8 @@ pub fn transformModelsResponse(
     allocator: std.mem.Allocator,
     response: std.json.Parsed(Google.ModelsResponse),
     provider_name: []const u8,
-) ![]Chat.Model {
-    var models = std.ArrayList(Chat.Model).empty;
+) ![]common.Model {
+    var models = std.ArrayList(common.Model).empty;
     errdefer models.deinit(allocator);
 
     for (response.value.models) |m| {
@@ -140,10 +141,12 @@ pub fn transformChatRequest(
     }
     errdefer if (system_instruction) |si| allocator.free(si.parts);
 
-    const tools: ?[]Google.GeminiTool = if (request.tools) |t|
-        try content.transformTools(t, allocator)
-    else
-        null;
+    const tools: ?[]Google.GeminiTool = if (request.tools) |chat_tools| blk: {
+        var fns: std.ArrayList(common.ToolFunction) = .empty;
+        defer fns.deinit(allocator);
+        for (chat_tools) |t| try fns.append(allocator, t.function);
+        break :blk if (fns.items.len > 0) try content.transformTools(fns.items, allocator) else null;
+    } else null;
     errdefer if (tools) |ts| content.cleanupTools(ts, allocator);
 
     const tool_config: ?Google.ToolConfig = if (request.tool_choice) |tc|
@@ -155,11 +158,26 @@ pub fn transformChatRequest(
     // Gemini models have a max output of 65536 tokens — clamp to avoid 400s.
     const max_tokens: ?u32 = if (raw_max_tokens) |m| @min(m, 65536) else null;
 
+    const response_mime_type: ?[]const u8 = if (request.response_format) |rf|
+        if (std.mem.eql(u8, rf.type, "json_object") or std.mem.eql(u8, rf.type, "json_schema"))
+            "application/json"
+        else
+            null
+    else
+        null;
+
     const generation_config = Google.GenerationConfig{
         .temperature = request.temperature,
         .top_p = request.top_p,
         .max_output_tokens = max_tokens,
         .stop_sequences = request.stop,
+        .candidate_count = request.n,
+        .seed = if (request.seed) |s| @intCast(s) else null,
+        .presence_penalty = request.presence_penalty,
+        .frequency_penalty = request.frequency_penalty,
+        .response_logprobs = request.logprobs,
+        .logprobs = if (request.top_logprobs) |lp| @intCast(lp) else null,
+        .response_mime_type = response_mime_type,
     };
 
     log.debug("[google] transformChatRequest: model={s} contents={d} tools={?} max_tokens={?}", .{
@@ -230,7 +248,6 @@ pub fn transformChatResponse(
             .role = .assistant,
             .content = if (message_text.len > 0) message_text else null,
             .tool_calls = tool_calls,
-            .function_call = null,
         },
         .finish_reason = finish_reason,
         .logprobs = null,
@@ -692,14 +709,33 @@ pub fn transformResponsesRequest(
     }
     errdefer if (system_instruction) |si| allocator.free(si.parts);
 
+    var fns: std.ArrayList(common.ToolFunction) = .empty;
+    defer fns.deinit(allocator);
+    if (request.tools) |resp_tools| {
+        for (resp_tools) |t| switch (t) {
+            .function => |f| try fns.append(allocator, f.function),
+            .other => {},
+        };
+    }
+    const tools: ?[]Google.GeminiTool = if (fns.items.len > 0)
+        try content.transformTools(fns.items, allocator)
+    else
+        null;
+    errdefer if (tools) |ts| content.cleanupTools(ts, allocator);
+
+    const tool_config: ?Google.ToolConfig = if (request.tool_choice) |tc|
+        content.transformToolChoice(tc)
+    else
+        null;
+
     const raw_max_tokens = request.max_output_tokens;
     return .{
         .model = model,
         .payload = .{
             .contents = try contents.toOwnedSlice(allocator),
             .system_instruction = system_instruction,
-            .tools = null,
-            .tool_config = null,
+            .tools = tools,
+            .tool_config = tool_config,
             .generation_config = .{
                 .temperature = request.temperature,
                 .top_p = request.top_p,
@@ -718,6 +754,7 @@ pub fn cleanupResponsesRequest(
     for (request.payload.contents) |c| allocator.free(c.parts);
     allocator.free(request.payload.contents);
     if (request.payload.system_instruction) |si| allocator.free(si.parts);
+    if (request.payload.tools) |ts| content.cleanupTools(ts, allocator);
 }
 
 /// Gemini response → inbound responses response. The Gemini wire carries no
