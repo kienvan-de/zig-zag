@@ -18,7 +18,7 @@
 //! - Network I/O bytes (rx/tx)
 //! - Input/output tokens from LLM responses
 //! - Input/output costs from LLM responses
-//! - Process stats (RSS, CPU time) from OS
+//! - Process stats (memory footprint, CPU time) from OS
 //!
 //! All counters are designed for high-frequency updates from multiple threads.
 //! Cost values are stored as micro-dollars (millionths of a dollar) for precision
@@ -165,21 +165,6 @@ pub fn getPeriodStart() i64 {
 // Process Stats from OS
 // ============================================================================
 
-/// Correct mach_task_basic_info struct layout for macOS.
-/// Zig's std.c.mach_task_basic_info is missing `resident_size_max` field,
-/// causing incorrect offsets.
-const MachTaskBasicInfo = extern struct {
-    virtual_size: u64,
-    resident_size: u64,
-    resident_size_max: u64, // Zig's std.c is missing this field!
-    user_time_seconds: i32,
-    user_time_microseconds: i32,
-    system_time_seconds: i32,
-    system_time_microseconds: i32,
-    policy: i32,
-    suspend_count: i32,
-};
-
 /// task_vm_info struct for getting phys_footprint (what `top` shows as MEM).
 /// We only need the first few fields up to phys_footprint.
 const TaskVmInfo = extern struct {
@@ -208,16 +193,17 @@ const TaskVmInfo = extern struct {
 const TASK_VM_INFO: i32 = 22;
 
 /// Get process stats (memory footprint and CPU time) from OS.
-/// - macOS: Uses Mach task_info for phys_footprint (like `top` MEM) and CPU time
-/// - Linux: Reads /proc/self/statm for RSS, rusage for CPU time
-/// - Other: Falls back to rusage (peak RSS, CPU time)
-fn getProcessStats() struct { rss_bytes: u64, cpu_time_us: u64 } {
+/// - macOS: Mach task_info for phys_footprint (like `top` MEM), getrusage for CPU time
+/// - Linux: /proc/self/statm for RSS, getrusage for CPU time
+/// - Windows: GetProcessTimes + K32GetProcessMemoryInfo
+/// - Other POSIX: falls back to getrusage (peak RSS, CPU time)
+fn getProcessStats() struct { memory_bytes: u64, cpu_time_us: u64 } {
     if (builtin.os.tag == .macos) {
         const c = std.c;
-        var rss_bytes: u64 = 0;
+        var memory_bytes: u64 = 0;
         var cpu_time_us: u64 = 0;
 
-        // Get phys_footprint using TASK_VM_INFO (matches `top` MEM column)
+        // Memory: phys_footprint via TASK_VM_INFO (matches `top` MEM column)
         var vm_info: TaskVmInfo = std.mem.zeroes(TaskVmInfo);
         var vm_count: c.mach_msg_type_number_t = @sizeOf(TaskVmInfo) / @sizeOf(u32);
         const vm_result = c.task_info(
@@ -227,28 +213,26 @@ fn getProcessStats() struct { rss_bytes: u64, cpu_time_us: u64 } {
             &vm_count,
         );
         if (vm_result == 0) {
-            rss_bytes = vm_info.phys_footprint;
+            memory_bytes = vm_info.phys_footprint;
         }
 
-        // Get CPU time using MACH_TASK_BASIC_INFO
-        var basic_info: MachTaskBasicInfo = std.mem.zeroes(MachTaskBasicInfo);
-        var basic_count: c.mach_msg_type_number_t = @sizeOf(MachTaskBasicInfo) / @sizeOf(u32);
-        const basic_result = c.task_info(
-            c.mach_task_self(),
-            c.MACH.TASK.BASIC.INFO,
-            @ptrCast(&basic_info),
-            &basic_count,
-        );
-        if (basic_result == 0) {
-            const user_us: u64 = @intCast(@as(i64, basic_info.user_time_seconds) * 1_000_000 + basic_info.user_time_microseconds);
-            const system_us: u64 = @intCast(@as(i64, basic_info.system_time_seconds) * 1_000_000 + basic_info.system_time_microseconds);
+        // CPU time via getrusage(RUSAGE_SELF) — same source as the Linux path.
+        // NOTE: do NOT use MACH_TASK_BASIC_INFO here: since macOS 26 the kernel
+        // reports 0 user/system time through that flavor (verified empirically),
+        // which made the menu-bar CPU read-out permanently 0%. getrusage returns
+        // the correct aggregate on every macOS version.
+        var usage: std.posix.rusage = undefined;
+        const ru_result = std.posix.system.getrusage(std.posix.system.rusage.SELF, &usage);
+        if (ru_result == 0) {
+            const user_us: u64 = @intCast(usage.utime.sec * 1_000_000 + usage.utime.usec);
+            const system_us: u64 = @intCast(usage.stime.sec * 1_000_000 + usage.stime.usec);
             cpu_time_us = user_us + system_us;
         }
 
-        return .{ .rss_bytes = rss_bytes, .cpu_time_us = cpu_time_us };
+        return .{ .memory_bytes = memory_bytes, .cpu_time_us = cpu_time_us };
     } else if (builtin.os.tag == .linux) {
         // Linux: Read /proc/self/statm for RSS
-        var rss_bytes: u64 = 0;
+        var memory_bytes: u64 = 0;
         if (fs.openFileAbsolute("/proc/self/statm", .{})) |file| {
             defer file.close();
             var buf: [128]u8 = undefined;
@@ -258,7 +242,7 @@ fn getProcessStats() struct { rss_bytes: u64, cpu_time_us: u64 } {
                 _ = iter.next(); // skip size
                 if (iter.next()) |rss_pages_str| {
                     if (std.fmt.parseInt(u64, rss_pages_str, 10)) |rss_pages| {
-                        rss_bytes = rss_pages * std.heap.pageSize();
+                        memory_bytes = rss_pages * std.heap.pageSize();
                     } else |_| {}
                 }
             } else |_| {}
@@ -274,20 +258,79 @@ fn getProcessStats() struct { rss_bytes: u64, cpu_time_us: u64 } {
             cpu_time_us = user_us + system_us;
         }
 
-        return .{ .rss_bytes = rss_bytes, .cpu_time_us = cpu_time_us };
+        return .{ .memory_bytes = memory_bytes, .cpu_time_us = cpu_time_us };
+    } else if (builtin.os.tag == .windows) {
+        // Windows: GetProcessTimes for CPU time, K32GetProcessMemoryInfo for the
+        // working set (closest user-mode equivalent of RSS/footprint). Both are
+        // declared locally to avoid depending on std internals.
+        const win = struct {
+            const ProcessMemoryCounters = extern struct {
+                cb: u32,
+                page_fault_count: u32,
+                peak_working_set_size: usize,
+                working_set_size: usize,
+                quota_peak_paged_pool_usage: usize,
+                quota_paged_pool_usage: usize,
+                quota_peak_non_paged_pool_usage: usize,
+                quota_non_paged_pool_usage: usize,
+                pagefile_usage: usize,
+                peak_pagefile_usage: usize,
+            };
+            extern "kernel32" fn GetCurrentProcess() callconv(.c) std.os.windows.HANDLE;
+            extern "kernel32" fn GetProcessTimes(
+                process: std.os.windows.HANDLE,
+                creation: *std.os.windows.FILETIME,
+                exit: *std.os.windows.FILETIME,
+                kernel: *std.os.windows.FILETIME,
+                user: *std.os.windows.FILETIME,
+            ) callconv(.c) c_int; // BOOL
+            extern "kernel32" fn K32GetProcessMemoryInfo(
+                process: std.os.windows.HANDLE,
+                counters: *ProcessMemoryCounters,
+                cb: u32,
+            ) callconv(.c) c_int; // BOOL
+        };
+
+        var memory_bytes: u64 = 0;
+        var cpu_time_us: u64 = 0;
+        const handle = win.GetCurrentProcess();
+
+        // CPU time: user + system, both FILETIME (100 ns units)
+        var creation: std.os.windows.FILETIME = undefined;
+        var exit_time: std.os.windows.FILETIME = undefined;
+        var kernel_time: std.os.windows.FILETIME = undefined;
+        var user_time: std.os.windows.FILETIME = undefined;
+        if (win.GetProcessTimes(handle, &creation, &exit_time, &kernel_time, &user_time) != 0) {
+            const filetime_us = struct {
+                fn f(t: std.os.windows.FILETIME) u64 {
+                    const raw = (@as(u64, t.dwHighDateTime) << 32) | @as(u64, t.dwLowDateTime);
+                    return raw / 10; // 100 ns -> µs
+                }
+            }.f;
+            cpu_time_us = filetime_us(kernel_time) + filetime_us(user_time);
+        }
+
+        var pmc: win.ProcessMemoryCounters = std.mem.zeroes(win.ProcessMemoryCounters);
+        pmc.cb = @sizeOf(win.ProcessMemoryCounters);
+        if (win.K32GetProcessMemoryInfo(handle, &pmc, pmc.cb) != 0) {
+            memory_bytes = pmc.working_set_size;
+        }
+
+        return .{ .memory_bytes = memory_bytes, .cpu_time_us = cpu_time_us };
     } else {
-        // Fallback: Use rusage (peak RSS, CPU time)
+        // Other POSIX (FreeBSD, ...): rusage. Note maxrss units vary by platform
+        // (bytes on FreeBSD, KiB on NetBSD/OpenBSD) — Linux and macOS are handled above.
         var usage: std.posix.rusage = undefined;
         const result = std.posix.system.getrusage(std.posix.system.rusage.SELF, &usage);
         if (result != 0) {
-            return .{ .rss_bytes = 0, .cpu_time_us = 0 };
+            return .{ .memory_bytes = 0, .cpu_time_us = 0 };
         }
 
         const user_us: u64 = @intCast(usage.utime.sec * 1_000_000 + usage.utime.usec);
         const system_us: u64 = @intCast(usage.stime.sec * 1_000_000 + usage.stime.usec);
 
         return .{
-            .rss_bytes = @intCast(@max(0, usage.maxrss)),
+            .memory_bytes = @intCast(@max(0, usage.maxrss)),
             .cpu_time_us = user_us + system_us,
         };
     }
@@ -307,10 +350,11 @@ fn getProcessStats() struct { rss_bytes: u64, cpu_time_us: u64 } {
 /// *nearly* consistent — individual fields are each atomic, but the aggregate is
 /// not captured under a single lock. This is acceptable for display purposes.
 pub const Snapshot = struct {
-    /// Resident memory (physical footprint) of the process in bytes.
+    /// Memory footprint of the process in bytes.
     /// macOS: `phys_footprint` from `TASK_VM_INFO` (matches the `top` MEM column).
     /// Linux: RSS from `/proc/self/statm`.
-    rss_bytes: u64,
+    /// Windows: working set from `K32GetProcessMemoryInfo`.
+    memory_bytes: u64,
     /// Total CPU time (user + system) consumed by the process, in **microseconds**.
     cpu_time_us: u64,
     /// Cumulative bytes received from downstream clients since the process started.
@@ -340,7 +384,7 @@ pub const Snapshot = struct {
 pub fn snapshot() Snapshot {
     const process_stats = getProcessStats();
     return .{
-        .rss_bytes = process_stats.rss_bytes,
+        .memory_bytes = process_stats.memory_bytes,
         .cpu_time_us = process_stats.cpu_time_us,
         .network_rx_bytes = network_rx_bytes.load(.monotonic),
         .network_tx_bytes = network_tx_bytes.load(.monotonic),
