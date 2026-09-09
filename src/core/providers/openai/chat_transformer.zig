@@ -28,6 +28,7 @@ const std = @import("std");
 const Chat = @import("chat_types.zig"); // chat schema (proxy + upstream wire)
 const Messages = @import("../anthropic/types.zig"); // Anthropic Messages wire types
 const Responses = @import("responses_types.zig"); // inbound responses schema
+const common = @import("types.zig"); // shared primitives
 const content = @import("chat_content.zig"); // own mapping internals
 const log = @import("../../log.zig");
 const time = @import("../../time.zig");
@@ -56,10 +57,10 @@ pub const appendsDoneMarker = true;
 /// already carry `created` and `owned_by`, which pass through.
 pub fn transformModelsResponse(
     allocator: std.mem.Allocator,
-    response: std.json.Parsed(Chat.ModelsResponse),
+    response: std.json.Parsed(common.ModelsResponse),
     provider_name: []const u8,
-) ![]Chat.Model {
-    var models = try allocator.alloc(Chat.Model, response.value.data.len);
+) ![]common.Model {
+    var models = try allocator.alloc(common.Model, response.value.data.len);
     errdefer allocator.free(models);
 
     for (response.value.data, 0..) |upstream_model, i| {
@@ -134,8 +135,6 @@ pub fn transformChatRequest(
         .tools = request.tools,
         .tool_choice = request.tool_choice,
         .parallel_tool_calls = request.parallel_tool_calls,
-        .functions = request.functions,
-        .function_call = request.function_call,
         .response_format = request.response_format,
         .stop = request.stop,
         .logit_bias = request.logit_bias,
@@ -147,16 +146,9 @@ pub fn transformChatRequest(
         .modalities = request.modalities,
         .audio = request.audio,
         .store = request.store,
-        .moderation = request.moderation,
-        .web_search_options = request.web_search_options,
         .metadata = request.metadata,
         .prediction = request.prediction,
-        .safety_identifier = request.safety_identifier,
-        .prompt_cache_key = request.prompt_cache_key,
-        .prompt_cache_options = request.prompt_cache_options,
-        .prompt_cache_retention = request.prompt_cache_retention,
         .service_tier = request.service_tier,
-        .verbosity = request.verbosity,
     };
 }
 
@@ -186,8 +178,6 @@ pub fn transformChatResponse(
         .usage = upstream_response.usage,
         .system_fingerprint = upstream_response.system_fingerprint,
         .service_tier = upstream_response.service_tier,
-        .metadata = upstream_response.metadata,
-        .moderation = upstream_response.moderation,
     };
 }
 
@@ -319,7 +309,7 @@ pub fn transformMessagesRequest(
     }
 
     for (request.messages) |msg| {
-        const role: Chat.Role = switch (msg.role) {
+        const role: common.Role = switch (msg.role) {
             .user => .user,
             .assistant => .assistant,
         };
@@ -336,7 +326,7 @@ pub fn transformMessagesRequest(
                 var tool_use_blocks: std.ArrayList(Chat.ToolCall) = .empty;
                 errdefer {
                     for (tool_use_blocks.items) |tc| {
-                        if (tc == .function) allocator.free(tc.function.function.arguments);
+                        allocator.free(tc.function.arguments);
                     }
                     tool_use_blocks.deinit(allocator);
                 }
@@ -352,20 +342,24 @@ pub fn transformMessagesRequest(
                             defer args_list.deinit(allocator);
                             try args_list.print(allocator, "{f}", .{std.json.fmt(tu.input, .{})});
 
-                            try tool_use_blocks.append(allocator, .{ .function = .{
+                            try tool_use_blocks.append(allocator, .{
                                 .id = tu.id,
                                 .type = "function",
                                 .function = .{
                                     .name = tu.name,
                                     .arguments = try allocator.dupe(u8, args_list.items),
                                 },
-                            } });
+                            });
                         },
                         .tool_result => |tr| try tool_results.append(allocator, .{
                             .id = tr.tool_use_id,
                             .content = tr.content,
                         }),
-                        .image, .document, .thinking, .redacted_thinking => {},
+                        .image, .document, .thinking, .redacted_thinking,
+                        .server_tool_use, .web_search_tool_result, .web_fetch_tool_result,
+                        .code_execution_tool_result, .bash_code_execution_tool_result,
+                        .text_editor_code_execution_tool_result, .tool_search_tool_result,
+                        .search_result, .container_upload => {},
                     }
                 }
 
@@ -380,7 +374,7 @@ pub fn transformMessagesRequest(
 
                 // Assistant message with text + tool_calls.
                 if (text_parts.items.len > 0 or tool_use_blocks.items.len > 0) {
-                    const content_text: ?Chat.MessageContent = if (text_parts.items.len > 0) blk: {
+                    const content_text: ?common.MessageContent = if (text_parts.items.len > 0) blk: {
                         break :blk .{ .text = try std.mem.join(allocator, "", text_parts.items) };
                     } else null;
 
@@ -401,14 +395,12 @@ pub fn transformMessagesRequest(
         const oai_tools = try allocator.alloc(Chat.Tool, anthro_tools.len);
         for (anthro_tools, 0..) |at, i| {
             oai_tools[i] = .{
+                .type = "function",
                 .function = .{
-                    .type = "function",
-                    .function = .{
-                        .name = at.name,
-                        .description = at.description,
-                        .parameters = at.input_schema, // borrows the inbound parse
-                        .strict = null,
-                    },
+                    .name = at.name orelse "",
+                    .description = at.description,
+                    .parameters = at.input_schema, // borrows the inbound parse
+                    .strict = null,
                 },
             };
         }
@@ -487,15 +479,12 @@ pub fn transformMessagesResponse(
         }
 
         if (choice.message.tool_calls) |tool_calls| for (tool_calls) |tc| {
-            switch (tc) {
-                .function => |f| try content_blocks.append(allocator, .{ .tool_use = .{
-                    .type = "tool_use",
-                    .id = try allocator.dupe(u8, f.id),
-                    .name = try allocator.dupe(u8, f.function.name),
-                    .input = try content.parseToolArguments(f.function.arguments, allocator),
-                } }),
-                .custom => {}, // no Messages-wire equivalent
-            }
+            try content_blocks.append(allocator, .{ .tool_use = .{
+                .type = "tool_use",
+                .id = try allocator.dupe(u8, tc.id),
+                .name = try allocator.dupe(u8, tc.function.name),
+                .input = try content.parseToolArguments(tc.function.arguments, allocator),
+            } });
         };
     }
 
@@ -686,10 +675,10 @@ pub fn transformResponsesRequest(
             if (item != .object) continue;
             const role_val = item.object.get("role") orelse continue;
             if (role_val != .string) continue;
-            const role = std.meta.stringToEnum(Chat.Role, role_val.string) orelse continue;
+            const role = std.meta.stringToEnum(common.Role, role_val.string) orelse continue;
 
             const content_val = item.object.get("content");
-            const message_content: ?Chat.MessageContent = blk: {
+            const message_content: ?common.MessageContent = blk: {
                 const cv = content_val orelse break :blk null;
                 switch (cv) {
                     .string => |s| break :blk .{ .text = s },
@@ -719,6 +708,15 @@ pub fn transformResponsesRequest(
         },
     }
 
+    const chat_tools: ?[]const Chat.Tool = if (request.tools) |rt| blk: {
+        const tools = try allocator.alloc(Chat.Tool, rt.len);
+        for (rt, 0..) |t, i| tools[i] = switch (t) {
+            .function => |f| .{ .type = "function", .function = f.function },
+            .other => .{ .type = "function", .function = .{ .name = "", .description = null, .parameters = null, .strict = null } },
+        };
+        break :blk tools;
+    } else null;
+
     return .{
         .model = model,
         .messages = try messages.toOwnedSlice(allocator),
@@ -731,7 +729,7 @@ pub fn transformResponsesRequest(
         .top_p = request.top_p,
         .top_logprobs = request.top_logprobs,
         .max_completion_tokens = request.max_output_tokens,
-        .tools = request.tools,
+        .tools = chat_tools,
         .tool_choice = request.tool_choice,
         .parallel_tool_calls = request.parallel_tool_calls,
         .store = request.store,
@@ -760,6 +758,7 @@ pub fn cleanupResponsesRequest(
     allocator: std.mem.Allocator,
 ) void {
     allocator.free(request.messages);
+    if (request.tools) |t| allocator.free(t);
 }
 
 /// Chat wire response → inbound responses response. The message item carries
@@ -799,16 +798,13 @@ pub fn transformResponsesResponse(
         } });
 
         if (message.tool_calls) |tool_calls| for (tool_calls) |tc| {
-            switch (tc) {
-                .function => |f| try output_items.append(allocator, .{ .function_call = .{
-                    .id = try allocator.dupe(u8, f.id),
-                    .type = "function_call",
-                    .name = try allocator.dupe(u8, f.function.name),
-                    .arguments = try allocator.dupe(u8, f.function.arguments),
-                    .status = "completed",
-                } }),
-                .custom => {},
-            }
+            try output_items.append(allocator, .{ .function_call = .{
+                .id = try allocator.dupe(u8, tc.id),
+                .type = "function_call",
+                .name = try allocator.dupe(u8, tc.function.name),
+                .arguments = try allocator.dupe(u8, tc.function.arguments),
+                .status = "completed",
+            } });
         };
 
         // finish_reason → status

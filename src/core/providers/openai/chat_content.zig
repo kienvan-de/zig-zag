@@ -29,6 +29,7 @@
 //! which borrow from the inbound parse.
 
 const std = @import("std");
+const common = @import("types.zig"); // shared primitives
 
 const Messages = @import("../anthropic/types.zig"); // Anthropic Messages wire types
 const Chat = @import("chat_types.zig"); // chat schema (proxy + upstream wire)
@@ -41,9 +42,9 @@ const log = @import("../../log.zig");
 /// Try to parse a raw SSE payload as an OpenAI error response. All strings in
 /// the result are freshly allocated — free with `freeError`. Returns null when
 /// the payload is not an error.
-pub fn tryParseError(json_part: []const u8, allocator: std.mem.Allocator) ?Chat.ErrorResponse {
+pub fn tryParseError(json_part: []const u8, allocator: std.mem.Allocator) ?common.ErrorResponse {
     const parsed = std.json.parseFromSlice(
-        Chat.ErrorResponse,
+        common.ErrorResponse,
         allocator,
         json_part,
         .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
@@ -67,7 +68,7 @@ pub fn tryParseError(json_part: []const u8, allocator: std.mem.Allocator) ?Chat.
 }
 
 /// Free an error response returned by `tryParseError`.
-pub fn freeError(error_response: Chat.ErrorResponse, allocator: std.mem.Allocator) void {
+pub fn freeError(error_response: common.ErrorResponse, allocator: std.mem.Allocator) void {
     allocator.free(error_response.@"error".message);
     allocator.free(error_response.@"error".type);
     if (error_response.@"error".param) |v| allocator.free(v);
@@ -77,7 +78,7 @@ pub fn freeError(error_response: Chat.ErrorResponse, allocator: std.mem.Allocato
 /// Render a chat error into `data: {json}\n\n` bytes (caller frees), or null
 /// on allocation failure.
 pub fn formatChatError(
-    error_response: Chat.ErrorResponse,
+    error_response: common.ErrorResponse,
     allocator: std.mem.Allocator,
 ) ?[]const u8 {
     var buf: std.ArrayList(u8) = .empty;
@@ -178,7 +179,10 @@ pub fn freeMessageOwnedBlocks(blocks: []const Messages.ContentBlock, allocator: 
                 allocator.free(tu.name);
                 freeParsedJsonValue(tu.input, allocator);
             },
-            .thinking, .redacted_thinking => {},
+            .thinking, .redacted_thinking,
+            .server_tool_use, .tool_result, .web_search_tool_result, .web_fetch_tool_result,
+            .code_execution_tool_result, .bash_code_execution_tool_result,
+            .text_editor_code_execution_tool_result, .tool_search_tool_result => {},
         }
     }
 }
@@ -285,10 +289,7 @@ pub fn freeMessageOwnedText(msg: Chat.Message, allocator: std.mem.Allocator) voi
     }
     if (msg.tool_calls) |tool_calls| {
         for (tool_calls) |tc| {
-            switch (tc) {
-                .function => |f| allocator.free(f.function.arguments),
-                .custom => {},
-            }
+            allocator.free(tc.function.arguments);
         }
         allocator.free(tool_calls);
     }
