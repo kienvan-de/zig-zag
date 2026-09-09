@@ -95,7 +95,7 @@ pub const AnthropicClient = struct {
                     }
                     const remaining = beta_value_buf.len - pos;
                     const copy_len = @min(b.len, remaining);
-                    @memcpy(beta_value_buf[pos..pos + copy_len], b[0..copy_len]);
+                    @memcpy(beta_value_buf[pos .. pos + copy_len], b[0..copy_len]);
                     pos += copy_len;
                 }
                 headers_buf[3] = .{ .name = "anthropic-beta", .value = beta_value_buf[0..pos] };
@@ -106,7 +106,7 @@ pub const AnthropicClient = struct {
     }
 
     /// Fetch list of available models from Anthropic API
-    pub fn listModels(self: *AnthropicClient) !std.json.Parsed(Anthropic.AnthropicModelsResponse) {
+    pub fn listModels(self: *AnthropicClient) !std.json.Parsed(Anthropic.ModelsResponse) {
         // Build cache key using provider name from config
         var cache_key_buf: [128]u8 = undefined;
         const cache_key = std.fmt.bufPrint(&cache_key_buf, "models:{s}", .{self.config.name}) catch "models:anthropic";
@@ -117,7 +117,7 @@ pub const AnthropicClient = struct {
             log.debug("Models cache hit for '{s}'", .{self.config.name});
 
             if (std.json.parseFromSlice(
-                Anthropic.AnthropicModelsResponse,
+                Anthropic.ModelsResponse,
                 self.allocator,
                 cached_body,
                 .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
@@ -152,7 +152,7 @@ pub const AnthropicClient = struct {
 
         // Parse response
         return std.json.parseFromSlice(
-            Anthropic.AnthropicModelsResponse,
+            Anthropic.ModelsResponse,
             self.allocator,
             response.body,
             .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
