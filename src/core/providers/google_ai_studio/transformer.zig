@@ -12,137 +12,56 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Transformer for Google AI Studio (Gemini) provider.
+//! Transformer for the google_ai_studio (Gemini) provider.
 //!
-//! Implements the full transformer interface expected by completion.zig:
-//!
-//!   OpenAI Chat path  (/v1/chat/completions):
-//!     transform / cleanupRequest / transformResponse / cleanupResponse
-//!     StreamState / transformStreamLine
-//!
-//!   Anthropic path   (/v1/messages):
-//!     transformFromAnthropic / cleanupFromAnthropicRequest
-//!     transformToAnthropicResponse / cleanupAnthropicResponse
-//!     AnthropicStreamState / transformStreamLineToAnthropic
-//!
-//!   OpenAI Responses path (/v1/responses):
-//!     ResponsesStreamState
-//!     transformFromResponses / cleanupFromRequest
-//!     transformToResponse / cleanupResponsesResp
-//!     transformStreamLineToResponses / flushResponsesStream
-//!
-//!   Models:
-//!     transformModelsResponse
+//! Four flows, named after the *inbound* schema (P2). Each request/response
+//! flow exposes exactly five functions; the Responses flow adds a flush.
+//! Every `pub` symbol here is defined here (P5). Conversion is written
+//! locally against the Gemini wire (P11) — no other provider's transformer
+//! is imported.
 
 const std = @import("std");
-const time = @import("../../time.zig");
-const OpenAIChat = @import("../openai/chat_types.zig");
-const OpenAIResponses = @import("../openai/responses_types.zig");
-const Anthropic = @import("../anthropic/types.zig");
-const Google = @import("types.zig");
+
+const Chat = @import("../openai/chat_types.zig"); // inbound chat schema (shapes only)
+const Messages = @import("../anthropic/types.zig"); // Anthropic Messages wire types
+const Responses = @import("../openai/responses_types.zig"); // inbound responses schema (shapes only)
+const Google = @import("types.zig"); // Gemini wire types
+const content = @import("content.zig"); // own mapping internals
 const log = @import("../../log.zig");
-const rt = @import("../openai/responses_transformer.zig");
+const time = @import("../../time.zig");
 
 // ============================================================================
-// Helpers
+// Contract
 // ============================================================================
 
-/// Map Gemini finishReason to OpenAI finish_reason.
-fn mapFinishReason(reason: ?[]const u8) []const u8 {
-    if (reason == null) return "stop";
-    const r = reason.?;
-    if (std.mem.eql(u8, r, "STOP")) return "stop";
-    if (std.mem.eql(u8, r, "MAX_TOKENS")) return "length";
-    if (std.mem.eql(u8, r, "SAFETY")) return "content_filter";
-    if (std.mem.eql(u8, r, "RECITATION")) return "content_filter";
-    if (std.mem.eql(u8, r, "FUNCTION_CALL")) return "tool_calls";
-    return "stop";
-}
+/// Result of transforming one upstream SSE line (P4): already-formatted bytes
+/// the pipeline writes verbatim, or nothing. Owned by the caller when `.output`.
+pub const StreamLineResult = union(enum) {
+    output: []const u8,
+    skip: void,
+};
 
-/// Map Gemini finishReason to Anthropic stop_reason.
-fn mapFinishReasonToAnthropic(reason: ?[]const u8) ?[]const u8 {
-    if (reason == null) return "end_turn";
-    const r = reason.?;
-    if (std.mem.eql(u8, r, "STOP")) return "end_turn";
-    if (std.mem.eql(u8, r, "MAX_TOKENS")) return "max_tokens";
-    if (std.mem.eql(u8, r, "FUNCTION_CALL")) return "tool_use";
-    return "end_turn";
-}
-
-/// Extract plain text from the first Gemini candidate.
-fn extractTextFromResponse(response: Google.Response, allocator: std.mem.Allocator) ![]const u8 {
-    if (response.candidates.len == 0) return try allocator.dupe(u8, "");
-
-    const candidate = response.candidates[0];
-    var parts_text = std.ArrayList([]const u8).empty;
-    defer parts_text.deinit(allocator);
-
-    for (candidate.content.parts) |part| {
-        switch (part) {
-            .text => |tp| {
-                if (tp.text.len > 0) try parts_text.append(allocator, tp.text);
-            },
-            else => {},
-        }
-    }
-
-    if (parts_text.items.len == 0) return try allocator.dupe(u8, "");
-    return try std.mem.join(allocator, "", parts_text.items);
-}
-
-/// Extract OpenAI tool calls from Gemini function_call parts.
-fn extractToolCallsFromResponse(
-    response: Google.Response,
-    allocator: std.mem.Allocator,
-) !?[]OpenAIChat.ToolCall {
-    if (response.candidates.len == 0) return null;
-
-    var tool_calls = std.ArrayList(OpenAIChat.ToolCall).empty;
-    defer tool_calls.deinit(allocator);
-
-    for (response.candidates[0].content.parts) |part| {
-        switch (part) {
-            .function_call => |fc| {
-                var args_buf = std.ArrayList(u8).empty;
-                defer args_buf.deinit(allocator);
-                try args_buf.print(allocator, "{f}", .{std.json.fmt(fc.args, .{})});
-                const args_str = try args_buf.toOwnedSlice(allocator);
-
-                // Generate a synthetic id — Gemini does not provide call ids
-                const call_id = try std.fmt.allocPrint(allocator, "call_{s}", .{fc.name});
-
-                try tool_calls.append(allocator, .{ .function = .{
-                    .id = call_id,
-                    .type = "function",
-                    .function = .{ .name = fc.name, .arguments = args_str },
-                } });
-            },
-            else => {},
-        }
-    }
-
-    if (tool_calls.items.len == 0) return null;
-    return try tool_calls.toOwnedSlice(allocator);
-}
+/// Chat and Messages pipelines append their own `[DONE]` sentinel; the
+/// Responses pipeline does not (native Responses upstreams end silently).
+pub const appendsDoneMarker = true;
 
 // ============================================================================
-// Models Response Transformation
+// Flow: /v1/models
 // ============================================================================
 
-/// Transform Google ModelsResponse to OpenAIChat.Model array.
-/// Only includes models that support generateContent.
+/// Map the Gemini models listing to inbound `Model` entries, prefixing ids
+/// with the provider name. Only models supporting `generateContent` are
+/// listed; the `models/` name prefix is stripped.
 pub fn transformModelsResponse(
     allocator: std.mem.Allocator,
     response: std.json.Parsed(Google.ModelsResponse),
     provider_name: []const u8,
-) ![]OpenAIChat.Model {
-    const models_data = response.value.models;
+) ![]Chat.Model {
+    var models = std.ArrayList(Chat.Model).empty;
+    errdefer models.deinit(allocator);
 
-    var result = std.ArrayList(OpenAIChat.Model).empty;
-    errdefer result.deinit(allocator);
-
-    for (models_data) |m| {
-        // Filter: only models that support generateContent
+    for (response.value.models) |m| {
+        // Filter: only models that support generateContent.
         var supports_generate = false;
         for (m.supported_generation_methods) |method| {
             if (std.mem.eql(u8, method, "generateContent")) {
@@ -152,295 +71,88 @@ pub fn transformModelsResponse(
         }
         if (!supports_generate) continue;
 
-        // Strip the "models/" prefix from the name to get the bare model id
+        // Strip the "models/" prefix to get the bare model id.
         const bare_name = if (std.mem.startsWith(u8, m.name, "models/"))
             m.name["models/".len..]
         else
             m.name;
-
         if (bare_name.len == 0) continue;
 
-        const prefixed_id = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ provider_name, bare_name });
-
-        try result.append(allocator, OpenAIChat.Model{
-            .id = prefixed_id,
+        try models.append(allocator, .{
+            .id = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ provider_name, bare_name }),
             .object = "model",
             .created = 0,
             .owned_by = try allocator.dupe(u8, "google"),
         });
     }
 
-    return try result.toOwnedSlice(allocator);
+    return models.toOwnedSlice(allocator);
 }
 
 // ============================================================================
-// Request Transformation: OpenAI Chat → Gemini
+// Flow: /v1/chat/completions — inbound chat schema → Gemini wire
 // ============================================================================
 
-/// Convert OpenAI messages to Gemini Content array.
-/// System messages are separated and returned as a SystemInstruction; other
-/// messages are returned as the contents slice.
-fn buildContents(
-    messages: []const OpenAIChat.Message,
+/// Stream state for the chat flow. Gemini chunks are self-contained Responses,
+/// so little survives across lines; the core fields carry id/model/usage out.
+pub const ChatStreamState = struct {
+    // --- uniform core (P3) ---
     allocator: std.mem.Allocator,
-) !struct {
-    contents: []Google.Content,
-    system_text: ?[]const u8,
-} {
-    var system_parts = std.ArrayList([]const u8).empty;
-    defer system_parts.deinit(allocator);
+    original_model: []const u8,
+    response_id: []const u8 = "",
+    finish_reason: ?[]const u8 = null,
+    input_tokens: u32 = 0,
+    output_tokens: u32 = 0,
 
-    var contents = std.ArrayList(Google.Content).empty;
-    errdefer contents.deinit(allocator);
+    // --- chat-flow specifics ---
+    created: i64,
 
-    for (messages) |msg| {
-        switch (msg.role) {
-            .system, .developer => {
-                if (msg.content) |content| {
-                    switch (content) {
-                        .text => |t| try system_parts.append(allocator, t),
-                        .parts => |ps| {
-                            for (ps) |p| {
-                                if (p == .text) try system_parts.append(allocator, p.text.text);
-                            }
-                        },
-                    }
-                }
-            },
-            .user => {
-                const role = "user";
-                var parts = std.ArrayList(Google.Part).empty;
-                defer parts.deinit(allocator);
-
-                if (msg.content) |content| {
-                    switch (content) {
-                        .text => |t| try parts.append(allocator, .{ .text = .{ .text = t } }),
-                        .parts => |ps| {
-                            for (ps) |p| {
-                                switch (p) {
-                                    .text => |tp| try parts.append(allocator, .{ .text = .{ .text = tp.text } }),
-                                    else => {}, // skip audio/file/refusal
-                                }
-                            }
-                        },
-                    }
-                }
-
-                if (parts.items.len == 0) {
-                    try parts.append(allocator, .{ .text = .{ .text = "" } });
-                }
-
-                const owned_parts = try parts.toOwnedSlice(allocator);
-                try contents.append(allocator, .{ .role = role, .parts = owned_parts });
-            },
-            .assistant => {
-                const role = "model";
-                var parts = std.ArrayList(Google.Part).empty;
-                defer parts.deinit(allocator);
-
-                if (msg.content) |content| {
-                    switch (content) {
-                        .text => |t| try parts.append(allocator, .{ .text = .{ .text = t } }),
-                        .parts => |ps| {
-                            for (ps) |p| {
-                                if (p == .text) try parts.append(allocator, .{ .text = .{ .text = p.text.text } });
-                            }
-                        },
-                    }
-                }
-
-                // Tool calls from assistant → function_call parts
-                if (msg.tool_calls) |tool_calls| {
-                    for (tool_calls) |tc| {
-                        switch (tc) {
-                            .function => |f| {
-                                const args_json = std.json.parseFromSlice(std.json.Value, allocator, f.function.arguments, .{}) catch null;
-                                const args_val: std.json.Value = if (args_json) |parsed| parsed.value else .null;
-                                try parts.append(allocator, .{ .function_call = .{
-                                    .name = f.function.name,
-                                    .args = args_val,
-                                } });
-                            },
-                            else => {},
-                        }
-                    }
-                }
-
-                if (parts.items.len == 0) {
-                    try parts.append(allocator, .{ .text = .{ .text = "" } });
-                }
-
-                const owned_parts = try parts.toOwnedSlice(allocator);
-                try contents.append(allocator, .{ .role = role, .parts = owned_parts });
-            },
-            .tool, .function => {
-                // Tool results become user messages with function_response parts
-                const role = "user";
-                var parts = std.ArrayList(Google.Part).empty;
-                defer parts.deinit(allocator);
-
-                const func_name = msg.tool_call_id orelse "unknown_function";
-                const content_text: []const u8 = if (msg.content) |c| switch (c) {
-                    .text => |t| t,
-                    .parts => |ps| if (ps.len > 0 and ps[0] == .text) ps[0].text.text else "",
-                } else "";
-
-                var resp_obj = std.json.ObjectMap{};
-                defer resp_obj.deinit(allocator);
-                try resp_obj.put(allocator, "output", .{ .string = content_text });
-
-                try parts.append(allocator, .{ .function_response = .{
-                    .name = func_name,
-                    .response = .{ .object = resp_obj },
-                } });
-
-                const owned_parts = try parts.toOwnedSlice(allocator);
-                try contents.append(allocator, .{ .role = role, .parts = owned_parts });
-            },
-        }
+    pub fn init(allocator: std.mem.Allocator, original_model: []const u8) ChatStreamState {
+        return .{
+            .allocator = allocator,
+            .original_model = original_model,
+            .created = time.timestamp(),
+        };
     }
 
-    // Gemini requires at least one content item and the last must be from "user"
-    if (contents.items.len == 0) {
-        var fallback_parts = try allocator.alloc(Google.Part, 1);
-        fallback_parts[0] = .{ .text = .{ .text = "" } };
-        try contents.append(allocator, .{ .role = "user", .parts = fallback_parts });
+    pub fn deinit(self: *ChatStreamState) void {
+        if (self.response_id.len > 0) self.allocator.free(self.response_id);
+        self.response_id = "";
     }
+};
 
-    const system_text: ?[]const u8 = if (system_parts.items.len > 0)
-        try std.mem.join(allocator, "\n\n", system_parts.items)
-    else
-        null;
-
-    return .{
-        .contents = try contents.toOwnedSlice(allocator),
-        .system_text = system_text,
-    };
-}
-
-/// Recursively strip JSON Schema fields unsupported by Gemini.
-/// Gemini accepts: type, properties, required, description, items, enum, anyOf, allOf.
-/// Rejects: $schema, $ref, $defs, format, minimum, maximum, default, examples, title, additionalProperties.
-fn sanitizeSchema(value: std.json.Value, allocator: std.mem.Allocator) !std.json.Value {
-    switch (value) {
-        .object => |obj| {
-            var new_obj: std.json.ObjectMap = .{};
-            var it = obj.iterator();
-            while (it.next()) |entry| {
-                const key = entry.key_ptr.*;
-                // Skip unsupported fields
-                if (std.mem.eql(u8, key, "$schema") or
-                    std.mem.eql(u8, key, "$ref") or
-                    std.mem.eql(u8, key, "$defs") or
-                    std.mem.eql(u8, key, "format") or
-                    std.mem.eql(u8, key, "minimum") or
-                    std.mem.eql(u8, key, "maximum") or
-                    std.mem.eql(u8, key, "exclusiveMinimum") or
-                    std.mem.eql(u8, key, "exclusiveMaximum") or
-                    std.mem.eql(u8, key, "default") or
-                    std.mem.eql(u8, key, "examples") or
-                    std.mem.eql(u8, key, "title") or
-                    std.mem.eql(u8, key, "additionalProperties")) continue;
-                const sanitized = try sanitizeSchema(entry.value_ptr.*, allocator);
-                try new_obj.put(allocator, key, sanitized);
-            }
-            return .{ .object = new_obj };
-        },
-        .array => |arr| {
-            var new_arr = std.json.Array.init(allocator);
-            for (arr.items) |item| {
-                try new_arr.append(try sanitizeSchema(item, allocator));
-            }
-            return .{ .array = new_arr };
-        },
-        else => return value,
-    }
-}
-
-/// Build a Gemini tool array from OpenAI tools.
-fn buildTools(
-    tools: []const OpenAIChat.Tool,
-    allocator: std.mem.Allocator,
-) ![]Google.GeminiTool {
-    var declarations = std.ArrayList(Google.FunctionDeclaration).empty;
-    defer declarations.deinit(allocator);
-
-    for (tools) |tool| {
-        switch (tool) {
-            .function => |f| {
-                const params = if (f.function.parameters) |p|
-                    try sanitizeSchema(p, allocator)
-                else
-                    null;
-                try declarations.append(allocator, .{
-                    .name = f.function.name,
-                    .description = f.function.description,
-                    .parameters = params,
-                });
-            },
-            else => {},
-        }
-    }
-
-    if (declarations.items.len == 0) {
-        return try allocator.alloc(Google.GeminiTool, 0);
-    }
-
-    const gemini_tools = try allocator.alloc(Google.GeminiTool, 1);
-    gemini_tools[0] = .{ .function_declarations = try declarations.toOwnedSlice(allocator) };
-    return gemini_tools;
-}
-
-/// Build Gemini ToolConfig from OpenAI tool_choice.
-fn buildToolConfig(tool_choice: std.json.Value) ?Google.ToolConfig {
-    switch (tool_choice) {
-        .string => |s| {
-            if (std.mem.eql(u8, s, "none")) {
-                return .{ .function_calling_config = .{ .mode = "NONE" } };
-            } else if (std.mem.eql(u8, s, "required")) {
-                return .{ .function_calling_config = .{ .mode = "ANY" } };
-            }
-            return .{ .function_calling_config = .{ .mode = "AUTO" } };
-        },
-        .object => |obj| {
-            if (obj.get("type")) |tv| {
-                if (tv == .string and std.mem.eql(u8, tv.string, "function")) {
-                    return .{ .function_calling_config = .{ .mode = "ANY" } };
-                }
-            }
-            return .{ .function_calling_config = .{ .mode = "AUTO" } };
-        },
-        else => return null,
-    }
-}
-
-/// Transform OpenAI chat request → Google.Request.
-pub fn transform(
-    request: OpenAIChat.Request,
-    target_model: []const u8,
+/// Inbound chat request → Gemini request, pinned to `model`. Gemini caps
+/// output at 65536 tokens — `max_tokens`/`max_completion_tokens` are clamped.
+pub fn transformChatRequest(
+    request: Chat.Request,
+    model: []const u8,
     allocator: std.mem.Allocator,
 ) !Google.Request {
-    const built = try buildContents(request.messages, allocator);
+    const built = try content.buildContents(request.messages, allocator);
+    errdefer allocator.free(built.contents);
+    errdefer if (built.system_text) |sys| allocator.free(sys);
 
     var system_instruction: ?Google.SystemInstruction = null;
     if (built.system_text) |sys| {
-        var si_parts = try allocator.alloc(Google.Part, 1);
+        const si_parts = try allocator.alloc(Google.Part, 1);
         si_parts[0] = .{ .text = .{ .text = sys } };
         system_instruction = .{ .parts = si_parts };
     }
+    errdefer if (system_instruction) |si| allocator.free(si.parts);
 
     const tools: ?[]Google.GeminiTool = if (request.tools) |t|
-        try buildTools(t, allocator)
+        try content.transformTools(t, allocator)
     else
         null;
+    errdefer if (tools) |ts| content.cleanupTools(ts, allocator);
 
     const tool_config: ?Google.ToolConfig = if (request.tool_choice) |tc|
-        buildToolConfig(tc)
+        content.transformToolChoice(tc)
     else
         null;
 
     const raw_max_tokens = request.max_tokens orelse request.max_completion_tokens;
-    // Gemini models have a max output of 65536 tokens — clamp to avoid 400 errors
+    // Gemini models have a max output of 65536 tokens — clamp to avoid 400s.
     const max_tokens: ?u32 = if (raw_max_tokens) |m| @min(m, 65536) else null;
 
     const generation_config = Google.GenerationConfig{
@@ -450,15 +162,15 @@ pub fn transform(
         .stop_sequences = request.stop,
     };
 
-    log.debug("[Google] transform: model={s} contents={d} tools={?} max_tokens={?}", .{
-        target_model,
+    log.debug("[google] transformChatRequest: model={s} contents={d} tools={?} max_tokens={?}", .{
+        model,
         built.contents.len,
         if (tools) |t| t.len else null,
         max_tokens,
     });
 
-    return Google.Request{
-        .model = target_model,
+    return .{
+        .model = model,
         .payload = .{
             .contents = built.contents,
             .system_instruction = system_instruction,
@@ -469,346 +181,285 @@ pub fn transform(
     };
 }
 
-/// Cleanup allocated resources from transform().
-pub fn cleanupRequest(request: Google.Request, allocator: std.mem.Allocator) void {
-    for (request.payload.contents) |content| {
-        allocator.free(content.parts);
+/// Free what `transformChatRequest` allocated: contents (+ owned function_call
+/// argument trees), system instruction, tools (+ sanitized schemas). Borrowed
+/// fields (names, text, stop sequences) are not freed here.
+pub fn cleanupChatRequest(
+    request: Google.Request,
+    allocator: std.mem.Allocator,
+) void {
+    for (request.payload.contents) |c| {
+        for (c.parts) |part| content.freeResponseOwnedArgs(part, allocator);
+        allocator.free(c.parts);
     }
     allocator.free(request.payload.contents);
 
     if (request.payload.system_instruction) |si| {
+        // The single part's text is the joined system_text owned by this request.
+        if (si.parts.len > 0 and si.parts[0] == .text) allocator.free(si.parts[0].text.text);
         allocator.free(si.parts);
     }
 
-    if (request.payload.tools) |tools| {
-        for (tools) |tool| {
-            if (tool.function_declarations) |fds| {
-                allocator.free(fds);
-            }
-        }
-        allocator.free(tools);
-    }
+    if (request.payload.tools) |tools| content.cleanupTools(tools, allocator);
 }
 
-// ============================================================================
-// Response Transformation: Gemini → OpenAI Chat
-// ============================================================================
-
-/// Transform Google.Response → OpenAIChat.Response.
-pub fn transformResponse(
-    response: Google.Response,
+/// Gemini response → inbound chat response. The Gemini wire carries no model
+/// field and no id: the model is echoed from the original request (provider-
+/// prefixed) and the id is synthesized (`chatcmpl-<timestamp>`).
+pub fn transformChatResponse(
+    upstream_response: Google.Response,
+    original_req: Chat.Request,
     allocator: std.mem.Allocator,
-    original_model: []const u8,
-) !OpenAIChat.Response {
-    const content_text = try extractTextFromResponse(response, allocator);
-    const tool_calls = try extractToolCallsFromResponse(response, allocator);
+) !Chat.Response {
+    const message_text = try content.extractTextFromBlocks(upstream_response, allocator);
+    errdefer allocator.free(message_text);
 
-    const finish_reason = if (response.candidates.len > 0)
-        mapFinishReason(response.candidates[0].finish_reason)
+    const tool_calls = try content.extractToolCalls(upstream_response, allocator);
+    errdefer if (tool_calls) |calls| content.freeToolCallList(calls, allocator);
+
+    const finish_reason: []const u8 = if (upstream_response.candidates.len > 0)
+        content.transformStopReason(upstream_response.candidates[0].finish_reason)
     else
         "stop";
 
-    const message = OpenAIChat.ResponseMessage{
-        .role = .assistant,
-        .content = if (content_text.len > 0) content_text else null,
-        .tool_calls = tool_calls,
-        .function_call = null,
-    };
-
-    const choice = OpenAIChat.ResponseChoice{
+    const choices = try allocator.alloc(Chat.ResponseChoice, 1);
+    errdefer allocator.free(choices);
+    choices[0] = .{
         .index = 0,
-        .message = message,
+        .message = .{
+            .role = .assistant,
+            .content = if (message_text.len > 0) message_text else null,
+            .tool_calls = tool_calls,
+            .function_call = null,
+        },
         .finish_reason = finish_reason,
         .logprobs = null,
     };
 
-    var choices = try allocator.alloc(OpenAIChat.ResponseChoice, 1);
-    choices[0] = choice;
-
-    const usage = OpenAIChat.Usage{
-        .prompt_tokens = response.usage_metadata.prompt_token_count,
-        .completion_tokens = response.usage_metadata.candidates_token_count,
-        .total_tokens = response.usage_metadata.total_token_count,
-    };
-
-    const model_str = try std.fmt.allocPrint(allocator, "google_ai_studio/{s}", .{original_model});
-    const id_str = try std.fmt.allocPrint(allocator, "chatcmpl-{d}", .{time.timestamp()});
-
-    return OpenAIChat.Response{
-        .id = id_str,
+    return .{
+        .id = try std.fmt.allocPrint(allocator, "chatcmpl-{d}", .{time.timestamp()}),
         .object = "chat.completion",
         .created = time.timestamp(),
-        .model = model_str,
+        .model = try std.fmt.allocPrint(allocator, "google_ai_studio/{s}", .{original_req.model}),
         .choices = choices,
-        .usage = usage,
+        .usage = .{
+            .prompt_tokens = upstream_response.usage_metadata.prompt_token_count,
+            .completion_tokens = upstream_response.usage_metadata.candidates_token_count,
+            .total_tokens = upstream_response.usage_metadata.total_token_count,
+        },
         .system_fingerprint = null,
         .service_tier = null,
     };
 }
 
-/// Cleanup resources from transformResponse().
-pub fn cleanupResponse(response: OpenAIChat.Response, allocator: std.mem.Allocator) void {
-    if (response.choices.len > 0) {
-        if (response.choices[0].message.content) |c| allocator.free(c);
-        if (response.choices[0].message.tool_calls) |tool_calls| {
-            for (tool_calls) |tc| {
-                switch (tc) {
-                    .function => |f| {
-                        allocator.free(f.id);
-                        allocator.free(f.function.arguments);
-                    },
-                    .custom => {},
-                }
-            }
-            allocator.free(tool_calls);
-        }
+/// Free what `transformChatResponse` allocated.
+pub fn cleanupChatResponse(
+    inbound_response: Chat.Response,
+    allocator: std.mem.Allocator,
+) void {
+    if (inbound_response.choices.len > 0) {
+        const message = inbound_response.choices[0].message;
+        if (message.content) |c| allocator.free(c);
+        if (message.tool_calls) |tool_calls| content.freeToolCallList(tool_calls, allocator);
     }
-    allocator.free(response.choices);
-    allocator.free(response.id);
-    allocator.free(response.model);
+    allocator.free(inbound_response.choices);
+    allocator.free(inbound_response.id);
+    allocator.free(inbound_response.model);
 }
 
-// ============================================================================
-// Streaming State and Transformation: Gemini → OpenAI Chat
-// ============================================================================
-
-/// Streaming state for Gemini → OpenAI chat streaming.
-pub const StreamState = struct {
-    allocator: std.mem.Allocator,
-    original_model: []const u8,
-    created: i64,
-    message_id: []const u8,
-    input_tokens: u32 = 0,
-
-    pub fn init(allocator: std.mem.Allocator, original_model: []const u8) StreamState {
-        return .{
-            .allocator = allocator,
-            .original_model = original_model,
-            .created = time.timestamp(),
-            .message_id = "chatcmpl-google",
-        };
-    }
-
-    pub fn deinit(self: *StreamState) void {
-        _ = self;
-    }
-};
-
-/// Transform a single Gemini SSE line to OpenAI StreamLineResult.
-/// Gemini streams `data: {json}` lines where each chunk is a full Response.
-pub fn transformStreamLine(
+/// One Gemini SSE line (a full Response) → zero or one chat-format SSE chunk
+/// as ready bytes (P4: no serialize→parse round-trip). The Gemini wire has no
+/// ids, so the chunk id is static per stream; usage is emitted only on the
+/// terminal chunk (the one carrying a finish_reason and a total count).
+pub fn transformChatStreamLine(
     line: []const u8,
-    state: *StreamState,
+    state: *ChatStreamState,
     allocator: std.mem.Allocator,
-) OpenAIChat.StreamLineResult {
+) StreamLineResult {
     if (!std.mem.startsWith(u8, line, "data: ")) return .{ .skip = {} };
-
     const json_part = line["data: ".len..];
 
-    const chunk = std.json.parseFromSlice(
+    const parsed = std.json.parseFromSlice(
         Google.StreamChunk,
         allocator,
         json_part,
         .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
     ) catch |err| {
-        log.debug("[Google] Failed to parse stream chunk: {}", .{err});
+        log.debug("[google] stream chunk parse failed: {}", .{err});
         return .{ .skip = {} };
     };
-    defer chunk.deinit();
+    defer parsed.deinit();
 
-    if (chunk.value.candidates.len == 0) return .{ .skip = {} };
+    if (parsed.value.candidates.len == 0) {
+        // Usage-only trailing chunk? Gemini sends usage on the final candidate
+        // chunk; without a candidate there is nothing to forward.
+        return .{ .skip = {} };
+    }
+    const candidate = parsed.value.candidates[0];
 
-    const candidate = chunk.value.candidates[0];
-
-    // Collect text from parts
-    var text_buf = std.ArrayList(u8).empty;
+    // Collect text parts (the typical case: exactly one text part per chunk).
+    var text_buf: std.ArrayList(u8) = .empty;
     defer text_buf.deinit(allocator);
     for (candidate.content.parts) |part| {
         switch (part) {
-            .text => |tp| text_buf.appendSlice(allocator, tp.text) catch {},
+            .text => |tp| text_buf.appendSlice(allocator, tp.text) catch return .{ .skip = {} },
             else => {},
         }
     }
 
-    // Track usage from final chunk
-    if (chunk.value.usage_metadata.total_token_count > 0) {
-        state.input_tokens = chunk.value.usage_metadata.prompt_token_count;
+    const is_final = candidate.finish_reason != null and candidate.finish_reason.?.len > 0;
+
+    // Usage tracking: Gemini repeats counts on every chunk; the authoritative
+    // totals arrive with the terminal chunk.
+    if (parsed.value.usage_metadata.total_token_count > 0) {
+        state.input_tokens = parsed.value.usage_metadata.prompt_token_count;
+        state.output_tokens = parsed.value.usage_metadata.candidates_token_count;
     }
 
-    const finish_reason = candidate.finish_reason;
-    const is_final = finish_reason != null and !std.mem.eql(u8, finish_reason.?, "");
-
-    const delta = OpenAIChat.Delta{
-        .content = if (text_buf.items.len > 0) text_buf.items else null,
-    };
-
-    const usage: ?OpenAIChat.Usage = if (is_final and chunk.value.usage_metadata.total_token_count > 0)
-        OpenAIChat.Usage{
-            .prompt_tokens = chunk.value.usage_metadata.prompt_token_count,
-            .completion_tokens = chunk.value.usage_metadata.candidates_token_count,
-            .total_tokens = chunk.value.usage_metadata.total_token_count,
+    const usage: ?Chat.Usage = if (is_final and parsed.value.usage_metadata.total_token_count > 0)
+        .{
+            .prompt_tokens = parsed.value.usage_metadata.prompt_token_count,
+            .completion_tokens = parsed.value.usage_metadata.candidates_token_count,
+            .total_tokens = parsed.value.usage_metadata.total_token_count,
         }
     else
         null;
 
-    const stream_choice = OpenAIChat.StreamChoice{
-        .index = 0,
-        .delta = delta,
-        .finish_reason = if (is_final) mapFinishReason(finish_reason) else null,
+    if (is_final) {
+        state.finish_reason = content.transformStopReason(candidate.finish_reason);
+    }
+
+    const delta = Chat.Delta{
+        .content = if (text_buf.items.len > 0) text_buf.items else null,
     };
 
-    var choices: [1]OpenAIChat.StreamChoice = .{stream_choice};
-
-    const stream_chunk = OpenAIChat.StreamChunk{
-        .id = state.message_id,
-        .object = "chat.completion.chunk",
+    const bytes = content.buildChatChunk(.{
+        .id = state.response_id,
         .created = state.created,
-        .model = state.original_model,
-        .choices = &choices,
-        .usage = usage,
-    };
-
-    // Serialise → re-parse to get owned Parsed(StreamChunk)
-    var buf = std.ArrayList(u8).empty;
-    buf.print(allocator, "{f}", .{std.json.fmt(stream_chunk, .{})}) catch return .{ .skip = {} };
-    defer buf.deinit(allocator);
-
-    const parsed = std.json.parseFromSlice(
-        OpenAIChat.StreamChunk,
-        allocator,
-        buf.items,
-        .{ .allocate = .alloc_always },
-    ) catch return .{ .skip = {} };
-
-    return .{ .chunk = parsed };
+        .original_model = state.original_model,
+    }, delta, if (is_final) state.finish_reason else null, usage, allocator) orelse
+        return .{ .skip = {} };
+    return .{ .output = bytes };
 }
 
 // ============================================================================
-// Anthropic path (/v1/messages): Anthropic.Request → Google.Request
+// Flow: /v1/messages — inbound messages schema → Gemini wire
 // ============================================================================
 
-/// Transform Anthropic.Request → Google.Request (for /v1/messages endpoint).
-pub fn transformFromAnthropic(
-    request: Anthropic.Request,
+/// Stream state for the messages flow: the Gemini wire has no message_start /
+/// message_stop framing, so the transformer synthesizes the Anthropic SSE
+/// protocol (message_start + content_block_start once, then deltas, then the
+/// stop triple on the terminal chunk).
+pub const MessagesStreamState = struct {
+    // --- uniform core (P3) ---
+    allocator: std.mem.Allocator,
+    original_model: []const u8,
+    response_id: []const u8 = "",
+    finish_reason: ?[]const u8 = null,
+    input_tokens: u32 = 0,
+    output_tokens: u32 = 0,
+
+    // --- messages-flow specifics ---
+    /// Whether the synthetic message_start + content_block_start were emitted.
+    sent_start: bool = false,
+
+    pub fn init(allocator: std.mem.Allocator, original_model: []const u8) MessagesStreamState {
+        return .{
+            .allocator = allocator,
+            .original_model = original_model,
+            // Static literal (Gemini wire has no ids): never freed — deinit is
+            // a no-op for the id here, unlike the other states which own dupes.
+            .response_id = "msg_google",
+        };
+    }
+
+    pub fn deinit(self: *MessagesStreamState) void {
+        _ = self;
+    }
+};
+
+/// Inbound messages request → Gemini request, pinned to `model`. Gemini caps
+/// output at 65536 tokens. Tools/tool_choice are not mapped (the old pass-
+/// through also dropped them — Anthropic-format tool declarations have no
+/// verified Gemini mapping yet).
+pub fn transformMessagesRequest(
+    request: Messages.Request,
     model: []const u8,
     allocator: std.mem.Allocator,
 ) !Google.Request {
-    // Build contents from Anthropic messages
-    var contents = std.ArrayList(Google.Content).empty;
-    errdefer contents.deinit(allocator);
+    const contents = try content.buildContentsFromMessages(request.messages, allocator);
+    errdefer allocator.free(contents);
 
-    for (request.messages) |msg| {
-        const role: []const u8 = switch (msg.role) {
-            .user => "user",
-            .assistant => "model",
-        };
-
-        var parts = std.ArrayList(Google.Part).empty;
-        defer parts.deinit(allocator);
-
-        switch (msg.content) {
-            .text => |t| try parts.append(allocator, .{ .text = .{ .text = t } }),
-            .blocks => |blocks| {
-                for (blocks) |block| {
-                    switch (block) {
-                        .text => |tb| try parts.append(allocator, .{ .text = .{ .text = tb.text } }),
-                        .tool_use => |tu| {
-                            try parts.append(allocator, .{ .function_call = .{
-                                .name = tu.name,
-                                .args = tu.input,
-                            } });
-                        },
-                        .tool_result => |tr| {
-                            const resp_text = tr.content orelse "";
-                            var resp_obj = std.json.ObjectMap{};
-                            defer resp_obj.deinit(allocator);
-                            try resp_obj.put(allocator, "output", .{ .string = resp_text });
-                            try parts.append(allocator, .{ .function_response = .{
-                                .name = tr.tool_use_id,
-                                .response = .{ .object = resp_obj },
-                            } });
-                        },
-                        else => {},
-                    }
-                }
-            },
-        }
-
-        if (parts.items.len == 0) {
-            try parts.append(allocator, .{ .text = .{ .text = "" } });
-        }
-
-        const owned_parts = try parts.toOwnedSlice(allocator);
-        try contents.append(allocator, .{ .role = role, .parts = owned_parts });
-    }
-
-    if (contents.items.len == 0) {
-        var fallback_parts = try allocator.alloc(Google.Part, 1);
-        fallback_parts[0] = .{ .text = .{ .text = "" } };
-        try contents.append(allocator, .{ .role = "user", .parts = fallback_parts });
-    }
-
-    // System instruction
     var system_instruction: ?Google.SystemInstruction = null;
     if (request.system) |sys| {
-        var si_parts = try allocator.alloc(Google.Part, 1);
+        const si_parts = try allocator.alloc(Google.Part, 1);
         si_parts[0] = .{ .text = .{ .text = sys } };
         system_instruction = .{ .parts = si_parts };
     }
+    errdefer if (system_instruction) |si| allocator.free(si.parts);
 
-    const generation_config = Google.GenerationConfig{
-        .temperature = request.temperature,
-        .top_p = request.top_p,
-        .top_k = request.top_k,
-        .max_output_tokens = @min(request.max_tokens, 65536),
-        .stop_sequences = request.stop_sequences,
-    };
-
-    return Google.Request{
+    return .{
         .model = model,
         .payload = .{
-            .contents = try contents.toOwnedSlice(allocator),
+            .contents = contents,
             .system_instruction = system_instruction,
             .tools = null,
             .tool_config = null,
-            .generation_config = generation_config,
+            .generation_config = .{
+                .temperature = request.temperature,
+                .top_p = request.top_p,
+                .top_k = request.top_k,
+                .max_output_tokens = @min(request.max_tokens, 65536),
+                .stop_sequences = request.stop_sequences,
+            },
         },
     };
 }
 
-/// Cleanup resources from transformFromAnthropic().
-pub fn cleanupFromAnthropicRequest(request: Google.Request, allocator: std.mem.Allocator) void {
-    cleanupRequest(request, allocator);
+/// Free what `transformMessagesRequest` allocated.
+pub fn cleanupMessagesRequest(
+    request: Google.Request,
+    allocator: std.mem.Allocator,
+) void {
+    for (request.payload.contents) |c| {
+        for (c.parts) |part| content.freeMessagesOwnedArgs(part, allocator);
+        allocator.free(c.parts);
+    }
+    allocator.free(request.payload.contents);
+
+    if (request.payload.system_instruction) |si| {
+        // The single part's text borrows from the inbound system string, so
+        // only the parts slice is owned here (unlike the chat flow, which owns
+        // the joined text).
+        allocator.free(si.parts);
+    }
 }
 
-// ============================================================================
-// Anthropic path (/v1/messages): Google.Response → Anthropic.Response
-// ============================================================================
-
-/// Transform Google.Response → Anthropic.Response.
-pub fn transformToAnthropicResponse(
-    response: Google.Response,
+/// Gemini response → inbound messages response (Anthropic Messages wire out).
+/// The Gemini wire carries no id or model: the id is synthesized (`msg_<ts>`)
+/// and the model string uses the historical literal.
+pub fn transformMessagesResponse(
+    upstream_response: Google.Response,
+    original_req: Messages.Request,
     allocator: std.mem.Allocator,
-    original_model: []const u8,
-) !Anthropic.Response {
-    _ = original_model;
+) !Messages.Response {
+    _ = original_req;
 
-    var content_blocks = std.ArrayList(Anthropic.ContentBlock).empty;
-    defer content_blocks.deinit(allocator);
+    var content_blocks: std.ArrayList(Messages.ContentBlock) = .empty;
+    errdefer content_blocks.deinit(allocator);
 
-    if (response.candidates.len > 0) {
-        for (response.candidates[0].content.parts) |part| {
+    if (upstream_response.candidates.len > 0) {
+        for (upstream_response.candidates[0].content.parts) |part| {
             switch (part) {
-                .text => |tp| {
-                    try content_blocks.append(allocator, .{ .text = .{
-                        .type = "text",
-                        .text = tp.text,
-                    } });
-                },
+                .text => |tp| try content_blocks.append(allocator, .{ .text = .{
+                    .type = "text",
+                    .text = tp.text,
+                } }),
                 .function_call => |fc| {
+                    // Gemini has no tool-call ids — the name stands in for the id.
                     try content_blocks.append(allocator, .{ .tool_use = .{
                         .type = "tool_use",
-                        .id = fc.name, // Gemini has no call id — use name
+                        .id = fc.name,
                         .name = fc.name,
                         .input = fc.args,
                     } });
@@ -822,94 +473,66 @@ pub fn transformToAnthropicResponse(
         try content_blocks.append(allocator, .{ .text = .{ .type = "text", .text = "" } });
     }
 
-    const stop_reason = if (response.candidates.len > 0)
-        mapFinishReasonToAnthropic(response.candidates[0].finish_reason)
+    const stop_reason: []const u8 = if (upstream_response.candidates.len > 0)
+        content.transformStopReasonToMessages(upstream_response.candidates[0].finish_reason)
     else
         "end_turn";
 
-    const model_str = try std.fmt.allocPrint(allocator, "google_ai_studio/gemini", .{});
-    const id_str = try std.fmt.allocPrint(allocator, "msg_{d}", .{time.timestamp()});
-
-    return Anthropic.Response{
-        .id = id_str,
+    return .{
+        .id = try std.fmt.allocPrint(allocator, "msg_{d}", .{time.timestamp()}),
         .type = "message",
         .role = "assistant",
         .content = try content_blocks.toOwnedSlice(allocator),
-        .model = model_str,
+        .model = try allocator.dupe(u8, "google_ai_studio/gemini"),
         .stop_reason = stop_reason,
         .stop_sequence = null,
         .usage = .{
-            .input_tokens = response.usage_metadata.prompt_token_count,
-            .output_tokens = response.usage_metadata.candidates_token_count,
+            .input_tokens = upstream_response.usage_metadata.prompt_token_count,
+            .output_tokens = upstream_response.usage_metadata.candidates_token_count,
         },
     };
 }
 
-/// Cleanup resources from transformToAnthropicResponse().
-pub fn cleanupAnthropicResponse(response: Anthropic.Response, allocator: std.mem.Allocator) void {
-    allocator.free(response.content);
-    allocator.free(response.id);
-    allocator.free(response.model);
+/// Free what `transformMessagesResponse` allocated: the content-block slice
+/// (block fields borrow from the upstream response) plus id and model strings.
+pub fn cleanupMessagesResponse(
+    inbound_response: Messages.Response,
+    allocator: std.mem.Allocator,
+) void {
+    allocator.free(inbound_response.content);
+    allocator.free(inbound_response.id);
+    allocator.free(inbound_response.model);
 }
 
-// ============================================================================
-// Anthropic Streaming State (/v1/messages streaming path)
-// ============================================================================
-
-pub const AnthropicStreamLineResult = Anthropic.AnthropicStreamLineResult;
-
-/// State for Gemini → Anthropic streaming.
-pub const AnthropicStreamState = struct {
-    allocator: std.mem.Allocator,
-    input_tokens: u32 = 0,
-    output_tokens: u32 = 0,
-    message_id: []const u8 = "msg_google",
-    model: []const u8 = "google_ai_studio/gemini",
-    sent_start: bool = false,
-    block_index: u32 = 0,
-
-    pub fn init(allocator: std.mem.Allocator, original_model: []const u8) AnthropicStreamState {
-        _ = original_model;
-        return .{ .allocator = allocator };
-    }
-
-    pub fn deinit(self: *AnthropicStreamState) void {
-        _ = self;
-    }
-
-    pub fn getUsage(self: *const AnthropicStreamState) Anthropic.StreamUsage {
-        return .{ .input_tokens = self.input_tokens, .output_tokens = self.output_tokens };
-    }
-};
-
-/// Transform a Gemini SSE chunk line to Anthropic-format SSE output.
-/// Returns AnthropicStreamLineResult (.output = owned []u8 or .skip).
-pub fn transformStreamLineToAnthropic(
+/// One Gemini SSE line → Anthropic-format SSE events as ready bytes,
+/// synthesizing the message protocol: the first chunk emits `message_start` +
+/// `content_block_start` (+ `ping`), text parts emit `content_block_delta`
+/// events, and the chunk carrying a finish_reason emits the closing
+/// `content_block_stop` + `message_delta` + `message_stop` triple. Usage is
+/// accumulated into `state` from the terminal chunk.
+pub fn transformMessagesStreamLine(
     line: []const u8,
-    state: *AnthropicStreamState,
+    state: *MessagesStreamState,
     allocator: std.mem.Allocator,
-) AnthropicStreamLineResult {
+) StreamLineResult {
     if (!std.mem.startsWith(u8, line, "data: ")) return .{ .skip = {} };
-
     const json_part = line["data: ".len..];
 
-    const chunk = std.json.parseFromSlice(
+    const parsed = std.json.parseFromSlice(
         Google.StreamChunk,
         allocator,
         json_part,
         .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
     ) catch return .{ .skip = {} };
-    defer chunk.deinit();
+    defer parsed.deinit();
 
-    var out = std.ArrayList(u8).empty;
-    defer out.deinit(allocator);
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
 
-    const alloc = allocator;
-
-    // Emit message_start on the first chunk
+    // Synthetic protocol opening, once per stream.
     if (!state.sent_start) {
         state.sent_start = true;
-        const start_json = std.fmt.allocPrint(alloc,
+        out.print(allocator,
             \\event: message_start
             \\data: {{"type":"message_start","message":{{"id":"{s}","type":"message","role":"assistant","content":[],"model":"{s}","stop_reason":null,"stop_sequence":null,"usage":{{"input_tokens":0,"output_tokens":0}}}}}}
             \\
@@ -920,162 +543,420 @@ pub fn transformStreamLineToAnthropic(
             \\data: {{"type":"ping"}}
             \\
             \\
-        , .{ state.message_id, state.model }) catch return .{ .skip = {} };
-        defer alloc.free(start_json);
-        out.appendSlice(alloc, start_json) catch return .{ .skip = {} };
+        , .{ state.response_id, state.original_model }) catch return .{ .skip = {} };
     }
 
-    // Emit text_delta for each text part
-    if (chunk.value.candidates.len > 0) {
-        for (chunk.value.candidates[0].content.parts) |part| {
+    if (parsed.value.candidates.len > 0) {
+        const candidate = parsed.value.candidates[0];
+
+        // Text deltas — std.json.fmt embedding handles JSON escaping.
+        for (candidate.content.parts) |part| {
             switch (part) {
                 .text => |tp| {
                     if (tp.text.len == 0) continue;
-                    // Escape the text for JSON embedding
-                    var escaped = std.ArrayList(u8).empty;
-                    defer escaped.deinit(alloc);
-                    for (tp.text) |c| {
-                        switch (c) {
-                            '"' => escaped.appendSlice(alloc, "\\\"") catch {},
-                            '\\' => escaped.appendSlice(alloc, "\\\\") catch {},
-                            '\n' => escaped.appendSlice(alloc, "\\n") catch {},
-                            '\r' => escaped.appendSlice(alloc, "\\r") catch {},
-                            '\t' => escaped.appendSlice(alloc, "\\t") catch {},
-                            else => escaped.append(alloc, c) catch {},
-                        }
-                    }
-                    const delta_json = std.fmt.allocPrint(alloc,
-                        "event: content_block_delta\ndata: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"text_delta\",\"text\":\"{s}\"}}}}\n\n",
-                        .{escaped.items},
+                    out.print(
+                        allocator,
+                        "event: content_block_delta\ndata: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"text_delta\",\"text\":{f}}}}}\n\n",
+                        .{std.json.fmt(tp.text, .{})},
                     ) catch continue;
-                    defer alloc.free(delta_json);
-                    out.appendSlice(alloc, delta_json) catch {};
                 },
                 else => {},
             }
         }
 
-        // Emit stop events on final chunk
-        const finish_reason = chunk.value.candidates[0].finish_reason;
-        if (finish_reason != null) {
-            const stop_reason = mapFinishReasonToAnthropic(finish_reason) orelse "end_turn";
+        // Terminal chunk: closing triple + usage accumulation.
+        if (candidate.finish_reason) |reason| {
+            if (reason.len > 0) {
+                state.input_tokens = parsed.value.usage_metadata.prompt_token_count;
+                state.output_tokens = parsed.value.usage_metadata.candidates_token_count;
+                const stop_reason = content.transformStopReasonToMessages(candidate.finish_reason);
+                state.finish_reason = stop_reason;
 
-            // Update usage
-            state.input_tokens = chunk.value.usage_metadata.prompt_token_count;
-            state.output_tokens = chunk.value.usage_metadata.candidates_token_count;
-
-            const stop_json = std.fmt.allocPrint(alloc,
-                \\event: content_block_stop
-                \\data: {{"type":"content_block_stop","index":0}}
-                \\
-                \\event: message_delta
-                \\data: {{"type":"message_delta","delta":{{"stop_reason":"{s}","stop_sequence":null}},"usage":{{"output_tokens":{d}}}}}
-                \\
-                \\event: message_stop
-                \\data: {{"type":"message_stop"}}
-                \\
-                \\
-            , .{ stop_reason, state.output_tokens }) catch return .{ .skip = {} };
-            defer alloc.free(stop_json);
-            out.appendSlice(alloc, stop_json) catch {};
+                out.print(allocator,
+                    \\event: content_block_stop
+                    \\data: {{"type":"content_block_stop","index":0}}
+                    \\
+                    \\event: message_delta
+                    \\data: {{"type":"message_delta","delta":{{"stop_reason":"{s}","stop_sequence":null}},"usage":{{"output_tokens":{d}}}}}
+                    \\
+                    \\event: message_stop
+                    \\data: {{"type":"message_stop"}}
+                    \\
+                    \\
+                , .{ stop_reason, state.output_tokens }) catch return .{ .skip = {} };
+            }
         }
     }
 
     if (out.items.len == 0) return .{ .skip = {} };
-
-    const owned = alloc.dupe(u8, out.items) catch return .{ .skip = {} };
-    return .{ .output = owned };
+    return .{ .output = out.toOwnedSlice(allocator) catch return .{ .skip = {} } };
 }
 
 // ============================================================================
-// OpenAI Responses path (/v1/responses)
-// Delegate to the shared responses_transformer helpers via the Anthropic bridge.
+// Flow: /v1/responses — inbound responses schema → Gemini wire
 // ============================================================================
+// Conversion is written locally against the Gemini wire (P11): the old
+// implementation bridged through the Anthropic path plus the openai
+// responses_transformer, which duplicated provider logic and lost events.
 
-pub const ResponsesStreamState = rt.MessagesStreamState;
+/// Stream state for the responses flow: accumulates id / terminal reason /
+/// usage so `flushResponsesStream` can synthesize the closing Responses events.
+pub const ResponsesStreamState = struct {
+    // --- uniform core (P3) ---
+    allocator: std.mem.Allocator,
+    original_model: []const u8,
+    response_id: []const u8 = "",
+    finish_reason: ?[]const u8 = null,
+    input_tokens: u32 = 0,
+    output_tokens: u32 = 0,
 
-/// Transform OpenAI Responses.Request → Google.Request.
-pub fn transformFromResponses(
-    request: OpenAIResponses.Request,
+    // --- responses-flow specifics ---
+    /// Whether the synthetic output_item.added + content_part.added were emitted.
+    sent_start: bool = false,
+
+    pub fn init(allocator: std.mem.Allocator, original_model: []const u8) ResponsesStreamState {
+        return .{
+            .allocator = allocator,
+            .original_model = original_model,
+        };
+    }
+
+    pub fn deinit(self: *ResponsesStreamState) void {
+        if (self.response_id.len > 0) self.allocator.free(self.response_id);
+        self.response_id = "";
+    }
+};
+
+/// Inbound responses request → Gemini request, pinned to `model`. Input text
+/// / message items become contents, `instructions` → systemInstruction,
+/// `max_output_tokens` clamped to the Gemini 65536 ceiling. Tools and
+/// tool_choice are not mapped (no verified Gemini mapping yet — matching the
+/// messages flow's stance).
+pub fn transformResponsesRequest(
+    request: Responses.Request,
     model: []const u8,
     allocator: std.mem.Allocator,
 ) !Google.Request {
-    // Convert Responses → Anthropic → Google
-    const anthro_req = try rt.toMessages(request, model, allocator);
-    defer rt.cleanupToMessages(anthro_req, allocator);
-    return transformFromAnthropic(anthro_req, model, allocator);
+    var contents: std.ArrayList(Google.Content) = .empty;
+    errdefer {
+        for (contents.items) |c| allocator.free(c.parts);
+        contents.deinit(allocator);
+    }
+
+    switch (request.input) {
+        .text => |text| {
+            const parts = try allocator.alloc(Google.Part, 1);
+            parts[0] = .{ .text = .{ .text = text } };
+            try contents.append(allocator, .{ .role = "user", .parts = parts });
+        },
+        .items => |items| for (items) |item| {
+            if (item != .object) continue;
+            const obj = item.object;
+
+            const role_val = obj.get("role") orelse continue;
+            if (role_val != .string) continue;
+            const role: []const u8 = if (std.mem.eql(u8, role_val.string, "assistant"))
+                "model"
+            else
+                "user";
+
+            const content_val = obj.get("content") orelse continue;
+            const text: []const u8 = switch (content_val) {
+                .string => |s| s,
+                .array => |arr| blk: {
+                    // First non-empty text part wins; images/references skipped.
+                    for (arr.items) |part| {
+                        if (part != .object) continue;
+                        const tv = part.object.get("text") orelse continue;
+                        if (tv == .string and tv.string.len > 0) break :blk tv.string;
+                    }
+                    break :blk "";
+                },
+                else => continue,
+            };
+            if (text.len == 0) continue;
+
+            const parts = try allocator.alloc(Google.Part, 1);
+            parts[0] = .{ .text = .{ .text = text } };
+            try contents.append(allocator, .{ .role = role, .parts = parts });
+        },
+    }
+
+    if (contents.items.len == 0) return error.EmptyMessages;
+
+    var system_instruction: ?Google.SystemInstruction = null;
+    if (request.instructions) |sys| {
+        const si_parts = try allocator.alloc(Google.Part, 1);
+        si_parts[0] = .{ .text = .{ .text = sys } };
+        system_instruction = .{ .parts = si_parts };
+    }
+    errdefer if (system_instruction) |si| allocator.free(si.parts);
+
+    const raw_max_tokens = request.max_output_tokens;
+    return .{
+        .model = model,
+        .payload = .{
+            .contents = try contents.toOwnedSlice(allocator),
+            .system_instruction = system_instruction,
+            .tools = null,
+            .tool_config = null,
+            .generation_config = .{
+                .temperature = request.temperature,
+                .top_p = request.top_p,
+                .max_output_tokens = if (raw_max_tokens) |m| @min(m, 65536) else null,
+            },
+        },
+    };
 }
 
-/// Cleanup from transformFromResponses().
-pub fn cleanupFromRequest(request: Google.Request, allocator: std.mem.Allocator) void {
-    cleanupRequest(request, allocator);
-}
-
-/// Transform Google.Response → OpenAIResponses.Response.
-pub fn transformToResponse(
-    response: Google.Response,
-    original_req: OpenAIResponses.Request,
+/// Free what `transformResponsesRequest` allocated: the contents slice and
+/// each part slice (text borrows the inbound parse; system parts slice owned).
+pub fn cleanupResponsesRequest(
+    request: Google.Request,
     allocator: std.mem.Allocator,
-) !OpenAIResponses.Response {
-    // Convert Google → Anthropic → Responses
-    const anthro_resp = try transformToAnthropicResponse(response, allocator, original_req.model);
-    defer cleanupAnthropicResponse(anthro_resp, allocator);
-    return rt.fromMessagesResponse(anthro_resp, original_req, allocator);
+) void {
+    for (request.payload.contents) |c| allocator.free(c.parts);
+    allocator.free(request.payload.contents);
+    if (request.payload.system_instruction) |si| allocator.free(si.parts);
 }
 
-/// Cleanup from transformToResponse().
-pub fn cleanupResponsesResp(resp: OpenAIResponses.Response, allocator: std.mem.Allocator) void {
-    rt.cleanupFromMessagesResponse(resp, allocator);
+/// Gemini response → inbound responses response. The Gemini wire carries no
+/// id: one is synthesized. Output items follow the Responses shape (message
+/// item first). Echo fields are copied from `original_req` per the Responses
+/// contract (no upstream equivalent).
+pub fn transformResponsesResponse(
+    upstream_response: Google.Response,
+    original_req: Responses.Request,
+    allocator: std.mem.Allocator,
+) !Responses.Response {
+    var output_items: std.ArrayList(Responses.OutputItem) = .empty;
+    errdefer output_items.deinit(allocator);
+
+    var parts: std.ArrayList(Responses.OutputContent) = .empty;
+    errdefer parts.deinit(allocator);
+
+    if (upstream_response.candidates.len > 0) {
+        for (upstream_response.candidates[0].content.parts) |part| {
+            switch (part) {
+                .text => |tp| {
+                    if (tp.text.len > 0) try parts.append(allocator, .{ .output_text = .{
+                        .type = "output_text",
+                        .text = try allocator.dupe(u8, tp.text),
+                    } });
+                },
+                .function_call => |fc| {
+                    // Arguments: re-serialize the parsed args tree to a string.
+                    var args_buf: std.ArrayList(u8) = .empty;
+                    defer args_buf.deinit(allocator);
+                    try args_buf.print(allocator, "{f}", .{std.json.fmt(fc.args, .{})});
+
+                    try output_items.append(allocator, .{
+                        .function_call = .{
+                            .id = try std.fmt.allocPrint(allocator, "call_{s}", .{fc.name}),
+                            .type = "function_call",
+                            // Owned: cleanupResponsesResponse frees name.
+                            .name = try allocator.dupe(u8, fc.name),
+                            .arguments = try args_buf.toOwnedSlice(allocator),
+                            .status = "completed",
+                        },
+                    });
+                },
+                else => {},
+            }
+        }
+    }
+
+    const content_slice = try parts.toOwnedSlice(allocator);
+    errdefer {
+        for (content_slice) |c| switch (c) {
+            .output_text => |txt| allocator.free(txt.text),
+            else => {},
+        };
+        allocator.free(content_slice);
+    }
+    try output_items.insert(allocator, 0, .{ .message = .{
+        .id = try std.fmt.allocPrint(allocator, "msg_{d}", .{time.timestamp()}),
+        .type = "message",
+        .role = "assistant",
+        .content = content_slice,
+        .status = "completed",
+    } });
+
+    // finishReason → status + incomplete_details
+    var status: []const u8 = "completed";
+    var incomplete_details: ?std.json.Value = null;
+    if (upstream_response.candidates.len > 0) {
+        if (upstream_response.candidates[0].finish_reason) |reason| {
+            if (std.mem.eql(u8, reason, "MAX_TOKENS")) {
+                status = "incomplete";
+                var obj: std.json.ObjectMap = .{};
+                const key = try allocator.dupe(u8, "reason");
+                errdefer allocator.free(key);
+                const value = try allocator.dupe(u8, "max_output_tokens");
+                errdefer allocator.free(value);
+                try obj.put(allocator, key, .{ .string = value });
+                incomplete_details = .{ .object = obj };
+            }
+        }
+    }
+
+    return .{
+        .id = try std.fmt.allocPrint(allocator, "resp_{d}", .{time.timestamp()}),
+        .object = "response",
+        .created_at = 0,
+        .model = try allocator.dupe(u8, original_req.model),
+        .status = status,
+        .output = try output_items.toOwnedSlice(allocator),
+        .usage = .{
+            .input_tokens = upstream_response.usage_metadata.prompt_token_count,
+            .output_tokens = upstream_response.usage_metadata.candidates_token_count,
+            .total_tokens = upstream_response.usage_metadata.total_token_count,
+        },
+        .incomplete_details = incomplete_details,
+        // Request-echo fields (no upstream equivalent — Responses contract).
+        .temperature = original_req.temperature,
+        .top_p = original_req.top_p,
+        .parallel_tool_calls = original_req.parallel_tool_calls orelse true,
+        .store = original_req.store,
+        .max_output_tokens = original_req.max_output_tokens,
+        .metadata = original_req.metadata,
+    };
 }
 
-/// Transform a Gemini SSE line to OpenAI Responses SSE output.
-/// Routes through the Anthropic stream state.
-pub fn transformStreamLineToResponses(
+/// Free what `transformResponsesResponse` allocated: id/model strings, the
+/// output tree (message item + text parts + function calls), and the
+/// incomplete_details map. Echo fields borrow from `original_req`.
+pub fn cleanupResponsesResponse(
+    inbound_response: Responses.Response,
+    allocator: std.mem.Allocator,
+) void {
+    allocator.free(inbound_response.id);
+    allocator.free(inbound_response.model);
+    if (inbound_response.incomplete_details) |details| content.freeParsedJsonValue(details, allocator);
+    for (inbound_response.output) |item| {
+        switch (item) {
+            .message => |m| {
+                allocator.free(m.id);
+                for (m.content) |c| switch (c) {
+                    .output_text => |txt| allocator.free(txt.text),
+                    .refusal => {},
+                    .other => {},
+                };
+                allocator.free(m.content);
+            },
+            .function_call => |f| {
+                allocator.free(f.id);
+                allocator.free(f.name);
+                allocator.free(f.arguments);
+            },
+            .reasoning => {},
+            .other => {},
+        }
+    }
+    allocator.free(inbound_response.output);
+}
+
+/// One Gemini SSE line → Responses SSE events as ready bytes. The first
+/// chunk emits `response.output_item.added` + `response.content_part.added`;
+/// text parts emit `response.output_text.delta`; the terminal chunk emits
+/// `response.output_text.done`. Usage / terminal reason accumulate into
+/// `state` for `flushResponsesStream`. Upstream errors surface as
+/// `response.failed` (P4).
+pub fn transformResponsesStreamLine(
     line: []const u8,
     state: *ResponsesStreamState,
     allocator: std.mem.Allocator,
-) ?[]const u8 {
-    // Convert the Gemini chunk line to an Anthropic SSE line, then feed
-    // that into the responses_transformer Anthropic helpers.
-    var tmp_state = AnthropicStreamState.init(allocator, "");
-    defer tmp_state.deinit();
+) StreamLineResult {
+    if (!std.mem.startsWith(u8, line, "data: ")) return .{ .skip = {} };
+    const json_part = line["data: ".len..];
 
-    const anthro_result = transformStreamLineToAnthropic(line, &tmp_state, allocator);
-    switch (anthro_result) {
-        .skip => return null,
-        .output => |anthro_lines| {
-            defer allocator.free(anthro_lines);
-            // Feed each individual `event:...\ndata:...\n\n` block into the
-            // MessagesStreamState processor.
-            var remaining = anthro_lines;
-            var last_out: ?[]const u8 = null;
-            while (remaining.len > 0) {
-                // Find next double-newline separator
-                const sep = std.mem.indexOf(u8, remaining, "\n\n") orelse remaining.len - 1;
-                const block = remaining[0 .. sep + 2];
-                remaining = if (sep + 2 < remaining.len) remaining[sep + 2 ..] else &.{};
+    const parsed = std.json.parseFromSlice(
+        Google.StreamChunk,
+        allocator,
+        json_part,
+        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+    ) catch return .{ .skip = {} };
+    defer parsed.deinit();
 
-                // Extract data: line from the block
-                var line_iter = std.mem.splitScalar(u8, block, '\n');
-                while (line_iter.next()) |l| {
-                    if (std.mem.startsWith(u8, l, "data: ")) {
-                        if (rt.fromMessagesStreamLine(l, state, allocator)) |out| {
-                            if (last_out) |prev| allocator.free(prev);
-                            last_out = out;
-                        }
-                    }
-                }
-            }
-            return last_out;
-        },
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+
+    // Opening events, once per stream (the id is static — no wire ids).
+    if (!state.sent_start) {
+        state.sent_start = true;
+        out.print(allocator,
+            \\event: response.output_item.added
+            \\data: {{"type":"response.output_item.added","output_index":0,"item":{{"id":"{s}","type":"message","role":"assistant","status":"in_progress"}}}}
+            \\
+            \\event: response.content_part.added
+            \\data: {{"type":"response.content_part.added","item_id":"{s}","output_index":0,"content_index":0,"part":{{"type":"output_text","text":""}}}}
+            \\
+            \\
+        , .{ state.response_id, state.response_id }) catch return .{ .skip = {} };
     }
+
+    if (parsed.value.candidates.len > 0) {
+        const candidate = parsed.value.candidates[0];
+
+        for (candidate.content.parts) |part| {
+            switch (part) {
+                .text => |tp| {
+                    if (tp.text.len == 0) continue;
+                    out.print(
+                        allocator,
+                        "event: response.output_text.delta\ndata: {{\"type\":\"response.output_text.delta\",\"item_id\":\"{s}\",\"output_index\":0,\"content_index\":0,\"delta\":{f}}}\n\n",
+                        .{ state.response_id, std.json.fmt(tp.text, .{}) },
+                    ) catch continue;
+                },
+                else => {},
+            }
+        }
+
+        if (candidate.finish_reason) |reason| {
+            if (reason.len > 0) {
+                state.input_tokens = parsed.value.usage_metadata.prompt_token_count;
+                state.output_tokens = parsed.value.usage_metadata.candidates_token_count;
+                state.finish_reason = content.transformStopReason(candidate.finish_reason);
+
+                out.print(allocator,
+                    \\event: response.output_text.done
+                    \\data: {{"type":"response.output_text.done","item_id":"{s}","output_index":0,"content_index":0,"text":""}}
+                    \\
+                    \\
+                , .{state.response_id}) catch return .{ .skip = {} };
+            }
+        }
+    }
+
+    if (out.items.len == 0) return .{ .skip = {} };
+    return .{ .output = out.toOwnedSlice(allocator) catch return .{ .skip = {} } };
 }
 
-/// Flush any buffered state at end of stream.
-pub fn flushResponsesStream(state: *ResponsesStreamState, allocator: std.mem.Allocator) ?[]const u8 {
-    return rt.fromMessagesStreamFlush(state, allocator);
-}
+/// Emit the terminal Responses events after the upstream stream ends
+/// (`response.output_item.done` + `response.completed`, or
+/// `response.incomplete` for a length-capped finish) with the usage
+/// accumulated in `state`. Returns `null` when there is nothing to flush.
+pub fn flushResponsesStream(
+    state: *ResponsesStreamState,
+    allocator: std.mem.Allocator,
+) ?[]const u8 {
+    const reason = state.finish_reason orelse return null;
+    const status: []const u8 = if (std.mem.eql(u8, reason, "length")) "incomplete" else "completed";
+    const input_tok = state.input_tokens;
+    const output_tok = state.output_tokens;
 
-// ============================================================================
-// Unit Tests
-// ============================================================================
+    var buf = std.ArrayList(u8).empty;
+    buf.print(
+        allocator,
+        \\event: response.output_item.done
+        \\data: {{"type":"response.output_item.done","item":{{"id":"{s}","type":"message","role":"assistant","status":"{s}"}}}}
+        \\
+        \\event: response.completed
+        \\data: {{"type":"response.completed","response":{{"id":"{s}","object":"response","model":"{s}","status":"{s}","usage":{{"input_tokens":{d},"output_tokens":{d},"total_tokens":{d}}}}}}}
+        \\
+        \\
+    ,
+        .{ state.response_id, status, state.response_id, state.original_model, status, input_tok, output_tok, input_tok + output_tok },
+    ) catch return null;
+    return buf.toOwnedSlice(allocator) catch null;
+}
