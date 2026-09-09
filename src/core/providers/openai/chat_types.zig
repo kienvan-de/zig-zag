@@ -6,24 +6,95 @@
 
 const std = @import("std");
 
-// Re-export all common primitives explicitly (usingnamespace removed in Zig 0.16)
 const common = @import("types.zig");
-pub const Model = common.Model;
-pub const ModelsResponse = common.ModelsResponse;
-pub const Role = common.Role;
-pub const ContentPart = common.ContentPart;
-pub const FunctionCall = common.FunctionCall;
-pub const ToolCallFunction = common.ToolCallFunction;
-pub const ToolCall = common.ToolCall;
-pub const ToolFunction = common.ToolFunction;
-pub const Tool = common.Tool;
-pub const Function = common.Function;
-pub const ResponseFormat = common.ResponseFormat;
-pub const StreamOptions = common.StreamOptions;
-pub const MessageContent = common.MessageContent;
-pub const Usage = common.Usage;
-pub const ErrorDetails = common.ErrorDetails;
-pub const ErrorResponse = common.ErrorResponse;
+
+// ============================================================================
+// Chat-completions-only types (not shared with Responses API)
+// ============================================================================
+
+pub const ToolCallFunction = struct {
+    name: []const u8,
+    arguments: []const u8,
+};
+
+pub const ToolCall = struct {
+    id: []const u8,
+    type: []const u8 = "function",
+    function: ToolCallFunction,
+
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.write(self);
+    }
+
+    pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
+        const json_value = try std.json.innerParse(std.json.Value, allocator, source, options);
+        return jsonParseFromValue(allocator, json_value, options);
+    }
+
+    pub fn jsonParseFromValue(_: std.mem.Allocator, source: std.json.Value, _: std.json.ParseOptions) !@This() {
+        if (source != .object) return error.UnexpectedToken;
+        const obj = source.object;
+        const id_val = obj.get("id") orelse return error.MissingField;
+        if (id_val != .string) return error.UnexpectedToken;
+        const type_val = obj.get("type") orelse return error.MissingField;
+        if (type_val != .string) return error.UnexpectedToken;
+        const func_val = obj.get("function") orelse return error.MissingField;
+        if (func_val != .object) return error.UnexpectedToken;
+        const name_val = func_val.object.get("name") orelse return error.MissingField;
+        if (name_val != .string) return error.UnexpectedToken;
+        const args_val = func_val.object.get("arguments") orelse return error.MissingField;
+        if (args_val != .string) return error.UnexpectedToken;
+        return .{
+            .id = id_val.string,
+            .type = type_val.string,
+            .function = .{ .name = name_val.string, .arguments = args_val.string },
+        };
+    }
+};
+
+/// Tool definition for Chat Completions API — nested format:
+/// {"type":"function","function":{"name":"...","description":"...","parameters":{}}}
+pub const Tool = struct {
+    type: []const u8 = "function",
+    function: common.ToolFunction,
+
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("function"); try self.function.jsonStringify(jw);
+        try jw.endObject();
+    }
+
+    pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
+        const json_value = try std.json.innerParse(std.json.Value, allocator, source, options);
+        return jsonParseFromValue(allocator, json_value, options);
+    }
+
+    pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, options: std.json.ParseOptions) !@This() {
+        if (source != .object) return error.UnexpectedToken;
+        const obj = source.object;
+        const type_val = obj.get("type") orelse return error.MissingField;
+        if (type_val != .string) return error.UnexpectedToken;
+
+        if (obj.get("function")) |func_val| {
+            const func = try std.json.parseFromValueLeaky(common.ToolFunction, allocator, func_val, options);
+            return .{ .type = type_val.string, .function = func };
+        } else if (obj.get("name")) |name_val| {
+            if (name_val != .string) return error.UnexpectedToken;
+            const desc = if (obj.get("description")) |d| (if (d == .string) d.string else null) else null;
+            const params = obj.get("parameters");
+            const strict = if (obj.get("strict")) |s| (if (s == .bool) s.bool else null) else null;
+            return .{ .type = type_val.string, .function = .{
+                .name = name_val.string,
+                .description = desc,
+                .parameters = params,
+                .strict = strict,
+            } };
+        } else {
+            return error.MissingField;
+        }
+    }
+};
 
 // ============================================================================
 // Streaming Tool Call (completions-specific delta fragments)
@@ -87,9 +158,8 @@ pub const Message = struct {
     name: ?[]const u8 = null,
     refusal: ?[]const u8 = null,
     audio: ?std.json.Value = null,
-    tool_calls: ?[]const common.ToolCall = null,
+    tool_calls: ?[]const ToolCall = null,
     tool_call_id: ?[]const u8 = null,
-    function_call: ?common.FunctionCall = null,
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         try jw.beginObject();
@@ -118,7 +188,6 @@ pub const Message = struct {
         if (self.audio) |a| { try jw.objectField("audio"); try jw.write(a); }
         if (self.tool_calls) |tc| { try jw.objectField("tool_calls"); try jw.write(tc); }
         if (self.tool_call_id) |tid| { try jw.objectField("tool_call_id"); try jw.write(tid); }
-        if (self.function_call) |fc| { try jw.objectField("function_call"); try jw.write(fc); }
 
         try jw.endObject();
     }
@@ -154,9 +223,9 @@ pub const Message = struct {
 
         const tool_calls = if (obj.get("tool_calls")) |tc|
             if (tc == .array) blk: {
-                const calls = try allocator.alloc(common.ToolCall, tc.array.items.len);
+                const calls = try allocator.alloc(ToolCall, tc.array.items.len);
                 for (tc.array.items, 0..) |item, i| {
-                    calls[i] = try common.ToolCall.jsonParseFromValue(allocator, item, options);
+                    calls[i] = try ToolCall.jsonParseFromValue(allocator, item, options);
                 }
                 break :blk calls;
             } else null
@@ -164,10 +233,6 @@ pub const Message = struct {
             null;
 
         const tool_call_id = if (obj.get("tool_call_id")) |tid| if (tid == .string) tid.string else null else null;
-        const function_call = if (obj.get("function_call")) |fc|
-            if (fc == .object) try std.json.innerParseFromValue(common.FunctionCall, allocator, fc, options) else null
-        else
-            null;
 
         return .{
             .role = role,
@@ -177,7 +242,6 @@ pub const Message = struct {
             .audio = audio,
             .tool_calls = tool_calls,
             .tool_call_id = tool_call_id,
-            .function_call = function_call,
         };
     }
 };
@@ -199,11 +263,9 @@ pub const Request = struct {
     n: ?u32 = null,
     presence_penalty: ?f32 = null,
     frequency_penalty: ?f32 = null,
-    tools: ?[]const common.Tool = null,
+    tools: ?[]const Tool = null,
     tool_choice: ?std.json.Value = null,
     parallel_tool_calls: ?bool = null,
-    functions: ?[]const common.Function = null,
-    function_call: ?[]const u8 = null,
     response_format: ?common.ResponseFormat = null,
     stop: ?[]const []const u8 = null,
     logit_bias: ?std.json.Value = null,
@@ -215,16 +277,9 @@ pub const Request = struct {
     modalities: ?[]const []const u8 = null,
     audio: ?std.json.Value = null,
     store: ?bool = null,
-    moderation: ?std.json.Value = null,
-    web_search_options: ?std.json.Value = null,
     metadata: ?std.json.Value = null,
     prediction: ?std.json.Value = null,
-    safety_identifier: ?[]const u8 = null,
-    prompt_cache_key: ?[]const u8 = null,
-    prompt_cache_options: ?std.json.Value = null,
-    prompt_cache_retention: ?[]const u8 = null,
     service_tier: ?[]const u8 = null,
-    verbosity: ?[]const u8 = null,
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         try jw.beginObject();
@@ -245,8 +300,6 @@ pub const Request = struct {
         if (self.tools) |v| { try jw.objectField("tools"); try jw.write(v); }
         if (self.tool_choice) |v| { try jw.objectField("tool_choice"); try jw.write(v); }
         if (self.parallel_tool_calls) |v| { try jw.objectField("parallel_tool_calls"); try jw.write(v); }
-        if (self.functions) |v| { try jw.objectField("functions"); try jw.write(v); }
-        if (self.function_call) |v| { try jw.objectField("function_call"); try jw.write(v); }
         if (self.response_format) |v| { try jw.objectField("response_format"); try jw.write(v); }
         if (self.stop) |v| { try jw.objectField("stop"); try jw.write(v); }
         if (self.logit_bias) |v| { try jw.objectField("logit_bias"); try jw.write(v); }
@@ -258,16 +311,9 @@ pub const Request = struct {
         if (self.modalities) |v| { try jw.objectField("modalities"); try jw.write(v); }
         if (self.audio) |v| { try jw.objectField("audio"); try jw.write(v); }
         if (self.store) |v| { try jw.objectField("store"); try jw.write(v); }
-        if (self.moderation) |v| { try jw.objectField("moderation"); try jw.write(v); }
-        if (self.web_search_options) |v| { try jw.objectField("web_search_options"); try jw.write(v); }
         if (self.metadata) |v| { try jw.objectField("metadata"); try jw.write(v); }
         if (self.prediction) |v| { try jw.objectField("prediction"); try jw.write(v); }
-        if (self.safety_identifier) |v| { try jw.objectField("safety_identifier"); try jw.write(v); }
-        if (self.prompt_cache_key) |v| { try jw.objectField("prompt_cache_key"); try jw.write(v); }
-        if (self.prompt_cache_options) |v| { try jw.objectField("prompt_cache_options"); try jw.write(v); }
-        if (self.prompt_cache_retention) |v| { try jw.objectField("prompt_cache_retention"); try jw.write(v); }
         if (self.service_tier) |v| { try jw.objectField("service_tier"); try jw.write(v); }
-        if (self.verbosity) |v| { try jw.objectField("verbosity"); try jw.write(v); }
         try jw.endObject();
     }
 
@@ -309,21 +355,13 @@ pub const Request = struct {
         if (obj.get("frequency_penalty")) |v| { result.frequency_penalty = switch (v) { .integer => |i| @floatFromInt(i), .float => |f| @floatCast(f), else => null }; }
         if (obj.get("tools")) |v| {
             if (v == .array) {
-                const tools = try allocator.alloc(common.Tool, v.array.items.len);
-                for (v.array.items, 0..) |tv, i| tools[i] = try common.Tool.jsonParseFromValue(allocator, tv, .{});
+                const tools = try allocator.alloc(Tool, v.array.items.len);
+                for (v.array.items, 0..) |tv, i| tools[i] = try Tool.jsonParseFromValue(allocator, tv, .{});
                 result.tools = tools;
             }
         }
         if (obj.get("tool_choice")) |v| { result.tool_choice = v; }
         if (obj.get("parallel_tool_calls")) |v| { result.parallel_tool_calls = if (v == .bool) v.bool else null; }
-        if (obj.get("functions")) |v| {
-            if (v == .array) {
-                const funcs = try allocator.alloc(common.Function, v.array.items.len);
-                for (v.array.items, 0..) |fv, i| funcs[i] = try std.json.parseFromValueLeaky(common.Function, allocator, fv, .{});
-                result.functions = funcs;
-            }
-        }
-        if (obj.get("function_call")) |v| { result.function_call = if (v == .string) v.string else null; }
         if (obj.get("response_format")) |v| {
             if (v == .object) {
                 const rf_type = if (v.object.get("type")) |t| (if (t == .string) t.string else "text") else "text";
@@ -356,16 +394,9 @@ pub const Request = struct {
         }
         if (obj.get("audio")) |v| { result.audio = v; }
         if (obj.get("store")) |v| { result.store = if (v == .bool) v.bool else null; }
-        if (obj.get("moderation")) |v| { result.moderation = v; }
-        if (obj.get("web_search_options")) |v| { result.web_search_options = v; }
         if (obj.get("metadata")) |v| { result.metadata = v; }
         if (obj.get("prediction")) |v| { result.prediction = v; }
-        if (obj.get("safety_identifier")) |v| { result.safety_identifier = if (v == .string) v.string else null; }
-        if (obj.get("prompt_cache_key")) |v| { result.prompt_cache_key = if (v == .string) v.string else null; }
-        if (obj.get("prompt_cache_options")) |v| { result.prompt_cache_options = v; }
-        if (obj.get("prompt_cache_retention")) |v| { result.prompt_cache_retention = if (v == .string) v.string else null; }
         if (obj.get("service_tier")) |v| { result.service_tier = if (v == .string) v.string else null; }
-        if (obj.get("verbosity")) |v| { result.verbosity = if (v == .string) v.string else null; }
 
         return result;
     }
@@ -381,7 +412,7 @@ pub const Delta = struct {
     content: ?[]const u8 = null,
     refusal: ?[]const u8 = null,
     tool_calls: ?[]const DeltaToolCall = null,
-    function_call: ?common.FunctionCall = null,
+    audio: ?std.json.Value = null,
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         try jw.beginObject();
@@ -394,7 +425,7 @@ pub const Delta = struct {
             for (tc) |call| { try call.jsonStringify(jw); }
             try jw.endArray();
         }
-        if (self.function_call) |fc| { try jw.objectField("function_call"); try jw.write(fc); }
+        if (self.audio) |a| { try jw.objectField("audio"); try jw.write(a); }
         try jw.endObject();
     }
 };
@@ -427,7 +458,6 @@ pub const StreamChunk = struct {
     system_fingerprint: ?[]const u8 = null,
     service_tier: ?[]const u8 = null,
     obfuscation: ?[]const u8 = null,
-    moderation: ?std.json.Value = null,
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         try jw.beginObject();
@@ -443,7 +473,6 @@ pub const StreamChunk = struct {
         if (self.system_fingerprint) |sf| { try jw.objectField("system_fingerprint"); try jw.write(sf); }
         if (self.service_tier) |st| { try jw.objectField("service_tier"); try jw.write(st); }
         if (self.obfuscation) |v| { try jw.objectField("obfuscation"); try jw.write(v); }
-        if (self.moderation) |v| { try jw.objectField("moderation"); try jw.write(v); }
         try jw.endObject();
     }
 };
@@ -457,8 +486,7 @@ pub const ResponseMessage = struct {
     role: common.Role,
     content: ?[]const u8,
     refusal: ?[]const u8 = null,
-    tool_calls: ?[]const common.ToolCall = null,
-    function_call: ?common.FunctionCall = null,
+    tool_calls: ?[]const ToolCall = null,
     annotations: ?std.json.Value = null,
     audio: ?std.json.Value = null,
 
@@ -468,7 +496,6 @@ pub const ResponseMessage = struct {
         if (self.content) |c| { try jw.objectField("content"); try jw.write(c); }
         if (self.refusal) |r| { try jw.objectField("refusal"); try jw.write(r); }
         if (self.tool_calls) |tc| { try jw.objectField("tool_calls"); try jw.write(tc); }
-        if (self.function_call) |fc| { try jw.objectField("function_call"); try jw.write(fc); }
         if (self.annotations) |a| { try jw.objectField("annotations"); try jw.write(a); }
         if (self.audio) |au| { try jw.objectField("audio"); try jw.write(au); }
         try jw.endObject();
@@ -502,8 +529,6 @@ pub const Response = struct {
     usage: ?common.Usage = null,
     system_fingerprint: ?[]const u8 = null,
     service_tier: ?[]const u8 = null,
-    metadata: ?std.json.Value = null,
-    moderation: ?std.json.Value = null,
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         try jw.beginObject();
@@ -518,8 +543,6 @@ pub const Response = struct {
         if (self.usage) |u| { try jw.objectField("usage"); try common.Usage.jsonStringify(u, jw); }
         if (self.system_fingerprint) |sf| { try jw.objectField("system_fingerprint"); try jw.write(sf); }
         if (self.service_tier) |st| { try jw.objectField("service_tier"); try jw.write(st); }
-        if (self.metadata) |v| { try jw.objectField("metadata"); try jw.write(v); }
-        if (self.moderation) |v| { try jw.objectField("moderation"); try jw.write(v); }
         try jw.endObject();
     }
 };
