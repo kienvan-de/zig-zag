@@ -355,7 +355,7 @@ export fn getServerStats() CServerStats {
         .error_code = error_code,
         .port = s.port,
         .uptime_seconds = uptime,
-        .memory_bytes = snap.rss_bytes,
+        .memory_bytes = snap.memory_bytes,
         .cpu_percent = 0.0, // Placeholder - calculated by Swift from cpu_time_us
         .cpu_time_us = snap.cpu_time_us,
         .network_rx_bytes = snap.network_rx_bytes,
