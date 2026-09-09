@@ -12,39 +12,89 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Anthropic wire-format transformer — one file, four flows.
+//!
+//! ## Principles
+//!
+//! - **P1** One transformer per upstream wire format: this file converts between
+//!   the inbound API schemas and the Anthropic wire, and nothing else.
+//! - **P2** Four flows, named after the *inbound* schema: `Models`, `Chat`,
+//!   `Messages`, `Responses`. Each request/response/stream flow exposes exactly
+//!   `transform{Flow}Request`, `cleanup{Flow}Request`, `transform{Flow}Response`,
+//!   `cleanup{Flow}Response`, `transform{Flow}StreamLine`. `Models` is
+//!   response-only. `Responses` additionally owns `flushResponsesStream`.
+//! - **P3** Three owned stream states (`ChatStreamState`, `MessagesStreamState`,
+//!   `ResponsesStreamState`), each with the uniform core
+//!   `allocator, original_model, response_id, finish_reason, input_tokens, output_tokens`
+//!   plus flow-specific fields. Usage is read from these fields at end of stream —
+//!   never scraped from individual chunks by pipelines.
+//! - **P4** One streaming result type, `StreamLineResult`. `output` carries
+//!   formatted SSE bytes ready to write (caller frees); errors are rendered
+//!   *inside* this transformer into the flow's own wire format.
+//! - **P5** No re-exports, no aliases: every `pub` symbol here is defined here.
+//! - **P6** Main surface only: mapping/streaming support code lives in `content.zig`.
+//! - **P7** Flow prefixes only in names (`Chat`/`Messages`/`Responses`/`Models`) —
+//!   including import aliases, so a reader sees the same vocabulary everywhere.
+//!   `Anthropic` names the wire format and appears only in prose.
+//! - **P8** Parameter order is fixed: request `(request, model, allocator)`,
+//!   response `(upstream_response, original_req, allocator)` — every response
+//!   carries the original inbound request so flow-specific echo fields
+//!   (e.g. Responses temperature/store) and the requested model are available;
+//!   stream `(line, *state, allocator)`, cleanup `(value, allocator)`.
+//!   Exception: `transformModelsResponse` keeps its pre-existing order.
+//! - **P11** Self-contained: depends on shared *type definitions* and its own
+//!   `content.zig` only — never on another provider's transformer/converter.
+//!   Conversion duplicated across providers is accepted; isolation over DRY.
+
 const std = @import("std");
-const time = @import("../../time.zig");
-const testing = std.testing;
-const OpenAIChat = @import("../openai/chat_types.zig");
-const OpenAIResponses = @import("../openai/responses_types.zig");
-const Anthropic = @import("types.zig");
+
+const Messages = @import("types.zig"); // Anthropic Messages wire types
+const Chat = @import("../openai/chat_types.zig"); // inbound chat schema (shapes only)
+const Responses = @import("../openai/responses_types.zig"); // inbound responses schema (shapes only)
+const content = @import("content.zig"); // own mapping internals
 const log = @import("../../log.zig");
-const rt = @import("../openai/responses_transformer.zig");
+const time = @import("../../time.zig");
 
 // ============================================================================
-// Models Response Transformation
+// Contract (shared by all flows)
 // ============================================================================
 
-/// Transform Anthropic AnthropicModelsResponse to OpenAIChat.Model array with provider prefix
+/// Result of feeding one upstream SSE line through a flow's stream transform.
+/// `output` is ready-to-write SSE bytes owned by the caller's allocator.
+pub const StreamLineResult = union(enum) {
+    output: []const u8,
+    skip: void,
+};
+
+/// The responses flow synthesizes its own terminal events; the pipeline appends
+/// the `[DONE]` sentinel afterwards.
+/// TODO(review): this is file-level today but only the Responses flow needs it —
+/// decide between per-flow flags or leaving it here.
+pub const appendsDoneMarker = true;
+
+// ============================================================================
+// Flow: /v1/models
+// ============================================================================
+// Response-only: GET, no request body, no streaming (P2).
+
+/// Map the Anthropic models listing to inbound `Model` entries, prefixing ids
+/// with the provider name.
 pub fn transformModelsResponse(
     allocator: std.mem.Allocator,
-    response: std.json.Parsed(Anthropic.AnthropicModelsResponse),
+    response: std.json.Parsed(Messages.ModelsResponse),
     provider_name: []const u8,
-) ![]OpenAIChat.Model {
+) ![]Chat.Model {
     const data = response.value.data;
 
-    var models = try allocator.alloc(OpenAIChat.Model, data.len);
+    var models = try allocator.alloc(Chat.Model, data.len);
     errdefer allocator.free(models);
 
-    for (data, 0..) |anthropic_model, i| {
-        // Create prefixed model ID: {provider_name}/{model_id}
-        const prefixed_id = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ provider_name, anthropic_model.id });
-
-        models[i] = OpenAIChat.Model{
-            .id = prefixed_id,
+    for (data, 0..) |entry, i| {
+        models[i] = .{
+            .id = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ provider_name, entry.id }),
             .object = "model",
             .created = 0,
-            .owned_by = try allocator.dupe(u8, "anthropic"),
+            .owned_by = try allocator.dupe(u8, provider_name),
         };
     }
 
@@ -52,24 +102,23 @@ pub fn transformModelsResponse(
 }
 
 // ============================================================================
-// Streaming State and Transformation
+// Flow: /v1/chat/completions — inbound chat schema → Anthropic wire
 // ============================================================================
 
-/// State for Anthropic→OpenAI streaming conversion
-/// Anthropic events are stateful, so we need to track context across events
-pub const StreamState = struct {
+/// Stream state for the chat flow: Anthropic events are stateful, so context
+/// (open tool call, whether a role has been emitted) must survive across lines.
+pub const ChatStreamState = struct {
+    // --- uniform core (P3) ---
     allocator: std.mem.Allocator,
-    message_id: ?[]const u8 = null,
-    model: ?[]const u8 = null,
     original_model: []const u8,
+    response_id: []const u8 = "",
+    finish_reason: ?[]const u8 = null,
+    input_tokens: u32 = 0,
+    output_tokens: u32 = 0,
+    // --- chat-flow specifics ---
     created: i64,
-    current_tool_call_index: ?u32 = null,
-    current_tool_call_id: ?[]const u8 = null,
-    current_tool_call_name: ?[]const u8 = null,
-    sent_role: bool = false,
-    input_tokens: ?u32 = null,
 
-    pub fn init(allocator: std.mem.Allocator, original_model: []const u8) StreamState {
+    pub fn init(allocator: std.mem.Allocator, original_model: []const u8) ChatStreamState {
         return .{
             .allocator = allocator,
             .original_model = original_model,
@@ -77,1016 +126,826 @@ pub const StreamState = struct {
         };
     }
 
-    pub fn deinit(self: *StreamState) void {
-        _ = self;
-        // No owned allocations to free - we use slices from parsed JSON
+    pub fn deinit(self: *ChatStreamState) void {
+        if (self.response_id.len > 0) self.allocator.free(self.response_id);
+        self.response_id = "";
     }
 };
 
-// ============================================================================
-// Error Response Transformation
-// ============================================================================
-
-/// Transform Anthropic error response to OpenAI error format
-pub fn transformErrorResponse(anthro_error: Anthropic.ErrorResponse) OpenAIChat.ErrorResponse {
-    // Map Anthropic error type to OpenAI error type
-    const error_type: []const u8 = if (std.mem.eql(u8, anthro_error.@"error".type, "invalid_request_error"))
-        "invalid_request_error"
-    else if (std.mem.eql(u8, anthro_error.@"error".type, "authentication_error"))
-        "invalid_request_error"
-    else if (std.mem.eql(u8, anthro_error.@"error".type, "permission_error"))
-        "invalid_request_error"
-    else if (std.mem.eql(u8, anthro_error.@"error".type, "not_found_error"))
-        "invalid_request_error"
-    else if (std.mem.eql(u8, anthro_error.@"error".type, "rate_limit_error"))
-        "invalid_request_error"
-    else if (std.mem.eql(u8, anthro_error.@"error".type, "overloaded_error"))
-        "server_error"
-    else
-        "server_error";
-
-    return OpenAIChat.ErrorResponse{
-        .@"error" = OpenAIChat.ErrorDetails{
-            .message = anthro_error.@"error".message,
-            .type = error_type,
-            .param = null,
-            .code = anthro_error.@"error".type,
-        },
-    };
-}
-
-/// Try to parse JSON as Anthropic error response
-fn tryParseError(json_part: []const u8, allocator: std.mem.Allocator) ?OpenAIChat.ErrorResponse {
-    const parsed = std.json.parseFromSlice(
-        Anthropic.ErrorResponse,
-        allocator,
-        json_part,
-        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
-    ) catch return null;
-    defer parsed.deinit();
-
-    return transformErrorResponse(parsed.value);
-}
-
-/// Transform a single Anthropic SSE line to OpenAI SSE format
-/// Returns StreamLineResult with chunk, error, or skip
-/// Caller must check for message_stop event type
-pub fn transformStreamLine(
-    line: []const u8,
-    state: *StreamState,
+/// Inbound chat request → Anthropic request, pinned to `model`.
+pub fn transformChatRequest(
+    request: Chat.Request,
+    model: []const u8,
     allocator: std.mem.Allocator,
-) OpenAIChat.StreamLineResult {
-    // Check if this is a data line
-    if (!std.mem.startsWith(u8, line, "data: ")) {
-        return .{ .skip = {} };
-    }
-
-    const json_part = line["data: ".len..];
-
-    // Try to determine event type by parsing
-    const type_info = std.json.parseFromSlice(
-        struct { type: []const u8 },
-        allocator,
-        json_part,
-        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
-    ) catch |err| {
-        // Failed to parse event type - try parsing as error response
-        if (tryParseError(json_part, allocator)) |error_response| {
-            log.warn("[Anthropic] [STREAM] Provider returned error: {s}", .{error_response.@"error".message});
-            return .{ .@"error" = error_response };
-        }
-        log.debug("[Anthropic] Failed to parse stream event type: {}", .{err});
-        return .{ .skip = {} };
-    };
-    defer type_info.deinit();
-
-    const event_type = type_info.value.type;
-
-    // Check for error event type
-    if (std.mem.eql(u8, event_type, "error")) {
-        if (tryParseError(json_part, allocator)) |error_response| {
-            log.warn("[Anthropic] [STREAM] Provider returned error event: {s}", .{error_response.@"error".message});
-            return .{ .@"error" = error_response };
-        }
-    }
-
-    if (std.mem.eql(u8, event_type, "message_start")) {
-        if (handleMessageStart(json_part, state, allocator)) |chunk| {
-            return .{ .chunk = chunk };
-        }
-    } else if (std.mem.eql(u8, event_type, "content_block_start")) {
-        if (handleContentBlockStart(json_part, state, allocator)) |chunk| {
-            return .{ .chunk = chunk };
-        }
-    } else if (std.mem.eql(u8, event_type, "content_block_delta")) {
-        if (handleContentBlockDelta(json_part, state, allocator)) |chunk| {
-            return .{ .chunk = chunk };
-        }
-    } else if (std.mem.eql(u8, event_type, "message_delta")) {
-        if (handleMessageDelta(json_part, state, allocator)) |chunk| {
-            return .{ .chunk = chunk };
-        }
-    }
-    // Ignore: message_stop (handled as done in chat.zig), content_block_stop, ping, etc.
-    return .{ .skip = {} };
-}
-
-fn handleMessageStart(json_part: []const u8, state: *StreamState, allocator: std.mem.Allocator) ?std.json.Parsed(OpenAIChat.StreamChunk) {
-    const parsed = std.json.parseFromSlice(
-        Anthropic.MessageStart,
-        allocator,
-        json_part,
-        .{ .allocate = .alloc_always },
-    ) catch |err| {
-        log.debug("[Anthropic] Failed to parse message_start event: {}", .{err});
-        return null;
-    };
-    defer parsed.deinit();
-
-    state.message_id = parsed.value.message.id;
-    state.model = parsed.value.message.model;
-    state.input_tokens = parsed.value.message.usage.input_tokens;
-
-    // Emit initial chunk with role
-    state.sent_role = true;
-    return buildOpenAIChunk(state, .{ .role = .assistant }, null, null, allocator);
-}
-
-fn handleContentBlockStart(json_part: []const u8, state: *StreamState, allocator: std.mem.Allocator) ?std.json.Parsed(OpenAIChat.StreamChunk) {
-    const parsed = std.json.parseFromSlice(
-        Anthropic.ContentBlockStart,
-        allocator,
-        json_part,
-        .{ .allocate = .alloc_always },
-    ) catch |err| {
-        log.debug("[Anthropic] Failed to parse content_block_start event: {}", .{err});
-        return null;
-    };
-    defer parsed.deinit();
-
-    const block_type = parsed.value.content_block.type;
-
-    if (std.mem.eql(u8, block_type, "tool_use")) {
-        // Start of tool call - emit tool_calls delta with id, type, name
-        state.current_tool_call_index = parsed.value.index;
-        state.current_tool_call_id = parsed.value.content_block.id;
-        state.current_tool_call_name = parsed.value.content_block.name;
-
-        const tool_call = OpenAIChat.DeltaToolCall{
-            .index = parsed.value.index,
-            .id = parsed.value.content_block.id,
-            .type = "function",
-            .function = .{
-                .name = parsed.value.content_block.name,
-                .arguments = "",
-            },
-        };
-
-        var tool_calls: [1]OpenAIChat.DeltaToolCall = .{tool_call};
-        return buildOpenAIChunk(state, .{ .tool_calls = &tool_calls }, null, null, allocator);
-    }
-    // For text blocks, we wait for content_block_delta
-    return null;
-}
-
-fn handleContentBlockDelta(json_part: []const u8, state: *StreamState, allocator: std.mem.Allocator) ?std.json.Parsed(OpenAIChat.StreamChunk) {
-    const parsed = std.json.parseFromSlice(
-        Anthropic.ContentBlockDelta,
-        allocator,
-        json_part,
-        .{ .allocate = .alloc_always },
-    ) catch |err| {
-        log.debug("[Anthropic] Failed to parse content_block_delta event: {}", .{err});
-        return null;
-    };
-    defer parsed.deinit();
-
-    const delta_type = parsed.value.delta.type;
-
-    if (std.mem.eql(u8, delta_type, "text_delta")) {
-        // Text content
-        if (parsed.value.delta.text) |text| {
-            return buildOpenAIChunk(state, .{ .content = text }, null, null, allocator);
-        }
-    } else if (std.mem.eql(u8, delta_type, "input_json_delta")) {
-        // Tool call arguments
-        if (parsed.value.delta.partial_json) |partial| {
-            const tool_call = OpenAIChat.DeltaToolCall{
-                .index = parsed.value.index,
-                .id = null,
-                .type = null,
-                .function = .{
-                    .name = null,
-                    .arguments = partial,
-                },
-            };
-
-            var tool_calls: [1]OpenAIChat.DeltaToolCall = .{tool_call};
-            return buildOpenAIChunk(state, .{ .tool_calls = &tool_calls }, null, null, allocator);
-        }
-    }
-    // thinking_delta and signature_delta are silently skipped in OpenAI path (GAP-15)
-    return null;
-}
-
-fn handleMessageDelta(json_part: []const u8, state: *StreamState, allocator: std.mem.Allocator) ?std.json.Parsed(OpenAIChat.StreamChunk) {
-    const parsed = std.json.parseFromSlice(
-        Anthropic.MessageDelta,
-        allocator,
-        json_part,
-        .{ .allocate = .alloc_always },
-    ) catch |err| {
-        log.debug("[Anthropic] Failed to parse message_delta event: {}", .{err});
-        return null;
-    };
-    defer parsed.deinit();
-
-    // Build usage from input_tokens (from message_start) and output_tokens (from message_delta)
-    const output_tokens = parsed.value.usage.output_tokens;
-    const input_tokens = state.input_tokens orelse 0;
-    const usage = OpenAIChat.Usage{
-        .prompt_tokens = input_tokens,
-        .completion_tokens = output_tokens,
-        .total_tokens = input_tokens + output_tokens,
-    };
-
-    // Emit final chunk with finish_reason and usage
-    const finish_reason = transformStopReason(parsed.value.delta.stop_reason);
-    return buildOpenAIChunk(state, .{}, finish_reason, usage, allocator);
-}
-
-/// Build an OpenAI streaming chunk from state and delta info
-/// Returns Parsed(StreamChunk) for consistent ownership model
-fn buildOpenAIChunk(
-    state: *StreamState,
-    delta: OpenAIChat.Delta,
-    finish_reason: ?[]const u8,
-    usage: ?OpenAIChat.Usage,
-    allocator: std.mem.Allocator,
-) ?std.json.Parsed(OpenAIChat.StreamChunk) {
-    const choice = OpenAIChat.StreamChoice{
-        .index = 0,
-        .delta = delta,
-        .finish_reason = finish_reason,
-    };
-
-    var choices: [1]OpenAIChat.StreamChoice = .{choice};
-
-    const chunk = OpenAIChat.StreamChunk{
-        .id = state.message_id orelse "msg_unknown",
-        .object = "chat.completion.chunk",
-        .created = state.created,
-        .model = state.original_model,
-        .choices = &choices,
-        .usage = usage,
-    };
-
-    // Serialize to JSON
-    var buffer = std.ArrayList(u8).empty;
-    buffer.print(allocator, "{f}", .{std.json.fmt(chunk, .{})}) catch return null;
-    defer buffer.deinit(allocator);
-
-    // Parse back to get Parsed that owns the data
-    const parsed = std.json.parseFromSlice(
-        OpenAIChat.StreamChunk,
-        allocator,
-        buffer.items,
-        .{ .allocate = .alloc_always },
-    ) catch return null;
-
-    return parsed;
-}
-
-// Type alias for OpenAI message content union
-const MessageContent = OpenAIChat.MessageContent;
-
-/// Extract system prompt from OpenAI messages
-/// System messages are removed from the message list and concatenated
-pub fn extractSystemPrompt(
-    messages: []const OpenAIChat.Message,
-    allocator: std.mem.Allocator,
-) !?[]const u8 {
-    var system_parts = std.ArrayList([]const u8).empty;
-    defer system_parts.deinit(allocator);
-
-    for (messages) |msg| {
-        if (msg.role == .system or msg.role == .developer) {
-            const content_text = if (msg.content) |content| switch (content) {
-                .text => |s| s,
-                .parts => |parts| blk: {
-                    // Extract text from parts
-                    for (parts) |part| {
-                        if (part == .text) {
-                            try system_parts.append(allocator, part.text.text);
-                        }
-                    }
-                    break :blk "";
-                },
-            } else "";
-            if (content_text.len > 0) {
-                try system_parts.append(allocator, content_text);
-            }
-        }
-    }
-
-    if (system_parts.items.len == 0) {
-        return null;
-    }
-
-    // Concatenate with newlines
-    return try std.mem.join(allocator, "\n\n", system_parts.items);
-}
-
-/// Transform OpenAI content to Anthropic content blocks
-pub fn transformContent(
-    content: MessageContent,
-    allocator: std.mem.Allocator,
-) ![]Anthropic.ContentBlockParam {
-    var blocks = std.ArrayList(Anthropic.ContentBlockParam).empty;
-    errdefer blocks.deinit(allocator);
-
-    switch (content) {
-        .text => |text| {
-            try blocks.append(allocator, .{ .text = .{ .type = "text", .text = text } });
-        },
-        .parts => |parts| {
-            for (parts) |part| {
-                switch (part) {
-                    .text => |text_part| {
-                        try blocks.append(allocator, .{ .text = .{
-                            .type = "text",
-                            .text = text_part.text,
-                        } });
-                    },
-                    .image_url => |image_part| {
-                        // Parse image URL: can be base64 or URL
-                        const url = image_part.image_url.url;
-                        if (std.mem.startsWith(u8, url, "data:")) {
-                            // Base64 format: data:image/png;base64,<data>
-                            const comma_idx = std.mem.indexOfScalar(u8, url, ',') orelse return error.UnsupportedContentType;
-                            const base64_data = url[comma_idx + 1 ..];
-                            const semicolon_idx = std.mem.indexOfScalar(u8, url[5..], ';') orelse return error.UnsupportedContentType;
-                            const media_type = url[5 .. 5 + semicolon_idx];
-
-                            try blocks.append(allocator, .{ .image = .{
-                                .type = "image",
-                                .source = .{ .base64 = .{
-                                    .type = "base64",
-                                    .media_type = media_type,
-                                    .data = base64_data,
-                                } },
-                            } });
-                        } else {
-                            // URL format
-                            try blocks.append(allocator, .{ .image = .{
-                                .type = "image",
-                                .source = .{ .url = .{
-                                    .type = "url",
-                                    .url = url,
-                                } },
-                            } });
-                        }
-                    },
-                    .input_audio, .file, .refusal => {
-                        // Audio/file/refusal parts have no Anthropic equivalent — skip silently
-                    },
-                }
-            }
-        },
-    }
-
-    return try blocks.toOwnedSlice(allocator);
-}
-
-/// Transform OpenAI tool calls to Anthropic tool_use content blocks
-pub fn transformToolCalls(
-    tool_calls: []const OpenAIChat.ToolCall,
-    allocator: std.mem.Allocator,
-) ![]Anthropic.ContentBlockParam {
-    var blocks = std.ArrayList(Anthropic.ContentBlockParam).empty;
-    errdefer blocks.deinit(allocator);
-
-    for (tool_calls) |tc| {
-        switch (tc) {
-            .function => |f| {
-                const parsed = std.json.parseFromSlice(std.json.Value, allocator, f.function.arguments, .{}) catch {
-                    try blocks.append(allocator, .{ .tool_use = .{
-                        .type = "tool_use",
-                        .id = f.id,
-                        .name = f.function.name,
-                        .input = std.json.Value{ .object = std.json.ObjectMap{} },
-                    } });
-                    continue;
-                };
-                try blocks.append(allocator, .{ .tool_use = .{
-                    .type = "tool_use",
-                    .id = f.id,
-                    .name = f.function.name,
-                    .input = parsed.value,
-                } });
-            },
-            .custom => {}, // No Anthropic equivalent for custom tool calls
-        }
-    }
-
-    return try blocks.toOwnedSlice(allocator);
-}
-
-/// Transform OpenAI tool/function message to Anthropic tool_result content block
-pub fn transformToolResult(
-    tool_call_id: []const u8,
-    content: ?MessageContent,
-    allocator: std.mem.Allocator,
-) !Anthropic.ContentBlockParam {
-    _ = allocator;
-    const content_str: ?[]const u8 = if (content) |c| switch (c) {
-        .text => |t| t,
-        .parts => |parts| blk: {
-            // Take first text part
-            for (parts) |part| {
-                if (part == .text) {
-                    break :blk part.text.text;
-                }
-            }
-            break :blk null;
-        },
-    } else null;
-
-    return .{ .tool_result = .{
-        .type = "tool_result",
-        .tool_use_id = tool_call_id,
-        .content = content_str,
-        .is_error = null,
-    } };
-}
-
-/// Transform OpenAI tools to Anthropic tools
-pub fn transformTools(
-    tools: []const OpenAIChat.Tool,
-    allocator: std.mem.Allocator,
-) ![]Anthropic.Tool {
-    var anthro_tools = std.ArrayList(Anthropic.Tool).empty;
-    errdefer anthro_tools.deinit(allocator);
-
-    for (tools) |tool| {
-        switch (tool) {
-            .function => |f| {
-                try anthro_tools.append(allocator, .{
-                    .name = f.function.name,
-                    .description = f.function.description,
-                    .input_schema = f.function.parameters orelse std.json.Value{ .object = std.json.ObjectMap{} },
-                });
-            },
-            .custom => {}, // No Anthropic equivalent for custom tools
-        }
-    }
-
-    return try anthro_tools.toOwnedSlice(allocator);
-}
-
-/// Transform OpenAI tool_choice (std.json.Value) to Anthropic tool_choice
-pub fn transformToolChoice(
-    tool_choice: std.json.Value,
-) ?Anthropic.ToolChoice {
-    switch (tool_choice) {
-        .string => |mode| {
-            if (std.mem.eql(u8, mode, "auto")) {
-                return .{ .auto = .{ .type = "auto" } };
-            } else if (std.mem.eql(u8, mode, "none")) {
-                return null; // No tool choice means don't use tools
-            } else if (std.mem.eql(u8, mode, "required")) {
-                return .{ .any = .{ .type = "any" } };
-            }
-            return .{ .auto = .{ .type = "auto" } };
-        },
-        .object => |obj| {
-            // Object format: {"type": "function", "function": {"name": "..."}}
-            if (obj.get("function")) |func_val| {
-                if (func_val == .object) {
-                    if (func_val.object.get("name")) |name_val| {
-                        if (name_val == .string) {
-                            return .{ .tool = .{
-                                .type = "tool",
-                                .name = name_val.string,
-                            } };
-                        }
-                    }
-                }
-            }
-            return .{ .auto = .{ .type = "auto" } };
-        },
-        else => return .{ .auto = .{ .type = "auto" } },
-    }
-}
-
-/// Normalize messages: remove system, merge consecutive same-role, ensure alternation
-pub fn normalizeMessages(
-    messages: []const OpenAIChat.Message,
-    allocator: std.mem.Allocator,
-) ![]Anthropic.Message {
-    var normalized = std.ArrayList(Anthropic.Message).empty;
-    errdefer {
-        for (normalized.items) |msg| {
-            switch (msg.content) {
-                .text => {},
-                .blocks => |blocks| allocator.free(blocks),
-            }
-        }
-        normalized.deinit(allocator);
-    }
-
-    var last_role: ?Anthropic.Role = null;
-    var pending_content = std.ArrayList(Anthropic.ContentBlockParam).empty;
-    defer pending_content.deinit(allocator);
-
-    for (messages) |msg| {
-        // Skip system messages
-        if (msg.role == .system) continue;
-        if (msg.role == .developer) continue; // developer role treated as system — extracted above
-
-        // Map role
-        const anthro_role: Anthropic.Role = switch (msg.role) {
-            .user => .user,
-            .assistant => .assistant,
-            .system, .developer => unreachable, // Already filtered above
-            .tool, .function => .user, // Tool responses become user messages
-        };
-
-        // Transform content
-        var content_blocks = std.ArrayList(Anthropic.ContentBlockParam).empty;
-        defer content_blocks.deinit(allocator);
-
-        // Handle tool/function messages - these need tool_result blocks
-        if (msg.role == .tool or msg.role == .function) {
-            const tool_call_id = msg.tool_call_id orelse "";
-            const tool_result = try transformToolResult(tool_call_id, msg.content, allocator);
-            try content_blocks.append(allocator, tool_result);
-        } else {
-            // Handle message content (may be null for assistant messages with tool_calls)
-            if (msg.content) |content| {
-                const transformed = try transformContent(content, allocator);
-                defer allocator.free(transformed);
-                try content_blocks.appendSlice(allocator, transformed);
-            }
-
-            // Handle tool calls (assistant messages)
-            if (msg.tool_calls) |tool_calls| {
-                const tool_use_blocks = try transformToolCalls(tool_calls, allocator);
-                defer allocator.free(tool_use_blocks);
-                try content_blocks.appendSlice(allocator, tool_use_blocks);
-            }
-        }
-
-        // Skip if no content
-        if (content_blocks.items.len == 0) continue;
-
-        // Check if we need to merge with previous message
-        if (last_role) |prev_role| {
-            if (prev_role == anthro_role) {
-                // Merge with pending content
-                try pending_content.appendSlice(allocator, content_blocks.items);
-                continue;
-            } else {
-                // Flush pending content
-                if (pending_content.items.len > 0) {
-                    const msg_content = try pending_content.toOwnedSlice(allocator);
-                    try normalized.append(allocator, .{
-                        .role = prev_role,
-                        .content = .{ .blocks = msg_content },
-                    });
-                    pending_content.clearRetainingCapacity();
-                }
-            }
-        }
-
-        // Start new pending message
-        try pending_content.appendSlice(allocator, content_blocks.items);
-        last_role = anthro_role;
-    }
-
-    // Flush final pending content
-    if (last_role) |role| {
-        if (pending_content.items.len > 0) {
-            const msg_content = try pending_content.toOwnedSlice(allocator);
-            try normalized.append(allocator, .{
-                .role = role,
-                .content = .{ .blocks = msg_content },
-            });
-        }
-    }
-
-    // Validate: ensure first message is user
-    if (normalized.items.len > 0 and normalized.items[0].role != .user) {
-        // Insert synthetic user message
-        var synthetic_content = try allocator.alloc(Anthropic.ContentBlockParam, 1);
-        synthetic_content[0] = .{ .text = .{
-            .type = "text",
-            .text = "[Conversation start]",
-        } };
-        try normalized.insert(allocator, 0, .{
-            .role = .user,
-            .content = .{ .blocks = synthetic_content },
-        });
-    }
-
-    if (normalized.items.len == 0) {
-        return error.EmptyMessages;
-    }
-
-    return try normalized.toOwnedSlice(allocator);
-}
-
-/// Main transformation function
-pub fn transform(
-    request: OpenAIChat.Request,
-    target_model: []const u8,
-    allocator: std.mem.Allocator,
-) !Anthropic.Request {
-    const system_prompt = try extractSystemPrompt(request.messages, allocator);
-    const messages = try normalizeMessages(request.messages, allocator);
-
-    // Transform tools if present
-    const tools: ?[]Anthropic.Tool = if (request.tools) |t| try transformTools(t, allocator) else null;
-
-    // Transform tool_choice if present
-    const tool_choice: ?Anthropic.ToolChoice = if (request.tool_choice) |tc| transformToolChoice(tc) else null;
-
-    // Transform stop sequences
-    const stop_sequences: ?[]const []const u8 = request.stop;
-
-    // Transform metadata (user -> user_id)
-    const metadata: ?Anthropic.Metadata = if (request.user) |u| .{ .user_id = u } else null;
-
-    return Anthropic.Request{
-        .model = target_model,
-        .messages = messages,
-        .system = system_prompt,
+) !Messages.Request {
+    return .{
+        .model = model,
+        .messages = try content.normalizeMessages(request.messages, allocator),
+        .system = try content.extractSystemPrompt(request.messages, allocator),
         .max_tokens = request.max_tokens orelse request.max_completion_tokens orelse 4096,
         .temperature = request.temperature,
         .top_p = request.top_p,
-        .top_k = null,
         .stream = request.stream,
-        .stop_sequences = stop_sequences,
-        .tools = tools,
-        .tool_choice = tool_choice,
-        .metadata = metadata,
+        .stop_sequences = request.stop,
+        .tools = if (request.tools) |tools| try content.transformTools(tools, allocator) else null,
+        .tool_choice = if (request.tool_choice) |tool_choice| content.transformToolChoice(tool_choice) else null,
+        .metadata = if (request.user) |user| .{ .user_id = user } else null,
     };
 }
 
-// ============================================================================
-// RESPONSE TRANSFORMATION (Anthropic → OpenAI)
-// ============================================================================
-
-/// Transform Anthropic stop reason to OpenAI finish reason
-pub fn transformStopReason(stop_reason: ?[]const u8) []const u8 {
-    if (stop_reason == null) return "stop";
-
-    const reason = stop_reason.?;
-    if (std.mem.eql(u8, reason, "end_turn")) return "stop";
-    if (std.mem.eql(u8, reason, "max_tokens")) return "length";
-    if (std.mem.eql(u8, reason, "stop_sequence")) return "stop";
-    if (std.mem.eql(u8, reason, "tool_use")) return "tool_calls";
-
-    return "stop"; // default
-}
-
-/// Extract text content from Anthropic ContentBlock array
-pub fn extractTextFromBlocks(blocks: []const Anthropic.ContentBlock, allocator: std.mem.Allocator) ![]const u8 {
-    var text_parts = std.ArrayList([]const u8).empty;
-    defer text_parts.deinit(allocator);
-
-    for (blocks) |block| {
-        switch (block) {
-            .text => |t| {
-                if (t.text.len > 0) try text_parts.append(allocator, t.text);
-            },
-            .tool_use, .thinking, .redacted_thinking => {},
-        }
-    }
-
-    if (text_parts.items.len == 0) {
-        return try allocator.dupe(u8, "");
-    }
-
-    return try std.mem.join(allocator, "", text_parts.items);
-}
-
-/// Extract tool_use blocks from Anthropic ContentBlock array and convert to OpenAI ToolCall array
-pub fn extractToolCalls(blocks: []const Anthropic.ContentBlock, allocator: std.mem.Allocator) !?[]OpenAIChat.ToolCall {
-    var tool_calls = std.ArrayList(OpenAIChat.ToolCall).empty;
-    defer tool_calls.deinit(allocator);
-
-    for (blocks) |block| {
-        switch (block) {
-            .tool_use => |tu| {
-                // Stringify the input JSON
-                var args_list = std.ArrayList(u8).empty;
-                defer args_list.deinit(allocator);
-                try args_list.print(allocator, "{f}", .{std.json.fmt(tu.input, .{})});
-                const args_str = try args_list.toOwnedSlice(allocator);
-
-                try tool_calls.append(allocator, .{ .function = .{
-                    .id = tu.id,
-                    .type = "function",
-                    .function = .{
-                        .name = tu.name,
-                        .arguments = args_str,
-                    },
-                } });
-            },
-            .text, .thinking, .redacted_thinking => {},
-        }
-    }
-
-    if (tool_calls.items.len == 0) {
-        return null;
-    }
-
-    return try tool_calls.toOwnedSlice(allocator);
-}
-
-/// Transform Anthropic response to OpenAI response (non-streaming)
-/// Cleanup function for Anthropic.Request
-pub fn cleanupRequest(request: Anthropic.Request, allocator: std.mem.Allocator) void {
-    if (request.system) |s| allocator.free(s);
+/// Free what `transformChatRequest` allocated: the system prompt, every turn's
+/// content blocks (including the parsed `tool_use.input` trees), the message
+/// slice, and the tool slice. Everything else borrows from the parsed inbound
+/// request and is freed with it.
+pub fn cleanupChatRequest(
+    request: Messages.Request,
+    allocator: std.mem.Allocator,
+) void {
+    if (request.system) |system_prompt| allocator.free(system_prompt);
     for (request.messages) |msg| {
-        switch (msg.content) {
-            .text => {},
-            .blocks => |blocks| allocator.free(blocks),
-        }
+        if (msg.content == .blocks) content.freeMessageBlocks(msg.content.blocks, allocator);
     }
     allocator.free(request.messages);
     if (request.tools) |tools| allocator.free(tools);
 }
 
-/// Cleanup function for OpenAIChat.Response
-pub fn cleanupResponse(response: OpenAIChat.Response, allocator: std.mem.Allocator) void {
-    if (response.choices.len > 0) {
-        if (response.choices[0].message.content) |content| {
-            allocator.free(content);
-        }
-        if (response.choices[0].message.tool_calls) |tool_calls| {
-            for (tool_calls) |tc| {
-                switch (tc) {
-                    .function => |f| allocator.free(f.function.arguments),
-                    .custom => {},
-                }
-            }
-            allocator.free(tool_calls);
+/// Free a slice of inbound tool calls produced by this flow (each `function`
+/// variant owns its serialized `arguments` string).
+/// Anthropic response → inbound chat response.
+pub fn transformChatResponse(
+    upstream_response: Messages.Response,
+    original_req: Chat.Request,
+    allocator: std.mem.Allocator,
+) !Chat.Response {
+    // The upstream echoes the concrete model id it served. `original_req` is
+    // kept for P8 response-signature uniformity (and future echo fields).
+    _ = original_req;
+
+    var message_text: ?[]const u8 = try content.extractTextFromBlocks(upstream_response.content, allocator);
+    errdefer if (message_text) |t| allocator.free(t);
+
+    // An empty text body is reported as `null` content, so the empty join is
+    // dropped rather than carried as a zero-length string.
+    if (message_text) |t| {
+        if (t.len == 0) {
+            allocator.free(t);
+            message_text = null;
         }
     }
-    allocator.free(response.choices);
-    // Free the id and model strings allocated in transformResponse
-    allocator.free(response.id);
-    allocator.free(response.model);
-}
 
-pub fn transformResponse(
-    anthropic_response: Anthropic.Response,
-    allocator: std.mem.Allocator,
-    original_model: []const u8,
-) !OpenAIChat.Response {
-    // Extract text content from content blocks
-    const content_text = try extractTextFromBlocks(anthropic_response.content, allocator);
+    const tool_calls = try content.extractToolCalls(upstream_response.content, allocator);
+    errdefer if (tool_calls) |calls| content.freeToolCalls(calls, allocator);
 
-    // Extract tool calls from content blocks
-    const tool_calls = try extractToolCalls(anthropic_response.content, allocator);
-
-    // Create message
-    const message = OpenAIChat.ResponseMessage{
-        .role = .assistant,
-        .content = if (content_text.len > 0) content_text else null,
-        .tool_calls = tool_calls,
-        .function_call = null,
-    };
-
-    // Create choice
-    const choice = OpenAIChat.ResponseChoice{
+    const choices = try allocator.alloc(Chat.ResponseChoice, 1);
+    errdefer allocator.free(choices);
+    choices[0] = .{
         .index = 0,
-        .message = message,
-        .finish_reason = transformStopReason(anthropic_response.stop_reason),
+        .message = .{
+            .role = .assistant,
+            .content = message_text,
+            .tool_calls = tool_calls,
+            .function_call = null,
+        },
+        .finish_reason = content.transformStopReason(upstream_response.stop_reason),
         .logprobs = null,
     };
 
-    var choices = try allocator.alloc(OpenAIChat.ResponseChoice, 1);
-    choices[0] = choice;
-
-    // Map usage
-    const usage = OpenAIChat.Usage{
-        .prompt_tokens = anthropic_response.usage.input_tokens,
-        .completion_tokens = anthropic_response.usage.output_tokens,
-        .total_tokens = anthropic_response.usage.input_tokens + anthropic_response.usage.output_tokens,
-    };
-
-    // Build model string: "anthropic/{actual_model_from_response}"
-    const model_str = try std.fmt.allocPrint(allocator, "anthropic/{s}", .{anthropic_response.model});
-    _ = original_model; // Available if needed for future use
-
-    // Duplicate id string to avoid dangling pointer after response is freed
-    const id_str = try allocator.dupe(u8, anthropic_response.id);
-
-    return OpenAIChat.Response{
-        .id = id_str,
+    return .{
+        // Duplicated: the caller keeps this after the upstream parse is freed.
+        .id = try allocator.dupe(u8, upstream_response.id),
         .object = "chat.completion",
         .created = time.timestamp(),
-        .model = model_str,
+        .model = try std.fmt.allocPrint(allocator, "anthropic/{s}", .{upstream_response.model}),
         .choices = choices,
-        .usage = usage,
+        .usage = .{
+            .prompt_tokens = upstream_response.usage.input_tokens,
+            .completion_tokens = upstream_response.usage.output_tokens,
+            .total_tokens = upstream_response.usage.input_tokens + upstream_response.usage.output_tokens,
+        },
         .system_fingerprint = null,
         .service_tier = null,
     };
 }
 
-// ============================================================================
-// PASS-THROUGH for /v1/messages endpoint (Anthropic → Anthropic)
-// Used when the incoming request is Anthropic format and the provider is also
-// Anthropic-native, so no transformation is needed — just replace the model.
-// ============================================================================
-
-/// Pass-through: replace model name (strip provider prefix), keep everything else.
-pub fn transformFromAnthropic(
-    request: Anthropic.Request,
-    model: []const u8,
+/// Free what `transformChatResponse` allocated.
+pub fn cleanupChatResponse(
+    inbound_response: Chat.Response,
     allocator: std.mem.Allocator,
-) !Anthropic.Request {
-    _ = allocator;
-    return .{
-        .model = model,
-        .messages = request.messages,
-        .max_tokens = request.max_tokens,
-        .system = request.system,
-        .temperature = request.temperature,
-        .top_p = request.top_p,
-        .top_k = request.top_k,
-        .stream = request.stream,
-        .stop_sequences = request.stop_sequences,
-        .tools = request.tools,
-        .tool_choice = request.tool_choice,
-        .metadata = request.metadata,
-        .thinking = request.thinking,
-        .betas = request.betas,
-        .service_tier = request.service_tier,
-        .output_config = request.output_config,
-        .container = request.container,
-        .inference_geo = request.inference_geo,
-    };
+) void {
+    if (inbound_response.choices.len > 0) {
+        const message = inbound_response.choices[0].message;
+        if (message.content) |text| allocator.free(text);
+        if (message.tool_calls) |calls| content.freeToolCalls(calls, allocator);
+    }
+    allocator.free(inbound_response.choices);
+    allocator.free(inbound_response.id);
+    allocator.free(inbound_response.model);
 }
 
-/// Cleanup for pass-through request (no-op — no allocations made)
-pub fn cleanupFromAnthropicRequest(request: Anthropic.Request, allocator: std.mem.Allocator) void {
+/// Serialize a chat `StreamChunk` into a `data: {json}\n\n` SSE line.
+/// The chunk borrows from `state` and the caller's parsed event, so it is
+/// consumed here immediately — no parse round-trip.
+/// One Anthropic SSE line → zero or one chat-format SSE chunk, as ready bytes.
+/// Parses the event, mutates `state`, and delegates byte formatting to
+/// `content.buildChatChunk` (P6: all helpers in content.zig). Upstream `error`
+/// events render into chat-format error bytes inline (P4).
+pub fn transformChatStreamLine(
+    line: []const u8,
+    state: *ChatStreamState,
+    allocator: std.mem.Allocator,
+) StreamLineResult {
+    if (!std.mem.startsWith(u8, line, "data: ")) return .{ .skip = {} };
+    const json_part = line["data: ".len..];
+
+    // Cheap type probe first; a failure here may instead be an error payload.
+    const type_info = std.json.parseFromSlice(
+        struct { type: []const u8 },
+        allocator,
+        json_part,
+        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+    ) catch {
+        const bytes = content.formatChatErrorLine(json_part, allocator) orelse
+            return .{ .skip = {} };
+        return .{ .output = bytes };
+    };
+    defer type_info.deinit();
+
+    const event_type = type_info.value.type;
+
+    if (std.mem.eql(u8, event_type, "error")) {
+        const bytes = content.formatChatErrorLine(json_part, allocator) orelse
+            return .{ .skip = {} };
+        return .{ .output = bytes };
+    }
+
+    if (std.mem.eql(u8, event_type, "message_start")) {
+        const parsed = std.json.parseFromSlice(
+            Messages.MessageStart,
+            allocator,
+            json_part,
+            .{ .allocate = .alloc_always },
+        ) catch |err| {
+            log.debug("[anthropic] message_start parse failed: {}", .{err});
+            return .{ .skip = {} };
+        };
+        defer parsed.deinit();
+
+        // Id is owned by the state (the parsed event dies on return). Guarded so
+        // a duplicate message_start can't leak the previous dupe.
+        if (state.response_id.len == 0 and parsed.value.message.id.len > 0) {
+            state.response_id = allocator.dupe(u8, parsed.value.message.id) catch return .{ .skip = {} };
+        }
+        state.input_tokens = parsed.value.message.usage.input_tokens;
+
+        const bytes = content.buildChatChunk(.{
+            .id = state.response_id,
+            .created = state.created,
+            .original_model = state.original_model,
+        }, .{ .role = .assistant }, null, null, allocator) orelse return .{ .skip = {} };
+        return .{ .output = bytes };
+    }
+
+    if (std.mem.eql(u8, event_type, "content_block_start")) {
+        const parsed = std.json.parseFromSlice(
+            Messages.ContentBlockStart,
+            allocator,
+            json_part,
+            .{ .allocate = .alloc_always },
+        ) catch |err| {
+            log.debug("[anthropic] content_block_start parse failed: {}", .{err});
+            return .{ .skip = {} };
+        };
+        defer parsed.deinit();
+
+        // A `tool_use` block opens with id + name; text blocks wait for deltas.
+        const block = parsed.value.content_block;
+        if (!std.mem.eql(u8, block.type, "tool_use")) return .{ .skip = {} };
+
+        const tool_calls = [_]Chat.DeltaToolCall{.{
+            .index = parsed.value.index,
+            .id = block.id,
+            .type = "function",
+            .function = .{ .name = block.name, .arguments = "" },
+        }};
+        const bytes = content.buildChatChunk(.{
+            .id = state.response_id,
+            .created = state.created,
+            .original_model = state.original_model,
+        }, .{ .tool_calls = &tool_calls }, null, null, allocator) orelse return .{ .skip = {} };
+        return .{ .output = bytes };
+    }
+
+    if (std.mem.eql(u8, event_type, "content_block_delta")) {
+        const parsed = std.json.parseFromSlice(
+            Messages.ContentBlockDelta,
+            allocator,
+            json_part,
+            .{ .allocate = .alloc_always },
+        ) catch |err| {
+            log.debug("[anthropic] content_block_delta parse failed: {}", .{err});
+            return .{ .skip = {} };
+        };
+        defer parsed.deinit();
+
+        // Text or partial tool-call arguments; thinking deltas are skipped.
+        const delta = parsed.value.delta;
+        if (std.mem.eql(u8, delta.type, "text_delta")) {
+            const text = delta.text orelse return .{ .skip = {} };
+            const bytes = content.buildChatChunk(.{
+                .id = state.response_id,
+                .created = state.created,
+                .original_model = state.original_model,
+            }, .{ .content = text }, null, null, allocator) orelse return .{ .skip = {} };
+            return .{ .output = bytes };
+        }
+        if (std.mem.eql(u8, delta.type, "input_json_delta")) {
+            const partial = delta.partial_json orelse return .{ .skip = {} };
+            const tool_calls = [_]Chat.DeltaToolCall{.{
+                .index = parsed.value.index,
+                .function = .{ .arguments = partial },
+            }};
+            const bytes = content.buildChatChunk(.{
+                .id = state.response_id,
+                .created = state.created,
+                .original_model = state.original_model,
+            }, .{ .tool_calls = &tool_calls }, null, null, allocator) orelse return .{ .skip = {} };
+            return .{ .output = bytes };
+        }
+        return .{ .skip = {} };
+    }
+
+    if (std.mem.eql(u8, event_type, "message_delta")) {
+        const parsed = std.json.parseFromSlice(
+            Messages.MessageDelta,
+            allocator,
+            json_part,
+            .{ .allocate = .alloc_always },
+        ) catch |err| {
+            log.debug("[anthropic] message_delta parse failed: {}", .{err});
+            return .{ .skip = {} };
+        };
+        defer parsed.deinit();
+
+        state.output_tokens = parsed.value.usage.output_tokens;
+        const finish_reason = content.transformStopReason(parsed.value.delta.stop_reason);
+        state.finish_reason = finish_reason;
+
+        const usage = Chat.Usage{
+            .prompt_tokens = state.input_tokens,
+            .completion_tokens = state.output_tokens,
+            .total_tokens = state.input_tokens + state.output_tokens,
+        };
+        const bytes = content.buildChatChunk(.{
+            .id = state.response_id,
+            .created = state.created,
+            .original_model = state.original_model,
+        }, .{}, finish_reason, usage, allocator) orelse return .{ .skip = {} };
+        return .{ .output = bytes };
+    }
+
+    // message_stop, content_block_stop, ping, … — nothing to emit.
+    return .{ .skip = {} };
+}
+
+// ============================================================================
+// Flow: /v1/messages — inbound messages schema → Anthropic wire (pass-through)
+// ============================================================================
+
+/// Stream state for the messages pass-through flow: lines are forwarded verbatim,
+/// the state exists only to carry usage out for metrics (P3).
+pub const MessagesStreamState = struct {
+    // --- uniform core (P3) ---
+    allocator: std.mem.Allocator,
+    original_model: []const u8,
+    response_id: []const u8 = "",
+    finish_reason: ?[]const u8 = null,
+    input_tokens: u32 = 0,
+    output_tokens: u32 = 0,
+
+    pub fn init(allocator: std.mem.Allocator, original_model: []const u8) MessagesStreamState {
+        return .{
+            .allocator = allocator,
+            .original_model = original_model,
+        };
+    }
+
+    pub fn deinit(self: *MessagesStreamState) void {
+        _ = self;
+    }
+};
+
+/// Pass-through: keep the inbound Anthropic request, pin `model`.
+pub fn transformMessagesRequest(
+    request: Messages.Request,
+    model: []const u8,
+    allocator: std.mem.Allocator,
+) !Messages.Request {
+    _ = allocator;
+    // Copy-and-override: the shallow copy borrows the inbound parse's slices,
+    // and any field added to the wire type later rides along automatically —
+    // which is exactly what a pass-through wants. The pipeline frees the
+    // inbound parse; no ownership transfers here.
+    var pinned = request;
+    pinned.model = model;
+    return pinned;
+}
+
+/// Pass-through cleanup — no allocations are made.
+pub fn cleanupMessagesRequest(
+    request: Messages.Request,
+    allocator: std.mem.Allocator,
+) void {
     _ = request;
     _ = allocator;
 }
 
-/// Pass-through: return the Anthropic response as-is.
-pub fn transformToAnthropicResponse(
-    response: Anthropic.Response,
+/// Pass-through: return the upstream Anthropic response as-is. The upstream
+/// already echoes the served model, so `original_req` is unused here.
+pub fn transformMessagesResponse(
+    upstream_response: Messages.Response,
+    original_req: Messages.Request,
+    allocator: std.mem.Allocator,
+) !Messages.Response {
+    _ = original_req;
+    _ = allocator;
+    return upstream_response;
+}
+
+/// Pass-through cleanup — nothing was allocated.
+pub fn cleanupMessagesResponse(
+    inbound_response: Messages.Response,
+    allocator: std.mem.Allocator,
+) void {
+    _ = inbound_response;
+    _ = allocator;
+}
+
+/// Forward one Anthropic SSE line verbatim, re-attaching the `event:` line the
+/// SSE iterator strips, and accumulate usage into `state`. The forwarded line
+/// is untouched — parsing here is only for metrics (P3/P4).
+pub fn transformMessagesStreamLine(
+    line: []const u8,
+    state: *MessagesStreamState,
+    allocator: std.mem.Allocator,
+) StreamLineResult {
+    if (!std.mem.startsWith(u8, line, "data: ")) {
+        // Non-data line (shouldn't happen with SSEIterator, but handle gracefully).
+        const raw = std.fmt.allocPrint(allocator, "{s}\n", .{line}) catch return .{ .skip = {} };
+        return .{ .output = raw };
+    }
+    const json_part = line["data: ".len..];
+
+    // Probe the event type once; dispatch usage extraction on it (the old code
+    // re-parsed every line three times).
+    const type_probe = std.json.parseFromSlice(
+        struct { type: []const u8 = "" },
+        allocator,
+        json_part,
+        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+    ) catch return .{ .output = std.fmt.allocPrint(allocator, "{s}\n\n", .{line}) catch return .{ .skip = {} } };
+    defer type_probe.deinit();
+    const event_type = type_probe.value.type;
+
+    // Usage accumulation only — never mutate the forwarded line.
+    if (std.mem.eql(u8, event_type, "message_start")) {
+        if (std.json.parseFromSlice(Messages.MessageStart, allocator, json_part, .{
+            .allocate = .alloc_always,
+            .ignore_unknown_fields = true,
+        })) |parsed| {
+            defer parsed.deinit();
+            state.input_tokens = parsed.value.message.usage.input_tokens;
+        } else |_| {}
+    } else if (std.mem.eql(u8, event_type, "message_delta")) {
+        if (std.json.parseFromSlice(Messages.MessageDelta, allocator, json_part, .{
+            .allocate = .alloc_always,
+            .ignore_unknown_fields = true,
+        })) |parsed| {
+            defer parsed.deinit();
+            state.output_tokens = parsed.value.usage.output_tokens;
+        } else |_| {}
+    }
+
+    // Reconstruct proper SSE framing: "event: <type>\ndata: <json>\n\n".
+    if (event_type.len > 0) {
+        const framed = std.fmt.allocPrint(allocator, "event: {s}\n{s}\n\n", .{ event_type, line }) catch return .{ .skip = {} };
+        return .{ .output = framed };
+    }
+    // No usable type field — emit the data line with proper SSE termination.
+    const terminated = std.fmt.allocPrint(allocator, "{s}\n\n", .{line}) catch return .{ .skip = {} };
+    return .{ .output = terminated };
+}
+
+// ============================================================================
+// Flow: /v1/responses — inbound responses schema → Anthropic wire
+// ============================================================================
+// Conversion is written locally against the Anthropic Messages wire (P11): no
+// delegation to another provider's transformer. `content.zig` is not used here —
+// this flow shares no parsing with the chat/messages flows.
+
+/// Stream state for the responses flow: accumulates the Anthropic message id,
+/// terminal reason and usage so `flushResponsesStream` can synthesize the
+/// closing Responses events.
+pub const ResponsesStreamState = struct {
+    // --- uniform core (P3) ---
     allocator: std.mem.Allocator,
     original_model: []const u8,
-) !Anthropic.Response {
-    _ = allocator;
-    _ = original_model;
-    return response;
-}
-
-/// Cleanup for pass-through response (no-op — no allocations made)
-pub fn cleanupAnthropicResponse(response: Anthropic.Response, allocator: std.mem.Allocator) void {
-    _ = response;
-    _ = allocator;
-}
-
-// ============================================================================
-// Anthropic SSE Streaming State (pass-through)
-// Forwards upstream Anthropic SSE lines as-is, parsing only for usage tracking.
-// ============================================================================
-
-pub const AnthropicStreamLineResult = Anthropic.AnthropicStreamLineResult;
-
-pub const AnthropicStreamState = struct {
-    allocator: std.mem.Allocator,
+    response_id: []const u8 = "",
+    finish_reason: ?[]const u8 = null,
     input_tokens: u32 = 0,
     output_tokens: u32 = 0,
 
-    pub fn init(allocator: std.mem.Allocator, original_model: []const u8) AnthropicStreamState {
-        _ = original_model;
-        return .{ .allocator = allocator };
+    pub fn init(allocator: std.mem.Allocator, original_model: []const u8) ResponsesStreamState {
+        return .{
+            .allocator = allocator,
+            .original_model = original_model,
+        };
     }
 
-    pub fn deinit(self: *AnthropicStreamState) void {
-        _ = self;
-    }
-
-    pub fn getUsage(self: *const AnthropicStreamState) Anthropic.StreamUsage {
-        return .{ .input_tokens = self.input_tokens, .output_tokens = self.output_tokens };
+    pub fn deinit(self: *ResponsesStreamState) void {
+        if (self.response_id.len > 0) self.allocator.free(self.response_id);
+        if (self.finish_reason) |reason| self.allocator.free(reason);
+        self.response_id = "";
+        self.finish_reason = null;
     }
 };
 
-/// Pass-through streaming: forward each SSE line as-is, track usage from message_start/message_delta.
-pub fn transformStreamLineToAnthropic(
-    line: []const u8,
-    state: *AnthropicStreamState,
-    allocator: std.mem.Allocator,
-) AnthropicStreamLineResult {
-    // Try to extract usage from data lines for metrics tracking
-    if (std.mem.startsWith(u8, line, "data: ")) {
-        const json_part = line["data: ".len..];
-
-        // Try to parse message_start for input_tokens
-        if (std.json.parseFromSlice(Anthropic.MessageStart, allocator, json_part, .{
-            .allocate = .alloc_always,
-            .ignore_unknown_fields = true,
-        })) |parsed| {
-            defer parsed.deinit();
-            if (std.mem.eql(u8, parsed.value.type, "message_start")) {
-                state.input_tokens = parsed.value.message.usage.input_tokens;
-            }
-        } else |_| {}
-
-        // Try to parse message_delta for output_tokens
-        if (std.json.parseFromSlice(Anthropic.MessageDelta, allocator, json_part, .{
-            .allocate = .alloc_always,
-            .ignore_unknown_fields = true,
-        })) |parsed| {
-            defer parsed.deinit();
-            if (std.mem.eql(u8, parsed.value.type, "message_delta")) {
-                state.output_tokens = parsed.value.usage.output_tokens;
-            }
-        } else |_| {}
-    }
-
-    // Reconstruct proper SSE format: the SSEIterator strips `event:` lines and blank line
-    // separators, so we must rebuild them. Extract the `type` field from the JSON payload
-    // to emit `event: <type>\ndata: <json>\n\n`.
-    if (std.mem.startsWith(u8, line, "data: ")) {
-        const json_part = line["data: ".len..];
-
-        // Try to extract the "type" field for the SSE event name
-        const EventType = struct { type: []const u8 = "" };
-        if (std.json.parseFromSlice(EventType, allocator, json_part, .{
-            .allocate = .alloc_always,
-            .ignore_unknown_fields = true,
-        })) |parsed| {
-            defer parsed.deinit();
-            if (parsed.value.type.len > 0) {
-                const output = std.fmt.allocPrint(allocator, "event: {s}\n{s}\n\n", .{ parsed.value.type, line }) catch return .{ .skip = {} };
-                return .{ .output = output };
-            }
-        } else |_| {}
-
-        // Fallback: no type field found, emit data line with proper SSE termination
-        const output = std.fmt.allocPrint(allocator, "{s}\n\n", .{line}) catch return .{ .skip = {} };
-        return .{ .output = output };
-    }
-
-    // Non-data line (shouldn't happen with SSEIterator, but handle gracefully)
-    const output = std.fmt.allocPrint(allocator, "{s}\n", .{line}) catch return .{ .skip = {} };
-    return .{ .output = output };
-}
-
-
-// ============================================================================
-// Responses method set — /v1/responses endpoint
-// Anthropic provider: delegate to responses_transformer Anthropic helpers.
-// ============================================================================
-
-pub const ResponsesStreamState = rt.MessagesStreamState;
-
-pub fn transformFromResponses(
-    request: OpenAIResponses.Request,
+/// Inbound responses request → Anthropic request (input items/messages →
+/// messages, instructions → system, reasoning effort → thinking, betas,
+/// service_tier, max_output_tokens → max_tokens), pinned to `model`.
+pub fn transformResponsesRequest(
+    request: Responses.Request,
     model: []const u8,
     allocator: std.mem.Allocator,
-) !Anthropic.Request {
-    return rt.toMessages(request, model, allocator);
+) !Messages.Request {
+    var messages = std.ArrayList(Messages.Message).empty;
+    errdefer messages.deinit(allocator);
+
+    switch (request.input) {
+        .text => |t| {
+            try messages.append(allocator, .{ .role = .user, .content = .{ .text = t } });
+        },
+        .items => |items| for (items) |item| {
+            if (item != .object) continue;
+            const obj = item.object;
+
+            const role_val = obj.get("role") orelse continue;
+            if (role_val != .string) continue;
+            const role: Messages.Role = if (std.mem.eql(u8, role_val.string, "assistant"))
+                .assistant
+            else
+                .user;
+
+            const content_val = obj.get("content") orelse continue;
+            const text: []const u8 = switch (content_val) {
+                .string => |s| s,
+                .array => |arr| blk: {
+                    // First non-empty text part wins; non-text parts (images,
+                    // item references) have no Anthropic equivalent here.
+                    for (arr.items) |part| {
+                        if (part != .object) continue;
+                        const tv = part.object.get("text") orelse continue;
+                        if (tv == .string and tv.string.len > 0) break :blk tv.string;
+                    }
+                    break :blk "";
+                },
+                else => continue,
+            };
+            if (text.len == 0) continue;
+
+            try messages.append(allocator, .{ .role = role, .content = .{ .text = text } });
+        },
+    }
+
+    if (messages.items.len == 0) return error.EmptyMessages;
+
+    // Tool definitions: function tools map through content.transformTools;
+    // custom tools (no Anthropic equivalent) are skipped (P11 note in content.zig).
+    var tools: ?[]Messages.Tool = null;
+    if (request.tools) |req_tools| blk: {
+        const chat_tools: []const Chat.Tool = req_tools;
+        tools = content.transformTools(chat_tools, allocator) catch |err| {
+            if (err == error.OutOfMemory) return err;
+            break :blk; // empty map -> no tools
+        };
+        if (tools != null and tools.?.len == 0) {
+            allocator.free(tools.?);
+            tools = null;
+        }
+    }
+
+    return .{
+        .model = model,
+        .messages = try messages.toOwnedSlice(allocator),
+        // Anthropic requires a positive max_tokens; mirror the old default.
+        .max_tokens = request.max_output_tokens orelse 4096,
+        .system = request.instructions,
+        .temperature = request.temperature,
+        .top_p = request.top_p,
+        .stream = request.stream,
+        .tools = tools,
+        .tool_choice = content.responsesToolChoice(request.tool_choice),
+        .thinking = request.thinking,
+        .betas = request.betas,
+        .service_tier = request.service_tier,
+    };
 }
 
-pub fn cleanupFromRequest(request: Anthropic.Request, allocator: std.mem.Allocator) void {
-    rt.cleanupToMessages(request, allocator);
-}
-
-pub fn transformToResponse(
-    response: Anthropic.Response,
-    original_req: OpenAIResponses.Request,
+pub fn cleanupResponsesRequest(
+    request: Messages.Request,
     allocator: std.mem.Allocator,
-) !OpenAIResponses.Response {
-    return rt.fromMessagesResponse(response, original_req, allocator);
+) void {
+    allocator.free(request.messages);
+    if (request.tools) |tools| allocator.free(tools);
 }
 
-pub fn cleanupResponsesResp(resp: OpenAIResponses.Response, allocator: std.mem.Allocator) void {
-    rt.cleanupFromMessagesResponse(resp, allocator);
+/// Anthropic response → inbound responses response (content blocks → output
+/// items, stop_reason → status, usage passthrough) plus the request-echo
+/// fields the Responses schema carries (temperature, top_p, …) which have no
+/// upstream equivalent and are copied from `original_req`.
+pub fn transformResponsesResponse(
+    upstream_response: Messages.Response,
+    original_req: Responses.Request,
+    allocator: std.mem.Allocator,
+) !Responses.Response {
+    var output_items = std.ArrayList(Responses.OutputItem).empty;
+    errdefer output_items.deinit(allocator);
+
+    var parts = std.ArrayList(Responses.OutputContent).empty;
+    errdefer parts.deinit(allocator);
+
+    for (upstream_response.content) |block| {
+        switch (block) {
+            .text => |t| {
+                if (t.text.len > 0) try parts.append(allocator, .{ .output_text = .{
+                    .type = "output_text",
+                    .text = try allocator.dupe(u8, t.text),
+                } });
+            },
+            .tool_use => |tu| {
+                // Arguments: serialize the parsed input tree back to a JSON string.
+                var args = std.ArrayList(u8).empty;
+                defer args.deinit(allocator);
+                try args.print(allocator, "{f}", .{std.json.fmt(tu.input, .{})});
+
+                try output_items.append(allocator, .{ .function_call = .{
+                    .id = try allocator.dupe(u8, tu.id),
+                    .type = "function_call",
+                    .name = try allocator.dupe(u8, tu.name),
+                    .arguments = try args.toOwnedSlice(allocator),
+                    .status = "completed",
+                } });
+            },
+            .thinking, .redacted_thinking => {}, // no Responses equivalent
+        }
+    }
+
+    const content_slice = try parts.toOwnedSlice(allocator);
+    try output_items.insert(allocator, 0, .{ .message = .{
+        .id = try allocator.dupe(u8, upstream_response.id),
+        .type = "message",
+        .role = "assistant",
+        .content = content_slice,
+        .status = "completed",
+    } });
+
+    // stop_reason → status + incomplete_details
+    var status: []const u8 = "completed";
+    var incomplete_details: ?std.json.Value = null;
+    if (upstream_response.stop_reason) |sr| {
+        if (std.mem.eql(u8, sr, "max_tokens")) {
+            status = "incomplete";
+            // Build with owned strings: cleanupResponsesResponse frees the tree
+            // via freeJsonValue, which frees keys and string values.
+            var obj = std.json.ObjectMap.empty;
+            const key = try allocator.dupe(u8, "reason");
+            errdefer allocator.free(key);
+            const value = try allocator.dupe(u8, "max_output_tokens");
+            errdefer allocator.free(value);
+            try obj.put(allocator, key, .{ .string = value });
+            incomplete_details = .{ .object = obj };
+        }
+    }
+
+    return .{
+        .id = try allocator.dupe(u8, upstream_response.id),
+        .object = "response",
+        .created_at = 0,
+        .model = try allocator.dupe(u8, original_req.model),
+        .status = status,
+        .output = try output_items.toOwnedSlice(allocator),
+        .usage = .{
+            .input_tokens = upstream_response.usage.input_tokens,
+            .output_tokens = upstream_response.usage.output_tokens,
+            .total_tokens = upstream_response.usage.input_tokens + upstream_response.usage.output_tokens,
+        },
+        .incomplete_details = incomplete_details,
+        // Request-echo fields (no upstream equivalent — part of the Responses contract).
+        .temperature = original_req.temperature,
+        .top_p = original_req.top_p,
+        .parallel_tool_calls = original_req.parallel_tool_calls orelse true,
+        .store = original_req.store,
+        .max_output_tokens = original_req.max_output_tokens,
+        .metadata = original_req.metadata,
+    };
 }
 
-pub fn transformStreamLineToResponses(
+/// Free what `transformResponsesResponse` allocated: id/model strings and the
+/// output tree. Echo fields (metadata, temperature, …) borrow from
+/// `original_req` and are freed with its parse.
+pub fn cleanupResponsesResponse(
+    inbound_response: Responses.Response,
+    allocator: std.mem.Allocator,
+) void {
+    allocator.free(inbound_response.id);
+    allocator.free(inbound_response.model);
+    // `incomplete_details` is built here (ObjectMap) — free the value tree.
+    if (inbound_response.incomplete_details) |details| content.freeJsonValue(allocator, details);
+    for (inbound_response.output) |item| {
+        switch (item) {
+            .message => |m| {
+                allocator.free(m.id);
+                for (m.content) |c| switch (c) {
+                    .output_text => |t| allocator.free(t.text),
+                    .refusal => {},
+                    .other => {},
+                };
+                allocator.free(m.content);
+            },
+            .function_call => |f| {
+                allocator.free(f.id);
+                allocator.free(f.name);
+                allocator.free(f.arguments);
+            },
+            .reasoning => {},
+            .other => {},
+        }
+    }
+    allocator.free(inbound_response.output);
+}
+
+/// One Anthropic SSE line → Responses SSE events as ready bytes; accumulates
+/// id / usage / terminal reason into `state`.
+///
+/// Event mapping:
+///   - `message_start`            → capture id + input usage, emit nothing
+///   - `content_block_start`      → `response.output_item.added` + `response.content_part.added`
+///   - `content_block_delta`      → text_delta → `response.output_text.delta`;
+///                                  input_json_delta → `response.function_call_arguments.delta`
+///   - `content_block_stop`       → `response.output_text.done` (text blocks only)
+///   - `message_delta`            → capture output usage + terminal reason, emit nothing
+///   - `message_stop`, `ping`, …  → skipped
+///   - `error`                    → rendered inline as `response.failed` (P4)
+pub fn transformResponsesStreamLine(
     line: []const u8,
     state: *ResponsesStreamState,
     allocator: std.mem.Allocator,
+) StreamLineResult {
+    if (!std.mem.startsWith(u8, line, "data: ")) return .{ .skip = {} };
+    const json_part = line["data: ".len..];
+
+    const type_probe = std.json.parseFromSlice(
+        struct { type: []const u8 = "" },
+        allocator,
+        json_part,
+        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+    ) catch return .{ .skip = {} };
+    defer type_probe.deinit();
+    const event_type = type_probe.value.type;
+
+    if (std.mem.eql(u8, event_type, "error")) {
+        const bytes = content.formatResponsesError(json_part, allocator) orelse
+            return .{ .skip = {} };
+        return .{ .output = bytes };
+    }
+
+    if (std.mem.eql(u8, event_type, "message_start")) {
+        const MsgStart = struct {
+            message: struct {
+                id: []const u8 = "",
+                usage: struct { input_tokens: u32 = 0 } = .{},
+            } = .{},
+        };
+        if (std.json.parseFromSlice(MsgStart, allocator, json_part, .{
+            .allocate = .alloc_always,
+            .ignore_unknown_fields = true,
+        })) |parsed| {
+            defer parsed.deinit();
+            if (state.response_id.len == 0 and parsed.value.message.id.len > 0) {
+                state.response_id = state.allocator.dupe(u8, parsed.value.message.id) catch "";
+            }
+            state.input_tokens = parsed.value.message.usage.input_tokens;
+        } else |_| {}
+        return .{ .skip = {} };
+    }
+
+    if (std.mem.eql(u8, event_type, "content_block_start")) {
+        const BlockStart = struct {
+            content_block: struct {
+                type: []const u8 = "",
+            } = .{},
+        };
+        const parsed = std.json.parseFromSlice(BlockStart, allocator, json_part, .{
+            .allocate = .alloc_always,
+            .ignore_unknown_fields = true,
+        }) catch return .{ .skip = {} };
+        defer parsed.deinit();
+        const is_text = std.mem.eql(u8, parsed.value.content_block.type, "text");
+        const bytes = content.responsesOutputItemAdded(state.response_id, is_text, allocator) orelse
+            return .{ .skip = {} };
+        return .{ .output = bytes };
+    }
+
+    if (std.mem.eql(u8, event_type, "content_block_delta")) {
+        const Delta = struct {
+            delta: struct {
+                type: []const u8 = "",
+                text: []const u8 = "",
+                partial_json: []const u8 = "",
+            } = .{},
+        };
+        const parsed = std.json.parseFromSlice(Delta, allocator, json_part, .{
+            .allocate = .alloc_always,
+            .ignore_unknown_fields = true,
+        }) catch return .{ .skip = {} };
+        defer parsed.deinit();
+        const delta = parsed.value.delta;
+
+        if (std.mem.eql(u8, delta.type, "text_delta")) {
+            if (delta.text.len == 0) return .{ .skip = {} };
+            const bytes = content.allocFmt(
+                allocator,
+                "event: response.output_text.delta\ndata: {{\"type\":\"response.output_text.delta\",\"item_id\":\"{s}\",\"output_index\":0,\"content_index\":0,\"delta\":{f}}}\n\n",
+                .{ state.response_id, std.json.fmt(delta.text, .{}) },
+            ) orelse return .{ .skip = {} };
+            return .{ .output = bytes };
+        }
+        if (std.mem.eql(u8, delta.type, "input_json_delta")) {
+            if (delta.partial_json.len == 0) return .{ .skip = {} };
+            const bytes = content.allocFmt(
+                allocator,
+                "event: response.function_call_arguments.delta\ndata: {{\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"{s}\",\"output_index\":0,\"delta\":{f}}}\n\n",
+                .{ state.response_id, std.json.fmt(delta.partial_json, .{}) },
+            ) orelse return .{ .skip = {} };
+            return .{ .output = bytes };
+        }
+        return .{ .skip = {} }; // thinking/signature deltas
+    }
+
+    if (std.mem.eql(u8, event_type, "content_block_stop")) {
+        const bytes = content.responsesOutputTextDone(state.response_id, allocator) orelse
+            return .{ .skip = {} };
+        return .{ .output = bytes };
+    }
+
+    if (std.mem.eql(u8, event_type, "message_delta")) {
+        const MsgDelta = struct {
+            delta: struct { stop_reason: []const u8 = "" } = .{},
+            usage: struct { output_tokens: u32 = 0 } = .{},
+        };
+        if (std.json.parseFromSlice(MsgDelta, allocator, json_part, .{
+            .allocate = .alloc_always,
+            .ignore_unknown_fields = true,
+        })) |parsed| {
+            defer parsed.deinit();
+            state.output_tokens = parsed.value.usage.output_tokens;
+            const reason = parsed.value.delta.stop_reason;
+            if (reason.len > 0) {
+                // Own the reason: it borrows from `parsed`, which dies below.
+                // message_delta arrives at most once upstream, but guard anyway
+                // so a repeat can't leak the previous dupe.
+                if (state.finish_reason) |prev| allocator.free(prev);
+                state.finish_reason = allocator.dupe(u8, reason) catch null;
+            }
+        } else |_| {}
+        return .{ .skip = {} };
+    }
+
+    return .{ .skip = {} }; // message_stop, ping, unknown
+}
+
+/// Emit the terminal Responses events after the upstream stream ends
+/// (`response.output_item.done` + `response.completed`, or `response.incomplete`
+/// when the reason is `max_tokens`) with the usage accumulated in `state`.
+/// Returns `null` when there is nothing to flush.
+pub fn flushResponsesStream(
+    state: *ResponsesStreamState,
+    allocator: std.mem.Allocator,
 ) ?[]const u8 {
-    return rt.fromMessagesStreamLine(line, state, allocator);
-}
+    const reason = state.finish_reason orelse return null;
+    const status: []const u8 = if (std.mem.eql(u8, reason, "max_tokens")) "incomplete" else "completed";
+    const input_tok = state.input_tokens;
+    const output_tok = state.output_tokens;
 
-pub fn flushResponsesStream(state: *ResponsesStreamState, allocator: std.mem.Allocator) ?[]const u8 {
-    return rt.fromMessagesStreamFlush(state, allocator);
+    return content.allocFmt(
+        allocator,
+        \\event: response.output_item.done
+        \\data: {{"type":"response.output_item.done","item":{{"id":"{s}","type":"message","role":"assistant","status":"{s}"}}}}
+        \\
+        \\event: response.completed
+        \\data: {{"type":"response.completed","response":{{"id":"{s}","object":"response","model":"{s}","status":"{s}","usage":{{"input_tokens":{d},"output_tokens":{d},"total_tokens":{d}}}}}}}
+        \\
+        \\
+    ,
+        .{ state.response_id, status, state.response_id, state.original_model, status, input_tok, output_tok, input_tok + output_tok },
+    );
 }
-
-// ============================================================================
-// TESTS - REQUEST TRANSFORMATION
-// ============================================================================

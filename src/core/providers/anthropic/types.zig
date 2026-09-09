@@ -1165,16 +1165,16 @@ pub const AnthropicStreamLineResult = union(enum) {
 // Models API Structures
 // ============================================================================
 
-/// Model info from Anthropic /v1/models endpoint
-pub const AnthropicModel = struct {
+/// Model info from the /v1/models endpoint
+pub const Model = struct {
     id: []const u8,
     name: ?[]const u8 = null,
     type: []const u8 = "model_info",
 };
 
-/// Response from Anthropic /v1/models endpoint
-pub const AnthropicModelsResponse = struct {
-    data: []const AnthropicModel = &.{},
+/// Response from the /v1/models endpoint
+pub const ModelsResponse = struct {
+    data: []const Model = &.{},
     next_cursor: ?[]const u8 = null,
     type: []const u8 = "list",
 };
