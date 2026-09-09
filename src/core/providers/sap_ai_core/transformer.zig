@@ -12,139 +12,143 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Transformer for the SAP AI Core provider (orchestration envelope wire).
+//!
+//! The SAP wire wraps chat-format payloads (`config.modules.prompt_templating`
+//! on the way out, `final_result` on the way in); each flow converts its
+//! inbound schema to/from that envelope. Conversion is written locally (P11).
+//!
+//! Four flows, named after the *inbound* schema (P2). Every `pub` symbol is
+//! defined here (P5).
+
 const std = @import("std");
-const OpenAIChat = @import("../openai/chat_types.zig");
-const OpenAIResponses = @import("../openai/responses_types.zig");
-const Anthropic = @import("../anthropic/types.zig");
-const SapAiCore = @import("types.zig");
-const openai_transformer = @import("../openai/chat_transformer.zig");
+
+const Chat = @import("../openai/chat_types.zig"); // chat schema (envelope payload)
+const Messages = @import("../anthropic/types.zig"); // Anthropic Messages wire types
+const Responses = @import("../openai/responses_types.zig"); // inbound responses schema
+const Sap = @import("types.zig"); // SAP AI Core wire types
+const content = @import("content.zig"); // own mapping internals
 const log = @import("../../log.zig");
-const rt = @import("../openai/responses_transformer.zig");
+const time = @import("../../time.zig");
 
-/// Check if a model has orchestration scenario
-fn hasOrchestrationScenario(sap_model: SapAiCore.SapModel) bool {
-    for (sap_model.allowedScenarios) |scenario| {
-        if (std.mem.eql(u8, scenario.scenarioId, "orchestration")) {
-            return true;
-        }
-    }
-    return false;
-}
+// ============================================================================
+// Contract
+// ============================================================================
 
-/// Check if a model has a valid latest non-deprecated version
-fn hasValidLatestVersion(sap_model: SapAiCore.SapModel) bool {
+/// Result of transforming one upstream SSE line (P4): already-formatted bytes
+/// the pipeline writes verbatim, or nothing. Owned by the caller when `.output`.
+pub const StreamLineResult = union(enum) {
+    output: []const u8,
+    skip: void,
+};
+
+/// Chat and Messages pipelines append their own `[DONE]` sentinel; the
+/// Responses pipeline does not (native Responses upstreams end silently).
+pub const appendsDoneMarker = true;
+
+/// A SAP model is usable through this provider only when it has a latest
+/// non-deprecated version and supports the "orchestration" scenario.
+fn isOrchestrationCapable(sap_model: Sap.SapModel) bool {
+    var has_latest = false;
     for (sap_model.versions) |version| {
-        if (version.isLatest and !version.deprecated) {
-            return true;
-        }
+        if (version.isLatest and !version.deprecated) has_latest = true;
+    }
+    if (!has_latest) return false;
+
+    for (sap_model.allowedScenarios) |scenario| {
+        if (std.mem.eql(u8, scenario.scenarioId, "orchestration")) return true;
     }
     return false;
 }
 
-/// Transform SAP AI Core SapModelsResponse to OpenAIChat.Model array with provider prefix
-/// Filters to only include models with:
-/// - isLatest = true and deprecated = false (in versions)
-/// - scenarioId = "orchestration" (in allowedScenarios)
+// ============================================================================
+// Flow: /v1/models
+// ============================================================================
+
+/// Map the SAP models listing to inbound `Model` entries, prefixing ids with
+/// the provider name. Only models with a latest non-deprecated version AND
+/// the "orchestration" scenario are usable through this provider.
 pub fn transformModelsResponse(
     allocator: std.mem.Allocator,
-    response: std.json.Parsed(SapAiCore.SapModelsResponse),
+    response: std.json.Parsed(Sap.SapModelsResponse),
     provider_name: []const u8,
-) ![]OpenAIChat.Model {
-    const resources = response.value.resources;
-
-    // First pass: count valid models
+) ![]Chat.Model {
     var valid_count: usize = 0;
-    for (resources) |sap_model| {
-        if (hasValidLatestVersion(sap_model) and hasOrchestrationScenario(sap_model)) {
-            valid_count += 1;
-        }
+    for (response.value.resources) |sap_model| {
+        if (isOrchestrationCapable(sap_model)) valid_count += 1;
     }
 
-    var models = try allocator.alloc(OpenAIChat.Model, valid_count);
+    var models = try allocator.alloc(Chat.Model, valid_count);
     errdefer allocator.free(models);
 
-    // Second pass: populate valid models
     var idx: usize = 0;
-    for (resources) |sap_model| {
-        if (hasValidLatestVersion(sap_model) and hasOrchestrationScenario(sap_model)) {
-            // Create prefixed model ID: {provider_name}/{model_id}
-            const prefixed_id = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ provider_name, sap_model.model });
-
-            models[idx] = OpenAIChat.Model{
-                .id = prefixed_id,
-                .object = "model",
-                .created = 0,
-                .owned_by = try allocator.dupe(u8, sap_model.provider),
-            };
-            idx += 1;
-        }
+    for (response.value.resources) |sap_model| {
+        if (!isOrchestrationCapable(sap_model)) continue;
+        models[idx] = .{
+            .id = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ provider_name, sap_model.model }),
+            .object = "model",
+            .created = 0,
+            .owned_by = try allocator.dupe(u8, sap_model.provider),
+        };
+        idx += 1;
     }
 
     return models;
 }
 
 // ============================================================================
-// Streaming State
+// Flow: /v1/chat/completions — chat wire in, SAP envelope out
 // ============================================================================
 
-/// State for SAP AI Core streaming (tracks original model name with provider prefix)
-pub const StreamState = struct {
+/// Stream state for the chat flow. The SAP envelope carries chat chunks in
+/// `final_result`; ids/usage arrive on those inner chunks.
+pub const ChatStreamState = struct {
+    // --- uniform core (P3) ---
+    allocator: std.mem.Allocator,
     original_model: []const u8,
+    response_id: []const u8 = "",
+    finish_reason: ?[]const u8 = null,
+    input_tokens: u32 = 0,
+    output_tokens: u32 = 0,
 
-    pub fn init(allocator: std.mem.Allocator, original_model: []const u8) StreamState {
-        _ = allocator;
-        return .{ .original_model = original_model };
+    pub fn init(allocator: std.mem.Allocator, original_model: []const u8) ChatStreamState {
+        return .{
+            .allocator = allocator,
+            .original_model = original_model,
+        };
     }
 
-    pub fn deinit(self: *StreamState) void {
-        _ = self;
+    pub fn deinit(self: *ChatStreamState) void {
+        if (self.response_id.len > 0) self.allocator.free(self.response_id);
+        self.response_id = "";
+        if (self.finish_reason) |reason| self.allocator.free(reason);
+        self.finish_reason = null;
     }
 };
 
-// ============================================================================
-// Request Transformation: OpenAI -> SAP AI Core
-// ============================================================================
-
-/// Transform OpenAI request to SAP AI Core orchestration format
-pub fn transform(
-    request: OpenAIChat.Request,
+/// Inbound chat request → SAP envelope, pinned to `model`. Sampling fields
+/// map onto `model.params`; messages/tools/tool_choice/response_format ride
+/// in the prompt_templating module (borrowed from the inbound parse).
+pub fn transformChatRequest(
+    request: Chat.Request,
     model: []const u8,
     allocator: std.mem.Allocator,
-) !SapAiCore.Request {
-    // Build model params from OpenAI request fields (S1 — model params forwarding)
-    var params_obj: std.json.ObjectMap = .{};
-    defer params_obj.deinit(allocator);
+) !Sap.Request {
+    // S1 — model params forwarding (max_completion_tokens wins over max_tokens)
+    const max_tokens: ?u32 = request.max_completion_tokens orelse request.max_tokens;
+    const params = try content.buildParams(.{
+        .temperature = request.temperature,
+        .max_tokens = max_tokens,
+        .top_p = request.top_p,
+    }, allocator);
+    errdefer if (params) |pv| content.freeParams(pv, allocator);
 
-    if (request.temperature) |v| try params_obj.put(allocator, "temperature", .{ .float = v });
-    if (request.max_tokens) |v| try params_obj.put(allocator, "max_tokens", .{ .integer = v });
-    if (request.max_completion_tokens) |v| try params_obj.put(allocator, "max_completion_tokens", .{ .integer = v });
-    if (request.top_p) |v| try params_obj.put(allocator, "top_p", .{ .float = v });
-    if (request.n) |v| try params_obj.put(allocator, "n", .{ .integer = v });
-    if (request.presence_penalty) |v| try params_obj.put(allocator, "presence_penalty", .{ .float = v });
-    if (request.frequency_penalty) |v| try params_obj.put(allocator, "frequency_penalty", .{ .float = v });
-    if (request.seed) |v| try params_obj.put(allocator, "seed", .{ .integer = v });
-    if (request.logprobs) |v| try params_obj.put(allocator, "logprobs", .{ .bool = v });
-    if (request.top_logprobs) |v| try params_obj.put(allocator, "top_logprobs", .{ .integer = v });
-    if (request.logit_bias) |v| try params_obj.put(allocator, "logit_bias", v);
-    if (request.stop) |seqs| {
-        var arr = std.json.Array.init(allocator);
-        for (seqs) |s| try arr.append(.{ .string = s });
-        try params_obj.put(allocator, "stop", .{ .array = arr });
-    }
-
-    const params: ?std.json.Value = if (params_obj.count() > 0)
-        .{ .object = try params_obj.clone(allocator) }
-    else
-        null;
-
-    const is_streaming = request.stream orelse false;
-
-    return SapAiCore.Request{
+    return .{
         .config = .{
             .modules = .{
                 .prompt_templating = .{
                     .prompt = .{
-                        .template = request.messages,
+                        .template = request.messages, // borrows the inbound parse
                         .tools = request.tools,
                         .tool_choice = request.tool_choice, // S2
                         .response_format = request.response_format, // S3
@@ -152,99 +156,60 @@ pub fn transform(
                     .model = .{
                         .name = model,
                         .version = "latest",
-                        .params = params, // S1
+                        .params = params,
                     },
                 },
             },
             .stream = .{
-                .enabled = is_streaming,
-                // Inject include_usage into chunk_size workaround is not applicable here;
-                // SAP AI Core's stream.enabled drives token usage in the final chunk (S19)
+                // S19 — SAP AI Core's stream.enabled drives token usage in the
+                // final chunk; no include_usage workaround is applicable here.
+                .enabled = request.stream orelse false,
                 .chunk_size = null,
             },
         },
     };
 }
 
-/// Cleanup transformed request — frees the params object if allocated
-pub fn cleanupRequest(request: SapAiCore.Request, allocator: std.mem.Allocator) void {
-    if (request.config.modules.prompt_templating.model.params) |p| {
-        var obj = p.object;
-        obj.deinit(allocator);
-    }
-}
-
-// ============================================================================
-// Response Transformation: SAP AI Core -> OpenAI
-// ============================================================================
-
-/// Deep copy a ResponseMessage
-fn dupeResponseMessage(allocator: std.mem.Allocator, msg: OpenAIChat.ResponseMessage) !OpenAIChat.ResponseMessage {
-    return OpenAIChat.ResponseMessage{
-        .role = msg.role,
-        .content = if (msg.content) |c| try allocator.dupe(u8, c) else null,
-        .tool_calls = if (msg.tool_calls) |tcs| blk: {
-            const duped = try allocator.alloc(OpenAIChat.ToolCall, tcs.len);
-            for (tcs, 0..) |tc, i| {
-                duped[i] = switch (tc) {
-                    .function => |f| OpenAIChat.ToolCall{ .function = .{
-                        .id = try allocator.dupe(u8, f.id),
-                        .type = try allocator.dupe(u8, f.type),
-                        .function = OpenAIChat.ToolCallFunction{
-                            .name = try allocator.dupe(u8, f.function.name),
-                            .arguments = try allocator.dupe(u8, f.function.arguments),
-                        },
-                    } },
-                    .custom => |c| OpenAIChat.ToolCall{ .custom = .{
-                        .id = try allocator.dupe(u8, c.id),
-                        .type = try allocator.dupe(u8, c.type),
-                        .custom = c.custom,
-                    } },
-                };
-            }
-            break :blk duped;
-        } else null,
-        .function_call = if (msg.function_call) |fc| OpenAIChat.FunctionCall{
-            .name = try allocator.dupe(u8, fc.name),
-            .arguments = try allocator.dupe(u8, fc.arguments),
-        } else null,
-    };
-}
-
-/// Deep copy a ResponseChoice
-fn dupeResponseChoice(allocator: std.mem.Allocator, choice: OpenAIChat.ResponseChoice) !OpenAIChat.ResponseChoice {
-    return OpenAIChat.ResponseChoice{
-        .index = choice.index,
-        .message = try dupeResponseMessage(allocator, choice.message),
-        .finish_reason = try allocator.dupe(u8, choice.finish_reason),
-        .logprobs = choice.logprobs, // json.Value is managed separately
-    };
-}
-
-/// Transform SAP AI Core response to OpenAI format
-pub fn transformResponse(
-    response: SapAiCore.Response,
+/// Free what `transformChatRequest` allocated (the params object).
+pub fn cleanupChatRequest(
+    request: Sap.Request,
     allocator: std.mem.Allocator,
-    original_model: []const u8,
-) !OpenAIChat.Response {
-    const final_result = response.final_result;
+) void {
+    if (request.config.modules.prompt_templating.model.params) |p| {
+        content.freeParams(p, allocator);
+    }
+}
 
-    // Allocate model string with provider prefix
-    const model_str = try allocator.dupe(u8, original_model);
+/// SAP response → inbound chat response (deep-copies the inner final_result
+/// so the transformed value outlives the client response's parse arena).
+pub fn transformChatResponse(
+    upstream_response: Sap.Response,
+    original_req: Chat.Request,
+    allocator: std.mem.Allocator,
+) !Chat.Response {
+    const final_result = upstream_response.final_result;
 
-    // Deep copy choices since response may be freed
-    const choices = try allocator.alloc(OpenAIChat.ResponseChoice, final_result.choices.len);
+    // Deep-copy the inner chat response: it lives in the client response's
+    // parse arena, which dies when the pipeline deinits the upstream parse.
+    const choices = try allocator.alloc(Chat.ResponseChoice, final_result.choices.len);
+    errdefer {
+        for (choices) |choice| {
+            content.freeResponseMessage(allocator, choice.message);
+            allocator.free(choice.finish_reason);
+        }
+        allocator.free(choices);
+    }
     for (final_result.choices, 0..) |choice, i| {
-        choices[i] = try dupeResponseChoice(allocator, choice);
+        choices[i] = try content.dupeResponseChoice(allocator, choice);
     }
 
-    return OpenAIChat.Response{
+    return .{
         .id = try allocator.dupe(u8, final_result.id),
         .object = try allocator.dupe(u8, final_result.object),
         .created = final_result.created,
-        .model = model_str,
+        .model = try allocator.dupe(u8, original_req.model),
         .choices = choices,
-        .usage = final_result.usage orelse OpenAIChat.Usage{
+        .usage = final_result.usage orelse Chat.Usage{
             .prompt_tokens = 0,
             .completion_tokens = 0,
             .total_tokens = 0,
@@ -254,393 +219,800 @@ pub fn transformResponse(
     };
 }
 
-/// Free a ResponseMessage's allocated fields
-fn freeResponseMessage(allocator: std.mem.Allocator, msg: OpenAIChat.ResponseMessage) void {
-    if (msg.content) |c| allocator.free(c);
-    if (msg.tool_calls) |tcs| {
-        for (tcs) |tc| {
-            switch (tc) {
-                .function => |f| {
-                    allocator.free(f.id);
-                    allocator.free(f.type);
-                    allocator.free(f.function.name);
-                    allocator.free(f.function.arguments);
-                },
-                .custom => |c| {
-                    allocator.free(c.id);
-                    allocator.free(c.type);
-                },
-            }
-        }
-        allocator.free(tcs);
-    }
-    if (msg.function_call) |fc| {
-        allocator.free(fc.name);
-        allocator.free(fc.arguments);
-    }
-}
-
-/// Cleanup transformed response
-pub fn cleanupResponse(response: OpenAIChat.Response, allocator: std.mem.Allocator) void {
-    allocator.free(response.id);
-    allocator.free(response.object);
-    allocator.free(response.model);
-    for (response.choices) |choice| {
-        freeResponseMessage(allocator, choice.message);
+/// Free what `transformChatResponse` allocated (the deep copies).
+pub fn cleanupChatResponse(
+    inbound_response: Chat.Response,
+    allocator: std.mem.Allocator,
+) void {
+    allocator.free(inbound_response.id);
+    allocator.free(inbound_response.object);
+    allocator.free(inbound_response.model);
+    for (inbound_response.choices) |choice| {
+        content.freeResponseMessage(allocator, choice.message);
         allocator.free(choice.finish_reason);
     }
-    allocator.free(response.choices);
+    allocator.free(inbound_response.choices);
 }
 
-// ============================================================================
-// Streaming Transformation
-// ============================================================================
-
-// ============================================================================
-// Error Response Transformation
-// ============================================================================
-
-/// Transform SAP AI Core error response to OpenAI error format
-pub fn transformErrorResponse(sap_error: SapAiCore.ErrorDetails) OpenAIChat.ErrorResponse {
-    // Map SAP numeric code to OpenAI string code
-    const code: ?[]const u8 = if (sap_error.code) |c| switch (c) {
-        400 => "bad_request",
-        401 => "invalid_api_key",
-        403 => "forbidden",
-        404 => "not_found",
-        429 => "rate_limit_exceeded",
-        500 => "server_error",
-        503 => "service_unavailable",
-        else => "unknown_error",
-    } else null;
-
-    // Determine error type based on code
-    const error_type: []const u8 = if (sap_error.code) |c|
-        if (c >= 400 and c < 500) "invalid_request_error" else "server_error"
-    else
-        "server_error";
-
-    return OpenAIChat.ErrorResponse{
-        .@"error" = OpenAIChat.ErrorDetails{
-            .message = sap_error.message orelse "Unknown error from SAP AI Core",
-            .type = error_type,
-            .param = null,
-            .code = code,
-        },
-    };
-}
-
-/// Same as transformErrorResponse but uses a pre-duplicated message (avoids use-after-free)
-fn transformErrorResponseDuped(sap_error: SapAiCore.ErrorDetails, duped_message: []const u8) OpenAIChat.ErrorResponse {
-    const code: ?[]const u8 = if (sap_error.code) |c| switch (c) {
-        400 => "bad_request",
-        401 => "invalid_api_key",
-        403 => "forbidden",
-        404 => "not_found",
-        429 => "rate_limit_exceeded",
-        500 => "server_error",
-        503 => "service_unavailable",
-        else => "unknown_error",
-    } else null;
-
-    const error_type: []const u8 = if (sap_error.code) |c|
-        if (c >= 400 and c < 500) "invalid_request_error" else "server_error"
-    else
-        "server_error";
-
-    return OpenAIChat.ErrorResponse{
-        .@"error" = OpenAIChat.ErrorDetails{
-            .message = duped_message,
-            .type = error_type,
-            .param = null,
-            .code = code,
-        },
-    };
-}
-
-/// Try to parse JSON as SAP AI Core error response
-fn tryParseError(json_part: []const u8, allocator: std.mem.Allocator) ?OpenAIChat.ErrorResponse {
-    const parsed = std.json.parseFromSlice(
-        SapAiCore.ErrorResponse,
-        allocator,
-        json_part,
-        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
-    ) catch return null;
-    defer parsed.deinit();
-
-    // Must dupe the message since parsed memory is freed by defer above
-    const msg = parsed.value.@"error".message orelse "Unknown error from SAP AI Core";
-    const duped_msg = allocator.dupe(u8, msg) catch return null;
-
-    return transformErrorResponseDuped(parsed.value.@"error", duped_msg);
-}
-
-/// Transform a single SSE line for streaming responses
-/// Extracts final_result from SAP AI Core wrapper and adds provider prefix to model
-/// Returns StreamLineResult with chunk, error, or skip
-/// Caller must check for [DONE] before calling
-pub fn transformStreamLine(
+/// One SAP SSE line → zero or one chat-format SSE chunk as ready bytes (P4).
+/// The `final_result` chat chunk is re-emitted with the model rewritten;
+/// upstream errors render inline.
+pub fn transformChatStreamLine(
     line: []const u8,
-    state: *StreamState,
+    state: *ChatStreamState,
     allocator: std.mem.Allocator,
-) OpenAIChat.StreamLineResult {
-    const original_model = state.original_model;
-
-    // Check if this is a data line
-    if (!std.mem.startsWith(u8, line, "data: ")) {
-        return .{ .skip = {} };
-    }
-
+) StreamLineResult {
+    if (!std.mem.startsWith(u8, line, "data: ")) return .{ .skip = {} };
     const json_part = line["data: ".len..];
 
-    // Try to parse as SAP AI Core stream chunk first
     const parsed = std.json.parseFromSlice(
-        SapAiCore.StreamChunk,
+        Sap.StreamChunk,
         allocator,
         json_part,
         .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
-    ) catch |err| {
-        // Failed to parse as stream chunk - try parsing as error response
-        if (tryParseError(json_part, allocator)) |error_response| {
-            log.warn("[SAP] [STREAM] Provider returned error: {s}", .{error_response.@"error".message});
-            return .{ .@"error" = error_response };
-        }
-        log.debug("[SAP] [STREAM] Failed to parse chunk: {} | raw: {s}", .{ err, json_part });
-        return .{ .skip = {} };
+    ) catch {
+        // Not a chunk — maybe an error payload; render it inline (P4).
+        const bytes = content.formatSapErrorLine(json_part, allocator) orelse
+            return .{ .skip = {} };
+        return .{ .output = bytes };
     };
     defer parsed.deinit();
 
     const final_result = parsed.value.final_result;
 
-    // Skip empty chunks (initial templating results)
-    if (final_result.id.len == 0) {
-        return .{ .skip = {} };
+    // Skip empty chunks (initial templating results).
+    if (final_result.id.len == 0) return .{ .skip = {} };
+
+    // Own the id: it borrows from `parsed`, which dies below (bug #18 class).
+    if (state.response_id.len == 0) {
+        state.response_id = allocator.dupe(u8, final_result.id) catch
+            return .{ .skip = {} };
     }
 
-    // Create OpenAI chunk with original model (including provider prefix)
-    const openai_chunk = OpenAIChat.StreamChunk{
-        .id = final_result.id,
-        .object = final_result.object,
+    if (final_result.choices.len > 0) {
+        const choice = final_result.choices[0];
+        if (choice.finish_reason) |reason| {
+            if (reason.len > 0) {
+                if (state.finish_reason) |prev| allocator.free(prev);
+                state.finish_reason = allocator.dupe(u8, reason) catch null;
+            }
+        }
+    }
+    if (final_result.usage) |usage| {
+        state.input_tokens = @intCast(usage.prompt_tokens);
+        state.output_tokens = @intCast(usage.completion_tokens);
+    }
+
+    const bytes = content.buildChatChunk(.{
+        .id = state.response_id,
         .created = final_result.created,
-        .model = original_model,
-        .choices = final_result.choices,
-        .usage = final_result.usage,
-    };
-
-    // Serialize to JSON
-    var buffer = std.ArrayList(u8).empty;
-    buffer.print(allocator, "{f}", .{std.json.fmt(openai_chunk, .{})}) catch return .{ .skip = {} };
-    defer buffer.deinit(allocator);
-
-    // Parse back to get Parsed that owns the data
-    const new_parsed = std.json.parseFromSlice(
-        OpenAIChat.StreamChunk,
-        allocator,
-        buffer.items,
-        .{ .allocate = .alloc_always },
-    ) catch return .{ .skip = {} };
-
-    return .{ .chunk = new_parsed };
+        .original_model = state.original_model,
+    }, if (final_result.choices.len > 0) final_result.choices[0].delta else .{}, if (final_result.choices.len > 0) final_result.choices[0].finish_reason else null, final_result.usage, allocator) orelse
+        return .{ .skip = {} };
+    return .{ .output = bytes };
 }
 
 // ============================================================================
-// Anthropic <-> SAP AI Core Reverse Transforms (for /v1/messages endpoint)
-// Chains: Anthropic <-> OpenAI (via openai_transformer) <-> SapAiCore (via existing)
+// Flow: /v1/messages — messages wire in, SAP envelope out
 // ============================================================================
 
-/// Transform Anthropic request to SAP AI Core request
-/// Chain: Anthropic -> OpenAI (openai_transformer) -> SapAiCore (existing transform)
-pub fn transformFromAnthropic(
-    request: Anthropic.Request,
-    model: []const u8,
-    allocator: std.mem.Allocator,
-) !SapAiCore.Request {
-    // Step 1: Anthropic -> OpenAI
-    const openai_request = try openai_transformer.transformFromAnthropic(request, model, allocator);
-    errdefer openai_transformer.cleanupFromAnthropicRequest(openai_request, allocator);
-
-    // Step 2: OpenAI -> SapAiCore (borrows slices from openai_request; params are cloned)
-    return try transform(openai_request, model, allocator);
-}
-
-/// Cleanup a request created by transformFromAnthropic.
-pub fn cleanupFromAnthropicRequest(request: SapAiCore.Request, allocator: std.mem.Allocator) void {
-    // Free the params clone if present
-    cleanupRequest(request, allocator);
-    // The template messages and tools were allocated by openai_transformer.transformFromAnthropic.
-    const openai_request = OpenAIChat.Request{
-        .model = request.config.modules.prompt_templating.model.name,
-        .messages = request.config.modules.prompt_templating.prompt.template,
-        .tools = request.config.modules.prompt_templating.prompt.tools,
-    };
-    openai_transformer.cleanupFromAnthropicRequest(openai_request, allocator);
-}
-
-/// Transform SAP AI Core response to Anthropic response
-/// Chain: SapAiCore -> OpenAI (existing transformResponse) -> Anthropic (openai_transformer)
-pub fn transformToAnthropicResponse(
-    response: SapAiCore.Response,
+/// Stream state for the messages flow: the SAP inner chat stream ends with
+/// `[DONE]`, which triggers the closing triple of the synthesized protocol.
+pub const MessagesStreamState = struct {
+    // --- uniform core (P3) ---
     allocator: std.mem.Allocator,
     original_model: []const u8,
-) !Anthropic.Response {
-    // Step 1: SapAiCore -> OpenAI
-    const openai_response = try transformResponse(response, allocator, original_model);
-    defer cleanupResponse(openai_response, allocator);
+    response_id: []const u8 = "",
+    finish_reason: ?[]const u8 = null,
+    input_tokens: u32 = 0,
+    output_tokens: u32 = 0,
 
-    // Step 2: OpenAI -> Anthropic
-    return try openai_transformer.transformToAnthropicResponse(openai_response, allocator, original_model);
-}
+    // --- messages-flow specifics ---
+    /// Whether the synthetic message_start was emitted.
+    sent_message_start: bool = false,
+    /// Whether the synthetic content_block_start was emitted.
+    sent_content_block_start: bool = false,
 
-/// Cleanup a response created by transformToAnthropicResponse
-pub fn cleanupAnthropicResponse(response: Anthropic.Response, allocator: std.mem.Allocator) void {
-    openai_transformer.cleanupAnthropicResponse(response, allocator);
-}
-
-// ============================================================================
-// Anthropic SSE Streaming (SapAiCore → OpenAI → Anthropic SSE events)
-// Chains through the OpenAI transformer's AnthropicStreamState.
-// ============================================================================
-
-pub const AnthropicStreamLineResult = Anthropic.AnthropicStreamLineResult;
-
-/// State machine that wraps OpenAI's AnthropicStreamState, handling the
-/// SapAiCore envelope (final_result unwrapping) first.
-pub const AnthropicStreamState = struct {
-    allocator: std.mem.Allocator,
-    /// Inner OpenAI→Anthropic stream state (handles SSE event generation)
-    inner: openai_transformer.AnthropicStreamState,
-
-    pub fn init(allocator: std.mem.Allocator, original_model: []const u8) AnthropicStreamState {
+    pub fn init(allocator: std.mem.Allocator, original_model: []const u8) MessagesStreamState {
         return .{
             .allocator = allocator,
-            .inner = openai_transformer.AnthropicStreamState.init(allocator, original_model),
+            .original_model = original_model,
         };
     }
 
-    pub fn deinit(self: *AnthropicStreamState) void {
-        self.inner.deinit();
-    }
-
-    pub fn getUsage(self: *const AnthropicStreamState) Anthropic.StreamUsage {
-        return self.inner.getUsage();
+    pub fn deinit(self: *MessagesStreamState) void {
+        // finish_reason is a dupe (mapped stop_reason captured from chunks).
+        if (self.finish_reason) |reason| self.allocator.free(reason);
+        self.finish_reason = null;
     }
 };
 
-/// Convert a SapAiCore SSE line into Anthropic SSE event bytes.
-/// Chain: SapAiCore SSE line → unwrap final_result → OpenAI SSE line → Anthropic SSE events
-pub fn transformStreamLineToAnthropic(
-    line: []const u8,
-    state: *AnthropicStreamState,
+/// Inbound messages request → SAP envelope, pinned to `model`. Messages are
+/// converted to chat messages (system-first, tool_use → tool_calls,
+/// tool_result → tool messages); tools and tool_choice map to chat shapes.
+pub fn transformMessagesRequest(
+    request: Messages.Request,
+    model: []const u8,
     allocator: std.mem.Allocator,
-) AnthropicStreamLineResult {
-    // Only process "data: " lines
-    if (!std.mem.startsWith(u8, line, "data: ")) {
-        return .{ .skip = {} };
+) !Sap.Request {
+    var messages: std.ArrayList(Chat.Message) = .empty;
+    errdefer {
+        for (messages.items) |msg| content.freeMessageOwnedText(msg, allocator);
+        messages.deinit(allocator);
     }
 
-    const json_part = line["data: ".len..];
-
-    // Handle [DONE]
-    if (std.mem.eql(u8, json_part, "[DONE]")) {
-        return openai_transformer.transformStreamLineToAnthropic(line, &state.inner, allocator);
+    // System message first (borrows the inbound system string).
+    if (request.system) |system_text| {
+        try messages.append(allocator, .{
+            .role = .system,
+            .content = .{ .text = system_text },
+        });
     }
 
-    // Step 1: Unwrap SapAiCore envelope to get OpenAI chunk
-    // Use existing transformStreamLine which extracts final_result and returns an OpenAI chunk
-    var sap_stream_state = StreamState.init(allocator, state.inner.original_model);
-    defer sap_stream_state.deinit();
-    const sap_result = transformStreamLine(line, &sap_stream_state, allocator);
+    for (request.messages) |msg| {
+        const role: Chat.Role = switch (msg.role) {
+            .user => .user,
+            .assistant => .assistant,
+        };
 
-    switch (sap_result) {
-        .chunk => |parsed| {
-            var chunk = parsed;
-            defer chunk.deinit();
+        switch (msg.content) {
+            .text => |text| try messages.append(allocator, .{
+                .role = role,
+                .content = .{ .text = try allocator.dupe(u8, text) },
+            }),
+            .blocks => |blocks| {
+                var text_parts: std.ArrayList([]const u8) = .empty;
+                defer text_parts.deinit(allocator);
 
-            // Step 2: Re-serialize the OpenAI chunk as a "data: {...}" line
-            // and feed it through the OpenAI→Anthropic transformer
-            var buf = std.ArrayList(u8).empty;
-            buf.print(allocator, "data: {f}", .{std.json.fmt(chunk.value, .{})}) catch return .{ .skip = {} };
-            defer buf.deinit(allocator);
+                var tool_use_blocks: std.ArrayList(Chat.ToolCall) = .empty;
+                errdefer {
+                    for (tool_use_blocks.items) |tc| {
+                        if (tc == .function) allocator.free(tc.function.function.arguments);
+                    }
+                    tool_use_blocks.deinit(allocator);
+                }
 
-            return openai_transformer.transformStreamLineToAnthropic(buf.items, &state.inner, allocator);
+                var tool_results: std.ArrayList(struct { id: []const u8, content: ?[]const u8 }) = .empty;
+                defer tool_results.deinit(allocator);
+
+                for (blocks) |block| {
+                    switch (block) {
+                        .text => |tb| try text_parts.append(allocator, tb.text),
+                        .tool_use => |tu| {
+                            var args_list: std.ArrayList(u8) = .empty;
+                            defer args_list.deinit(allocator);
+                            try args_list.print(allocator, "{f}", .{std.json.fmt(tu.input, .{})});
+
+                            try tool_use_blocks.append(allocator, .{ .function = .{
+                                .id = tu.id,
+                                .type = "function",
+                                .function = .{
+                                    .name = tu.name,
+                                    .arguments = try allocator.dupe(u8, args_list.items),
+                                },
+                            } });
+                        },
+                        .tool_result => |tr| try tool_results.append(allocator, .{
+                            .id = tr.tool_use_id,
+                            .content = tr.content,
+                        }),
+                        .image, .document, .thinking, .redacted_thinking => {},
+                    }
+                }
+
+                // Tool results first — one tool message per result.
+                for (tool_results.items) |tr| {
+                    try messages.append(allocator, .{
+                        .role = .tool,
+                        .content = if (tr.content) |c| .{ .text = try allocator.dupe(u8, c) } else null,
+                        .tool_call_id = tr.id,
+                    });
+                }
+
+                if (text_parts.items.len > 0 or tool_use_blocks.items.len > 0) {
+                    const content_text: ?Chat.MessageContent = if (text_parts.items.len > 0) blk: {
+                        break :blk .{ .text = try std.mem.join(allocator, "", text_parts.items) };
+                    } else null;
+
+                    try messages.append(allocator, .{
+                        .role = role,
+                        .content = content_text,
+                        .tool_calls = if (tool_use_blocks.items.len > 0)
+                            try tool_use_blocks.toOwnedSlice(allocator)
+                        else
+                            null,
+                    });
+                }
+            },
+        }
+    }
+
+    // Anthropic tools → chat function tools (schema borrows the inbound parse).
+    const tools: ?[]Chat.Tool = if (request.tools) |anthro_tools| blk: {
+        const oai_tools = try allocator.alloc(Chat.Tool, anthro_tools.len);
+        for (anthro_tools, 0..) |at, i| {
+            oai_tools[i] = .{ .function = .{
+                .type = "function",
+                .function = .{
+                    .name = at.name,
+                    .description = at.description,
+                    .parameters = at.input_schema,
+                    .strict = null,
+                },
+            } };
+        }
+        break :blk oai_tools;
+    } else null;
+    errdefer if (tools) |ts| allocator.free(ts);
+
+    const params = try content.buildParams(.{
+        .temperature = request.temperature,
+        .max_tokens = request.max_tokens,
+        .top_p = request.top_p,
+    }, allocator);
+    errdefer if (params) |pv| content.freeParams(pv, allocator);
+
+    return .{
+        .config = .{
+            .modules = .{
+                .prompt_templating = .{
+                    .prompt = .{
+                        .template = try messages.toOwnedSlice(allocator),
+                        .tools = tools,
+                        .tool_choice = null, // Anthropic union not mapped (gap, as before)
+                        .response_format = null,
+                    },
+                    .model = .{
+                        .name = model,
+                        .version = "latest",
+                        .params = params,
+                    },
+                },
+            },
+            .stream = .{
+                .enabled = request.stream orelse false,
+                .chunk_size = null,
+            },
         },
-        .@"error" => {
-            return .{ .skip = {} };
-        },
-        .skip => {
-            return .{ .skip = {} };
-        },
+    };
+}
+
+/// Free what `transformMessagesRequest` allocated: the params object, the
+/// tools slice, and the owned parts of the template messages.
+pub fn cleanupMessagesRequest(
+    request: Sap.Request,
+    allocator: std.mem.Allocator,
+) void {
+    const prompt = request.config.modules.prompt_templating.prompt;
+    for (prompt.template) |msg| content.freeMessageOwnedText(msg, allocator);
+    allocator.free(prompt.template);
+    if (prompt.tools) |tools| allocator.free(tools);
+    if (request.config.modules.prompt_templating.model.params) |p| {
+        content.freeParams(p, allocator);
     }
 }
 
+/// SAP response → inbound messages response (bug #17-pattern ownership:
+/// leaky-parsed args freed via `content.freeMessageOwnedBlocks`).
+pub fn transformMessagesResponse(
+    upstream_response: Sap.Response,
+    original_req: Messages.Request,
+    allocator: std.mem.Allocator,
+) !Messages.Response {
+    const final_result = upstream_response.final_result;
+
+    var content_blocks: std.ArrayList(Messages.ContentBlock) = .empty;
+    errdefer {
+        content.freeMessageOwnedBlocks(content_blocks.items, allocator);
+        content_blocks.deinit(allocator);
+    }
+
+    if (final_result.choices.len > 0) {
+        const message = final_result.choices[0].message;
+
+        if (message.content) |text| {
+            if (text.len > 0) {
+                try content_blocks.append(allocator, .{ .text = .{
+                    .type = "text",
+                    .text = try allocator.dupe(u8, text),
+                } });
+            }
+        }
+
+        if (message.tool_calls) |tool_calls| for (tool_calls) |tc| {
+            switch (tc) {
+                .function => |f| try content_blocks.append(allocator, .{ .tool_use = .{
+                    .type = "tool_use",
+                    .id = try allocator.dupe(u8, f.id),
+                    .name = try allocator.dupe(u8, f.function.name),
+                    .input = try content.parseToolArguments(f.function.arguments, allocator),
+                } }),
+                .custom => {},
+            }
+        };
+    }
+
+    if (content_blocks.items.len == 0) {
+        try content_blocks.append(allocator, .{ .text = .{ .type = "text", .text = "" } });
+    }
+
+    const stop_reason: ?[]const u8 = if (final_result.choices.len > 0)
+        content.transformStopReasonToMessages(final_result.choices[0].finish_reason)
+    else
+        "end_turn";
+
+    return .{
+        .id = try allocator.dupe(u8, final_result.id),
+        .type = "message",
+        .role = "assistant",
+        .content = try content_blocks.toOwnedSlice(allocator),
+        .model = try allocator.dupe(u8, original_req.model),
+        .stop_reason = stop_reason,
+        .stop_sequence = null,
+        .usage = if (final_result.usage) |u| .{
+            .input_tokens = @intCast(u.prompt_tokens),
+            .output_tokens = @intCast(u.completion_tokens),
+        } else .{ .input_tokens = 0, .output_tokens = 0 },
+    };
+}
+
+/// Free what `transformMessagesResponse` allocated.
+pub fn cleanupMessagesResponse(
+    inbound_response: Messages.Response,
+    allocator: std.mem.Allocator,
+) void {
+    content.freeMessageOwnedBlocks(inbound_response.content, allocator);
+    allocator.free(inbound_response.id);
+    allocator.free(inbound_response.model);
+    allocator.free(inbound_response.content);
+}
+
+/// One SAP SSE line → Anthropic-format SSE events as ready bytes: the first
+/// text delta lazily emits the protocol opening; the `[DONE]` sentinel emits
+/// the closing triple with the accumulated usage.
+pub fn transformMessagesStreamLine(
+    line: []const u8,
+    state: *MessagesStreamState,
+    allocator: std.mem.Allocator,
+) StreamLineResult {
+    if (!std.mem.startsWith(u8, line, "data: ")) return .{ .skip = {} };
+    const json_part = line["data: ".len..];
+
+    // [DONE] — the SAP chat stream's terminal sentinel: close the synthesized
+    // message. States that never opened still close as a complete message.
+    if (std.mem.eql(u8, json_part, "[DONE]")) {
+        var out: std.ArrayList(u8) = .empty;
+        errdefer out.deinit(allocator);
+
+        if (!state.sent_message_start or !state.sent_content_block_start) {
+            const open = content.messagesOpen(state.original_model, allocator) orelse
+                return .{ .skip = {} };
+            out.appendSlice(allocator, open) catch return .{ .skip = {} };
+            allocator.free(open);
+            state.sent_message_start = true;
+            state.sent_content_block_start = true;
+        }
+
+        const close = content.messagesClose(
+            state.finish_reason orelse "end_turn",
+            state.output_tokens,
+            allocator,
+        ) orelse return .{ .skip = {} };
+        out.appendSlice(allocator, close) catch return .{ .skip = {} };
+        allocator.free(close);
+
+        return .{ .output = out.toOwnedSlice(allocator) catch return .{ .skip = {} } };
+    }
+
+    const parsed = std.json.parseFromSlice(
+        Sap.StreamChunk,
+        allocator,
+        json_part,
+        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+    ) catch return .{ .skip = {} };
+    defer parsed.deinit();
+
+    const final_result = parsed.value.final_result;
+    if (final_result.id.len == 0) return .{ .skip = {} };
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+
+    // Lazy protocol opening, once per stream.
+    if (!state.sent_message_start or !state.sent_content_block_start) {
+        const open = content.messagesOpen(state.original_model, allocator) orelse
+            return .{ .skip = {} };
+        out.appendSlice(allocator, open) catch return .{ .skip = {} };
+        allocator.free(open);
+        state.sent_message_start = true;
+        state.sent_content_block_start = true;
+    }
+
+    if (final_result.choices.len > 0) {
+        const choice = final_result.choices[0];
+
+        // Usage from the final chunk.
+        if (final_result.usage) |usage| {
+            state.input_tokens = @intCast(usage.prompt_tokens);
+            state.output_tokens = @intCast(usage.completion_tokens);
+        }
+
+        if (choice.finish_reason) |reason| {
+            if (reason.len > 0) {
+                if (state.finish_reason) |prev| allocator.free(prev);
+                state.finish_reason = allocator.dupe(
+                    u8,
+                    content.transformStopReasonToMessages(reason),
+                ) catch null;
+            }
+        }
+
+        // Text deltas (chat wire tool_calls stream deltas are not forwarded,
+        // matching the other bridged providers).
+        if (choice.delta.content) |text| {
+            if (text.len > 0) {
+                out.print(
+                    allocator,
+                    "event: content_block_delta\ndata: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"text_delta\",\"text\":{f}}}}}\n\n",
+                    .{std.json.fmt(text, .{})},
+                ) catch return .{ .skip = {} };
+            }
+        }
+    }
+
+    if (out.items.len == 0) return .{ .skip = {} };
+    return .{ .output = out.toOwnedSlice(allocator) catch return .{ .skip = {} } };
+}
+
 // ============================================================================
-// Responses method set — /v1/responses endpoint
-// SAP provider: delegate to responses_transformer SAP helpers.
-// Streaming unwraps the SAP envelope first (same as Anthropic path above),
-// then converts the inner chat chunk to a Responses SSE event.
+// Flow: /v1/responses — responses wire in, SAP envelope out
 // ============================================================================
 
+/// Stream state for the responses flow: accumulates id / terminal reason /
+/// usage so `flushResponsesStream` can synthesize the closing Responses
+/// events. The SAP inner chat stream ends with `[DONE]`.
 pub const ResponsesStreamState = struct {
-    sap_state: StreamState,
-    chat_state: rt.StreamState,
+    // --- uniform core (P3) ---
+    allocator: std.mem.Allocator,
+    original_model: []const u8,
+    response_id: []const u8 = "",
+    finish_reason: ?[]const u8 = null,
+    input_tokens: u32 = 0,
+    output_tokens: u32 = 0,
 
     pub fn init(allocator: std.mem.Allocator, original_model: []const u8) ResponsesStreamState {
         return .{
-            .sap_state = StreamState.init(allocator, original_model),
-            .chat_state = rt.StreamState.init(allocator, original_model),
+            .allocator = allocator,
+            .original_model = original_model,
         };
     }
 
     pub fn deinit(self: *ResponsesStreamState) void {
-        self.sap_state.deinit();
-        self.chat_state.deinit();
+        if (self.response_id.len > 0) self.allocator.free(self.response_id);
+        self.response_id = "";
+        if (self.finish_reason) |reason| self.allocator.free(reason);
+        self.finish_reason = null;
     }
 };
 
-pub fn transformFromResponses(
-    request: OpenAIResponses.Request,
+/// Inbound responses request → SAP envelope, pinned to `model`. Messages are
+/// derived from `instructions` + `input` (text-first, mirroring the rt bridge);
+/// `max_output_tokens` maps to `max_tokens` in params.
+pub fn transformResponsesRequest(
+    request: Responses.Request,
     model: []const u8,
     allocator: std.mem.Allocator,
-) !SapAiCore.Request {
-    return rt.toSap(request, model, allocator);
-}
+) !Sap.Request {
+    // Messages from instructions + input (text-first mirror of the rt bridge).
+    var messages: std.ArrayList(Chat.Message) = .empty;
+    errdefer {
+        for (messages.items) |msg| content.freeMessageOwnedText(msg, allocator);
+        messages.deinit(allocator);
+    }
 
-pub fn cleanupFromRequest(request: SapAiCore.Request, allocator: std.mem.Allocator) void {
-    rt.cleanupToSap(request, allocator);
-}
+    if (request.instructions) |inst| {
+        try messages.append(allocator, .{
+            .role = .system,
+            .content = .{ .text = inst }, // borrows the inbound parse
+        });
+    }
 
-pub fn transformToResponse(
-    response: SapAiCore.Response,
-    original_req: OpenAIResponses.Request,
-    allocator: std.mem.Allocator,
-) !OpenAIResponses.Response {
-    return rt.fromSapResponse(response, original_req, allocator);
-}
+    switch (request.input) {
+        .text => |text| try messages.append(allocator, .{
+            .role = .user,
+            .content = .{ .text = text },
+        }),
+        .items => |items| for (items) |item| {
+            if (item != .object) continue;
+            const role_val = item.object.get("role") orelse continue;
+            if (role_val != .string) continue;
+            const role = std.meta.stringToEnum(Chat.Role, role_val.string) orelse continue;
 
-pub fn cleanupResponsesResp(resp: OpenAIResponses.Response, allocator: std.mem.Allocator) void {
-    rt.cleanupFromSapResponse(resp, allocator);
-}
+            const content_val = item.object.get("content");
+            const message_content: ?Chat.MessageContent = blk: {
+                const cv = content_val orelse break :blk null;
+                switch (cv) {
+                    .string => |s| break :blk .{ .text = s },
+                    .array => |arr| {
+                        for (arr.items) |part| {
+                            if (part != .object) continue;
+                            const text_val = part.object.get("text") orelse continue;
+                            if (text_val == .string and text_val.string.len > 0) {
+                                break :blk .{ .text = text_val.string };
+                            }
+                        }
+                        break :blk null;
+                    },
+                    else => break :blk null,
+                }
+            };
 
-/// Unwrap SAP envelope → chat chunk → Responses SSE event
-pub fn transformStreamLineToResponses(
-    line: []const u8,
-    state: *ResponsesStreamState,
-    allocator: std.mem.Allocator,
-) ?[]const u8 {
-    const sap_result = transformStreamLine(line, &state.sap_state, allocator);
-    switch (sap_result) {
-        .chunk => |parsed| {
-            var chunk = parsed;
-            defer chunk.deinit();
-            var buf = std.ArrayList(u8).empty;
-            defer buf.deinit(allocator);
-            buf.print(allocator, "data: {f}", .{std.json.fmt(chunk.value, .{})}) catch return null;
-            return rt.fromChatStreamLine(buf.items, &state.chat_state, allocator);
+            try messages.append(allocator, .{
+                .role = role,
+                .content = message_content,
+                .tool_call_id = if (item.object.get("tool_call_id")) |v|
+                    if (v == .string) v.string else null
+                else
+                    null,
+            });
         },
-        .@"error", .skip => return null,
+    }
+
+    const params = try content.buildParams(.{
+        .temperature = request.temperature,
+        .max_tokens = request.max_output_tokens,
+        .top_p = request.top_p,
+    }, allocator);
+    errdefer if (params) |pv| content.freeParams(pv, allocator);
+
+    return .{
+        .config = .{
+            .modules = .{
+                .prompt_templating = .{
+                    .prompt = .{
+                        .template = try messages.toOwnedSlice(allocator),
+                        .tools = request.tools,
+                        .tool_choice = request.tool_choice,
+                        .response_format = if (request.text) |txt| txt.format else null,
+                    },
+                    .model = .{
+                        .name = model,
+                        .version = "latest",
+                        .params = params,
+                    },
+                },
+            },
+            .stream = .{
+                .enabled = request.stream orelse false,
+                .chunk_size = null,
+            },
+        },
+    };
+}
+
+/// Free what `transformResponsesRequest` allocated: the params object and
+/// the template slice. All message text borrows the inbound parse (unlike
+/// the messages face, which dupes and frees via freeMessageOwnedText).
+pub fn cleanupResponsesRequest(
+    request: Sap.Request,
+    allocator: std.mem.Allocator,
+) void {
+    const prompt = request.config.modules.prompt_templating.prompt;
+    allocator.free(prompt.template);
+    if (request.config.modules.prompt_templating.model.params) |p| {
+        content.freeParams(p, allocator);
     }
 }
 
-pub fn flushResponsesStream(state: *ResponsesStreamState, allocator: std.mem.Allocator) ?[]const u8 {
-    return rt.fromChatStreamFlush(&state.chat_state, allocator);
+/// SAP response → inbound responses response (message + function_call items,
+/// echo fields from `original_req`, status from finish_reason).
+pub fn transformResponsesResponse(
+    upstream_response: Sap.Response,
+    original_req: Responses.Request,
+    allocator: std.mem.Allocator,
+) !Responses.Response {
+    const final_result = upstream_response.final_result;
+
+    var output_items: std.ArrayList(Responses.OutputItem) = .empty;
+    errdefer output_items.deinit(allocator);
+
+    var content_parts: std.ArrayList(Responses.OutputContent) = .empty;
+    errdefer content_parts.deinit(allocator);
+
+    var finish_reason: []const u8 = "stop";
+
+    if (final_result.choices.len > 0) {
+        const choice = final_result.choices[0];
+        finish_reason = choice.finish_reason;
+
+        if (choice.message.content) |c| {
+            if (c.len > 0) {
+                try content_parts.append(allocator, .{ .output_text = .{
+                    .type = "output_text",
+                    .text = try allocator.dupe(u8, c),
+                } });
+            }
+        }
+    }
+
+    if (final_result.choices.len > 0) {
+        if (final_result.choices[0].message.tool_calls) |tool_calls| for (tool_calls) |tc| {
+            switch (tc) {
+                .function => |f| try output_items.append(allocator, .{ .function_call = .{
+                    .id = try allocator.dupe(u8, f.id),
+                    .type = "function_call",
+                    .name = try allocator.dupe(u8, f.function.name),
+                    .arguments = try allocator.dupe(u8, f.function.arguments),
+                    .status = "completed",
+                } }),
+                .custom => {},
+            }
+        };
+    }
+
+    try output_items.insert(allocator, 0, .{ .message = .{
+        .id = try allocator.dupe(u8, final_result.id),
+        .type = "message",
+        .role = "assistant",
+        .content = try content_parts.toOwnedSlice(allocator),
+        .status = "completed",
+    } });
+
+    return .{
+        .id = try allocator.dupe(u8, final_result.id),
+        .object = "response",
+        .created_at = @floatFromInt(final_result.created),
+        .model = try allocator.dupe(u8, original_req.model),
+        .status = "completed",
+        .output = try output_items.toOwnedSlice(allocator),
+        .usage = if (final_result.usage) |u| .{
+            .input_tokens = u.prompt_tokens,
+            .output_tokens = u.completion_tokens,
+            .total_tokens = u.total_tokens,
+        } else .{ .input_tokens = 0, .output_tokens = 0, .total_tokens = 0 },
+        .temperature = original_req.temperature,
+        .top_p = original_req.top_p,
+        .parallel_tool_calls = original_req.parallel_tool_calls orelse true,
+        .store = original_req.store,
+        .max_output_tokens = original_req.max_output_tokens,
+        .metadata = original_req.metadata,
+    };
+}
+
+/// Free what `transformResponsesResponse` allocated.
+pub fn cleanupResponsesResponse(
+    inbound_response: Responses.Response,
+    allocator: std.mem.Allocator,
+) void {
+    allocator.free(inbound_response.id);
+    allocator.free(inbound_response.model);
+    for (inbound_response.output) |item| {
+        switch (item) {
+            .message => |m| {
+                allocator.free(m.id);
+                for (m.content) |c| switch (c) {
+                    .output_text => |txt| allocator.free(txt.text),
+                    .refusal => {},
+                    .other => {},
+                };
+                allocator.free(m.content);
+            },
+            .function_call => |f| {
+                allocator.free(f.id);
+                allocator.free(f.name);
+                allocator.free(f.arguments);
+            },
+            .reasoning => {},
+            .other => {},
+        }
+    }
+    allocator.free(inbound_response.output);
+}
+
+/// One SAP SSE line → Responses SSE events as ready bytes: text deltas emit
+/// `response.output_text.delta`, tool-argument deltas emit
+/// `response.function_call_arguments.delta`, the terminal chunk captures
+/// finish_reason + usage for the flush.
+pub fn transformResponsesStreamLine(
+    line: []const u8,
+    state: *ResponsesStreamState,
+    allocator: std.mem.Allocator,
+) StreamLineResult {
+    if (!std.mem.startsWith(u8, line, "data: ")) return .{ .skip = {} };
+    const json_part = line["data: ".len..];
+
+    // [DONE] handled by the pipeline; SAP chunks carry the terminal state.
+    const parsed = std.json.parseFromSlice(
+        Sap.StreamChunk,
+        allocator,
+        json_part,
+        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+    ) catch return .{ .skip = {} };
+    defer parsed.deinit();
+
+    const final_result = parsed.value.final_result;
+    if (final_result.id.len == 0) return .{ .skip = {} };
+
+    // Own the id (bug #18 class: dupe before the parse dies).
+    if (state.response_id.len == 0) {
+        state.response_id = allocator.dupe(u8, final_result.id) catch
+            return .{ .skip = {} };
+    }
+
+    if (final_result.choices.len > 0) {
+        const choice = final_result.choices[0];
+
+        // Terminal reason FIRST (bug #20: a chunk may carry both).
+        if (choice.finish_reason) |reason| {
+            if (reason.len > 0) {
+                if (state.finish_reason) |prev| allocator.free(prev);
+                state.finish_reason = allocator.dupe(u8, reason) catch null;
+            }
+        }
+
+        if (final_result.usage) |usage| {
+            state.input_tokens = @intCast(usage.prompt_tokens);
+            state.output_tokens = @intCast(usage.completion_tokens);
+        }
+
+        // Text delta → response.output_text.delta
+        if (choice.delta.content) |text| {
+            if (text.len > 0) {
+                var buf: std.ArrayList(u8) = .empty;
+                buf.print(
+                    allocator,
+                    "event: response.output_text.delta\ndata: {{\"type\":\"response.output_text.delta\",\"item_id\":\"{s}\",\"output_index\":0,\"content_index\":0,\"delta\":{f}}}\n\n",
+                    .{ state.response_id, std.json.fmt(text, .{}) },
+                ) catch return .{ .skip = {} };
+                return .{ .output = buf.toOwnedSlice(allocator) catch return .{ .skip = {} } };
+            }
+        }
+
+        // Tool-args delta → response.function_call_arguments.delta
+        if (choice.delta.tool_calls) |tcs| {
+            if (tcs.len > 0) {
+                const args = if (tcs[0].function) |f| (f.arguments orelse "") else "";
+                if (args.len > 0) {
+                    var buf: std.ArrayList(u8) = .empty;
+                    buf.print(
+                        allocator,
+                        "event: response.function_call_arguments.delta\ndata: {{\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"{s}\",\"output_index\":0,\"delta\":{f}}}\n\n",
+                        .{ state.response_id, std.json.fmt(args, .{}) },
+                    ) catch return .{ .skip = {} };
+                    return .{ .output = buf.toOwnedSlice(allocator) catch return .{ .skip = {} } };
+                }
+            }
+        }
+    }
+
+    return .{ .skip = {} };
+}
+
+/// Emit the terminal Responses events after the upstream stream ends
+/// (`response.output_item.done` + `response.completed`, or
+/// `response.incomplete` when the finish reason is `length`) with the usage
+/// accumulated in `state`. Returns `null` when there is nothing to flush.
+pub fn flushResponsesStream(
+    state: *ResponsesStreamState,
+    allocator: std.mem.Allocator,
+) ?[]const u8 {
+    const reason = state.finish_reason orelse return null;
+    const status: []const u8 = if (std.mem.eql(u8, reason, "length")) "incomplete" else "completed";
+    const input_tok = state.input_tokens;
+    const output_tok = state.output_tokens;
+
+    var buf: std.ArrayList(u8) = .empty;
+    buf.print(
+        allocator,
+        \\event: response.output_item.done
+        \\data: {{"type":"response.output_item.done","item":{{"id":"{s}","type":"message","role":"assistant","status":"{s}"}}}}
+        \\
+        \\event: response.completed
+        \\data: {{"type":"response.completed","response":{{"id":"{s}","object":"response","model":"{s}","status":"{s}","usage":{{"input_tokens":{d},"output_tokens":{d},"total_tokens":{d}}}}}}}
+        \\
+        \\
+    ,
+        .{ state.response_id, status, state.response_id, state.original_model, status, input_tok, output_tok, input_tok + output_tok },
+    ) catch return null;
+    return buf.toOwnedSlice(allocator) catch null;
 }
