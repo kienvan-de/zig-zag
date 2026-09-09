@@ -36,14 +36,17 @@ const pricing = @import("pricing.zig");
 const provider_mod = @import("provider.zig");
 const utils = @import("utils.zig");
 const worker_pool = @import("worker_pool.zig");
-const openai_types = @import("providers/openai/chat_types.zig");
-const openai_responses_types = @import("providers/openai/responses_types.zig");
-const anthropic_types = @import("providers/anthropic/types.zig");
+const chat_types = @import("providers/openai/chat_types.zig");
+const responses_types = @import("providers/openai/responses_types.zig");
+const messages_types = @import("providers/anthropic/types.zig");
 
 // Provider modules — direct imports for comptime dispatch
+// The OpenAI wire formats are treated as two separate sub-providers:
+//   - chat_transformer: legacy /v1/chat/completions wire format
+//   - responses_transformer: Responses API wire format (api_schema=latest)
 const openai = struct {
     const client = @import("providers/openai/client.zig");
-    const transformer = @import("providers/openai/chat_transformer.zig");
+    const chat_transformer = @import("providers/openai/chat_transformer.zig");
     const responses_transformer = @import("providers/openai/responses_transformer.zig");
 };
 const anthropic = struct {
@@ -65,26 +68,6 @@ const google_ai_studio = struct {
     const client = @import("providers/google_ai_studio/client.zig");
     const transformer = @import("providers/google_ai_studio/transformer.zig");
 };
-
-
-/// Re-exported OpenAI type definitions (`Request`, `Response`, `Model`, etc.).
-/// Callers use `completion.OpenAIChat.Request` instead of importing the provider types directly.
-pub const OpenAI = openai_types;
-
-/// Re-exported OpenAI Responses API type definitions.
-pub const ResponsesAPI = openai_responses_types;
-
-/// Re-exported Anthropic type definitions (`Request`, `Response`, etc.).
-/// Callers use `completion.Anthropic.Request` instead of importing the provider types directly.
-pub const Anthropic = anthropic_types;
-
-/// Errors returned by the public completion functions (`chatComplete`, `messagesComplete`).
-/// Re-exported from `errors.zig` — the single source of truth for all error sets.
-///
-/// These are **well-known** error conditions that the caller (e.g. an HTTP handler) should
-/// map to transport-specific responses — typically HTTP status codes and JSON error bodies.
-/// Use `switch (err)` for exhaustive handling.
-pub const CompletionError = errors.CompletionError;
 
 // ============================================================================
 // chatComplete — OpenAI format
@@ -110,7 +93,7 @@ pub const CompletionError = errors.CompletionError;
 pub fn chatComplete(
     writer: anytype,
     allocator: std.mem.Allocator,
-    request: openai_types.Request,
+    request: chat_types.Request,
 ) !void {
     const cfg = config_mod.get();
 
@@ -140,14 +123,14 @@ pub fn chatComplete(
             .openai => {
                 const schema = provider_config.getString("api_schema") orelse "legacy";
                 if (std.mem.eql(u8, schema, "latest")) {
-                    try chatViaResponses(openai.client.OpenAIClient, openai.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
+                    try dispatchChat(openai.client.OpenAIClient, openai.responses_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
                 } else {
-                    try dispatchChat(openai.client.OpenAIClient, openai.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
+                    try dispatchChat(openai.client.OpenAIClient, openai.chat_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
                 }
             },
             .sap_ai_core => try dispatchChat(sap_ai_core.client.SapAiCoreClient, sap_ai_core.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
-            .hai => try dispatchChat(hai.client.HaiClient, openai.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
-            .copilot => try dispatchChat(copilot.client.CopilotClient, openai.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
+            .hai => try dispatchChat(hai.client.HaiClient, openai.chat_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
+            .copilot => try dispatchChat(copilot.client.CopilotClient, openai.chat_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
             .google_ai_studio => try dispatchChat(google_ai_studio.client.GoogleAiStudioClient, google_ai_studio.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
         }
     } else |_| {
@@ -159,9 +142,9 @@ pub fn chatComplete(
 
         if (std.mem.eql(u8, compatible, "openai")) {
             if (std.mem.eql(u8, schema, "latest")) {
-                try chatViaResponses(openai.client.OpenAIClient, openai.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
+                try dispatchChat(openai.client.OpenAIClient, openai.responses_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
             } else {
-                try dispatchChat(openai.client.OpenAIClient, openai.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
+                try dispatchChat(openai.client.OpenAIClient, openai.chat_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
             }
         } else if (std.mem.eql(u8, compatible, "anthropic")) {
             try dispatchChat(anthropic.client.AnthropicClient, anthropic.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
@@ -195,7 +178,7 @@ fn dispatchChat(
     writer: anytype,
     is_streaming: bool,
     allocator: std.mem.Allocator,
-    request: openai_types.Request,
+    request: chat_types.Request,
     model: []const u8,
     provider_name: []const u8,
     provider_config: *const config_mod.ProviderConfig,
@@ -222,7 +205,7 @@ fn chatSync(
     comptime Transformer: type,
     writer: anytype,
     allocator: std.mem.Allocator,
-    request: openai_types.Request,
+    request: chat_types.Request,
     model: []const u8,
     provider_name: []const u8,
     provider_config: *const config_mod.ProviderConfig,
@@ -232,11 +215,11 @@ fn chatSync(
 
     // Transform
     const transform_start = time.milliTimestamp();
-    const provider_request = Transformer.transform(request, model, allocator) catch |err| {
+    const provider_request = Transformer.transformChatRequest(request, model, allocator) catch |err| {
         log.err("[SYNC] Transform request error: {} for model '{s}'", .{ err, request.model });
         return error.TransformFailed;
     };
-    defer Transformer.cleanupRequest(provider_request, allocator);
+    defer Transformer.cleanupChatRequest(provider_request, allocator);
     const transform_request_time = time.milliTimestamp() - transform_start;
     log.debug("[SYNC] Transform request completed in {d}ms", .{transform_request_time});
 
@@ -263,25 +246,22 @@ fn chatSync(
 
     // Transform response
     const transform_response_start = time.milliTimestamp();
-    const openai_response = Transformer.transformResponse(provider_response.value, allocator, request.model) catch |err| {
+    const openai_response = Transformer.transformChatResponse(provider_response.value, request, allocator) catch |err| {
         log.err("[SYNC] Transform response error: {} for model '{s}'", .{ err, request.model });
         return error.TransformResponseFailed;
     };
-    defer Transformer.cleanupResponse(openai_response, allocator);
+    defer Transformer.cleanupChatResponse(openai_response, allocator);
     const transform_response_time = time.milliTimestamp() - transform_response_start;
     log.debug("[SYNC] Transform response completed in {d}ms", .{transform_response_time});
 
     // Track tokens and costs
     if (openai_response.usage) |usage| {
-        const in_tokens: u64 = @intCast(usage.prompt_tokens);
-        const out_tokens: u64 = @intCast(usage.completion_tokens);
-        metrics.addInputTokens(in_tokens);
-        metrics.addOutputTokens(out_tokens);
-        if (pricing.getCost(provider_name, model)) |cost_entry| {
-            const cost = pricing.calculateCost(cost_entry, in_tokens, out_tokens);
-            metrics.addInputCost(cost.input_cost);
-            metrics.addOutputCost(cost.output_cost);
-        }
+        recordTokenUsage(
+            @intCast(usage.prompt_tokens),
+            @intCast(usage.completion_tokens),
+            model,
+            provider_name,
+        );
     }
 
     // Serialize and write to writer
@@ -311,7 +291,7 @@ fn chatStreaming(
     comptime Transformer: type,
     writer: anytype,
     allocator: std.mem.Allocator,
-    request: openai_types.Request,
+    request: chat_types.Request,
     model: []const u8,
     provider_name: []const u8,
     provider_config: *const config_mod.ProviderConfig,
@@ -321,11 +301,11 @@ fn chatStreaming(
 
     // Transform
     const transform_start = time.milliTimestamp();
-    const provider_request = Transformer.transform(request, model, allocator) catch |err| {
+    const provider_request = Transformer.transformChatRequest(request, model, allocator) catch |err| {
         log.err("[STREAM] Transform request error: {} for model '{s}'", .{ err, request.model });
         return error.TransformFailed;
     };
-    defer Transformer.cleanupRequest(provider_request, allocator);
+    defer Transformer.cleanupChatRequest(provider_request, allocator);
     const transform_time = time.milliTimestamp() - transform_start;
     log.debug("[STREAM] Transform request completed in {d}ms", .{transform_time});
 
@@ -351,7 +331,7 @@ fn chatStreaming(
     log.debug("[STREAM] Stream connection established in {d}ms", .{stream_connect_time});
 
     // Initialize streaming state
-    var state = Transformer.StreamState.init(allocator, request.model);
+    var state = Transformer.ChatStreamState.init(allocator, request.model);
     defer state.deinit();
 
     // Process chunks
@@ -391,11 +371,10 @@ fn chatStreaming(
         }
 
         // Transform the chunk
-        const result = Transformer.transformStreamLine(line, &state, allocator);
+        const result = Transformer.transformChatStreamLine(line, &state, allocator);
         switch (result) {
-            .chunk => |parsed| {
-                var chunk = parsed;
-                defer chunk.deinit();
+            .output => |output| {
+                defer allocator.free(output);
 
                 if (first_chunk_time == null) {
                     first_chunk_time = time.milliTimestamp() - process_start;
@@ -403,34 +382,9 @@ fn chatStreaming(
                 }
                 chunk_count += 1;
 
-                // Track tokens and costs from usage (usually in final chunk)
-                if (chunk.value.usage) |usage| {
-                    const in_tokens: u64 = @intCast(usage.prompt_tokens);
-                    const out_tokens: u64 = @intCast(usage.completion_tokens);
-                    metrics.addInputTokens(in_tokens);
-                    metrics.addOutputTokens(out_tokens);
-                    if (pricing.getCost(provider_name, model)) |cost_entry| {
-                        const cost = pricing.calculateCost(cost_entry, in_tokens, out_tokens);
-                        metrics.addInputCost(cost.input_cost);
-                        metrics.addOutputCost(cost.output_cost);
-                    }
-                }
-
-                // Serialize chunk to SSE format — atomic writeAll
-                var buffer = std.ArrayList(u8).empty;
-                defer buffer.deinit(sa);
-                buffer.print(sa, "data: {f}\n\n", .{std.json.fmt(chunk.value, .{})}) catch continue;
-                try writer.writeAll(buffer.items);
-            },
-            .@"error" => |error_response| {
-                had_error = true;
-                log.warn("[STREAM] Provider returned error: {s}", .{error_response.@"error".message});
-
-                var buffer = std.ArrayList(u8).empty;
-                defer buffer.deinit(sa);
-                buffer.print(sa, "data: {f}\n\n", .{std.json.fmt(error_response, .{})}) catch break;
-                try writer.writeAll(buffer.items);
-                break;
+                // P4: the transformer renders ready-to-write bytes; usage was
+                // already accumulated into `state` (metrics recorded below).
+                try writer.writeAll(output);
             },
             .skip => {},
         }
@@ -438,6 +392,11 @@ fn chatStreaming(
 
     // Always send [DONE] marker (OpenAI format)
     try writer.writeAll("data: [DONE]\n\n");
+
+    // Track tokens and costs from the stream state (P3: uniform fields; usage
+    // arrives on the final chunk for include_usage-injected upstreams and is
+    // accumulated there — no per-chunk scraping anymore).
+    recordTokenUsage(state.input_tokens, state.output_tokens, model, provider_name);
 
     const process_time = time.milliTimestamp() - process_start;
     log.debug("[STREAM] Processed {d} chunks in {d}ms", .{ chunk_count, process_time });
@@ -467,7 +426,7 @@ fn chatStreaming(
 ///
 /// The caller provides `writer` and is responsible for any transport framing,
 /// exactly as with `chatComplete`. The difference is that input and output use
-/// Anthropic types (`anthropic_types.Request` / `anthropic_types.Response`).
+/// Anthropic types (`messages_types.Request` / `messages_types.Response`).
 ///
 /// **Pipeline**: identical to `chatComplete` — enforceBudget → parseModel →
 /// resolve provider → transform request → init client → send upstream →
@@ -480,7 +439,7 @@ fn chatStreaming(
 pub fn messagesComplete(
     writer: anytype,
     allocator: std.mem.Allocator,
-    request: anthropic_types.Request,
+    request: messages_types.Request,
 ) !void {
     const cfg = config_mod.get();
 
@@ -504,7 +463,7 @@ pub fn messagesComplete(
     const is_streaming = request.stream orelse false;
 
     // Dispatch to provider
-    // Note: HAI uses anthropic.transformer for /v1/messages (not openai.transformer)
+    // Note: HAI uses anthropic.transformer for /v1/messages (not openai.chat_transformer)
     if (provider_mod.Provider.fromString(model_info.provider)) |native_provider| {
         switch (native_provider) {
             .anthropic => try dispatchMessages(anthropic.client.AnthropicClient, anthropic.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
@@ -512,12 +471,12 @@ pub fn messagesComplete(
             .openai => {
                 const schema = provider_config.getString("api_schema") orelse "legacy";
                 if (std.mem.eql(u8, schema, "latest")) {
-                    try messagesViaResponses(openai.client.OpenAIClient, openai.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
+                    try dispatchMessages(openai.client.OpenAIClient, openai.responses_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
                 } else {
-                    try dispatchMessages(openai.client.OpenAIClient, openai.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
+                    try dispatchMessages(openai.client.OpenAIClient, openai.chat_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
                 }
             },
-            .copilot => try dispatchMessages(copilot.client.CopilotClient, openai.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
+            .copilot => try dispatchMessages(copilot.client.CopilotClient, openai.chat_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
             .sap_ai_core => try dispatchMessages(sap_ai_core.client.SapAiCoreClient, sap_ai_core.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
             .google_ai_studio => try dispatchMessages(google_ai_studio.client.GoogleAiStudioClient, google_ai_studio.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
         }
@@ -532,9 +491,9 @@ pub fn messagesComplete(
             try dispatchMessages(anthropic.client.AnthropicClient, anthropic.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
         } else if (std.mem.eql(u8, compatible, "openai")) {
             if (std.mem.eql(u8, schema, "latest")) {
-                try messagesViaResponses(openai.client.OpenAIClient, openai.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
+                try dispatchMessages(openai.client.OpenAIClient, openai.responses_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
             } else {
-                try dispatchMessages(openai.client.OpenAIClient, openai.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
+                try dispatchMessages(openai.client.OpenAIClient, openai.chat_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
             }
         } else {
             log.err("Unknown compatible provider type: '{s}'", .{compatible});
@@ -549,7 +508,7 @@ fn dispatchMessages(
     writer: anytype,
     is_streaming: bool,
     allocator: std.mem.Allocator,
-    request: anthropic_types.Request,
+    request: messages_types.Request,
     model: []const u8,
     provider_name: []const u8,
     provider_config: *const config_mod.ProviderConfig,
@@ -576,7 +535,7 @@ fn messagesSync(
     comptime Transformer: type,
     writer: anytype,
     allocator: std.mem.Allocator,
-    request: anthropic_types.Request,
+    request: messages_types.Request,
     model: []const u8,
     provider_name: []const u8,
     provider_config: *const config_mod.ProviderConfig,
@@ -586,11 +545,11 @@ fn messagesSync(
 
     // Transform
     const transform_start = time.milliTimestamp();
-    const provider_request = Transformer.transformFromAnthropic(request, model, allocator) catch |err| {
+    const provider_request = Transformer.transformMessagesRequest(request, model, allocator) catch |err| {
         log.err("[SYNC] Transform request error: {} for model '{s}/{s}'", .{ err, provider_name, model });
         return error.TransformFailed;
     };
-    defer Transformer.cleanupFromAnthropicRequest(provider_request, allocator);
+    defer Transformer.cleanupMessagesRequest(provider_request, allocator);
     const transform_request_time = time.milliTimestamp() - transform_start;
     log.debug("[SYNC] Transform request completed in {d}ms", .{transform_request_time});
 
@@ -617,25 +576,21 @@ fn messagesSync(
 
     // Transform response
     const transform_response_start = time.milliTimestamp();
-    const anthropic_response = Transformer.transformToAnthropicResponse(provider_response.value, allocator, request.model) catch |err| {
+    const anthropic_response = Transformer.transformMessagesResponse(provider_response.value, request, allocator) catch |err| {
         log.err("[SYNC] Transform response error: {} for model '{s}/{s}'", .{ err, provider_name, model });
         return error.TransformResponseFailed;
     };
-    defer Transformer.cleanupAnthropicResponse(anthropic_response, allocator);
+    defer Transformer.cleanupMessagesResponse(anthropic_response, allocator);
     const transform_response_time = time.milliTimestamp() - transform_response_start;
     log.debug("[SYNC] Transform response completed in {d}ms", .{transform_response_time});
 
     // Track tokens and costs
-    const usage = anthropic_response.usage;
-    const in_tokens: u64 = @intCast(usage.input_tokens);
-    const out_tokens: u64 = @intCast(usage.output_tokens);
-    metrics.addInputTokens(in_tokens);
-    metrics.addOutputTokens(out_tokens);
-    if (pricing.getCost(provider_name, model)) |cost_entry| {
-        const cost = pricing.calculateCost(cost_entry, in_tokens, out_tokens);
-        metrics.addInputCost(cost.input_cost);
-        metrics.addOutputCost(cost.output_cost);
-    }
+    recordTokenUsage(
+        @intCast(anthropic_response.usage.input_tokens),
+        @intCast(anthropic_response.usage.output_tokens),
+        model,
+        provider_name,
+    );
 
     // Serialize and write
     const serialize_start = time.milliTimestamp();
@@ -658,7 +613,7 @@ fn messagesStreaming(
     comptime Transformer: type,
     writer: anytype,
     allocator: std.mem.Allocator,
-    request: anthropic_types.Request,
+    request: messages_types.Request,
     model: []const u8,
     provider_name: []const u8,
     provider_config: *const config_mod.ProviderConfig,
@@ -670,11 +625,11 @@ fn messagesStreaming(
     const transform_start = time.milliTimestamp();
     var mutable_request = request;
     mutable_request.stream = true;
-    const provider_request = Transformer.transformFromAnthropic(mutable_request, model, allocator) catch |err| {
+    const provider_request = Transformer.transformMessagesRequest(mutable_request, model, allocator) catch |err| {
         log.err("[STREAM] Transform request error: {} for model '{s}/{s}'", .{ err, provider_name, model });
         return error.TransformFailed;
     };
-    defer Transformer.cleanupFromAnthropicRequest(provider_request, allocator);
+    defer Transformer.cleanupMessagesRequest(provider_request, allocator);
     const transform_time = time.milliTimestamp() - transform_start;
     log.debug("[STREAM] Transform request completed in {d}ms", .{transform_time});
 
@@ -704,7 +659,7 @@ fn messagesStreaming(
     var chunk_count: u32 = 0;
     var had_error = false;
 
-    var stream_state = Transformer.AnthropicStreamState.init(allocator, request.model);
+    var stream_state = Transformer.MessagesStreamState.init(allocator, request.model);
     defer stream_state.deinit();
 
     while (true) {
@@ -721,7 +676,7 @@ fn messagesStreaming(
 
         const line = maybe_line orelse break;
 
-        const result = Transformer.transformStreamLineToAnthropic(line, &stream_state, allocator);
+        const result = Transformer.transformMessagesStreamLine(line, &stream_state, allocator);
         switch (result) {
             .output => |output| {
                 defer allocator.free(output);
@@ -736,17 +691,9 @@ fn messagesStreaming(
         }
     }
 
-    // Track tokens and costs from stream state
-    const usage = stream_state.getUsage();
-    if (usage.input_tokens > 0 or usage.output_tokens > 0) {
-        metrics.addInputTokens(usage.input_tokens);
-        metrics.addOutputTokens(usage.output_tokens);
-        if (pricing.getCost(provider_name, model)) |cost_entry| {
-            const cost = pricing.calculateCost(cost_entry, usage.input_tokens, usage.output_tokens);
-            metrics.addInputCost(cost.input_cost);
-            metrics.addOutputCost(cost.output_cost);
-        }
-    }
+    // Track tokens and costs from stream state (P3: uniform state fields;
+    // getUsage() is gone — the states expose input_tokens/output_tokens directly)
+    recordTokenUsage(stream_state.input_tokens, stream_state.output_tokens, model, provider_name);
 
     const process_time = time.milliTimestamp() - process_start;
     log.debug("[STREAM] Processed {d} chunks in {d}ms", .{ chunk_count, process_time });
@@ -818,7 +765,7 @@ const ThreadSafeAllocator = struct {
 /// Result from a provider fetch task
 const FetchResult = struct {
     provider_name: []const u8,
-    models: ?[]openai_types.Model,
+    models: ?[]chat_types.Model,
     err: ?anyerror,
     elapsed_ms: i64,
 };
@@ -843,14 +790,14 @@ const FetchContext = struct {
 /// The returned slice is **caller-owned**. Free it with `freeModels()` when
 /// done — that function handles freeing both the slice and the heap-allocated
 /// strings inside each `Model`.
-pub fn listModels(allocator: std.mem.Allocator) ![]openai_types.Model {
+pub fn listModels(allocator: std.mem.Allocator) ![]chat_types.Model {
     const cfg = config_mod.get();
     const provider_count = cfg.providers.count();
 
     log.info("GET /v1/models - starting fetch from {d} providers", .{provider_count});
 
     if (provider_count == 0) {
-        return try allocator.alloc(openai_types.Model, 0);
+        return try allocator.alloc(chat_types.Model, 0);
     }
 
     // If a pool backend is available, fetch in parallel; else sequential
@@ -910,7 +857,7 @@ pub fn listModels(allocator: std.mem.Allocator) ![]openai_types.Model {
     wg.wait();
 
     // Aggregate results
-    var all_models = std.ArrayList(openai_types.Model).empty;
+    var all_models = std.ArrayList(chat_types.Model).empty;
     defer all_models.deinit(safe_allocator);
 
     for (results[0..provider_count]) |result| {
@@ -933,10 +880,10 @@ pub fn listModels(allocator: std.mem.Allocator) ![]openai_types.Model {
     log.info("GET /v1/models - total models: {d}", .{all_models.items.len});
 
     // Sort alphabetically by id
-    const sorted = try allocator.alloc(openai_types.Model, all_models.items.len);
+    const sorted = try allocator.alloc(chat_types.Model, all_models.items.len);
     @memcpy(sorted, all_models.items);
-    std.mem.sort(openai_types.Model, sorted, {}, struct {
-        fn lessThan(_: void, a: openai_types.Model, b: openai_types.Model) bool {
+    std.mem.sort(chat_types.Model, sorted, {}, struct {
+        fn lessThan(_: void, a: chat_types.Model, b: chat_types.Model) bool {
             return std.mem.order(u8, a.id, b.id) == .lt;
         }
     }.lessThan);
@@ -945,7 +892,7 @@ pub fn listModels(allocator: std.mem.Allocator) ![]openai_types.Model {
 }
 
 /// Free a model slice previously returned by `listModels`.
-pub fn freeModels(allocator: std.mem.Allocator, models: []openai_types.Model) void {
+pub fn freeModels(allocator: std.mem.Allocator, models: []chat_types.Model) void {
     for (models) |m| {
         allocator.free(m.id);
         allocator.free(m.owned_by);
@@ -978,8 +925,8 @@ fn fetchTask(ctx_ptr: *anyopaque) void {
     ctx.result.elapsed_ms = time.milliTimestamp() - start_time;
 }
 
-fn listModelsSequential(allocator: std.mem.Allocator, cfg: *const config_mod.Config) ![]openai_types.Model {
-    var all_models = std.ArrayList(openai_types.Model).empty;
+fn listModelsSequential(allocator: std.mem.Allocator, cfg: *const config_mod.Config) ![]chat_types.Model {
+    var all_models = std.ArrayList(chat_types.Model).empty;
     defer all_models.deinit(allocator);
 
     var provider_iter = cfg.providers.iterator();
@@ -1008,10 +955,10 @@ fn listModelsSequential(allocator: std.mem.Allocator, cfg: *const config_mod.Con
     }
 
     // Sort alphabetically by id
-    const sorted = try allocator.alloc(openai_types.Model, all_models.items.len);
+    const sorted = try allocator.alloc(chat_types.Model, all_models.items.len);
     @memcpy(sorted, all_models.items);
-    std.mem.sort(openai_types.Model, sorted, {}, struct {
-        fn lessThan(_: void, a: openai_types.Model, b: openai_types.Model) bool {
+    std.mem.sort(chat_types.Model, sorted, {}, struct {
+        fn lessThan(_: void, a: chat_types.Model, b: chat_types.Model) bool {
             return std.mem.order(u8, a.id, b.id) == .lt;
         }
     }.lessThan);
@@ -1023,7 +970,7 @@ fn fetchModelsForProvider(
     allocator: std.mem.Allocator,
     provider_name: []const u8,
     provider_config: *const config_mod.ProviderConfig,
-) !?[]openai_types.Model {
+) !?[]chat_types.Model {
     return fetchModelsForProviderInner(allocator, provider_name, provider_config) catch |err| {
         if (err == error.AuthRequired and tryAutoReauth(allocator, provider_name)) {
             return fetchModelsForProviderInner(allocator, provider_name, provider_config);
@@ -1036,11 +983,11 @@ fn fetchModelsForProviderInner(
     allocator: std.mem.Allocator,
     provider_name: []const u8,
     provider_config: *const config_mod.ProviderConfig,
-) !?[]openai_types.Model {
+) !?[]chat_types.Model {
     // Check for "compatible" field first (takes precedence)
     if (provider_config.getString("compatible")) |compatible| {
         if (std.mem.eql(u8, compatible, "openai")) {
-            return try fetchModels(openai.client.OpenAIClient, openai.transformer, allocator, provider_name, provider_config);
+            return try fetchModels(openai.client.OpenAIClient, openai.chat_transformer, allocator, provider_name, provider_config);
         } else if (std.mem.eql(u8, compatible, "anthropic")) {
             return try fetchModels(anthropic.client.AnthropicClient, anthropic.transformer, allocator, provider_name, provider_config);
         }
@@ -1049,11 +996,11 @@ fn fetchModelsForProviderInner(
 
     if (provider_mod.Provider.fromString(provider_name)) |native_provider| {
         return switch (native_provider) {
-            .openai => try fetchModels(openai.client.OpenAIClient, openai.transformer, allocator, provider_name, provider_config),
+            .openai => try fetchModels(openai.client.OpenAIClient, openai.chat_transformer, allocator, provider_name, provider_config),
             .anthropic => try fetchModels(anthropic.client.AnthropicClient, anthropic.transformer, allocator, provider_name, provider_config),
             .sap_ai_core => try fetchModels(sap_ai_core.client.SapAiCoreClient, sap_ai_core.transformer, allocator, provider_name, provider_config),
-            .hai => try fetchModels(hai.client.HaiClient, openai.transformer, allocator, provider_name, provider_config),
-            .copilot => try fetchModels(copilot.client.CopilotClient, openai.transformer, allocator, provider_name, provider_config),
+            .hai => try fetchModels(hai.client.HaiClient, openai.chat_transformer, allocator, provider_name, provider_config),
+            .copilot => try fetchModels(copilot.client.CopilotClient, openai.chat_transformer, allocator, provider_name, provider_config),
             .google_ai_studio => try fetchModels(google_ai_studio.client.GoogleAiStudioClient, google_ai_studio.transformer, allocator, provider_name, provider_config),
         };
     } else |_| {
@@ -1067,7 +1014,7 @@ fn fetchModels(
     allocator: std.mem.Allocator,
     provider_name: []const u8,
     provider_config: *const config_mod.ProviderConfig,
-) !?[]openai_types.Model {
+) !?[]chat_types.Model {
     var client = try ClientType.init(allocator, provider_config);
     defer client.deinit();
 
@@ -1093,7 +1040,37 @@ fn fetchModels(
 
 // ============================================================================
 // responsesComplete — OpenAI Responses API format (/v1/responses)
+//
+// Usage/cost tracking: all dispatch paths below feed their token usage
+// into `metrics` via the shared recordTokenUsage helper so tokens and costs
+// stay correct for every API schema.
 // ============================================================================
+
+// ----------------------------------------------------------------------------
+// Shared usage recording helper
+// ----------------------------------------------------------------------------
+
+/// Record token usage and (if pricing data is available) cost for a completed
+/// LLM call. Zero-usage calls are ignored so failed/empty streams don't skew
+/// the counters. The single metering point for every pipeline in this file —
+/// callers extract the token counts from their response objects or stream
+/// states (both expose `input_tokens`/`output_tokens` per the P3 state core)
+/// and pass them here.
+fn recordTokenUsage(
+    input_tokens: u64,
+    output_tokens: u64,
+    model: []const u8,
+    provider_name: []const u8,
+) void {
+    if (input_tokens == 0 and output_tokens == 0) return;
+    metrics.addInputTokens(input_tokens);
+    metrics.addOutputTokens(output_tokens);
+    if (pricing.getCost(provider_name, model)) |cost_entry| {
+        const cost = pricing.calculateCost(cost_entry, input_tokens, output_tokens);
+        metrics.addInputCost(cost.input_cost);
+        metrics.addOutputCost(cost.output_cost);
+    }
+}
 
 /// Perform a completion using the OpenAI Responses API schema.
 ///
@@ -1101,15 +1078,15 @@ fn fetchModels(
 /// `messagesComplete` normalize their inbound schemas and delegate here.
 ///
 /// Dispatch rules:
-///   - anthropic → bridge via responses_transformer.toMessages → AnthropicClient
+///   - anthropic → anthropic.transformer messages face → AnthropicClient
 ///   - openai/compatible with api_schema=latest → pass-through to /v1/responses
-///   - openai/compatible with api_schema=legacy  → bridge via toChat → /v1/chat/completions
-///   - sap_ai_core → bridge via toSap → SapAiCoreClient
-///   - hai/copilot → bridge via toChat → respective client
+///   - openai/compatible with api_schema=legacy  → openai.chat_transformer → /v1/chat/completions
+///   - sap_ai_core → sap_ai_core.transformer responses face → SapAiCoreClient
+///   - hai/copilot → openai.chat_transformer → respective client
 pub fn responsesComplete(
     writer: anytype,
     allocator: std.mem.Allocator,
-    request: openai_responses_types.Request,
+    request: responses_types.Request,
 ) !void {
     const cfg = config_mod.get();
     try utils.enforceBudget(cfg);
@@ -1131,17 +1108,10 @@ pub fn responsesComplete(
     if (provider_mod.Provider.fromString(model_info.provider)) |native_provider| {
         switch (native_provider) {
             .anthropic => try dispatchResponses(anthropic.client.AnthropicClient, anthropic.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
-            .openai => {
-                const schema = provider_config.getString("api_schema") orelse "legacy";
-                if (std.mem.eql(u8, schema, "latest")) {
-                    try dispatchResponsesNative(openai.client.OpenAIClient, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
-                } else {
-                    try dispatchResponses(openai.client.OpenAIClient, openai.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
-                }
-            },
+            .openai => try dispatchResponses(openai.client.OpenAIClient, openai.responses_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
             .sap_ai_core => try dispatchResponses(sap_ai_core.client.SapAiCoreClient, sap_ai_core.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
-            .hai => try dispatchResponses(hai.client.HaiClient, openai.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
-            .copilot => try dispatchResponses(copilot.client.CopilotClient, openai.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
+            .hai => try dispatchResponses(hai.client.HaiClient, openai.chat_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
+            .copilot => try dispatchResponses(copilot.client.CopilotClient, openai.chat_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
             .google_ai_studio => try dispatchResponses(google_ai_studio.client.GoogleAiStudioClient, google_ai_studio.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
         }
     } else |_| {
@@ -1149,14 +1119,9 @@ pub fn responsesComplete(
             log.err("Provider '{s}' not supported and no 'compatible' field specified", .{model_info.provider});
             return error.CompatibleFieldMissing;
         };
-        const schema = provider_config.getString("api_schema") orelse "legacy";
 
         if (std.mem.eql(u8, compatible, "openai")) {
-            if (std.mem.eql(u8, schema, "latest")) {
-                try dispatchResponsesNative(openai.client.OpenAIClient, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
-            } else {
-                try dispatchResponses(openai.client.OpenAIClient, openai.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
-            }
+            try dispatchResponses(openai.client.OpenAIClient, openai.responses_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
         } else if (std.mem.eql(u8, compatible, "anthropic")) {
             try dispatchResponses(anthropic.client.AnthropicClient, anthropic.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
         } else {
@@ -1166,247 +1131,27 @@ pub fn responsesComplete(
     }
 }
 
-/// api_schema=latest: send Request directly to upstream /v1/responses.
-/// OpenAIClient.sendRequest sees Request at comptime → routes to /v1/responses.
-/// The response is already in Response format — write directly.
-fn dispatchResponsesNative(
-    comptime Client: type,
-    writer: anytype,
-    is_streaming: bool,
-    allocator: std.mem.Allocator,
-    request: openai_responses_types.Request,
-    model: []const u8,
-    provider_name: []const u8,
-    provider_config: *const config_mod.ProviderConfig,
-) !void {
-    var client = Client.init(allocator, provider_config) catch |err| {
-        log.err("[RESPONSES] Client init failed: {}", .{err});
-        return error.ClientInitFailed;
-    };
-    defer client.deinit();
-
-    var req = request;
-    req.model = model;
-
-    if (is_streaming) {
-        const stream_result = client.sendStreamingRequest(req) catch |err| {
-            if (err == error.AuthRequired and tryAutoReauth(allocator, provider_name)) {
-                const retry = client.sendStreamingRequest(req) catch return error.UpstreamError;
-                _ = retry;
-            }
-            return error.UpstreamError;
-        };
-        defer client.freeStreamingResult(stream_result);
-        while (true) {
-            const maybe_line = stream_result.iterator.next() catch break;
-            const line = maybe_line orelse break;
-            if (std.mem.startsWith(u8, line, "data: [DONE]")) break;
-            writer.writeAll(line) catch {};
-            writer.writeAll("\n\n") catch {};
-        }
-    } else {
-        const response = client.sendRequest(req) catch |err| {
-            if (err == error.AuthRequired and tryAutoReauth(allocator, provider_name)) {
-                const retry_resp = client.sendRequest(req) catch return error.UpstreamError;
-                defer retry_resp.deinit();
-                var buf = std.ArrayList(u8).empty;
-                defer buf.deinit(allocator);
-                try buf.print(allocator, "{f}", .{std.json.fmt(retry_resp.value, .{})});
-                return writer.writeAll(buf.items);
-            }
-            return error.UpstreamError;
-        };
-        defer response.deinit();
-        var buf = std.ArrayList(u8).empty;
-        defer buf.deinit(allocator);
-        try buf.print(allocator, "{f}", .{std.json.fmt(response.value, .{})});
-        try writer.writeAll(buf.items);
-    }
-}
-
-/// api_schema=latest: convert OpenAIChat.Request → Request, send to /v1/responses,
-/// convert Response → OpenAIChat.Response for the chat response path.
-fn chatViaResponses(
-    comptime Client: type,
-    comptime Transformer: type,
-    writer: anytype,
-    is_streaming: bool,
-    allocator: std.mem.Allocator,
-    request: openai_types.Request,
-    model: []const u8,
-    provider_name: []const u8,
-    provider_config: *const config_mod.ProviderConfig,
-) !void {
-    _ = Transformer;
-    const rt = openai.responses_transformer;
-
-    const responses_req = rt.fromChat(request, allocator) catch |err| {
-        log.err("[CHAT→RESPONSES] fromChat failed: {}", .{err});
-        return error.TransformFailed;
-    };
-    defer rt.cleanupFromChat(responses_req, allocator);
-
-    var responses_req_with_model = responses_req;
-    responses_req_with_model.model = model;
-
-    var client = Client.init(allocator, provider_config) catch |err| {
-        log.err("[CHAT→RESPONSES] Client init failed: {}", .{err});
-        return error.ClientInitFailed;
-    };
-    defer client.deinit();
-
-    if (is_streaming) {
-        const stream_result = client.sendStreamingRequest(responses_req_with_model) catch |err| {
-            if (err == error.AuthRequired and tryAutoReauth(allocator, provider_name)) {
-                const retry = client.sendStreamingRequest(responses_req_with_model) catch return error.UpstreamError;
-                _ = retry;
-            }
-            return error.UpstreamError;
-        };
-        defer client.freeStreamingResult(stream_result);
-        // Upstream sends ResponsesStreamEvent lines; convert back to chat chunks
-        var stream_state = openai.transformer.StreamState.init(allocator, request.model);
-        defer stream_state.deinit();
-        while (true) {
-            const maybe_line = stream_result.iterator.next() catch break;
-            const line = maybe_line orelse break;
-            if (std.mem.startsWith(u8, line, "data: [DONE]")) break;
-            // For now pass through — full reverse streaming transform is a follow-up
-            writer.writeAll(line) catch {};
-            writer.writeAll("\n\n") catch {};
-        }
-        try writer.writeAll("data: [DONE]\n\n");
-    } else {
-        const resp = client.sendRequest(responses_req_with_model) catch |err| {
-            if (err == error.AuthRequired and tryAutoReauth(allocator, provider_name)) {
-                const retry_resp = client.sendRequest(responses_req_with_model) catch return error.UpstreamError;
-                defer retry_resp.deinit();
-                const chat_resp = rt.toChatResponse(retry_resp.value, allocator) catch return error.TransformResponseFailed;
-                defer rt.cleanupToChatResponse(chat_resp, allocator);
-                var buf = std.ArrayList(u8).empty;
-                defer buf.deinit(allocator);
-                try buf.print(allocator, "{f}", .{std.json.fmt(chat_resp, .{})});
-                return writer.writeAll(buf.items);
-            }
-            return error.UpstreamError;
-        };
-        defer resp.deinit();
-        const chat_resp = rt.toChatResponse(resp.value, allocator) catch |err| {
-            log.err("[CHAT→RESPONSES] toChatResponse failed: {}", .{err});
-            return error.TransformResponseFailed;
-        };
-        defer rt.cleanupToChatResponse(chat_resp, allocator);
-        var buf = std.ArrayList(u8).empty;
-        defer buf.deinit(allocator);
-        try buf.print(allocator, "{f}", .{std.json.fmt(chat_resp, .{})});
-        try writer.writeAll(buf.items);
-    }
-}
-
-/// api_schema=latest: convert Anthropic.Request → Request, send to /v1/responses,
-/// convert Response → Anthropic.Response for the messages response path.
-fn messagesViaResponses(
-    comptime Client: type,
-    comptime Transformer: type,
-    writer: anytype,
-    is_streaming: bool,
-    allocator: std.mem.Allocator,
-    request: anthropic_types.Request,
-    model: []const u8,
-    provider_name: []const u8,
-    provider_config: *const config_mod.ProviderConfig,
-) !void {
-    _ = Transformer;
-    const rt = openai.responses_transformer;
-
-    const responses_req = rt.fromMessages(request, allocator) catch |err| {
-        log.err("[MESSAGES→RESPONSES] fromMessages failed: {}", .{err});
-        return error.TransformFailed;
-    };
-    defer rt.cleanupFromMessages(responses_req, allocator);
-
-    var responses_req_with_model = responses_req;
-    responses_req_with_model.model = model;
-
-    var client = Client.init(allocator, provider_config) catch |err| {
-        log.err("[MESSAGES→RESPONSES] Client init failed: {}", .{err});
-        return error.ClientInitFailed;
-    };
-    defer client.deinit();
-
-    if (is_streaming) {
-        const stream_result = client.sendStreamingRequest(responses_req_with_model) catch |err| {
-            if (err == error.AuthRequired and tryAutoReauth(allocator, provider_name)) {
-                const retry = client.sendStreamingRequest(responses_req_with_model) catch return error.UpstreamError;
-                _ = retry;
-            }
-            return error.UpstreamError;
-        };
-        defer client.freeStreamingResult(stream_result);
-        // Pass through responses SSE lines — full reverse streaming transform is a follow-up
-        while (true) {
-            const maybe_line = stream_result.iterator.next() catch break;
-            const line = maybe_line orelse break;
-            if (std.mem.startsWith(u8, line, "data: [DONE]")) break;
-            writer.writeAll(line) catch {};
-            writer.writeAll("\n\n") catch {};
-        }
-        try writer.writeAll("data: [DONE]\n\n");
-    } else {
-        const resp = client.sendRequest(responses_req_with_model) catch |err| {
-            if (err == error.AuthRequired and tryAutoReauth(allocator, provider_name)) {
-                const retry_resp = client.sendRequest(responses_req_with_model) catch return error.UpstreamError;
-                defer retry_resp.deinit();
-                const chat_resp = rt.toChatResponse(retry_resp.value, allocator) catch return error.TransformResponseFailed;
-                defer rt.cleanupToChatResponse(chat_resp, allocator);
-                const anthro_resp = openai.transformer.transformToAnthropicResponse(chat_resp, allocator, request.model) catch return error.TransformResponseFailed;
-                defer openai.transformer.cleanupAnthropicResponse(anthro_resp, allocator);
-                var buf = std.ArrayList(u8).empty;
-                defer buf.deinit(allocator);
-                try buf.print(allocator, "{f}", .{std.json.fmt(anthro_resp, .{})});
-                return writer.writeAll(buf.items);
-            }
-            return error.UpstreamError;
-        };
-        defer resp.deinit();
-        const chat_resp = rt.toChatResponse(resp.value, allocator) catch |err| {
-            log.err("[MESSAGES→RESPONSES] toChatResponse failed: {}", .{err});
-            return error.TransformResponseFailed;
-        };
-        defer rt.cleanupToChatResponse(chat_resp, allocator);
-        const anthro_resp = openai.transformer.transformToAnthropicResponse(chat_resp, allocator, request.model) catch |err| {
-            log.err("[MESSAGES→RESPONSES] transformToAnthropicResponse failed: {}", .{err});
-            return error.TransformResponseFailed;
-        };
-        defer openai.transformer.cleanupAnthropicResponse(anthro_resp, allocator);
-        var buf = std.ArrayList(u8).empty;
-        defer buf.deinit(allocator);
-        try buf.print(allocator, "{f}", .{std.json.fmt(anthro_resp, .{})});
-        try writer.writeAll(buf.items);
-    }
-}
-
 /// Dispatch a /v1/responses request through a provider's responses method set.
-/// Transformer must implement: transformFromResponses, cleanupFromRequest,
+/// Transformer must implement: transformResponsesRequest, cleanupResponsesRequest,
 /// transformToResponse, cleanupResponse,
-/// ResponsesStreamState (init/deinit), transformStreamLineToResponses, flushResponsesStream.
+/// ResponsesStreamState (init/deinit), transformResponsesStreamLine, flushResponsesStream.
 fn dispatchResponses(
     comptime Client: type,
     comptime Transformer: type,
     writer: anytype,
     is_streaming: bool,
     allocator: std.mem.Allocator,
-    request: openai_responses_types.Request,
+    request: responses_types.Request,
     model: []const u8,
     provider_name: []const u8,
     provider_config: *const config_mod.ProviderConfig,
 ) !void {
     // Transform Request → provider wire format
-    const provider_req = Transformer.transformFromResponses(request, model, allocator) catch |err| {
-        log.err("[RESPONSES] transformFromResponses failed: {}", .{err});
+    const provider_req = Transformer.transformResponsesRequest(request, model, allocator) catch |err| {
+        log.err("[RESPONSES] transformResponsesRequest failed: {}", .{err});
         return error.TransformFailed;
     };
-    defer Transformer.cleanupFromRequest(provider_req, allocator);
+    defer Transformer.cleanupResponsesRequest(provider_req, allocator);
 
     var client = Client.init(allocator, provider_config) catch |err| {
         log.err("[RESPONSES] Client init failed: {}", .{err});
@@ -1431,41 +1176,66 @@ fn dispatchResponses(
             const maybe_line = stream_result.iterator.next() catch break;
             const line = maybe_line orelse break;
             if (std.mem.startsWith(u8, line, "data: [DONE]")) break;
-            if (Transformer.transformStreamLineToResponses(line, &stream_state, allocator)) |out| {
-                defer allocator.free(out);
-                writer.writeAll(out) catch {};
+            switch (Transformer.transformResponsesStreamLine(line, &stream_state, allocator)) {
+                .output => |out| {
+                    defer allocator.free(out);
+                    writer.writeAll(out) catch {};
+                },
+                .skip => {},
             }
         }
         if (Transformer.flushResponsesStream(&stream_state, allocator)) |out| {
             defer allocator.free(out);
             writer.writeAll(out) catch {};
         }
-        try writer.writeAll("data: [DONE]\n\n");
+        // Only the chat↔responses bridge synthesizes a terminal sentinel; a
+        // native Responses upstream ends its own stream (no [DONE] in spec).
+        if (Transformer.appendsDoneMarker) {
+            try writer.writeAll("data: [DONE]\n\n");
+        }
+        recordTokenUsage(
+            stream_state.input_tokens,
+            stream_state.output_tokens,
+            model,
+            provider_name,
+        );
     } else {
         const provider_response = client.sendRequest(provider_req) catch |err| {
             if (err == error.AuthRequired and tryAutoReauth(allocator, provider_name)) {
                 const retry_resp = client.sendRequest(provider_req) catch return error.UpstreamError;
                 defer retry_resp.deinit();
-                const resp = Transformer.transformToResponse(retry_resp.value, request, allocator) catch return error.TransformResponseFailed;
-                defer Transformer.cleanupResponsesResp(resp, allocator);
+                const resp = Transformer.transformResponsesResponse(retry_resp.value, request, allocator) catch return error.TransformResponseFailed;
+                defer Transformer.cleanupResponsesResponse(resp, allocator);
                 var buf = std.ArrayList(u8).empty;
                 defer buf.deinit(allocator);
                 try buf.print(allocator, "{f}", .{std.json.fmt(resp, .{})});
+                recordTokenUsage(
+                    resp.usage.input_tokens,
+                    resp.usage.output_tokens,
+                    model,
+                    provider_name,
+                );
                 return writer.writeAll(buf.items);
             }
             return error.UpstreamError;
         };
         defer provider_response.deinit();
 
-        const resp = Transformer.transformToResponse(provider_response.value, request, allocator) catch |err| {
+        const resp = Transformer.transformResponsesResponse(provider_response.value, request, allocator) catch |err| {
             log.err("[RESPONSES] transformToResponse failed: {}", .{err});
             return error.TransformResponseFailed;
         };
-        defer Transformer.cleanupResponsesResp(resp, allocator);
+        defer Transformer.cleanupResponsesResponse(resp, allocator);
 
         var buf = std.ArrayList(u8).empty;
         defer buf.deinit(allocator);
         try buf.print(allocator, "{f}", .{std.json.fmt(resp, .{})});
         try writer.writeAll(buf.items);
+        recordTokenUsage(
+            resp.usage.input_tokens,
+            resp.usage.output_tokens,
+            model,
+            provider_name,
+        );
     }
 }
