@@ -1,0 +1,845 @@
+{
+  "_comment": "This file contains one example object per streaming event type, ordered as they appear in a typical response stream.",
+
+  "response.queued": {
+    "type": "response.queued",
+    "sequence_number": 1,
+    "response": {
+      "id": "resp_abc123xyz",
+      "object": "response",
+      "created_at": 1749500000.0,
+      "completed_at": null,
+      "status": "queued",
+      "model": "gpt-4o-2024-11-20",
+      "output": [],
+      "usage": null,
+      "error": null,
+      "incomplete_details": null
+    }
+  },
+
+  "response.created": {
+    "type": "response.created",
+    "sequence_number": 2,
+    "response": {
+      "id": "resp_abc123xyz",
+      "object": "response",
+      "created_at": 1749500000.0,
+      "completed_at": null,
+      "status": "in_progress",
+      "model": "gpt-4o-2024-11-20",
+      "output": [],
+      "instructions": "Respond concisely in plain text.",
+      "tools": [],
+      "tool_choice": { "type": "auto" },
+      "parallel_tool_calls": true,
+      "max_tool_calls": 10,
+      "temperature": 0.7,
+      "top_p": 1.0,
+      "top_logprobs": null,
+      "max_output_tokens": 2048,
+      "truncation": "disabled",
+      "metadata": { "user_id": "u_987xyz" },
+      "usage": null,
+      "error": null,
+      "incomplete_details": null
+    }
+  },
+
+  "response.in_progress": {
+    "type": "response.in_progress",
+    "sequence_number": 3,
+    "response": {
+      "id": "resp_abc123xyz",
+      "object": "response",
+      "created_at": 1749500000.0,
+      "completed_at": null,
+      "status": "in_progress",
+      "model": "gpt-4o-2024-11-20",
+      "output": [],
+      "usage": null
+    }
+  },
+
+  "response.output_item.added (reasoning)": {
+    "type": "response.output_item.added",
+    "sequence_number": 4,
+    "output_index": 0,
+    "item": {
+      "type": "reasoning",
+      "id": "rs_001",
+      "summary": [],
+      "status": "in_progress"
+    }
+  },
+
+  "response.content_part.added (reasoning_text)": {
+    "type": "response.content_part.added",
+    "sequence_number": 5,
+    "output_index": 0,
+    "item_id": "rs_001",
+    "content_index": 0,
+    "part": {
+      "type": "reasoning_text",
+      "text": ""
+    }
+  },
+
+  "response.reasoning_text.delta": {
+    "type": "response.reasoning_text.delta",
+    "sequence_number": 6,
+    "output_index": 0,
+    "item_id": "rs_001",
+    "content_index": 0,
+    "delta": "The user is asking about"
+  },
+
+  "response.reasoning_text.done": {
+    "type": "response.reasoning_text.done",
+    "sequence_number": 7,
+    "output_index": 0,
+    "item_id": "rs_001",
+    "content_index": 0,
+    "text": "The user is asking about the weather in Paris. I will call get_current_weather."
+  },
+
+  "response.reasoning_summary_part.added": {
+    "type": "response.reasoning_summary_part.added",
+    "sequence_number": 8,
+    "output_index": 0,
+    "item_id": "rs_001",
+    "summary_index": 0,
+    "part": {
+      "type": "summary_text",
+      "text": ""
+    }
+  },
+
+  "response.reasoning_summary_text.delta": {
+    "type": "response.reasoning_summary_text.delta",
+    "sequence_number": 9,
+    "output_index": 0,
+    "item_id": "rs_001",
+    "summary_index": 0,
+    "delta": "Checking weather"
+  },
+
+  "response.reasoning_summary_text.done": {
+    "type": "response.reasoning_summary_text.done",
+    "sequence_number": 10,
+    "output_index": 0,
+    "item_id": "rs_001",
+    "summary_index": 0,
+    "text": "Checking weather for Paris."
+  },
+
+  "response.reasoning_summary_part.done": {
+    "type": "response.reasoning_summary_part.done",
+    "sequence_number": 11,
+    "output_index": 0,
+    "item_id": "rs_001",
+    "summary_index": 0,
+    "part": {
+      "type": "summary_text",
+      "text": "Checking weather for Paris."
+    }
+  },
+
+  "response.content_part.done (reasoning_text)": {
+    "type": "response.content_part.done",
+    "sequence_number": 12,
+    "output_index": 0,
+    "item_id": "rs_001",
+    "content_index": 0,
+    "part": {
+      "type": "reasoning_text",
+      "text": "The user is asking about the weather in Paris. I will call get_current_weather."
+    }
+  },
+
+  "response.output_item.done (reasoning)": {
+    "type": "response.output_item.done",
+    "sequence_number": 13,
+    "output_index": 0,
+    "item": {
+      "type": "reasoning",
+      "id": "rs_001",
+      "summary": [
+        { "type": "summary_text", "text": "Checking weather for Paris." }
+      ],
+      "status": "completed"
+    }
+  },
+
+  "response.output_item.added (function_call)": {
+    "type": "response.output_item.added",
+    "sequence_number": 14,
+    "output_index": 1,
+    "item": {
+      "type": "function_call",
+      "id": "fc_001",
+      "call_id": "call_abc123",
+      "name": "get_current_weather",
+      "arguments": "",
+      "status": "in_progress",
+      "async": false,
+      "namespace": null,
+      "caller": null
+    }
+  },
+
+  "response.function_call_arguments.delta": {
+    "type": "response.function_call_arguments.delta",
+    "sequence_number": 15,
+    "output_index": 1,
+    "item_id": "fc_001",
+    "call_id": "call_abc123",
+    "delta": "{\"location\":\"Par"
+  },
+
+  "response.function_call_arguments.done": {
+    "type": "response.function_call_arguments.done",
+    "sequence_number": 16,
+    "output_index": 1,
+    "item_id": "fc_001",
+    "call_id": "call_abc123",
+    "arguments": "{\"location\":\"Paris, France\",\"unit\":\"celsius\"}"
+  },
+
+  "response.output_item.done (function_call)": {
+    "type": "response.output_item.done",
+    "sequence_number": 17,
+    "output_index": 1,
+    "item": {
+      "type": "function_call",
+      "id": "fc_001",
+      "call_id": "call_abc123",
+      "name": "get_current_weather",
+      "arguments": "{\"location\":\"Paris, France\",\"unit\":\"celsius\"}",
+      "status": "completed",
+      "async": false,
+      "namespace": null,
+      "caller": null
+    }
+  },
+
+  "response.output_item.added (web_search_call)": {
+    "type": "response.output_item.added",
+    "sequence_number": 18,
+    "output_index": 2,
+    "item": {
+      "type": "web_search_call",
+      "id": "ws_001",
+      "status": "in_progress",
+      "action": null
+    }
+  },
+
+  "response.web_search_call.in_progress": {
+    "type": "response.web_search_call.in_progress",
+    "sequence_number": 19,
+    "output_index": 2,
+    "item_id": "ws_001"
+  },
+
+  "response.web_search_call.searching": {
+    "type": "response.web_search_call.searching",
+    "sequence_number": 20,
+    "output_index": 2,
+    "item_id": "ws_001"
+  },
+
+  "response.web_search_call.completed": {
+    "type": "response.web_search_call.completed",
+    "sequence_number": 21,
+    "output_index": 2,
+    "item_id": "ws_001"
+  },
+
+  "response.output_item.done (web_search_call)": {
+    "type": "response.output_item.done",
+    "sequence_number": 22,
+    "output_index": 2,
+    "item": {
+      "type": "web_search_call",
+      "id": "ws_001",
+      "status": "completed",
+      "action": {
+        "type": "search",
+        "query": "current weather Paris France today"
+      }
+    }
+  },
+
+  "response.output_item.added (file_search_call)": {
+    "type": "response.output_item.added",
+    "sequence_number": 23,
+    "output_index": 3,
+    "item": {
+      "type": "file_search_call",
+      "id": "fs_001",
+      "status": "in_progress",
+      "queries": [],
+      "results": null
+    }
+  },
+
+  "response.file_search_call.in_progress": {
+    "type": "response.file_search_call.in_progress",
+    "sequence_number": 24,
+    "output_index": 3,
+    "item_id": "fs_001"
+  },
+
+  "response.file_search_call.searching": {
+    "type": "response.file_search_call.searching",
+    "sequence_number": 25,
+    "output_index": 3,
+    "item_id": "fs_001"
+  },
+
+  "response.file_search_call.completed": {
+    "type": "response.file_search_call.completed",
+    "sequence_number": 26,
+    "output_index": 3,
+    "item_id": "fs_001"
+  },
+
+  "response.output_item.added (code_interpreter_call)": {
+    "type": "response.output_item.added",
+    "sequence_number": 27,
+    "output_index": 4,
+    "item": {
+      "type": "code_interpreter_call",
+      "id": "ci_001",
+      "status": "in_progress",
+      "code": "",
+      "results": []
+    }
+  },
+
+  "response.code_interpreter_call.in_progress": {
+    "type": "response.code_interpreter_call.in_progress",
+    "sequence_number": 28,
+    "output_index": 4,
+    "item_id": "ci_001"
+  },
+
+  "response.code_interpreter_call_code.delta": {
+    "type": "response.code_interpreter_call_code.delta",
+    "sequence_number": 29,
+    "output_index": 4,
+    "item_id": "ci_001",
+    "delta": "import requests\nr = requests.get('https://api.weather.example.com/paris')\n"
+  },
+
+  "response.code_interpreter_call_code.done": {
+    "type": "response.code_interpreter_call_code.done",
+    "sequence_number": 30,
+    "output_index": 4,
+    "item_id": "ci_001",
+    "code": "import requests\nr = requests.get('https://api.weather.example.com/paris')\nprint(r.json())"
+  },
+
+  "response.code_interpreter_call.interpreting": {
+    "type": "response.code_interpreter_call.interpreting",
+    "sequence_number": 31,
+    "output_index": 4,
+    "item_id": "ci_001"
+  },
+
+  "response.code_interpreter_call.completed": {
+    "type": "response.code_interpreter_call.completed",
+    "sequence_number": 32,
+    "output_index": 4,
+    "item_id": "ci_001"
+  },
+
+  "response.output_item.added (mcp_list_tools)": {
+    "type": "response.output_item.added",
+    "sequence_number": 33,
+    "output_index": 5,
+    "item": {
+      "type": "mcp_list_tools",
+      "id": "mcp_list_001",
+      "server_label": "weather_server",
+      "status": "in_progress",
+      "tools": []
+    }
+  },
+
+  "response.mcp_list_tools.in_progress": {
+    "type": "response.mcp_list_tools.in_progress",
+    "sequence_number": 34,
+    "output_index": 5,
+    "item_id": "mcp_list_001"
+  },
+
+  "response.mcp_list_tools.completed": {
+    "type": "response.mcp_list_tools.completed",
+    "sequence_number": 35,
+    "output_index": 5,
+    "item_id": "mcp_list_001"
+  },
+
+  "response.mcp_list_tools.failed": {
+    "type": "response.mcp_list_tools.failed",
+    "sequence_number": 36,
+    "output_index": 5,
+    "item_id": "mcp_list_001"
+  },
+
+  "response.output_item.added (mcp_call)": {
+    "type": "response.output_item.added",
+    "sequence_number": 37,
+    "output_index": 6,
+    "item": {
+      "type": "mcp_call",
+      "id": "mcp_001",
+      "server_label": "weather_server",
+      "name": "get_forecast",
+      "arguments": "",
+      "status": "in_progress",
+      "output": null,
+      "error": null
+    }
+  },
+
+  "response.mcp_call_arguments.delta": {
+    "type": "response.mcp_call_arguments.delta",
+    "sequence_number": 38,
+    "output_index": 6,
+    "item_id": "mcp_001",
+    "delta": "{\"city\":\"Par"
+  },
+
+  "response.mcp_call_arguments.done": {
+    "type": "response.mcp_call_arguments.done",
+    "sequence_number": 39,
+    "output_index": 6,
+    "item_id": "mcp_001",
+    "arguments": "{\"city\":\"Paris\",\"days\":3}"
+  },
+
+  "response.mcp_call.in_progress": {
+    "type": "response.mcp_call.in_progress",
+    "sequence_number": 40,
+    "output_index": 6,
+    "item_id": "mcp_001"
+  },
+
+  "response.mcp_call.completed": {
+    "type": "response.mcp_call.completed",
+    "sequence_number": 41,
+    "output_index": 6,
+    "item_id": "mcp_001"
+  },
+
+  "response.mcp_call.failed": {
+    "type": "response.mcp_call.failed",
+    "sequence_number": 42,
+    "output_index": 6,
+    "item_id": "mcp_001"
+  },
+
+  "response.output_item.added (image_generation_call)": {
+    "type": "response.output_item.added",
+    "sequence_number": 43,
+    "output_index": 7,
+    "item": {
+      "type": "image_generation_call",
+      "id": "img_001",
+      "status": "in_progress",
+      "result": null
+    }
+  },
+
+  "response.image_generation_call.in_progress": {
+    "type": "response.image_generation_call.in_progress",
+    "sequence_number": 44,
+    "output_index": 7,
+    "item_id": "img_001"
+  },
+
+  "response.image_generation_call.generating": {
+    "type": "response.image_generation_call.generating",
+    "sequence_number": 45,
+    "output_index": 7,
+    "item_id": "img_001"
+  },
+
+  "response.image_generation_call.partial_image": {
+    "type": "response.image_generation_call.partial_image",
+    "sequence_number": 46,
+    "output_index": 7,
+    "item_id": "img_001",
+    "partial_image_index": 0,
+    "partial_image_b64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+  },
+
+  "response.image_generation_call.completed": {
+    "type": "response.image_generation_call.completed",
+    "sequence_number": 47,
+    "output_index": 7,
+    "item_id": "img_001"
+  },
+
+  "response.output_item.added (shell_call)": {
+    "type": "response.output_item.added",
+    "sequence_number": 48,
+    "output_index": 8,
+    "item": {
+      "type": "local_shell_call",
+      "id": "shell_001",
+      "status": "in_progress",
+      "action": {
+        "type": "exec",
+        "command": [],
+        "env": {},
+        "timeout_ms": null,
+        "working_directory": null
+      }
+    }
+  },
+
+  "response.shell_call_command.added": {
+    "type": "response.shell_call_command.added",
+    "sequence_number": 49,
+    "output_index": 8,
+    "item_id": "shell_001",
+    "command_index": 0,
+    "command": ""
+  },
+
+  "response.shell_call_command.delta": {
+    "type": "response.shell_call_command.delta",
+    "sequence_number": 50,
+    "output_index": 8,
+    "item_id": "shell_001",
+    "command_index": 0,
+    "delta": "curl -s https://api.weather"
+  },
+
+  "response.shell_call_command.done": {
+    "type": "response.shell_call_command.done",
+    "sequence_number": 51,
+    "output_index": 8,
+    "item_id": "shell_001",
+    "command_index": 0,
+    "command": "curl -s https://api.weather.example.com/paris"
+  },
+
+  "response.shell_call_output_content.delta": {
+    "type": "response.shell_call_output_content.delta",
+    "sequence_number": 52,
+    "output_index": 8,
+    "item_id": "shell_001",
+    "delta": {
+      "stdout": "{\"temp\":22,\"con",
+      "stderr": ""
+    }
+  },
+
+  "response.shell_call_output_content.done": {
+    "type": "response.shell_call_output_content.done",
+    "sequence_number": 53,
+    "output_index": 8,
+    "item_id": "shell_001",
+    "output": [
+      {
+        "type": "text",
+        "text": "{\"temp\":22,\"condition\":\"partly_cloudy\"}"
+      }
+    ]
+  },
+
+  "response.output_item.added (message)": {
+    "type": "response.output_item.added",
+    "sequence_number": 54,
+    "output_index": 9,
+    "item": {
+      "type": "message",
+      "id": "msg_001",
+      "role": "assistant",
+      "status": "in_progress",
+      "phase": "final_answer",
+      "content": []
+    }
+  },
+
+  "response.content_part.added (output_text)": {
+    "type": "response.content_part.added",
+    "sequence_number": 55,
+    "output_index": 9,
+    "item_id": "msg_001",
+    "content_index": 0,
+    "part": {
+      "type": "output_text",
+      "text": "",
+      "annotations": [],
+      "logprobs": null
+    }
+  },
+
+  "response.output_text.delta": {
+    "type": "response.output_text.delta",
+    "sequence_number": 56,
+    "output_index": 9,
+    "item_id": "msg_001",
+    "content_index": 0,
+    "delta": "The current weather in Paris",
+    "logprobs": [
+      {
+        "token": "The",
+        "bytes": [84, 104, 101],
+        "logprob": -0.0023,
+        "top_logprobs": [
+          { "token": "The", "bytes": [84, 104, 101], "logprob": -0.0023 },
+          { "token": "Currently", "bytes": [67, 117, 114, 114, 101, 110, 116, 108, 121], "logprob": -2.1456 }
+        ]
+      }
+    ]
+  },
+
+  "response.output_text.annotation.added": {
+    "type": "response.output_text.annotation.added",
+    "sequence_number": 57,
+    "output_index": 9,
+    "item_id": "msg_001",
+    "content_index": 0,
+    "annotation_index": 0,
+    "annotation": {
+      "type": "url_citation",
+      "url": "https://weather.example.com/paris",
+      "title": "Paris Weather Today",
+      "start_index": 4,
+      "end_index": 48
+    }
+  },
+
+  "response.output_text.done": {
+    "type": "response.output_text.done",
+    "sequence_number": 58,
+    "output_index": 9,
+    "item_id": "msg_001",
+    "content_index": 0,
+    "text": "The current weather in Paris is 22°C and partly cloudy.",
+    "logprobs": [
+      {
+        "token": "The",
+        "bytes": [84, 104, 101],
+        "logprob": -0.0023,
+        "top_logprobs": [
+          { "token": "The", "bytes": [84, 104, 101], "logprob": -0.0023 }
+        ]
+      }
+    ]
+  },
+
+  "response.refusal.delta": {
+    "type": "response.refusal.delta",
+    "sequence_number": 59,
+    "output_index": 9,
+    "item_id": "msg_001",
+    "content_index": 1,
+    "delta": "I'm sorry, I can't help"
+  },
+
+  "response.refusal.done": {
+    "type": "response.refusal.done",
+    "sequence_number": 60,
+    "output_index": 9,
+    "item_id": "msg_001",
+    "content_index": 1,
+    "refusal": "I'm sorry, I can't help with that request."
+  },
+
+  "response.audio.delta": {
+    "type": "response.audio.delta",
+    "sequence_number": 61,
+    "output_index": 10,
+    "item_id": "audio_001",
+    "response_id": "resp_abc123xyz",
+    "delta": "UklGRiQAAABXQVZFZm10IBAAAA=="
+  },
+
+  "response.audio.done": {
+    "type": "response.audio.done",
+    "sequence_number": 62,
+    "output_index": 10,
+    "item_id": "audio_001",
+    "response_id": "resp_abc123xyz"
+  },
+
+  "response.audio.transcript.delta": {
+    "type": "response.audio.transcript.delta",
+    "sequence_number": 63,
+    "output_index": 10,
+    "item_id": "audio_001",
+    "delta": "The current weather in Paris"
+  },
+
+  "response.audio.transcript.done": {
+    "type": "response.audio.transcript.done",
+    "sequence_number": 64,
+    "output_index": 10,
+    "item_id": "audio_001",
+    "transcript": "The current weather in Paris is 22 degrees and partly cloudy."
+  },
+
+  "response.custom_tool_call_input.delta": {
+    "type": "response.custom_tool_call_input.delta",
+    "sequence_number": 65,
+    "output_index": 11,
+    "item_id": "ctc_001",
+    "delta": "{\"param\":\"val"
+  },
+
+  "response.custom_tool_call_input.done": {
+    "type": "response.custom_tool_call_input.done",
+    "sequence_number": 66,
+    "output_index": 11,
+    "item_id": "ctc_001",
+    "input": "{\"param\":\"value\"}"
+  },
+
+  "response.content_part.done (output_text)": {
+    "type": "response.content_part.done",
+    "sequence_number": 67,
+    "output_index": 9,
+    "item_id": "msg_001",
+    "content_index": 0,
+    "part": {
+      "type": "output_text",
+      "text": "The current weather in Paris is 22°C and partly cloudy.",
+      "annotations": [
+        {
+          "type": "url_citation",
+          "url": "https://weather.example.com/paris",
+          "title": "Paris Weather Today",
+          "start_index": 4,
+          "end_index": 48
+        }
+      ],
+      "logprobs": null
+    }
+  },
+
+  "response.output_item.done (message)": {
+    "type": "response.output_item.done",
+    "sequence_number": 68,
+    "output_index": 9,
+    "item": {
+      "type": "message",
+      "id": "msg_001",
+      "role": "assistant",
+      "status": "completed",
+      "phase": "final_answer",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "The current weather in Paris is 22°C and partly cloudy.",
+          "annotations": [],
+          "logprobs": null
+        }
+      ]
+    }
+  },
+
+  "response.completed": {
+    "type": "response.completed",
+    "sequence_number": 69,
+    "response": {
+      "id": "resp_abc123xyz",
+      "object": "response",
+      "created_at": 1749500000.0,
+      "completed_at": 1749500002.345,
+      "status": "completed",
+      "model": "gpt-4o-2024-11-20",
+      "output": [
+        {
+          "type": "message",
+          "id": "msg_001",
+          "role": "assistant",
+          "status": "completed",
+          "phase": "final_answer",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "The current weather in Paris is 22°C and partly cloudy.",
+              "annotations": [],
+              "logprobs": null
+            }
+          ]
+        }
+      ],
+      "usage": {
+        "input_tokens": 854,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 512
+        },
+        "output_tokens": 87,
+        "output_tokens_details": {
+          "reasoning_tokens": 24
+        },
+        "total_tokens": 941
+      },
+      "error": null,
+      "incomplete_details": null
+    }
+  },
+
+  "response.failed": {
+    "type": "response.failed",
+    "sequence_number": 69,
+    "response": {
+      "id": "resp_abc123xyz",
+      "object": "response",
+      "created_at": 1749500000.0,
+      "completed_at": 1749500001.234,
+      "status": "failed",
+      "model": "gpt-4o-2024-11-20",
+      "output": [],
+      "usage": null,
+      "error": {
+        "code": "server_error",
+        "message": "The server had an error while processing your request."
+      },
+      "incomplete_details": null
+    }
+  },
+
+  "response.incomplete": {
+    "type": "response.incomplete",
+    "sequence_number": 69,
+    "response": {
+      "id": "resp_abc123xyz",
+      "object": "response",
+      "created_at": 1749500000.0,
+      "completed_at": 1749500002.0,
+      "status": "incomplete",
+      "model": "gpt-4o-2024-11-20",
+      "output": [],
+      "usage": {
+        "input_tokens": 200,
+        "input_tokens_details": { "cache_write_tokens": 0, "cached_tokens": 0 },
+        "output_tokens": 2048,
+        "output_tokens_details": { "reasoning_tokens": 0 },
+        "total_tokens": 2248
+      },
+      "error": null,
+      "incomplete_details": {
+        "reason": "max_output_tokens"
+      }
+    }
+  },
+
+  "error": {
+    "type": "error",
+    "sequence_number": 99,
+    "code": "rate_limit_exceeded",
+    "message": "You exceeded your current quota, please check your plan and billing details.",
+    "param": null
+  }
+}

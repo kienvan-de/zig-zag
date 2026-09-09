@@ -1,0 +1,171 @@
+{
+  "model": "gpt-4o",
+  "input": [
+    {
+      "type": "message",
+      "role": "system",
+      "content": "You are a helpful assistant."
+    },
+    {
+      "type": "message",
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "What is the weather like in Paris today?"
+        }
+      ]
+    }
+  ],
+  "instructions": "Respond concisely in plain text.",
+  "background": false,
+  "context_management": [
+    {
+      "type": "auto",
+      "compact_threshold": 8000
+    }
+  ],
+  "conversation": "conv_abc123",
+  "include": [
+    "file_search_call.results",
+    "web_search_call.results",
+    "web_search_call.action.sources",
+    "message.input_image.image_url",
+    "computer_call_output.output.image_url",
+    "reasoning.encrypted_content",
+    "code_interpreter_call.outputs",
+    "message.output_text.logprobs"
+  ],
+  "max_output_tokens": 2048,
+  "max_tool_calls": 10,
+  "metadata": {
+    "user_id": "u_987xyz",
+    "session": "sess_001"
+  },
+  "moderation": {
+    "model": "omni-moderation-latest",
+    "policy": {
+      "input": {
+        "mode": "block"
+      },
+      "output": {
+        "mode": "score"
+      }
+    }
+  },
+  "parallel_tool_calls": true,
+  "previous_response_id": "resp_prev_abc",
+  "prompt": {
+    "id": "pmpt_abc123",
+    "version": "2",
+    "variables": {
+      "topic": "weather"
+    }
+  },
+  "prompt_cache_key": "cache_key_xyz",
+  "prompt_cache_options": {
+    "mode": "implicit",
+    "ttl": "30m"
+  },
+  "reasoning": {
+    "effort": "medium",
+    "summary": "auto"
+  },
+  "safety_identifier": "safe_id_001",
+  "service_tier": "default",
+  "store": true,
+  "stream": true,
+  "stream_options": {
+    "include_obfuscation": false
+  },
+  "temperature": 0.7,
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "weather_response",
+      "description": "Structured weather response",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "location": { "type": "string" },
+          "temperature": { "type": "number" },
+          "condition": { "type": "string" }
+        },
+        "required": ["location", "temperature", "condition"],
+        "additionalProperties": false
+      },
+      "strict": true
+    },
+    "verbosity": "detailed"
+  },
+  "tool_choice": {
+    "type": "auto"
+  },
+  "tools": [
+    {
+      "type": "function",
+      "name": "get_current_weather",
+      "description": "Get the current weather for a given location.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "location": {
+            "type": "string",
+            "description": "City and country, e.g. 'Paris, France'"
+          },
+          "unit": {
+            "type": "string",
+            "enum": ["celsius", "fahrenheit"]
+          }
+        },
+        "required": ["location"],
+        "additionalProperties": false
+      },
+      "strict": true
+    },
+    {
+      "type": "web_search_preview",
+      "search_context_size": "medium",
+      "user_location": {
+        "type": "approximate",
+        "country": "FR",
+        "city": "Paris",
+        "region": "Île-de-France",
+        "timezone": "Europe/Paris"
+      }
+    },
+    {
+      "type": "file_search",
+      "vector_store_ids": ["vs_abc123"],
+      "max_num_results": 20,
+      "filters": {
+        "type": "eq",
+        "key": "category",
+        "value": "weather"
+      },
+      "ranking_options": {
+        "ranker": "auto",
+        "score_threshold": 0.5
+      }
+    },
+    {
+      "type": "code_interpreter",
+      "container": {
+        "type": "auto"
+      }
+    },
+    {
+      "type": "mcp",
+      "server_label": "weather_server",
+      "server_url": "https://mcp.example.com/weather",
+      "allowed_tools": ["get_forecast"],
+      "headers": {
+        "Authorization": "Bearer token_xyz"
+      },
+      "require_approval": "never"
+    }
+  ],
+  "top_logprobs": 5,
+  "top_p": 1.0,
+  "truncation": "disabled"
+}

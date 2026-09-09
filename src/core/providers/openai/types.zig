@@ -172,6 +172,7 @@ pub const ResponseFormat = struct {
 /// Stream options
 pub const StreamOptions = struct {
     include_usage: ?bool = null,
+    include_obfuscation: ?bool = null,
 };
 
 /// Content union type for messages
