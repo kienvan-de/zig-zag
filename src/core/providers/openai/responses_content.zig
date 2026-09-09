@@ -26,6 +26,7 @@
 //! (chat / messages / responses) are bridged onto it.
 
 const std = @import("std");
+const common = @import("types.zig"); // shared primitives
 
 const Chat = @import("chat_types.zig"); // chat schema
 const Messages = @import("../anthropic/types.zig"); // Anthropic Messages wire types
@@ -86,7 +87,7 @@ pub fn buildChatChunk(
     ctx: ChatChunkContext,
     delta: Chat.Delta,
     finish_reason: ?[]const u8,
-    usage: ?Chat.Usage,
+    usage: ?common.Usage,
     allocator: std.mem.Allocator,
 ) ?[]const u8 {
     const choices = [_]Chat.StreamChoice{.{
@@ -122,7 +123,10 @@ pub fn freeMessageOwnedBlocks(blocks: []const Messages.ContentBlock, allocator: 
                 allocator.free(tu.name);
                 freeParsedJsonValue(tu.input, allocator);
             },
-            .thinking, .redacted_thinking => {},
+            .thinking, .redacted_thinking,
+            .server_tool_use, .tool_result, .web_search_tool_result, .web_fetch_tool_result,
+            .code_execution_tool_result, .bash_code_execution_tool_result,
+            .text_editor_code_execution_tool_result, .tool_search_tool_result => {},
         }
     }
 }
@@ -161,17 +165,12 @@ pub fn parseToolArguments(
 }
 
 /// Free a chat tool-call list as built by the chat-face response transform:
-/// each function variant owns id, name, and arguments.
+/// each call owns id, name, and arguments.
 pub fn freeChatToolCallList(tool_calls: []const Chat.ToolCall, allocator: std.mem.Allocator) void {
     for (tool_calls) |tc| {
-        switch (tc) {
-            .function => |f| {
-                allocator.free(f.id);
-                allocator.free(f.function.name);
-                allocator.free(f.function.arguments);
-            },
-            .custom => {},
-        }
+        allocator.free(tc.id);
+        allocator.free(tc.function.name);
+        allocator.free(tc.function.arguments);
     }
     allocator.free(tool_calls);
 }

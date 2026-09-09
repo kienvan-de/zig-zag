@@ -22,6 +22,7 @@
 //! defined here (P5).
 
 const std = @import("std");
+const common = @import("types.zig"); // shared primitives
 
 const Chat = @import("chat_types.zig"); // chat schema
 const Messages = @import("../anthropic/types.zig"); // Anthropic Messages wire types
@@ -76,10 +77,10 @@ const ResponsesEventData = struct {
 /// pass through (identical to the chat transformer's face).
 pub fn transformModelsResponse(
     allocator: std.mem.Allocator,
-    response: std.json.Parsed(Chat.ModelsResponse),
+    response: std.json.Parsed(common.ModelsResponse),
     provider_name: []const u8,
-) ![]Chat.Model {
-    var models = try allocator.alloc(Chat.Model, response.value.data.len);
+) ![]common.Model {
+    var models = try allocator.alloc(common.Model, response.value.data.len);
     errdefer allocator.free(models);
 
     for (response.value.data, 0..) |upstream_model, i| {
@@ -168,12 +169,19 @@ pub fn transformChatRequest(
     else
         .{ .text = "" };
 
+    // Convert Chat.Tool (nested format) to Responses.Tool (flat format) — same ToolFunction data.
+    const tools: ?[]const Responses.Tool = if (request.tools) |chat_tools| blk: {
+        const rt = try allocator.alloc(Responses.Tool, chat_tools.len);
+        for (chat_tools, 0..) |t, i| rt[i] = .{ .function = .{ .function = t.function } };
+        break :blk rt;
+    } else null;
+
     return .{
         .model = model,
         .input = input,
         .instructions = instructions,
         .stream = request.stream,
-        .tools = request.tools,
+        .tools = tools,
         .tool_choice = request.tool_choice,
         .parallel_tool_calls = request.parallel_tool_calls,
         .temperature = request.temperature,
@@ -181,10 +189,9 @@ pub fn transformChatRequest(
         .top_logprobs = request.top_logprobs,
         .store = request.store,
         .metadata = request.metadata,
-        .moderation = request.moderation,
-        .safety_identifier = request.safety_identifier,
-        .prompt_cache_key = request.prompt_cache_key,
-        .prompt_cache_options = request.prompt_cache_options,
+        .safety_identifier = null,
+        .prompt_cache_key = null,
+        .prompt_cache_options = null,
         .user = request.user,
         .service_tier = request.service_tier,
         .max_output_tokens = request.max_completion_tokens orelse request.max_tokens,
@@ -238,11 +245,9 @@ pub fn transformChatResponse(
     var tool_calls: std.ArrayList(Chat.ToolCall) = .empty;
     errdefer {
         for (tool_calls.items) |tc| {
-            if (tc == .function) {
-                allocator.free(tc.function.id);
-                allocator.free(tc.function.function.name);
-                allocator.free(tc.function.function.arguments);
-            }
+            allocator.free(tc.id);
+            allocator.free(tc.function.name);
+            allocator.free(tc.function.arguments);
         }
         tool_calls.deinit(allocator);
     }
@@ -257,14 +262,14 @@ pub fn transformChatResponse(
                     }
                 }
             },
-            .function_call => |f| try tool_calls.append(allocator, .{ .function = .{
+            .function_call => |f| try tool_calls.append(allocator, .{
                 .id = try allocator.dupe(u8, f.id),
                 .type = "function",
                 .function = .{
                     .name = try allocator.dupe(u8, f.name),
                     .arguments = try allocator.dupe(u8, f.arguments),
                 },
-            } }),
+            }),
             .reasoning, .other => {},
         }
     }
@@ -307,11 +312,11 @@ pub fn transformChatResponse(
         .created = @intFromFloat(upstream_response.created_at),
         .model = try allocator.dupe(u8, upstream_response.model),
         .choices = choices,
-        .usage = .{
-            .prompt_tokens = upstream_response.usage.input_tokens,
-            .completion_tokens = upstream_response.usage.output_tokens,
-            .total_tokens = upstream_response.usage.total_tokens,
-        },
+        .usage = if (upstream_response.usage) |u| .{
+            .prompt_tokens = u.input_tokens,
+            .completion_tokens = u.output_tokens,
+            .total_tokens = u.total_tokens,
+        } else null,
         .service_tier = upstream_response.service_tier,
     };
 }
@@ -525,8 +530,6 @@ pub fn transformMessagesRequest(
         .temperature = request.temperature,
         .top_p = request.top_p,
         .max_output_tokens = request.max_tokens, // non-optional on Messages.Request
-        .thinking = request.thinking,
-        .betas = request.betas,
         .service_tier = request.service_tier,
         .truncation = null,
         .background = null,
@@ -630,8 +633,8 @@ pub fn transformMessagesResponse(
         .stop_reason = stop_reason,
         .stop_sequence = null,
         .usage = .{
-            .input_tokens = upstream_response.usage.input_tokens,
-            .output_tokens = upstream_response.usage.output_tokens,
+            .input_tokens = if (upstream_response.usage) |u| u.input_tokens else 0,
+            .output_tokens = if (upstream_response.usage) |u| u.output_tokens else 0,
         },
     };
 }
