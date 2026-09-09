@@ -1,0 +1,282 @@
+{
+  "id": "msg_01XFDUDYJgAACTU3kkRXdUAK",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-opus-4-5-20251101",
+  "stop_reason": "tool_use",
+  "stop_sequence": null,
+  "usage": {
+    "input_tokens": 2095,
+    "output_tokens": 503,
+    "cache_creation_input_tokens": 512,
+    "cache_read_input_tokens": 1024
+  },
+  "container": {
+    "id": "container_xyz789",
+    "expires_at": "2026-09-09T12:00:00Z",
+    "skills": [
+      {
+        "skill_id": "python-data-science",
+        "type": "anthropic",
+        "version": "latest"
+      },
+      {
+        "skill_id": "my-custom-skill",
+        "type": "custom",
+        "version": "1.0.0"
+      }
+    ]
+  },
+  "content": [
+    {
+      "type": "thinking",
+      "thinking": "Let me reason through this step by step. The user wants weather data and also wants me to search the web...",
+      "signature": "sig_abc123def456ghi789"
+    },
+    {
+      "type": "redacted_thinking",
+      "data": "opaque_encrypted_thinking_data_base64encoded=="
+    },
+    {
+      "type": "text",
+      "text": "I'll look up the current weather and search for recent news.",
+      "citations": null
+    },
+    {
+      "type": "text",
+      "text": "Based on the document, the relevant passage states the following.",
+      "citations": [
+        {
+          "type": "char_location",
+          "cited_text": "the relevant excerpt from plain text",
+          "document_index": 0,
+          "document_title": "Source Document",
+          "start_char_index": 120,
+          "end_char_index": 220,
+          "file_id": "file_abc123"
+        },
+        {
+          "type": "page_location",
+          "cited_text": "the relevant excerpt from PDF",
+          "document_index": 1,
+          "document_title": "Technical PDF",
+          "start_page_number": 3,
+          "end_page_number": 4,
+          "file_id": "file_pdf456"
+        },
+        {
+          "type": "content_block_location",
+          "cited_text": "the relevant excerpt from content block",
+          "document_index": 2,
+          "document_title": "Content Document",
+          "start_block_index": 0,
+          "end_block_index": 1,
+          "file_id": "file_content789"
+        }
+      ]
+    },
+    {
+      "type": "tool_use",
+      "id": "toolu_01A09q90qw90lq917835lq9",
+      "name": "get_weather",
+      "input": {
+        "location": "Berlin",
+        "unit": "celsius"
+      },
+      "caller": {
+        "type": "direct"
+      }
+    },
+    {
+      "type": "tool_use",
+      "id": "toolu_01Bcd234efgh567",
+      "name": "run_query",
+      "input": {
+        "query": "SELECT * FROM users LIMIT 10"
+      },
+      "caller": {
+        "type": "code_execution_20250825",
+        "tool_id": "srvtoolu_01Xyz789"
+      }
+    },
+    {
+      "type": "server_tool_use",
+      "id": "srvtoolu_01WebSearch123",
+      "name": "web_search",
+      "input": {
+        "query": "latest AI breakthroughs 2026"
+      },
+      "caller": {
+        "type": "direct"
+      }
+    },
+    {
+      "type": "server_tool_use",
+      "id": "srvtoolu_01WebFetch456",
+      "name": "web_fetch",
+      "input": {
+        "url": "https://example.com/article"
+      },
+      "caller": {
+        "type": "direct"
+      }
+    },
+    {
+      "type": "server_tool_use",
+      "id": "srvtoolu_01Code789",
+      "name": "code_execution",
+      "input": {
+        "code": "print('Hello, World!')",
+        "language": "python"
+      },
+      "caller": {
+        "type": "direct"
+      }
+    },
+    {
+      "type": "server_tool_use",
+      "id": "srvtoolu_01Bash012",
+      "name": "bash_code_execution",
+      "input": {
+        "command": "ls -la"
+      },
+      "caller": {
+        "type": "direct"
+      }
+    },
+    {
+      "type": "server_tool_use",
+      "id": "srvtoolu_01Editor345",
+      "name": "text_editor_code_execution",
+      "input": {
+        "command": "view",
+        "path": "/workspace/main.py"
+      },
+      "caller": {
+        "type": "direct"
+      }
+    },
+    {
+      "type": "server_tool_use",
+      "id": "srvtoolu_01ToolSearch678",
+      "name": "tool_search_tool_bm25",
+      "input": {
+        "query": "weather tool"
+      },
+      "caller": {
+        "type": "direct"
+      }
+    },
+    {
+      "type": "web_search_tool_result",
+      "tool_use_id": "srvtoolu_01WebSearch123",
+      "content": [
+        {
+          "type": "web_search_result",
+          "title": "Latest AI Breakthroughs in 2026",
+          "url": "https://example.com/ai-news-2026",
+          "encrypted_content": "enc_content_xyz_base64encoded==",
+          "page_age": "2026-09-01"
+        },
+        {
+          "type": "web_search_result",
+          "title": "AI Progress Report",
+          "url": "https://research.example.com/ai-report",
+          "encrypted_content": "enc_content_abc_base64encoded==",
+          "page_age": null
+        }
+      ],
+      "caller": {
+        "type": "direct"
+      }
+    },
+    {
+      "type": "web_fetch_tool_result",
+      "tool_use_id": "srvtoolu_01WebFetch456",
+      "content": {
+        "type": "web_fetch_result",
+        "url": "https://example.com/article",
+        "retrieved_at": "2026-09-09T10:00:00Z",
+        "content": {
+          "type": "document",
+          "source": {
+            "type": "text",
+            "media_type": "text/plain",
+            "data": "The article content fetched from the URL."
+          }
+        }
+      },
+      "caller": {
+        "type": "direct"
+      }
+    },
+    {
+      "type": "code_execution_tool_result",
+      "tool_use_id": "srvtoolu_01Code789",
+      "content": {
+        "type": "code_execution_result",
+        "stdout": "Hello, World!\n",
+        "stderr": "",
+        "return_code": 0,
+        "content": [
+          {
+            "type": "code_execution_output",
+            "file_id": "file_output_png123"
+          }
+        ]
+      }
+    },
+    {
+      "type": "bash_code_execution_tool_result",
+      "tool_use_id": "srvtoolu_01Bash012",
+      "content": {
+        "type": "bash_code_execution_result",
+        "stdout": "total 48\ndrwxr-xr-x  8 user group 256 Sep  9 10:00 .\ndrwxr-xr-x 12 user group 384 Sep  8 09:00 ..\n-rw-r--r--  1 user group 1234 Sep  9 10:00 main.py\n",
+        "stderr": "",
+        "return_code": 0,
+        "content": [
+          {
+            "type": "bash_code_execution_output",
+            "file_id": "file_bash_out456"
+          }
+        ]
+      }
+    },
+    {
+      "type": "text_editor_code_execution_tool_result",
+      "tool_use_id": "srvtoolu_01Editor345",
+      "content": {
+        "type": "text_editor_code_execution_view_result",
+        "content": "def main():\n    print('Hello')\n\nif __name__ == '__main__':\n    main()\n",
+        "file_type": "text",
+        "num_lines": 5,
+        "start_line": 1,
+        "total_lines": 5
+      }
+    },
+    {
+      "type": "tool_search_tool_result",
+      "tool_use_id": "srvtoolu_01ToolSearch678",
+      "content": {
+        "type": "tool_search_tool_search_result",
+        "tool_references": [
+          {
+            "type": "tool_reference",
+            "tool_name": "get_weather"
+          }
+        ]
+      }
+    },
+    {
+      "type": "tool_result",
+      "tool_use_id": "toolu_01A09q90qw90lq917835lq9",
+      "is_error": false,
+      "content": [
+        {
+          "type": "text",
+          "text": "18°C, partly cloudy"
+        }
+      ]
+    }
+  ]
+}

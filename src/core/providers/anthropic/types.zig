@@ -71,6 +71,10 @@ pub const ImageSource = union(enum) {
         type: []const u8 = "url",
         url: []const u8,
     },
+    file: struct {
+        type: []const u8 = "file",
+        file_id: []const u8,
+    },
 
     pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
         const json_value = try std.json.innerParse(std.json.Value, allocator, source, options);
@@ -94,6 +98,10 @@ pub const ImageSource = union(enum) {
             const url_val = obj.get("url") orelse return error.MissingField;
             if (url_val != .string) return error.UnexpectedToken;
             return .{ .url = .{ .type = type_str, .url = url_val.string } };
+        } else if (std.mem.eql(u8, type_str, "file")) {
+            const file_id_val = obj.get("file_id") orelse return error.MissingField;
+            if (file_id_val != .string) return error.UnexpectedToken;
+            return .{ .file = .{ .type = type_str, .file_id = file_id_val.string } };
         } else {
             return error.UnexpectedToken;
         }
@@ -103,6 +111,7 @@ pub const ImageSource = union(enum) {
         switch (self) {
             .base64 => |v| try jw.write(v),
             .url => |v| try jw.write(v),
+            .file => |v| try jw.write(v),
         }
     }
 };
@@ -122,6 +131,10 @@ pub const DocumentSource = union(enum) {
     url_pdf: struct {
         type: []const u8 = "url",
         url: []const u8,
+    },
+    file: struct {
+        type: []const u8 = "file",
+        file_id: []const u8,
     },
 
     pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
@@ -152,6 +165,10 @@ pub const DocumentSource = union(enum) {
             const url_val = obj.get("url") orelse return error.MissingField;
             if (url_val != .string) return error.UnexpectedToken;
             return .{ .url_pdf = .{ .type = type_str, .url = url_val.string } };
+        } else if (std.mem.eql(u8, type_str, "file")) {
+            const file_id_val = obj.get("file_id") orelse return error.MissingField;
+            if (file_id_val != .string) return error.UnexpectedToken;
+            return .{ .file = .{ .type = type_str, .file_id = file_id_val.string } };
         } else {
             return error.UnexpectedToken;
         }
@@ -162,6 +179,7 @@ pub const DocumentSource = union(enum) {
             .base64_pdf => |v| try jw.write(v),
             .plain_text => |v| try jw.write(v),
             .url_pdf => |v| try jw.write(v),
+            .file => |v| try jw.write(v),
         }
     }
 };
@@ -172,13 +190,15 @@ pub const ToolResultBlock = struct {
     tool_use_id: []const u8,
     content: ?[]const u8 = null,
     is_error: ?bool = null,
+    cache_control: ?CacheControl = null,
+    toolset_name: ?[]const u8 = null,
 
     pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
         const json_value = try std.json.innerParse(std.json.Value, allocator, source, options);
         return jsonParseFromValue(allocator, json_value, options);
     }
 
-    pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, _: std.json.ParseOptions) !@This() {
+    pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, options: std.json.ParseOptions) !@This() {
         if (source != .object) return error.UnexpectedToken;
         const obj = source.object;
 
@@ -211,10 +231,22 @@ pub const ToolResultBlock = struct {
             else => null,
         } else null;
 
+        const cache_control: ?CacheControl = if (obj.get("cache_control")) |v|
+            try std.json.innerParseFromValue(CacheControl, allocator, v, options)
+        else
+            null;
+
+        const toolset_name: ?[]const u8 = if (obj.get("toolset_name")) |v| switch (v) {
+            .string => |s| s,
+            else => null,
+        } else null;
+
         return .{
             .tool_use_id = tool_use_id_val.string,
             .content = content,
             .is_error = is_error,
+            .cache_control = cache_control,
+            .toolset_name = toolset_name,
         };
     }
 
@@ -232,33 +264,112 @@ pub const ToolResultBlock = struct {
             try jw.objectField("is_error");
             try jw.write(e);
         }
+        if (self.cache_control) |cc| {
+            try jw.objectField("cache_control");
+            try jw.write(cc);
+        }
+        if (self.toolset_name) |tn| {
+            try jw.objectField("toolset_name");
+            try jw.write(tn);
+        }
         try jw.endObject();
     }
 };
+
+/// Caller info for tool_use / server_tool_use blocks
+pub const Caller = struct {
+    type: []const u8,
+    tool_id: ?[]const u8 = null,
+};
+
+/// Citations on a text content block
+pub const CitationEntry = std.json.Value;
 
 /// Content block param for messages (request)
 pub const ContentBlockParam = union(enum) {
     text: struct {
         type: []const u8 = "text",
         text: []const u8,
+        cache_control: ?CacheControl = null,
+        citations: ?std.json.Value = null,
     },
     image: struct {
         type: []const u8 = "image",
         source: ImageSource,
+        cache_control: ?CacheControl = null,
+        transformations: ?std.json.Value = null,
     },
     document: struct {
         type: []const u8 = "document",
         source: DocumentSource,
         title: ?[]const u8 = null,
         context: ?[]const u8 = null,
+        cache_control: ?CacheControl = null,
+        citations: ?std.json.Value = null,
     },
     tool_use: struct {
         type: []const u8 = "tool_use",
         id: []const u8,
         name: []const u8,
         input: std.json.Value,
+        cache_control: ?CacheControl = null,
+        caller: ?Caller = null,
+        toolset_name: ?[]const u8 = null,
+    },
+    server_tool_use: struct {
+        type: []const u8 = "server_tool_use",
+        id: []const u8,
+        name: []const u8,
+        input: std.json.Value,
+        cache_control: ?CacheControl = null,
+        caller: ?Caller = null,
     },
     tool_result: ToolResultBlock,
+    web_search_tool_result: struct {
+        type: []const u8 = "web_search_tool_result",
+        tool_use_id: []const u8,
+        content: std.json.Value,
+        cache_control: ?CacheControl = null,
+        caller: ?Caller = null,
+    },
+    web_fetch_tool_result: struct {
+        type: []const u8 = "web_fetch_tool_result",
+        tool_use_id: []const u8,
+        content: std.json.Value,
+        cache_control: ?CacheControl = null,
+        caller: ?Caller = null,
+    },
+    code_execution_tool_result: struct {
+        type: []const u8 = "code_execution_tool_result",
+        tool_use_id: []const u8,
+        content: std.json.Value,
+    },
+    bash_code_execution_tool_result: struct {
+        type: []const u8 = "bash_code_execution_tool_result",
+        tool_use_id: []const u8,
+        content: std.json.Value,
+        cache_control: ?CacheControl = null,
+    },
+    text_editor_code_execution_tool_result: struct {
+        type: []const u8 = "text_editor_code_execution_tool_result",
+        tool_use_id: []const u8,
+        content: std.json.Value,
+        cache_control: ?CacheControl = null,
+    },
+    tool_search_tool_result: struct {
+        type: []const u8 = "tool_search_tool_result",
+        tool_use_id: []const u8,
+        content: std.json.Value,
+        cache_control: ?CacheControl = null,
+    },
+    search_result: struct {
+        type: []const u8 = "search_result",
+        title: ?[]const u8 = null,
+        source: ?[]const u8 = null,
+        content: std.json.Value,
+        cache_control: ?CacheControl = null,
+        citations: ?std.json.Value = null,
+    },
     thinking: struct {
         type: []const u8 = "thinking",
         thinking: []const u8,
@@ -267,6 +378,11 @@ pub const ContentBlockParam = union(enum) {
     redacted_thinking: struct {
         type: []const u8 = "redacted_thinking",
         data: []const u8,
+    },
+    container_upload: struct {
+        type: []const u8 = "container_upload",
+        file_id: []const u8,
+        cache_control: ?CacheControl = null,
     },
 
     pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
@@ -282,29 +398,159 @@ pub const ContentBlockParam = union(enum) {
         if (type_value != .string) return error.UnexpectedToken;
         const type_str = type_value.string;
 
+        const cache_control: ?CacheControl = if (obj.get("cache_control")) |v|
+            try std.json.innerParseFromValue(CacheControl, allocator, v, options)
+        else
+            null;
+
         if (std.mem.eql(u8, type_str, "text")) {
             const text_val = obj.get("text") orelse return error.MissingField;
             if (text_val != .string) return error.UnexpectedToken;
-            return .{ .text = .{ .type = type_str, .text = text_val.string } };
+            return .{ .text = .{
+                .type = type_str,
+                .text = text_val.string,
+                .cache_control = cache_control,
+                .citations = obj.get("citations"),
+            } };
         } else if (std.mem.eql(u8, type_str, "image")) {
             const source_val = obj.get("source") orelse return error.MissingField;
             const img_source = try ImageSource.jsonParseFromValue(allocator, source_val, options);
-            return .{ .image = .{ .type = type_str, .source = img_source } };
+            return .{ .image = .{
+                .type = type_str,
+                .source = img_source,
+                .cache_control = cache_control,
+                .transformations = obj.get("transformations"),
+            } };
         } else if (std.mem.eql(u8, type_str, "document")) {
             const source_val = obj.get("source") orelse return error.MissingField;
             const doc_source = try DocumentSource.jsonParseFromValue(allocator, source_val, options);
             const title = if (obj.get("title")) |v| (if (v == .string) v.string else null) else null;
             const context = if (obj.get("context")) |v| (if (v == .string) v.string else null) else null;
-            return .{ .document = .{ .type = type_str, .source = doc_source, .title = title, .context = context } };
+            return .{ .document = .{
+                .type = type_str,
+                .source = doc_source,
+                .title = title,
+                .context = context,
+                .cache_control = cache_control,
+                .citations = obj.get("citations"),
+            } };
         } else if (std.mem.eql(u8, type_str, "tool_use")) {
             const id_val = obj.get("id") orelse return error.MissingField;
             if (id_val != .string) return error.UnexpectedToken;
             const name_val = obj.get("name") orelse return error.MissingField;
             if (name_val != .string) return error.UnexpectedToken;
             const input_val = obj.get("input") orelse std.json.Value{ .object = std.json.ObjectMap{} };
-            return .{ .tool_use = .{ .type = type_str, .id = id_val.string, .name = name_val.string, .input = input_val } };
+            const caller: ?Caller = if (obj.get("caller")) |v|
+                try std.json.innerParseFromValue(Caller, allocator, v, options)
+            else
+                null;
+            const toolset_name: ?[]const u8 = if (obj.get("toolset_name")) |v| switch (v) {
+                .string => |s| s,
+                else => null,
+            } else null;
+            return .{ .tool_use = .{
+                .type = type_str,
+                .id = id_val.string,
+                .name = name_val.string,
+                .input = input_val,
+                .cache_control = cache_control,
+                .caller = caller,
+                .toolset_name = toolset_name,
+            } };
+        } else if (std.mem.eql(u8, type_str, "server_tool_use")) {
+            const id_val = obj.get("id") orelse return error.MissingField;
+            if (id_val != .string) return error.UnexpectedToken;
+            const name_val = obj.get("name") orelse return error.MissingField;
+            if (name_val != .string) return error.UnexpectedToken;
+            const input_val = obj.get("input") orelse std.json.Value{ .object = std.json.ObjectMap{} };
+            const caller: ?Caller = if (obj.get("caller")) |v|
+                try std.json.innerParseFromValue(Caller, allocator, v, options)
+            else
+                null;
+            return .{ .server_tool_use = .{
+                .type = type_str,
+                .id = id_val.string,
+                .name = name_val.string,
+                .input = input_val,
+                .cache_control = cache_control,
+                .caller = caller,
+            } };
         } else if (std.mem.eql(u8, type_str, "tool_result")) {
             return .{ .tool_result = try ToolResultBlock.jsonParseFromValue(allocator, source, options) };
+        } else if (std.mem.eql(u8, type_str, "web_search_tool_result")) {
+            const tuid = obj.get("tool_use_id") orelse return error.MissingField;
+            if (tuid != .string) return error.UnexpectedToken;
+            const content_val = obj.get("content") orelse return error.MissingField;
+            const caller: ?Caller = if (obj.get("caller")) |v|
+                try std.json.innerParseFromValue(Caller, allocator, v, options)
+            else
+                null;
+            return .{ .web_search_tool_result = .{
+                .tool_use_id = tuid.string,
+                .content = content_val,
+                .cache_control = cache_control,
+                .caller = caller,
+            } };
+        } else if (std.mem.eql(u8, type_str, "web_fetch_tool_result")) {
+            const tuid = obj.get("tool_use_id") orelse return error.MissingField;
+            if (tuid != .string) return error.UnexpectedToken;
+            const content_val = obj.get("content") orelse return error.MissingField;
+            const caller: ?Caller = if (obj.get("caller")) |v|
+                try std.json.innerParseFromValue(Caller, allocator, v, options)
+            else
+                null;
+            return .{ .web_fetch_tool_result = .{
+                .tool_use_id = tuid.string,
+                .content = content_val,
+                .cache_control = cache_control,
+                .caller = caller,
+            } };
+        } else if (std.mem.eql(u8, type_str, "code_execution_tool_result")) {
+            const tuid = obj.get("tool_use_id") orelse return error.MissingField;
+            if (tuid != .string) return error.UnexpectedToken;
+            const content_val = obj.get("content") orelse return error.MissingField;
+            return .{ .code_execution_tool_result = .{
+                .tool_use_id = tuid.string,
+                .content = content_val,
+            } };
+        } else if (std.mem.eql(u8, type_str, "bash_code_execution_tool_result")) {
+            const tuid = obj.get("tool_use_id") orelse return error.MissingField;
+            if (tuid != .string) return error.UnexpectedToken;
+            const content_val = obj.get("content") orelse return error.MissingField;
+            return .{ .bash_code_execution_tool_result = .{
+                .tool_use_id = tuid.string,
+                .content = content_val,
+                .cache_control = cache_control,
+            } };
+        } else if (std.mem.eql(u8, type_str, "text_editor_code_execution_tool_result")) {
+            const tuid = obj.get("tool_use_id") orelse return error.MissingField;
+            if (tuid != .string) return error.UnexpectedToken;
+            const content_val = obj.get("content") orelse return error.MissingField;
+            return .{ .text_editor_code_execution_tool_result = .{
+                .tool_use_id = tuid.string,
+                .content = content_val,
+                .cache_control = cache_control,
+            } };
+        } else if (std.mem.eql(u8, type_str, "tool_search_tool_result")) {
+            const tuid = obj.get("tool_use_id") orelse return error.MissingField;
+            if (tuid != .string) return error.UnexpectedToken;
+            const content_val = obj.get("content") orelse return error.MissingField;
+            return .{ .tool_search_tool_result = .{
+                .tool_use_id = tuid.string,
+                .content = content_val,
+                .cache_control = cache_control,
+            } };
+        } else if (std.mem.eql(u8, type_str, "search_result")) {
+            const title = if (obj.get("title")) |v| (if (v == .string) v.string else null) else null;
+            const src = if (obj.get("source")) |v| (if (v == .string) v.string else null) else null;
+            const content_val = obj.get("content") orelse std.json.Value{ .null = {} };
+            return .{ .search_result = .{
+                .title = title,
+                .source = src,
+                .content = content_val,
+                .cache_control = cache_control,
+                .citations = obj.get("citations"),
+            } };
         } else if (std.mem.eql(u8, type_str, "thinking")) {
             const thinking_val = obj.get("thinking") orelse return error.MissingField;
             if (thinking_val != .string) return error.UnexpectedToken;
@@ -315,6 +561,13 @@ pub const ContentBlockParam = union(enum) {
             const data_val = obj.get("data") orelse return error.MissingField;
             if (data_val != .string) return error.UnexpectedToken;
             return .{ .redacted_thinking = .{ .type = type_str, .data = data_val.string } };
+        } else if (std.mem.eql(u8, type_str, "container_upload")) {
+            const file_id_val = obj.get("file_id") orelse return error.MissingField;
+            if (file_id_val != .string) return error.UnexpectedToken;
+            return .{ .container_upload = .{
+                .file_id = file_id_val.string,
+                .cache_control = cache_control,
+            } };
         } else {
             return error.UnexpectedToken;
         }
@@ -322,13 +575,122 @@ pub const ContentBlockParam = union(enum) {
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         switch (self) {
-            .text => |v| try jw.write(v),
-            .image => |v| try jw.write(v),
-            .document => |v| try jw.write(v),
-            .tool_use => |v| try jw.write(v),
+            .text => |v| {
+                try jw.beginObject();
+                try jw.objectField("type"); try jw.write(v.type);
+                try jw.objectField("text"); try jw.write(v.text);
+                if (v.cache_control) |cc| { try jw.objectField("cache_control"); try jw.write(cc); }
+                if (v.citations) |c| { try jw.objectField("citations"); try jw.write(c); }
+                try jw.endObject();
+            },
+            .image => |v| {
+                try jw.beginObject();
+                try jw.objectField("type"); try jw.write(v.type);
+                try jw.objectField("source"); try jw.write(v.source);
+                if (v.cache_control) |cc| { try jw.objectField("cache_control"); try jw.write(cc); }
+                if (v.transformations) |t| { try jw.objectField("transformations"); try jw.write(t); }
+                try jw.endObject();
+            },
+            .document => |v| {
+                try jw.beginObject();
+                try jw.objectField("type"); try jw.write(v.type);
+                try jw.objectField("source"); try jw.write(v.source);
+                if (v.title) |t| { try jw.objectField("title"); try jw.write(t); }
+                if (v.context) |c| { try jw.objectField("context"); try jw.write(c); }
+                if (v.cache_control) |cc| { try jw.objectField("cache_control"); try jw.write(cc); }
+                if (v.citations) |c| { try jw.objectField("citations"); try jw.write(c); }
+                try jw.endObject();
+            },
+            .tool_use => |v| {
+                try jw.beginObject();
+                try jw.objectField("type"); try jw.write(v.type);
+                try jw.objectField("id"); try jw.write(v.id);
+                try jw.objectField("name"); try jw.write(v.name);
+                try jw.objectField("input"); try jw.write(v.input);
+                if (v.cache_control) |cc| { try jw.objectField("cache_control"); try jw.write(cc); }
+                if (v.caller) |c| { try jw.objectField("caller"); try jw.write(c); }
+                if (v.toolset_name) |tn| { try jw.objectField("toolset_name"); try jw.write(tn); }
+                try jw.endObject();
+            },
+            .server_tool_use => |v| {
+                try jw.beginObject();
+                try jw.objectField("type"); try jw.write(v.type);
+                try jw.objectField("id"); try jw.write(v.id);
+                try jw.objectField("name"); try jw.write(v.name);
+                try jw.objectField("input"); try jw.write(v.input);
+                if (v.cache_control) |cc| { try jw.objectField("cache_control"); try jw.write(cc); }
+                if (v.caller) |c| { try jw.objectField("caller"); try jw.write(c); }
+                try jw.endObject();
+            },
             .tool_result => |v| try jw.write(v),
+            .web_search_tool_result => |v| {
+                try jw.beginObject();
+                try jw.objectField("type"); try jw.write(v.type);
+                try jw.objectField("tool_use_id"); try jw.write(v.tool_use_id);
+                try jw.objectField("content"); try jw.write(v.content);
+                if (v.cache_control) |cc| { try jw.objectField("cache_control"); try jw.write(cc); }
+                if (v.caller) |c| { try jw.objectField("caller"); try jw.write(c); }
+                try jw.endObject();
+            },
+            .web_fetch_tool_result => |v| {
+                try jw.beginObject();
+                try jw.objectField("type"); try jw.write(v.type);
+                try jw.objectField("tool_use_id"); try jw.write(v.tool_use_id);
+                try jw.objectField("content"); try jw.write(v.content);
+                if (v.cache_control) |cc| { try jw.objectField("cache_control"); try jw.write(cc); }
+                if (v.caller) |c| { try jw.objectField("caller"); try jw.write(c); }
+                try jw.endObject();
+            },
+            .code_execution_tool_result => |v| {
+                try jw.beginObject();
+                try jw.objectField("type"); try jw.write(v.type);
+                try jw.objectField("tool_use_id"); try jw.write(v.tool_use_id);
+                try jw.objectField("content"); try jw.write(v.content);
+                try jw.endObject();
+            },
+            .bash_code_execution_tool_result => |v| {
+                try jw.beginObject();
+                try jw.objectField("type"); try jw.write(v.type);
+                try jw.objectField("tool_use_id"); try jw.write(v.tool_use_id);
+                try jw.objectField("content"); try jw.write(v.content);
+                if (v.cache_control) |cc| { try jw.objectField("cache_control"); try jw.write(cc); }
+                try jw.endObject();
+            },
+            .text_editor_code_execution_tool_result => |v| {
+                try jw.beginObject();
+                try jw.objectField("type"); try jw.write(v.type);
+                try jw.objectField("tool_use_id"); try jw.write(v.tool_use_id);
+                try jw.objectField("content"); try jw.write(v.content);
+                if (v.cache_control) |cc| { try jw.objectField("cache_control"); try jw.write(cc); }
+                try jw.endObject();
+            },
+            .tool_search_tool_result => |v| {
+                try jw.beginObject();
+                try jw.objectField("type"); try jw.write(v.type);
+                try jw.objectField("tool_use_id"); try jw.write(v.tool_use_id);
+                try jw.objectField("content"); try jw.write(v.content);
+                if (v.cache_control) |cc| { try jw.objectField("cache_control"); try jw.write(cc); }
+                try jw.endObject();
+            },
+            .search_result => |v| {
+                try jw.beginObject();
+                try jw.objectField("type"); try jw.write(v.type);
+                if (v.title) |t| { try jw.objectField("title"); try jw.write(t); }
+                if (v.source) |s| { try jw.objectField("source"); try jw.write(s); }
+                try jw.objectField("content"); try jw.write(v.content);
+                if (v.cache_control) |cc| { try jw.objectField("cache_control"); try jw.write(cc); }
+                if (v.citations) |c| { try jw.objectField("citations"); try jw.write(c); }
+                try jw.endObject();
+            },
             .thinking => |v| try jw.write(v),
             .redacted_thinking => |v| try jw.write(v),
+            .container_upload => |v| {
+                try jw.beginObject();
+                try jw.objectField("type"); try jw.write(v.type);
+                try jw.objectField("file_id"); try jw.write(v.file_id);
+                if (v.cache_control) |cc| { try jw.objectField("cache_control"); try jw.write(cc); }
+                try jw.endObject();
+            },
         }
     }
 };
@@ -420,6 +782,7 @@ pub const Message = struct {
 /// Cache control for prompt caching
 pub const CacheControl = struct {
     type: []const u8 = "ephemeral",
+    ttl: ?[]const u8 = null,
 };
 
 /// Extended thinking configuration (GAP-1)
@@ -437,13 +800,29 @@ pub const OutputConfig = struct {
 
 /// Tool definition for Anthropic API
 pub const Tool = struct {
-    name: []const u8,
+    name: ?[]const u8 = null,
     description: ?[]const u8 = null,
-    input_schema: std.json.Value,
+    input_schema: ?std.json.Value = null,
     type: []const u8 = "custom",
     cache_control: ?CacheControl = null,
     defer_loading: ?bool = null,
     strict: ?bool = null,
+    allowed_callers: ?std.json.Value = null,
+    eager_input_streaming: ?std.json.Value = null,
+    input_examples: ?std.json.Value = null,
+    // text_editor fields
+    max_characters: ?u32 = null,
+    // web_search / web_fetch fields
+    max_uses: ?u32 = null,
+    max_content_tokens: ?u32 = null,
+    allowed_domains: ?std.json.Value = null,
+    blocked_domains: ?std.json.Value = null,
+    user_location: ?std.json.Value = null,
+    response_inclusion: ?[]const u8 = null,
+    citations: ?std.json.Value = null,
+    use_cache: ?bool = null,
+    // toolset fields (browser_toolset, computer_toolset)
+    configs: ?std.json.Value = null,
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         try jw.beginObject();
@@ -452,14 +831,18 @@ pub const Tool = struct {
             try jw.objectField("type");
             try jw.write(self.type);
         }
-        try jw.objectField("name");
-        try jw.write(self.name);
+        if (self.name) |n| {
+            try jw.objectField("name");
+            try jw.write(n);
+        }
         if (self.description) |d| {
             try jw.objectField("description");
             try jw.write(d);
         }
-        try jw.objectField("input_schema");
-        try jw.write(self.input_schema);
+        if (self.input_schema) |is| {
+            try jw.objectField("input_schema");
+            try jw.write(is);
+        }
         if (self.cache_control) |cc| {
             try jw.objectField("cache_control");
             try jw.write(cc);
@@ -471,6 +854,58 @@ pub const Tool = struct {
         if (self.strict) |s| {
             try jw.objectField("strict");
             try jw.write(s);
+        }
+        if (self.allowed_callers) |ac| {
+            try jw.objectField("allowed_callers");
+            try jw.write(ac);
+        }
+        if (self.eager_input_streaming) |eis| {
+            try jw.objectField("eager_input_streaming");
+            try jw.write(eis);
+        }
+        if (self.input_examples) |ie| {
+            try jw.objectField("input_examples");
+            try jw.write(ie);
+        }
+        if (self.max_characters) |mc| {
+            try jw.objectField("max_characters");
+            try jw.write(mc);
+        }
+        if (self.max_uses) |mu| {
+            try jw.objectField("max_uses");
+            try jw.write(mu);
+        }
+        if (self.max_content_tokens) |mct| {
+            try jw.objectField("max_content_tokens");
+            try jw.write(mct);
+        }
+        if (self.allowed_domains) |ad| {
+            try jw.objectField("allowed_domains");
+            try jw.write(ad);
+        }
+        if (self.blocked_domains) |bd| {
+            try jw.objectField("blocked_domains");
+            try jw.write(bd);
+        }
+        if (self.user_location) |ul| {
+            try jw.objectField("user_location");
+            try jw.write(ul);
+        }
+        if (self.response_inclusion) |ri| {
+            try jw.objectField("response_inclusion");
+            try jw.write(ri);
+        }
+        if (self.citations) |c| {
+            try jw.objectField("citations");
+            try jw.write(c);
+        }
+        if (self.use_cache) |uc| {
+            try jw.objectField("use_cache");
+            try jw.write(uc);
+        }
+        if (self.configs) |cfg| {
+            try jw.objectField("configs");
+            try jw.write(cfg);
         }
         try jw.endObject();
     }
@@ -566,9 +1001,11 @@ pub const Request = struct {
     // GAP-7: structured output
     output_config: ?OutputConfig = null,
     // GAP-8: code execution container
-    container: ?std.json.Value = null,
+    container: ?Container = null,
     // GAP-9: inference geography
     inference_geo: ?[]const u8 = null,
+    // top-level cache control
+    cache_control: ?CacheControl = null,
 
     /// Parse system field that can be either a string or array of content blocks.
     /// Array format: [{"type": "text", "text": "..."}, ...]
@@ -715,13 +1152,22 @@ pub const Request = struct {
             null;
 
         // GAP-8: container
-        const container: ?std.json.Value = obj.get("container");
+        const container: ?Container = if (obj.get("container")) |v|
+            try std.json.innerParseFromValue(Container, allocator, v, options)
+        else
+            null;
 
         // GAP-9: inference_geo
         const inference_geo: ?[]const u8 = if (obj.get("inference_geo")) |v| switch (v) {
             .string => |s| s,
             else => null,
         } else null;
+
+        // top-level cache_control
+        const cache_control: ?CacheControl = if (obj.get("cache_control")) |v|
+            try std.json.innerParseFromValue(CacheControl, allocator, v, options)
+        else
+            null;
 
         return .{
             .model = model_val.string,
@@ -742,6 +1188,7 @@ pub const Request = struct {
             .output_config = output_config,
             .container = container,
             .inference_geo = inference_geo,
+            .cache_control = cache_control,
         };
     }
 
@@ -839,31 +1286,96 @@ pub const Request = struct {
             try jw.write(ig);
         }
 
+        if (self.cache_control) |cc| {
+            try jw.objectField("cache_control");
+            try jw.write(cc);
+        }
+
         try jw.endObject();
     }
 };
 
-/// Content block in response - can be text, tool_use, thinking, or redacted_thinking
+/// Container skill entry
+pub const ContainerSkill = struct {
+    skill_id: []const u8,
+    type: []const u8,
+    version: ?[]const u8 = null,
+};
+
+/// Container metadata returned in responses (and sent in requests)
+pub const Container = struct {
+    id: []const u8,
+    expires_at: ?[]const u8 = null,
+    skills: ?[]const ContainerSkill = null,
+};
+
+/// Content block in response — mirrors all variants from ContentBlockParam
 pub const ContentBlock = union(enum) {
     text: struct {
         type: []const u8,
         text: []const u8,
-        citations: ?std.json.Value = null, // GAP-14
+        citations: ?std.json.Value = null,
     },
     tool_use: struct {
         type: []const u8,
         id: []const u8,
         name: []const u8,
         input: std.json.Value,
+        caller: ?Caller = null,
     },
-    thinking: struct { // GAP-11
+    server_tool_use: struct {
+        type: []const u8,
+        id: []const u8,
+        name: []const u8,
+        input: std.json.Value,
+        caller: ?Caller = null,
+    },
+    thinking: struct {
         type: []const u8,
         thinking: []const u8,
         signature: []const u8,
     },
-    redacted_thinking: struct { // GAP-11
+    redacted_thinking: struct {
         type: []const u8,
         data: []const u8,
+    },
+    tool_result: struct {
+        type: []const u8,
+        tool_use_id: []const u8,
+        is_error: ?bool = null,
+        content: std.json.Value,
+    },
+    web_search_tool_result: struct {
+        type: []const u8,
+        tool_use_id: []const u8,
+        content: std.json.Value,
+        caller: ?Caller = null,
+    },
+    web_fetch_tool_result: struct {
+        type: []const u8,
+        tool_use_id: []const u8,
+        content: std.json.Value,
+        caller: ?Caller = null,
+    },
+    code_execution_tool_result: struct {
+        type: []const u8,
+        tool_use_id: []const u8,
+        content: std.json.Value,
+    },
+    bash_code_execution_tool_result: struct {
+        type: []const u8,
+        tool_use_id: []const u8,
+        content: std.json.Value,
+    },
+    text_editor_code_execution_tool_result: struct {
+        type: []const u8,
+        tool_use_id: []const u8,
+        content: std.json.Value,
+    },
+    tool_search_tool_result: struct {
+        type: []const u8,
+        tool_use_id: []const u8,
+        content: std.json.Value,
     },
 
     pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
@@ -872,8 +1384,6 @@ pub const ContentBlock = union(enum) {
     }
 
     pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, options: std.json.ParseOptions) !@This() {
-        _ = allocator;
-        _ = options;
         if (source != .object) return error.UnexpectedToken;
         const obj = source.object;
 
@@ -884,11 +1394,10 @@ pub const ContentBlock = union(enum) {
         if (std.mem.eql(u8, type_str, "text")) {
             const text_value = obj.get("text") orelse return error.MissingField;
             if (text_value != .string) return error.UnexpectedToken;
-            const citations = obj.get("citations");
             return .{ .text = .{
                 .type = type_str,
                 .text = text_value.string,
-                .citations = citations,
+                .citations = obj.get("citations"),
             } };
         } else if (std.mem.eql(u8, type_str, "tool_use")) {
             const id_value = obj.get("id") orelse return error.MissingField;
@@ -896,11 +1405,33 @@ pub const ContentBlock = union(enum) {
             const name_value = obj.get("name") orelse return error.MissingField;
             if (name_value != .string) return error.UnexpectedToken;
             const input_value = obj.get("input") orelse std.json.Value{ .object = std.json.ObjectMap{} };
+            const caller: ?Caller = if (obj.get("caller")) |v|
+                try std.json.innerParseFromValue(Caller, allocator, v, options)
+            else
+                null;
             return .{ .tool_use = .{
                 .type = type_str,
                 .id = id_value.string,
                 .name = name_value.string,
                 .input = input_value,
+                .caller = caller,
+            } };
+        } else if (std.mem.eql(u8, type_str, "server_tool_use")) {
+            const id_value = obj.get("id") orelse return error.MissingField;
+            if (id_value != .string) return error.UnexpectedToken;
+            const name_value = obj.get("name") orelse return error.MissingField;
+            if (name_value != .string) return error.UnexpectedToken;
+            const input_value = obj.get("input") orelse std.json.Value{ .object = std.json.ObjectMap{} };
+            const caller: ?Caller = if (obj.get("caller")) |v|
+                try std.json.innerParseFromValue(Caller, allocator, v, options)
+            else
+                null;
+            return .{ .server_tool_use = .{
+                .type = type_str,
+                .id = id_value.string,
+                .name = name_value.string,
+                .input = input_value,
+                .caller = caller,
             } };
         } else if (std.mem.eql(u8, type_str, "thinking")) {
             const thinking_val = obj.get("thinking") orelse return error.MissingField;
@@ -919,6 +1450,84 @@ pub const ContentBlock = union(enum) {
                 .type = type_str,
                 .data = data_val.string,
             } };
+        } else if (std.mem.eql(u8, type_str, "tool_result")) {
+            const tuid = obj.get("tool_use_id") orelse return error.MissingField;
+            if (tuid != .string) return error.UnexpectedToken;
+            const is_error: ?bool = if (obj.get("is_error")) |v| switch (v) {
+                .bool => |b| b,
+                else => null,
+            } else null;
+            const content_val = obj.get("content") orelse std.json.Value{ .null = {} };
+            return .{ .tool_result = .{
+                .type = type_str,
+                .tool_use_id = tuid.string,
+                .is_error = is_error,
+                .content = content_val,
+            } };
+        } else if (std.mem.eql(u8, type_str, "web_search_tool_result")) {
+            const tuid = obj.get("tool_use_id") orelse return error.MissingField;
+            if (tuid != .string) return error.UnexpectedToken;
+            const content_val = obj.get("content") orelse std.json.Value{ .null = {} };
+            const caller: ?Caller = if (obj.get("caller")) |v|
+                try std.json.innerParseFromValue(Caller, allocator, v, options)
+            else
+                null;
+            return .{ .web_search_tool_result = .{
+                .type = type_str,
+                .tool_use_id = tuid.string,
+                .content = content_val,
+                .caller = caller,
+            } };
+        } else if (std.mem.eql(u8, type_str, "web_fetch_tool_result")) {
+            const tuid = obj.get("tool_use_id") orelse return error.MissingField;
+            if (tuid != .string) return error.UnexpectedToken;
+            const content_val = obj.get("content") orelse std.json.Value{ .null = {} };
+            const caller: ?Caller = if (obj.get("caller")) |v|
+                try std.json.innerParseFromValue(Caller, allocator, v, options)
+            else
+                null;
+            return .{ .web_fetch_tool_result = .{
+                .type = type_str,
+                .tool_use_id = tuid.string,
+                .content = content_val,
+                .caller = caller,
+            } };
+        } else if (std.mem.eql(u8, type_str, "code_execution_tool_result")) {
+            const tuid = obj.get("tool_use_id") orelse return error.MissingField;
+            if (tuid != .string) return error.UnexpectedToken;
+            const content_val = obj.get("content") orelse std.json.Value{ .null = {} };
+            return .{ .code_execution_tool_result = .{
+                .type = type_str,
+                .tool_use_id = tuid.string,
+                .content = content_val,
+            } };
+        } else if (std.mem.eql(u8, type_str, "bash_code_execution_tool_result")) {
+            const tuid = obj.get("tool_use_id") orelse return error.MissingField;
+            if (tuid != .string) return error.UnexpectedToken;
+            const content_val = obj.get("content") orelse std.json.Value{ .null = {} };
+            return .{ .bash_code_execution_tool_result = .{
+                .type = type_str,
+                .tool_use_id = tuid.string,
+                .content = content_val,
+            } };
+        } else if (std.mem.eql(u8, type_str, "text_editor_code_execution_tool_result")) {
+            const tuid = obj.get("tool_use_id") orelse return error.MissingField;
+            if (tuid != .string) return error.UnexpectedToken;
+            const content_val = obj.get("content") orelse std.json.Value{ .null = {} };
+            return .{ .text_editor_code_execution_tool_result = .{
+                .type = type_str,
+                .tool_use_id = tuid.string,
+                .content = content_val,
+            } };
+        } else if (std.mem.eql(u8, type_str, "tool_search_tool_result")) {
+            const tuid = obj.get("tool_use_id") orelse return error.MissingField;
+            if (tuid != .string) return error.UnexpectedToken;
+            const content_val = obj.get("content") orelse std.json.Value{ .null = {} };
+            return .{ .tool_search_tool_result = .{
+                .type = type_str,
+                .tool_use_id = tuid.string,
+                .content = content_val,
+            } };
         } else {
             // Unknown block type — skip gracefully instead of failing
             return .{ .text = .{ .type = type_str, .text = "" } };
@@ -934,9 +1543,78 @@ pub const ContentBlock = union(enum) {
                 if (v.citations) |c| { try out.objectField("citations"); try out.write(c); }
                 try out.endObject();
             },
-            .tool_use => |v| try out.write(v),
+            .tool_use => |v| {
+                try out.beginObject();
+                try out.objectField("type"); try out.write(v.type);
+                try out.objectField("id"); try out.write(v.id);
+                try out.objectField("name"); try out.write(v.name);
+                try out.objectField("input"); try out.write(v.input);
+                if (v.caller) |c| { try out.objectField("caller"); try out.write(c); }
+                try out.endObject();
+            },
+            .server_tool_use => |v| {
+                try out.beginObject();
+                try out.objectField("type"); try out.write(v.type);
+                try out.objectField("id"); try out.write(v.id);
+                try out.objectField("name"); try out.write(v.name);
+                try out.objectField("input"); try out.write(v.input);
+                if (v.caller) |c| { try out.objectField("caller"); try out.write(c); }
+                try out.endObject();
+            },
             .thinking => |v| try out.write(v),
             .redacted_thinking => |v| try out.write(v),
+            .tool_result => |v| {
+                try out.beginObject();
+                try out.objectField("type"); try out.write(v.type);
+                try out.objectField("tool_use_id"); try out.write(v.tool_use_id);
+                if (v.is_error) |e| { try out.objectField("is_error"); try out.write(e); }
+                try out.objectField("content"); try out.write(v.content);
+                try out.endObject();
+            },
+            .web_search_tool_result => |v| {
+                try out.beginObject();
+                try out.objectField("type"); try out.write(v.type);
+                try out.objectField("tool_use_id"); try out.write(v.tool_use_id);
+                try out.objectField("content"); try out.write(v.content);
+                if (v.caller) |c| { try out.objectField("caller"); try out.write(c); }
+                try out.endObject();
+            },
+            .web_fetch_tool_result => |v| {
+                try out.beginObject();
+                try out.objectField("type"); try out.write(v.type);
+                try out.objectField("tool_use_id"); try out.write(v.tool_use_id);
+                try out.objectField("content"); try out.write(v.content);
+                if (v.caller) |c| { try out.objectField("caller"); try out.write(c); }
+                try out.endObject();
+            },
+            .code_execution_tool_result => |v| {
+                try out.beginObject();
+                try out.objectField("type"); try out.write(v.type);
+                try out.objectField("tool_use_id"); try out.write(v.tool_use_id);
+                try out.objectField("content"); try out.write(v.content);
+                try out.endObject();
+            },
+            .bash_code_execution_tool_result => |v| {
+                try out.beginObject();
+                try out.objectField("type"); try out.write(v.type);
+                try out.objectField("tool_use_id"); try out.write(v.tool_use_id);
+                try out.objectField("content"); try out.write(v.content);
+                try out.endObject();
+            },
+            .text_editor_code_execution_tool_result => |v| {
+                try out.beginObject();
+                try out.objectField("type"); try out.write(v.type);
+                try out.objectField("tool_use_id"); try out.write(v.tool_use_id);
+                try out.objectField("content"); try out.write(v.content);
+                try out.endObject();
+            },
+            .tool_search_tool_result => |v| {
+                try out.beginObject();
+                try out.objectField("type"); try out.write(v.type);
+                try out.objectField("tool_use_id"); try out.write(v.tool_use_id);
+                try out.objectField("content"); try out.write(v.content);
+                try out.endObject();
+            },
         }
     }
 };
@@ -976,7 +1654,7 @@ pub const Response = struct {
     stop_reason: ?[]const u8,
     stop_sequence: ?[]const u8,
     usage: Usage,
-    container: ?std.json.Value = null, // GAP-13
+    container: ?Container = null,
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         try jw.beginObject();
@@ -994,79 +1672,8 @@ pub const Response = struct {
 };
 
 // ============================================================================
-// Streaming Event Structures
-// ============================================================================
-
-/// Message start event data
-pub const MessageStartData = struct {
-    type: []const u8,
-    message: struct {
-        id: []const u8,
-        type: []const u8,
-        role: []const u8,
-        content: []const ContentBlock,
-        model: []const u8,
-        stop_reason: ?[]const u8,
-        stop_sequence: ?[]const u8,
-        usage: Usage,
-    },
-};
-
-/// Content block start event data
-pub const ContentBlockStartData = struct {
-    type: []const u8,
-    index: u32 = 0,
-    content_block: struct {
-        type: []const u8 = "",
-        text: []const u8 = "",
-    } = .{},
-};
-
-/// Text delta in streaming
-pub const TextDelta = struct {
-    type: []const u8 = "",
-    text: []const u8 = "",
-};
-
-/// Content block delta event data
-pub const ContentBlockDeltaData = struct {
-    type: []const u8 = "",
-    index: u32 = 0,
-    delta: TextDelta = .{},
-};
-
-/// Content block stop event data
-pub const ContentBlockStopData = struct {
-    type: []const u8 = "",
-    index: u32 = 0,
-};
-
-/// Message delta event data
-pub const MessageDeltaData = struct {
-    type: []const u8 = "",
-    delta: struct {
-        stop_reason: ?[]const u8 = null,
-        stop_sequence: ?[]const u8 = null,
-    } = .{},
-    usage: struct {
-        output_tokens: u32 = 0,
-    } = .{},
-};
-
-/// Ping event data
-pub const PingData = struct {
-    type: []const u8,
-};
-
-// ============================================================================
 // Streaming Event Types for SSE Parsing
 // ============================================================================
-
-/// Generic streaming event wrapper
-pub const StreamEvent = struct {
-    event_type: []const u8,
-    data: []const u8,
-};
 
 /// Message start event - contains initial message metadata
 pub const MessageStart = struct {
@@ -1097,9 +1704,11 @@ pub const ContentBlockInfo = struct {
     id: ?[]const u8 = null,
     name: ?[]const u8 = null,
     input: ?std.json.Value = null,
-    thinking: ?[]const u8 = null, // GAP-15: thinking block start
-    signature: ?[]const u8 = null, // GAP-15: thinking block start
-    data: ?[]const u8 = null,     // GAP-15: redacted_thinking block start
+    thinking: ?[]const u8 = null,
+    signature: ?[]const u8 = null,
+    data: ?[]const u8 = null,
+    tool_use_id: ?[]const u8 = null, // web_search_tool_result block
+    content: ?std.json.Value = null, // web_search_tool_result block (complete, no deltas)
 };
 
 /// Content block delta event
@@ -1109,19 +1718,28 @@ pub const ContentBlockDelta = struct {
     delta: DeltaContent = .{},
 };
 
-/// Delta content - can be text_delta, input_json_delta, or thinking_delta
+/// Delta content - can be text_delta, input_json_delta, thinking_delta, or signature_delta
 pub const DeltaContent = struct {
     type: []const u8 = "",
     text: ?[]const u8 = null,
     partial_json: ?[]const u8 = null,
-    thinking: ?[]const u8 = null, // GAP-15: thinking_delta
-    signature: ?[]const u8 = null, // GAP-15: thinking_delta signature
+    thinking: ?[]const u8 = null,
+    signature: ?[]const u8 = null,
 };
 
 /// Content block stop event
 pub const ContentBlockStop = struct {
     type: []const u8 = "",
     index: u32 = 0,
+};
+
+/// Usage in message_delta events — superset of the basic Usage struct
+pub const MessageDeltaUsage = struct {
+    input_tokens: ?u32 = null,
+    output_tokens: u32 = 0,
+    cache_creation_input_tokens: ?u32 = null,
+    cache_read_input_tokens: ?u32 = null,
+    server_tool_use: ?struct { web_search_requests: ?u32 = null } = null,
 };
 
 /// Message delta event - contains stop reason
@@ -1131,14 +1749,18 @@ pub const MessageDelta = struct {
         stop_reason: ?[]const u8 = null,
         stop_sequence: ?[]const u8 = null,
     } = .{},
-    usage: struct {
-        output_tokens: u32 = 0,
-    } = .{},
+    usage: MessageDeltaUsage = .{},
 };
 
 /// Message stop event
 pub const MessageStop = struct {
     type: []const u8 = "",
+};
+
+/// SSE error event — can appear at any point in the stream
+pub const SseErrorEvent = struct {
+    type: []const u8 = "",
+    @"error": ErrorDetails = .{ .type = "", .message = "" },
 };
 
 // ============================================================================

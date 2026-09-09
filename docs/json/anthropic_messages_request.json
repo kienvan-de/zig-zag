@@ -1,0 +1,587 @@
+{
+  "model": "claude-opus-4-5",
+  "max_tokens": 8096,
+  "stream": true,
+  "system": [
+    {
+      "type": "text",
+      "text": "You are a helpful assistant.",
+      "cache_control": {
+        "type": "ephemeral",
+        "ttl": "5m"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "Analyze this image and document.",
+          "cache_control": {
+            "type": "ephemeral",
+            "ttl": "1h"
+          },
+          "citations": [
+            {
+              "type": "char_location",
+              "cited_text": "relevant excerpt",
+              "document_index": 0,
+              "document_title": "Source Doc",
+              "start_char_index": 0,
+              "end_char_index": 100
+            },
+            {
+              "type": "page_location",
+              "cited_text": "page excerpt",
+              "document_index": 1,
+              "document_title": "PDF Source",
+              "start_page_number": 1,
+              "end_page_number": 2
+            },
+            {
+              "type": "content_block_location",
+              "cited_text": "block excerpt",
+              "document_index": 0,
+              "document_title": "Block Source",
+              "start_block_index": 0,
+              "end_block_index": 1
+            },
+            {
+              "type": "web_search_result_location",
+              "cited_text": "web excerpt",
+              "encrypted_index": "enc_abc123",
+              "url": "https://example.com",
+              "title": "Example Page"
+            },
+            {
+              "type": "search_result_location",
+              "cited_text": "search excerpt",
+              "search_result_index": 0,
+              "start_block_index": 0,
+              "end_block_index": 1,
+              "source": "internal_index",
+              "title": "Search Result"
+            }
+          ]
+        },
+        {
+          "type": "image",
+          "source": {
+            "type": "base64",
+            "media_type": "image/png",
+            "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+          },
+          "cache_control": {
+            "type": "ephemeral",
+            "ttl": "5m"
+          },
+          "transformations": {
+            "oversized_image": "downsize"
+          }
+        },
+        {
+          "type": "image",
+          "source": {
+            "type": "url",
+            "url": "https://example.com/image.jpg"
+          }
+        },
+        {
+          "type": "image",
+          "source": {
+            "type": "file",
+            "file_id": "file_abc123"
+          }
+        },
+        {
+          "type": "document",
+          "source": {
+            "type": "base64",
+            "media_type": "application/pdf",
+            "data": "JVBERi0xLjQKJdPr6eEKMSAwIG9iago8PAovVHlwZSAvQ2F0YWxvZwovUGFnZXMgMiAwIFIKPj4KZW5kb2JqCg=="
+          },
+          "title": "Sample PDF",
+          "context": "Technical specification document",
+          "cache_control": {
+            "type": "ephemeral",
+            "ttl": "1h"
+          },
+          "citations": {
+            "enabled": true
+          }
+        },
+        {
+          "type": "document",
+          "source": {
+            "type": "text",
+            "media_type": "text/plain",
+            "data": "Plain text document content here."
+          },
+          "title": "Plain Text Doc",
+          "context": "Reference material"
+        },
+        {
+          "type": "document",
+          "source": {
+            "type": "url",
+            "url": "https://example.com/document.pdf"
+          }
+        },
+        {
+          "type": "document",
+          "source": {
+            "type": "file",
+            "file_id": "file_doc456"
+          }
+        },
+        {
+          "type": "search_result",
+          "title": "Search Result Title",
+          "source": "https://example.com/result",
+          "content": [
+            {
+              "type": "text",
+              "text": "Search result content."
+            }
+          ],
+          "cache_control": {
+            "type": "ephemeral",
+            "ttl": "5m"
+          },
+          "citations": {
+            "enabled": true
+          }
+        },
+        {
+          "type": "thinking",
+          "thinking": "Let me reason through this step by step...",
+          "signature": "sig_abc123def456"
+        },
+        {
+          "type": "redacted_thinking",
+          "data": "opaque_encrypted_thinking_data_here"
+        },
+        {
+          "type": "container_upload",
+          "file_id": "file_container789",
+          "cache_control": {
+            "type": "ephemeral",
+            "ttl": "5m"
+          }
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "I'll use the get_weather tool to check that."
+        },
+        {
+          "type": "tool_use",
+          "id": "toolu_01A09q90qw90lq917835lq9",
+          "name": "get_weather",
+          "input": {
+            "location": "Berlin",
+            "unit": "celsius"
+          },
+          "cache_control": {
+            "type": "ephemeral",
+            "ttl": "5m"
+          },
+          "caller": {
+            "type": "direct"
+          },
+          "toolset_name": null
+        },
+        {
+          "type": "server_tool_use",
+          "id": "srvtoolu_01Abc123",
+          "name": "web_search",
+          "input": {
+            "query": "latest AI news"
+          },
+          "cache_control": {
+            "type": "ephemeral",
+            "ttl": "5m"
+          },
+          "caller": {
+            "type": "code_execution_20250825",
+            "tool_id": "srvtoolu_01Xyz789"
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "toolu_01A09q90qw90lq917835lq9",
+          "is_error": false,
+          "content": [
+            {
+              "type": "text",
+              "text": "The weather in Berlin is 18°C and partly cloudy."
+            }
+          ],
+          "cache_control": {
+            "type": "ephemeral",
+            "ttl": "5m"
+          },
+          "toolset_name": null
+        },
+        {
+          "type": "web_search_tool_result",
+          "tool_use_id": "srvtoolu_01Abc123",
+          "content": [
+            {
+              "type": "web_search_result",
+              "title": "Latest AI Breakthroughs",
+              "url": "https://example.com/ai-news",
+              "encrypted_content": "enc_content_xyz",
+              "page_age": "2026-09-01"
+            }
+          ],
+          "cache_control": {
+            "type": "ephemeral",
+            "ttl": "5m"
+          },
+          "caller": {
+            "type": "direct"
+          }
+        },
+        {
+          "type": "web_fetch_tool_result",
+          "tool_use_id": "srvtoolu_01Fetch123",
+          "content": {
+            "type": "web_fetch_result",
+            "url": "https://example.com/article",
+            "retrieved_at": "2026-09-09T10:00:00Z",
+            "content": {
+              "type": "document",
+              "source": {
+                "type": "text",
+                "media_type": "text/plain",
+                "data": "Fetched page content."
+              }
+            }
+          },
+          "cache_control": {
+            "type": "ephemeral",
+            "ttl": "5m"
+          },
+          "caller": {
+            "type": "direct"
+          }
+        },
+        {
+          "type": "code_execution_tool_result",
+          "tool_use_id": "srvtoolu_01Code123",
+          "content": {
+            "type": "code_execution_result",
+            "stdout": "Hello, World!\n",
+            "stderr": "",
+            "return_code": 0,
+            "content": [
+              {
+                "type": "code_execution_output",
+                "file_id": "file_output123"
+              }
+            ]
+          }
+        },
+        {
+          "type": "bash_code_execution_tool_result",
+          "tool_use_id": "srvtoolu_01Bash123",
+          "content": {
+            "type": "bash_code_execution_result",
+            "stdout": "file.txt\ndir/\n",
+            "stderr": "",
+            "return_code": 0,
+            "content": [
+              {
+                "type": "bash_code_execution_output",
+                "file_id": "file_bash_out456"
+              }
+            ]
+          },
+          "cache_control": {
+            "type": "ephemeral",
+            "ttl": "5m"
+          }
+        },
+        {
+          "type": "text_editor_code_execution_tool_result",
+          "tool_use_id": "srvtoolu_01Editor123",
+          "content": {
+            "type": "text_editor_code_execution_view_result",
+            "content": "line1\nline2\nline3",
+            "file_type": "text",
+            "num_lines": 3,
+            "start_line": 1,
+            "total_lines": 3
+          },
+          "cache_control": {
+            "type": "ephemeral",
+            "ttl": "5m"
+          }
+        },
+        {
+          "type": "tool_search_tool_result",
+          "tool_use_id": "srvtoolu_01Search123",
+          "content": {
+            "type": "tool_search_tool_search_result",
+            "tool_references": [
+              {
+                "type": "tool_reference",
+                "tool_name": "get_weather",
+                "cache_control": null
+              }
+            ]
+          },
+          "cache_control": {
+            "type": "ephemeral",
+            "ttl": "5m"
+          }
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "type": "custom",
+      "name": "get_weather",
+      "description": "Get the current weather in a location.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "location": {
+            "type": "string",
+            "description": "City name or coordinates"
+          },
+          "unit": {
+            "type": "string",
+            "enum": ["celsius", "fahrenheit"],
+            "description": "Temperature unit"
+          }
+        },
+        "required": ["location"]
+      },
+      "cache_control": {
+        "type": "ephemeral",
+        "ttl": "5m"
+      },
+      "allowed_callers": ["direct", "code_execution_20250825"],
+      "defer_loading": false,
+      "eager_input_streaming": null,
+      "input_examples": [
+        { "location": "Berlin", "unit": "celsius" }
+      ],
+      "strict": false
+    },
+    {
+      "type": "bash_20250124",
+      "name": "bash",
+      "cache_control": null,
+      "allowed_callers": ["direct"],
+      "defer_loading": false
+    },
+    {
+      "type": "code_execution_20260521",
+      "name": "code_execution",
+      "cache_control": null,
+      "allowed_callers": ["direct"],
+      "defer_loading": false
+    },
+    {
+      "type": "browser_toolset_20260801",
+      "cache_control": null,
+      "configs": {
+        "screenshot": { "enabled": true, "defer_loading": false },
+        "left_click": { "enabled": true, "defer_loading": false },
+        "navigate": { "enabled": true, "defer_loading": false },
+        "type": { "enabled": true, "defer_loading": false },
+        "scroll": { "enabled": true, "defer_loading": false },
+        "find": { "enabled": true, "defer_loading": false },
+        "get_page_text": { "enabled": true, "defer_loading": false },
+        "double_click": { "enabled": false, "defer_loading": null },
+        "right_click": { "enabled": false, "defer_loading": null },
+        "key": { "enabled": true, "defer_loading": false },
+        "hold_key": { "enabled": false, "defer_loading": null },
+        "hover": { "enabled": true, "defer_loading": false },
+        "mouse_move": { "enabled": false, "defer_loading": null },
+        "left_click_drag": { "enabled": false, "defer_loading": null },
+        "left_mouse_down": { "enabled": false, "defer_loading": null },
+        "left_mouse_up": { "enabled": false, "defer_loading": null },
+        "middle_click": { "enabled": false, "defer_loading": null },
+        "triple_click": { "enabled": false, "defer_loading": null },
+        "javascript_exec": { "enabled": false, "defer_loading": null },
+        "form_input": { "enabled": true, "defer_loading": false },
+        "file_upload": { "enabled": false, "defer_loading": null },
+        "new_tab": { "enabled": true, "defer_loading": false },
+        "close_tab": { "enabled": true, "defer_loading": false },
+        "switch_tab": { "enabled": true, "defer_loading": false },
+        "list_tabs": { "enabled": true, "defer_loading": false },
+        "read_console": { "enabled": false, "defer_loading": null },
+        "read_network": { "enabled": false, "defer_loading": null },
+        "read_page": { "enabled": true, "defer_loading": false },
+        "scroll_to": { "enabled": true, "defer_loading": false },
+        "zoom": { "enabled": false, "defer_loading": null },
+        "wait": { "enabled": true, "defer_loading": false }
+      }
+    },
+    {
+      "type": "computer_toolset_20260801",
+      "cache_control": null,
+      "configs": {
+        "screenshot": { "enabled": true, "defer_loading": false },
+        "left_click": { "enabled": true, "defer_loading": false },
+        "type": { "enabled": true, "defer_loading": false },
+        "key": { "enabled": true, "defer_loading": false },
+        "scroll": { "enabled": true, "defer_loading": false },
+        "mouse_move": { "enabled": false, "defer_loading": null },
+        "double_click": { "enabled": false, "defer_loading": null },
+        "right_click": { "enabled": false, "defer_loading": null },
+        "triple_click": { "enabled": false, "defer_loading": null },
+        "hold_key": { "enabled": false, "defer_loading": null },
+        "left_click_drag": { "enabled": false, "defer_loading": null },
+        "left_mouse_down": { "enabled": false, "defer_loading": null },
+        "left_mouse_up": { "enabled": false, "defer_loading": null },
+        "middle_click": { "enabled": false, "defer_loading": null },
+        "cursor_position": { "enabled": false, "defer_loading": null },
+        "zoom": { "enabled": false, "defer_loading": null },
+        "wait": { "enabled": true, "defer_loading": false }
+      }
+    },
+    {
+      "type": "memory_20250818",
+      "name": "memory",
+      "cache_control": null,
+      "allowed_callers": ["direct"],
+      "defer_loading": false
+    },
+    {
+      "type": "text_editor_20250728",
+      "name": "str_replace_based_edit_tool",
+      "max_characters": 100000,
+      "cache_control": null,
+      "allowed_callers": ["direct"],
+      "defer_loading": false
+    },
+    {
+      "type": "web_search_20260318",
+      "name": "web_search",
+      "max_uses": 5,
+      "allowed_domains": ["example.com", "docs.example.com"],
+      "blocked_domains": ["ads.example.com"],
+      "user_location": {
+        "type": "approximate",
+        "city": "Berlin",
+        "country": "DE",
+        "region": "Berlin",
+        "timezone": "Europe/Berlin"
+      },
+      "response_inclusion": "full",
+      "cache_control": null,
+      "allowed_callers": ["direct"],
+      "defer_loading": false,
+      "strict": false
+    },
+    {
+      "type": "web_fetch_20260318",
+      "name": "web_fetch",
+      "max_uses": 3,
+      "max_content_tokens": 10000,
+      "allowed_domains": ["example.com"],
+      "blocked_domains": [],
+      "citations": {
+        "enabled": true
+      },
+      "use_cache": true,
+      "response_inclusion": "full",
+      "cache_control": null,
+      "allowed_callers": ["direct"],
+      "defer_loading": false,
+      "strict": false
+    },
+    {
+      "type": "tool_search_tool_bm25_20251119",
+      "name": "tool_search_tool_bm25",
+      "cache_control": null,
+      "allowed_callers": ["direct"],
+      "defer_loading": false,
+      "strict": false
+    },
+    {
+      "type": "tool_search_tool_regex_20251119",
+      "name": "tool_search_tool_regex",
+      "cache_control": null,
+      "allowed_callers": ["direct"],
+      "defer_loading": false,
+      "strict": false
+    }
+  ],
+  "tool_choice": {
+    "type": "tool",
+    "name": "get_weather",
+    "disable_parallel_tool_use": false
+  },
+  "thinking": {
+    "type": "enabled",
+    "budget_tokens": 10000,
+    "display": "summarized"
+  },
+  "output_config": {
+    "effort": "high",
+    "format": {
+      "type": "json_schema",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "answer": {
+            "type": "string",
+            "description": "The answer to the question"
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          }
+        },
+        "required": ["answer", "confidence"]
+      }
+    }
+  },
+  "metadata": {
+    "user_id": "user_abc123"
+  },
+  "stop_sequences": ["<END>", "Human:"],
+  "temperature": 0.7,
+  "top_p": 0.95,
+  "top_k": 40,
+  "service_tier": "auto",
+  "cache_control": {
+    "type": "ephemeral",
+    "ttl": "5m"
+  },
+  "container": {
+    "id": "container_xyz789",
+    "skills": [
+      {
+        "skill_id": "python-data-science",
+        "type": "anthropic",
+        "version": "latest"
+      },
+      {
+        "skill_id": "my-custom-skill",
+        "type": "custom",
+        "version": "1.0.0"
+      }
+    ]
+  },
+  "inference_geo": "eu-west"
+}

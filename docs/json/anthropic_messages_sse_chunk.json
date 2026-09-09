@@ -1,0 +1,380 @@
+{
+  "_comment": "Full SSE stream sequence — each top-level key is one SSE event. Format: event: <type>\\ndata: <json>\\n\\n",
+  "events": [
+    {
+      "event": "message_start",
+      "data": {
+        "type": "message_start",
+        "message": {
+          "id": "msg_01XFDUDYJgAACTU3kkRXdUAK",
+          "type": "message",
+          "role": "assistant",
+          "model": "claude-opus-4-5-20251101",
+          "content": [],
+          "stop_reason": null,
+          "stop_sequence": null,
+          "usage": {
+            "input_tokens": 2095,
+            "output_tokens": 1,
+            "cache_creation_input_tokens": 512,
+            "cache_read_input_tokens": 1024
+          }
+        }
+      }
+    },
+    {
+      "event": "ping",
+      "data": {
+        "type": "ping"
+      }
+    },
+    {
+      "_comment": "content_block_start: thinking block (extended thinking)",
+      "event": "content_block_start",
+      "data": {
+        "type": "content_block_start",
+        "index": 0,
+        "content_block": {
+          "type": "thinking",
+          "thinking": "",
+          "signature": ""
+        }
+      }
+    },
+    {
+      "_comment": "thinking_delta: streams the thinking text",
+      "event": "content_block_delta",
+      "data": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": "I need to find the GCD of 1071 and 462 using the Euclidean algorithm.\n\n1071 = 2 × 462 + 147"
+        }
+      }
+    },
+    {
+      "_comment": "signature_delta: sent once just before content_block_stop for a thinking block",
+      "event": "content_block_delta",
+      "data": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "signature_delta",
+          "signature": "EqQBCgIYAhIM1gbcDa9GJwZA2b3hGgxBdjrkzLoky3dl1pkiMOYdsignaturebase64encoded=="
+        }
+      }
+    },
+    {
+      "event": "content_block_stop",
+      "data": {
+        "type": "content_block_stop",
+        "index": 0
+      }
+    },
+    {
+      "_comment": "content_block_start: text block",
+      "event": "content_block_start",
+      "data": {
+        "type": "content_block_start",
+        "index": 1,
+        "content_block": {
+          "type": "text",
+          "text": ""
+        }
+      }
+    },
+    {
+      "_comment": "text_delta: streams text content",
+      "event": "content_block_delta",
+      "data": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "text_delta",
+          "text": "I'll look up the weather and run a tool for you."
+        }
+      }
+    },
+    {
+      "event": "content_block_delta",
+      "data": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "text_delta",
+          "text": " One moment."
+        }
+      }
+    },
+    {
+      "event": "content_block_stop",
+      "data": {
+        "type": "content_block_stop",
+        "index": 1
+      }
+    },
+    {
+      "_comment": "content_block_start: tool_use block (custom tool)",
+      "event": "content_block_start",
+      "data": {
+        "type": "content_block_start",
+        "index": 2,
+        "content_block": {
+          "type": "tool_use",
+          "id": "toolu_01T1x1fJ34qAmk2tNTrN7Up6",
+          "name": "get_weather",
+          "input": {}
+        }
+      }
+    },
+    {
+      "_comment": "input_json_delta: partial JSON for tool input — accumulate until content_block_stop",
+      "event": "content_block_delta",
+      "data": {
+        "type": "content_block_delta",
+        "index": 2,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": ""
+        }
+      }
+    },
+    {
+      "event": "content_block_delta",
+      "data": {
+        "type": "content_block_delta",
+        "index": 2,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "{\"location\":"
+        }
+      }
+    },
+    {
+      "event": "content_block_delta",
+      "data": {
+        "type": "content_block_delta",
+        "index": 2,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " \"San Francisco, CA\"}"
+        }
+      }
+    },
+    {
+      "event": "content_block_stop",
+      "data": {
+        "type": "content_block_stop",
+        "index": 2
+      }
+    },
+    {
+      "_comment": "content_block_start: server_tool_use block (built-in server tool)",
+      "event": "content_block_start",
+      "data": {
+        "type": "content_block_start",
+        "index": 3,
+        "content_block": {
+          "type": "server_tool_use",
+          "id": "srvtoolu_014hJH82Qum7Td6UV8gDXThB",
+          "name": "web_search",
+          "input": {}
+        }
+      }
+    },
+    {
+      "event": "content_block_delta",
+      "data": {
+        "type": "content_block_delta",
+        "index": 3,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "{\"query\": \"weather San Francisco today\"}"
+        }
+      }
+    },
+    {
+      "event": "content_block_stop",
+      "data": {
+        "type": "content_block_stop",
+        "index": 3
+      }
+    },
+    {
+      "_comment": "content_block_start: web_search_tool_result — arrives as a complete block (no deltas)",
+      "event": "content_block_start",
+      "data": {
+        "type": "content_block_start",
+        "index": 4,
+        "content_block": {
+          "type": "web_search_tool_result",
+          "tool_use_id": "srvtoolu_014hJH82Qum7Td6UV8gDXThB",
+          "content": [
+            {
+              "type": "web_search_result",
+              "title": "Weather in San Francisco Today",
+              "url": "https://example.com/weather/sf",
+              "encrypted_content": "Ev0DCioIAxgCIiQ3NmU4ZmI4OC1kbase64==",
+              "page_age": "2026-09-09"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "event": "content_block_stop",
+      "data": {
+        "type": "content_block_stop",
+        "index": 4
+      }
+    },
+    {
+      "_comment": "content_block_start: redacted_thinking block",
+      "event": "content_block_start",
+      "data": {
+        "type": "content_block_start",
+        "index": 5,
+        "content_block": {
+          "type": "redacted_thinking",
+          "data": ""
+        }
+      }
+    },
+    {
+      "event": "content_block_stop",
+      "data": {
+        "type": "content_block_stop",
+        "index": 5
+      }
+    },
+    {
+      "_comment": "content_block_start: fallback block — appears during server-side model fallback, no deltas",
+      "event": "content_block_start",
+      "data": {
+        "type": "content_block_start",
+        "index": 6,
+        "content_block": {
+          "type": "fallback"
+        }
+      }
+    },
+    {
+      "event": "content_block_stop",
+      "data": {
+        "type": "content_block_stop",
+        "index": 6
+      }
+    },
+    {
+      "_comment": "final text block with the answer",
+      "event": "content_block_start",
+      "data": {
+        "type": "content_block_start",
+        "index": 7,
+        "content_block": {
+          "type": "text",
+          "text": ""
+        }
+      }
+    },
+    {
+      "event": "content_block_delta",
+      "data": {
+        "type": "content_block_delta",
+        "index": 7,
+        "delta": {
+          "type": "text_delta",
+          "text": "The weather in San Francisco is 18°C and partly cloudy."
+        }
+      }
+    },
+    {
+      "event": "content_block_stop",
+      "data": {
+        "type": "content_block_stop",
+        "index": 7
+      }
+    },
+    {
+      "_comment": "message_delta: stop_reason + cumulative output token count. stop_reason values: end_turn | stop_sequence | max_tokens | tool_use",
+      "event": "message_delta",
+      "data": {
+        "type": "message_delta",
+        "delta": {
+          "stop_reason": "tool_use",
+          "stop_sequence": null
+        },
+        "usage": {
+          "input_tokens": 2095,
+          "output_tokens": 503,
+          "cache_creation_input_tokens": 512,
+          "cache_read_input_tokens": 1024,
+          "server_tool_use": {
+            "web_search_requests": 1
+          }
+        }
+      }
+    },
+    {
+      "event": "message_stop",
+      "data": {
+        "type": "message_stop"
+      }
+    },
+    {
+      "_comment": "error event — can appear at any point in the stream",
+      "event": "error",
+      "data": {
+        "type": "error",
+        "error": {
+          "type": "overloaded_error",
+          "message": "Overloaded"
+        }
+      }
+    }
+  ],
+  "_schema": {
+    "_comment": "All possible event types and their data shapes",
+    "event_types": [
+      "message_start",
+      "content_block_start",
+      "content_block_delta",
+      "content_block_stop",
+      "message_delta",
+      "message_stop",
+      "ping",
+      "error"
+    ],
+    "content_block_types_in_start": [
+      "text",
+      "thinking",
+      "redacted_thinking",
+      "tool_use",
+      "server_tool_use",
+      "web_search_tool_result",
+      "fallback"
+    ],
+    "delta_types_in_content_block_delta": [
+      "text_delta",
+      "input_json_delta",
+      "thinking_delta",
+      "signature_delta"
+    ],
+    "stop_reason_values": [
+      "end_turn",
+      "stop_sequence",
+      "max_tokens",
+      "tool_use"
+    ],
+    "server_tool_names": [
+      "web_search",
+      "web_fetch",
+      "code_execution",
+      "bash_code_execution",
+      "text_editor_code_execution",
+      "tool_search_tool_bm25",
+      "tool_search_tool_regex"
+    ]
+  }
+}
