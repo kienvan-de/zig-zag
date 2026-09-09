@@ -22,6 +22,7 @@
 //! defined here (P5).
 
 const std = @import("std");
+const common = @import("../openai/types.zig"); // shared primitives
 
 const Chat = @import("../openai/chat_types.zig"); // chat schema (envelope payload)
 const Messages = @import("../anthropic/types.zig"); // Anthropic Messages wire types
@@ -72,13 +73,13 @@ pub fn transformModelsResponse(
     allocator: std.mem.Allocator,
     response: std.json.Parsed(Sap.SapModelsResponse),
     provider_name: []const u8,
-) ![]Chat.Model {
+) ![]common.Model {
     var valid_count: usize = 0;
     for (response.value.resources) |sap_model| {
         if (isOrchestrationCapable(sap_model)) valid_count += 1;
     }
 
-    var models = try allocator.alloc(Chat.Model, valid_count);
+    var models = try allocator.alloc(common.Model, valid_count);
     errdefer allocator.free(models);
 
     var idx: usize = 0;
@@ -350,7 +351,7 @@ pub fn transformMessagesRequest(
     }
 
     for (request.messages) |msg| {
-        const role: Chat.Role = switch (msg.role) {
+        const role: common.Role = switch (msg.role) {
             .user => .user,
             .assistant => .assistant,
         };
@@ -367,7 +368,7 @@ pub fn transformMessagesRequest(
                 var tool_use_blocks: std.ArrayList(Chat.ToolCall) = .empty;
                 errdefer {
                     for (tool_use_blocks.items) |tc| {
-                        if (tc == .function) allocator.free(tc.function.function.arguments);
+                        allocator.free(tc.function.arguments);
                     }
                     tool_use_blocks.deinit(allocator);
                 }
@@ -383,20 +384,24 @@ pub fn transformMessagesRequest(
                             defer args_list.deinit(allocator);
                             try args_list.print(allocator, "{f}", .{std.json.fmt(tu.input, .{})});
 
-                            try tool_use_blocks.append(allocator, .{ .function = .{
+                            try tool_use_blocks.append(allocator, .{
                                 .id = tu.id,
                                 .type = "function",
                                 .function = .{
                                     .name = tu.name,
                                     .arguments = try allocator.dupe(u8, args_list.items),
                                 },
-                            } });
+                            });
                         },
                         .tool_result => |tr| try tool_results.append(allocator, .{
                             .id = tr.tool_use_id,
                             .content = tr.content,
                         }),
-                        .image, .document, .thinking, .redacted_thinking => {},
+                        .image, .document, .thinking, .redacted_thinking,
+                        .server_tool_use, .web_search_tool_result, .web_fetch_tool_result,
+                        .code_execution_tool_result, .bash_code_execution_tool_result,
+                        .text_editor_code_execution_tool_result, .tool_search_tool_result,
+                        .search_result, .container_upload => {},
                     }
                 }
 
@@ -431,15 +436,15 @@ pub fn transformMessagesRequest(
     const tools: ?[]Chat.Tool = if (request.tools) |anthro_tools| blk: {
         const oai_tools = try allocator.alloc(Chat.Tool, anthro_tools.len);
         for (anthro_tools, 0..) |at, i| {
-            oai_tools[i] = .{ .function = .{
+            oai_tools[i] = .{
                 .type = "function",
                 .function = .{
-                    .name = at.name,
+                    .name = at.name orelse "",
                     .description = at.description,
                     .parameters = at.input_schema,
                     .strict = null,
                 },
-            } };
+            };
         }
         break :blk oai_tools;
     } else null;
@@ -520,15 +525,12 @@ pub fn transformMessagesResponse(
         }
 
         if (message.tool_calls) |tool_calls| for (tool_calls) |tc| {
-            switch (tc) {
-                .function => |f| try content_blocks.append(allocator, .{ .tool_use = .{
-                    .type = "tool_use",
-                    .id = try allocator.dupe(u8, f.id),
-                    .name = try allocator.dupe(u8, f.function.name),
-                    .input = try content.parseToolArguments(f.function.arguments, allocator),
-                } }),
-                .custom => {},
-            }
+            try content_blocks.append(allocator, .{ .tool_use = .{
+                .type = "tool_use",
+                .id = try allocator.dupe(u8, tc.id),
+                .name = try allocator.dupe(u8, tc.function.name),
+                .input = try content.parseToolArguments(tc.function.arguments, allocator),
+            } });
         };
     }
 
@@ -726,7 +728,7 @@ pub fn transformResponsesRequest(
             if (item != .object) continue;
             const role_val = item.object.get("role") orelse continue;
             if (role_val != .string) continue;
-            const role = std.meta.stringToEnum(Chat.Role, role_val.string) orelse continue;
+            const role = std.meta.stringToEnum(common.Role, role_val.string) orelse continue;
 
             const content_val = item.object.get("content");
             const message_content: ?Chat.MessageContent = blk: {
@@ -765,13 +767,22 @@ pub fn transformResponsesRequest(
     }, allocator);
     errdefer if (params) |pv| content.freeParams(pv, allocator);
 
+    const chat_tools: ?[]const Chat.Tool = if (request.tools) |rt| blk: {
+        const tools = try allocator.alloc(Chat.Tool, rt.len);
+        for (rt, 0..) |t, i| tools[i] = switch (t) {
+            .function => |f| .{ .type = "function", .function = f.function },
+            .other => .{ .type = "function", .function = .{ .name = "", .description = null, .parameters = null, .strict = null } },
+        };
+        break :blk tools;
+    } else null;
+
     return .{
         .config = .{
             .modules = .{
                 .prompt_templating = .{
                     .prompt = .{
                         .template = try messages.toOwnedSlice(allocator),
-                        .tools = request.tools,
+                        .tools = chat_tools,
                         .tool_choice = request.tool_choice,
                         .response_format = if (request.text) |txt| txt.format else null,
                     },
@@ -799,6 +810,7 @@ pub fn cleanupResponsesRequest(
 ) void {
     const prompt = request.config.modules.prompt_templating.prompt;
     allocator.free(prompt.template);
+    if (prompt.tools) |t| allocator.free(t);
     if (request.config.modules.prompt_templating.model.params) |p| {
         content.freeParams(p, allocator);
     }
@@ -837,16 +849,13 @@ pub fn transformResponsesResponse(
 
     if (final_result.choices.len > 0) {
         if (final_result.choices[0].message.tool_calls) |tool_calls| for (tool_calls) |tc| {
-            switch (tc) {
-                .function => |f| try output_items.append(allocator, .{ .function_call = .{
-                    .id = try allocator.dupe(u8, f.id),
-                    .type = "function_call",
-                    .name = try allocator.dupe(u8, f.function.name),
-                    .arguments = try allocator.dupe(u8, f.function.arguments),
-                    .status = "completed",
-                } }),
-                .custom => {},
-            }
+            try output_items.append(allocator, .{ .function_call = .{
+                .id = try allocator.dupe(u8, tc.id),
+                .type = "function_call",
+                .name = try allocator.dupe(u8, tc.function.name),
+                .arguments = try allocator.dupe(u8, tc.function.arguments),
+                .status = "completed",
+            } });
         };
     }
 

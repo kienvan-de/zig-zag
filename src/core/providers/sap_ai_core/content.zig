@@ -28,6 +28,7 @@
 //! ownership transfer of the inner chat objects.
 
 const std = @import("std");
+const common = @import("../openai/types.zig"); // shared primitives
 
 const Messages = @import("../anthropic/types.zig"); // Anthropic Messages wire types
 const Chat = @import("../openai/chat_types.zig"); // chat schema (envelope payload)
@@ -98,27 +99,16 @@ pub fn dupeResponseMessage(
             const duped = try allocator.alloc(Chat.ToolCall, tcs.len);
             errdefer allocator.free(duped);
             for (tcs, 0..) |tc, i| {
-                duped[i] = switch (tc) {
-                    .function => |f| .{ .function = .{
-                        .id = try allocator.dupe(u8, f.id),
-                        .type = try allocator.dupe(u8, f.type),
-                        .function = .{
-                            .name = try allocator.dupe(u8, f.function.name),
-                            .arguments = try allocator.dupe(u8, f.function.arguments),
-                        },
-                    } },
-                    .custom => |c| .{ .custom = .{
-                        .id = try allocator.dupe(u8, c.id),
-                        .type = try allocator.dupe(u8, c.type),
-                        .custom = c.custom,
-                    } },
+                duped[i] = .{
+                    .id = try allocator.dupe(u8, tc.id),
+                    .type = try allocator.dupe(u8, tc.type),
+                    .function = .{
+                        .name = try allocator.dupe(u8, tc.function.name),
+                        .arguments = try allocator.dupe(u8, tc.function.arguments),
+                    },
                 };
             }
             break :blk duped;
-        } else null,
-        .function_call = if (msg.function_call) |fc| .{
-            .name = try allocator.dupe(u8, fc.name),
-            .arguments = try allocator.dupe(u8, fc.arguments),
         } else null,
     };
 }
@@ -141,24 +131,12 @@ pub fn freeResponseMessage(allocator: std.mem.Allocator, msg: Chat.ResponseMessa
     if (msg.content) |c| allocator.free(c);
     if (msg.tool_calls) |tcs| {
         for (tcs) |tc| {
-            switch (tc) {
-                .function => |f| {
-                    allocator.free(f.id);
-                    allocator.free(f.type);
-                    allocator.free(f.function.name);
-                    allocator.free(f.function.arguments);
-                },
-                .custom => |c| {
-                    allocator.free(c.id);
-                    allocator.free(c.type);
-                },
-            }
+            allocator.free(tc.id);
+            allocator.free(tc.type);
+            allocator.free(tc.function.name);
+            allocator.free(tc.function.arguments);
         }
         allocator.free(tcs);
-    }
-    if (msg.function_call) |fc| {
-        allocator.free(fc.name);
-        allocator.free(fc.arguments);
     }
 }
 
@@ -210,7 +188,7 @@ pub fn formatSapErrorLine(
     ) catch return null;
     defer allocator.free(message);
 
-    const error_response = Chat.ErrorResponse{ .@"error" = .{
+    const error_response = common.ErrorResponse{ .@"error" = .{
         .message = message,
         .type = mapped.type,
         .param = null,
@@ -357,7 +335,10 @@ pub fn freeMessageOwnedBlocks(
                 allocator.free(tu.name);
                 freeParsedJsonValue(tu.input, allocator);
             },
-            .thinking, .redacted_thinking => {},
+            .thinking, .redacted_thinking,
+            .server_tool_use, .tool_result, .web_search_tool_result, .web_fetch_tool_result,
+            .code_execution_tool_result, .bash_code_execution_tool_result,
+            .text_editor_code_execution_tool_result, .tool_search_tool_result => {},
         }
     }
 }
@@ -375,10 +356,7 @@ pub fn freeMessageOwnedText(msg: Chat.Message, allocator: std.mem.Allocator) voi
     }
     if (msg.tool_calls) |tool_calls| {
         for (tool_calls) |tc| {
-            switch (tc) {
-                .function => |f| allocator.free(f.function.arguments),
-                .custom => {},
-            }
+            allocator.free(tc.function.arguments);
         }
         allocator.free(tool_calls);
     }
