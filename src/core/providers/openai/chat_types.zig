@@ -1,8 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 //! OpenAI /v1/chat/completions types.
-//!
-//! Re-exports all common primitives from types.zig so callers only need to
-//! import this file to access the full OpenAI chat/completions API surface.
 
 const std = @import("std");
 
@@ -11,6 +8,95 @@ const common = @import("types.zig");
 // ============================================================================
 // Chat-completions-only types (not shared with Responses API)
 // ============================================================================
+
+/// Content part for chat message content arrays (text or image)
+pub const ContentPart = union(enum) {
+    text: struct {
+        type: []const u8 = "text",
+        text: []const u8,
+    },
+    image_url: struct {
+        type: []const u8 = "image_url",
+        image_url: struct {
+            url: []const u8,
+            detail: ?[]const u8 = null,
+        },
+    },
+
+    pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
+        const json_value = try std.json.innerParse(std.json.Value, allocator, source, options);
+        return jsonParseFromValue(allocator, json_value, options);
+    }
+
+    pub fn jsonParseFromValue(_: std.mem.Allocator, source: std.json.Value, _: std.json.ParseOptions) !@This() {
+        if (source != .object) return error.UnexpectedToken;
+        const obj = source.object;
+        const type_value = obj.get("type") orelse return error.MissingField;
+        if (type_value != .string) return error.UnexpectedToken;
+        const type_str = type_value.string;
+        if (std.mem.eql(u8, type_str, "text")) {
+            const text_value = obj.get("text") orelse return error.MissingField;
+            if (text_value != .string) return error.UnexpectedToken;
+            return .{ .text = .{ .type = "text", .text = text_value.string } };
+        } else if (std.mem.eql(u8, type_str, "image_url")) {
+            const image_url_obj = obj.get("image_url") orelse return error.MissingField;
+            if (image_url_obj != .object) return error.UnexpectedToken;
+            const url_value = image_url_obj.object.get("url") orelse return error.MissingField;
+            if (url_value != .string) return error.UnexpectedToken;
+            const detail = if (image_url_obj.object.get("detail")) |d| if (d == .string) d.string else null else null;
+            return .{ .image_url = .{
+                .type = "image_url",
+                .image_url = .{ .url = url_value.string, .detail = detail },
+            } };
+        } else {
+            return .{ .text = .{ .type = type_str, .text = "" } };
+        }
+    }
+
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        switch (self) {
+            .text => |t| {
+                try jw.objectField("type"); try jw.write("text");
+                try jw.objectField("text"); try jw.write(t.text);
+            },
+            .image_url => |img| {
+                try jw.objectField("type"); try jw.write("image_url");
+                try jw.objectField("image_url");
+                try jw.beginObject();
+                try jw.objectField("url"); try jw.write(img.image_url.url);
+                if (img.image_url.detail) |d| { try jw.objectField("detail"); try jw.write(d); }
+                try jw.endObject();
+            },
+        }
+        try jw.endObject();
+    }
+};
+
+/// Message content — string or array of content parts
+pub const MessageContent = union(enum) {
+    text: []const u8,
+    parts: []const ContentPart,
+};
+
+/// Usage statistics for chat completions
+pub const Usage = struct {
+    prompt_tokens: u32,
+    completion_tokens: u32,
+    total_tokens: u32,
+    prompt_tokens_details: ?std.json.Value = null,
+    completion_tokens_details: ?std.json.Value = null,
+
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("prompt_tokens"); try jw.write(self.prompt_tokens);
+        try jw.objectField("completion_tokens"); try jw.write(self.completion_tokens);
+        try jw.objectField("total_tokens"); try jw.write(self.total_tokens);
+        if (self.prompt_tokens_details) |v| { try jw.objectField("prompt_tokens_details"); try jw.write(v); }
+        if (self.completion_tokens_details) |v| { try jw.objectField("completion_tokens_details"); try jw.write(v); }
+        try jw.endObject();
+    }
+};
 
 pub const ToolCallFunction = struct {
     name: []const u8,
@@ -154,7 +240,7 @@ pub const DeltaToolCall = struct {
 /// Represents a message in the conversation
 pub const Message = struct {
     role: common.Role,
-    content: ?common.MessageContent = .{ .text = "" },
+    content: ?MessageContent = .{ .text = "" },
     name: ?[]const u8 = null,
     refusal: ?[]const u8 = null,
     audio: ?std.json.Value = null,
@@ -204,12 +290,12 @@ pub const Message = struct {
         const role_value = obj.get("role") orelse return error.MissingField;
         const role = try std.json.innerParseFromValue(common.Role, allocator, role_value, options);
 
-        const content: ?common.MessageContent = if (obj.get("content")) |content_value| switch (content_value) {
+        const content: ?MessageContent = if (obj.get("content")) |content_value| switch (content_value) {
             .string => |s| .{ .text = s },
             .array => |arr| blk: {
-                const parts = try allocator.alloc(common.ContentPart, arr.items.len);
+                const parts = try allocator.alloc(ContentPart, arr.items.len);
                 for (arr.items, 0..) |item, i| {
-                    parts[i] = try common.ContentPart.jsonParseFromValue(allocator, item, options);
+                    parts[i] = try ContentPart.jsonParseFromValue(allocator, item, options);
                 }
                 break :blk .{ .parts = parts };
             },
@@ -454,7 +540,7 @@ pub const StreamChunk = struct {
     created: i64,
     model: []const u8,
     choices: []const StreamChoice,
-    usage: ?common.Usage = null,
+    usage: ?Usage = null,
     system_fingerprint: ?[]const u8 = null,
     service_tier: ?[]const u8 = null,
     obfuscation: ?[]const u8 = null,
@@ -469,7 +555,7 @@ pub const StreamChunk = struct {
         try jw.beginArray();
         for (self.choices) |choice| { try choice.jsonStringify(jw); }
         try jw.endArray();
-        if (self.usage) |u| { try jw.objectField("usage"); try common.Usage.jsonStringify(u, jw); }
+        if (self.usage) |u| { try jw.objectField("usage"); try Usage.jsonStringify(u, jw); }
         if (self.system_fingerprint) |sf| { try jw.objectField("system_fingerprint"); try jw.write(sf); }
         if (self.service_tier) |st| { try jw.objectField("service_tier"); try jw.write(st); }
         if (self.obfuscation) |v| { try jw.objectField("obfuscation"); try jw.write(v); }
@@ -526,7 +612,7 @@ pub const Response = struct {
     created: i64 = 0,
     model: []const u8,
     choices: []const ResponseChoice,
-    usage: ?common.Usage = null,
+    usage: ?Usage = null,
     system_fingerprint: ?[]const u8 = null,
     service_tier: ?[]const u8 = null,
 
@@ -540,7 +626,7 @@ pub const Response = struct {
         try jw.beginArray();
         for (self.choices) |choice| { try choice.jsonStringify(jw); }
         try jw.endArray();
-        if (self.usage) |u| { try jw.objectField("usage"); try common.Usage.jsonStringify(u, jw); }
+        if (self.usage) |u| { try jw.objectField("usage"); try Usage.jsonStringify(u, jw); }
         if (self.system_fingerprint) |sf| { try jw.objectField("system_fingerprint"); try jw.write(sf); }
         if (self.service_tier) |st| { try jw.objectField("service_tier"); try jw.write(st); }
         try jw.endObject();

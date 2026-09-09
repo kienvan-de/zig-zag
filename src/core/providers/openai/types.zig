@@ -20,20 +20,6 @@ const std = @import("std");
 // and /v1/responses (responses_types.zig).
 // ============================================================================
 
-/// Model object from /v1/models endpoint
-pub const Model = struct {
-    id: []const u8,
-    object: []const u8 = "model",
-    created: i64 = 0,
-    owned_by: []const u8 = "unknown",
-};
-
-/// Response for GET /v1/models
-pub const ModelsResponse = struct {
-    object: []const u8 = "list",
-    data: []const Model,
-};
-
 /// Role in a conversation
 pub const Role = enum {
     system,
@@ -58,73 +44,6 @@ pub const Role = enum {
         return std.meta.stringToEnum(Role, source.string) orelse error.UnknownField;
     }
 };
-
-/// Content part for message content array
-pub const ContentPart = union(enum) {
-    text: struct {
-        type: []const u8 = "text",
-        text: []const u8,
-    },
-    image_url: struct {
-        type: []const u8 = "image_url",
-        image_url: struct {
-            url: []const u8,
-            detail: ?[]const u8 = null,
-        },
-    },
-
-    pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
-        const json_value = try std.json.innerParse(std.json.Value, allocator, source, options);
-        return jsonParseFromValue(allocator, json_value, options);
-    }
-
-    pub fn jsonParseFromValue(_: std.mem.Allocator, source: std.json.Value, _: std.json.ParseOptions) !@This() {
-        if (source != .object) return error.UnexpectedToken;
-        const obj = source.object;
-
-        const type_value = obj.get("type") orelse return error.MissingField;
-        if (type_value != .string) return error.UnexpectedToken;
-        const type_str = type_value.string;
-
-        if (std.mem.eql(u8, type_str, "text")) {
-            const text_value = obj.get("text") orelse return error.MissingField;
-            if (text_value != .string) return error.UnexpectedToken;
-            return .{ .text = .{ .type = "text", .text = text_value.string } };
-        } else if (std.mem.eql(u8, type_str, "image_url")) {
-            const image_url_obj = obj.get("image_url") orelse return error.MissingField;
-            if (image_url_obj != .object) return error.UnexpectedToken;
-            const url_value = image_url_obj.object.get("url") orelse return error.MissingField;
-            if (url_value != .string) return error.UnexpectedToken;
-            const detail = if (image_url_obj.object.get("detail")) |d| if (d == .string) d.string else null else null;
-            return .{ .image_url = .{
-                .type = "image_url",
-                .image_url = .{ .url = url_value.string, .detail = detail },
-            } };
-        } else {
-            return .{ .text = .{ .type = type_str, .text = "" } };
-        }
-    }
-
-    pub fn jsonStringify(self: @This(), jw: anytype) !void {
-        try jw.beginObject();
-        switch (self) {
-            .text => |t| {
-                try jw.objectField("type"); try jw.write("text");
-                try jw.objectField("text"); try jw.write(t.text);
-            },
-            .image_url => |img| {
-                try jw.objectField("type"); try jw.write("image_url");
-                try jw.objectField("image_url");
-                try jw.beginObject();
-                try jw.objectField("url"); try jw.write(img.image_url.url);
-                if (img.image_url.detail) |d| { try jw.objectField("detail"); try jw.write(d); }
-                try jw.endObject();
-            },
-        }
-        try jw.endObject();
-    }
-};
-
 
 /// Tool function definition
 pub const ToolFunction = struct {
@@ -173,31 +92,6 @@ pub const ResponseFormat = struct {
 pub const StreamOptions = struct {
     include_usage: ?bool = null,
     include_obfuscation: ?bool = null,
-};
-
-/// Content union type for messages
-pub const MessageContent = union(enum) {
-    text: []const u8,
-    parts: []const ContentPart,
-};
-
-/// Usage statistics
-pub const Usage = struct {
-    prompt_tokens: u32,
-    completion_tokens: u32,
-    total_tokens: u32,
-    prompt_tokens_details: ?std.json.Value = null,
-    completion_tokens_details: ?std.json.Value = null,
-
-    pub fn jsonStringify(self: @This(), jw: anytype) !void {
-        try jw.beginObject();
-        try jw.objectField("prompt_tokens"); try jw.write(self.prompt_tokens);
-        try jw.objectField("completion_tokens"); try jw.write(self.completion_tokens);
-        try jw.objectField("total_tokens"); try jw.write(self.total_tokens);
-        if (self.prompt_tokens_details) |v| { try jw.objectField("prompt_tokens_details"); try jw.write(v); }
-        if (self.completion_tokens_details) |v| { try jw.objectField("completion_tokens_details"); try jw.write(v); }
-        try jw.endObject();
-    }
 };
 
 // ============================================================================
