@@ -104,10 +104,11 @@ pub const SapAiCoreClient = struct {
         self.client.deinit();
     }
 
-    /// Build headers for SAP AI Core API (requires access token)
-    fn buildHeaders(self: *SapAiCoreClient, auth_buffer: []u8, headers_buf: []std.http.Header, access_token: []const u8) ![]std.http.Header {
-        const auth_value = try std.fmt.bufPrint(auth_buffer, "Bearer {s}", .{access_token});
-
+    /// Build headers for SAP AI Core API (requires access token).
+    /// `auth_value` must be "Bearer <access_token>", heap-allocated by the
+    /// caller: XSUAA JWTs are unbounded (8KB+ observed with many scopes), so
+    /// a fixed-size stack buffer overflows with error.NoSpaceLeft.
+    fn buildHeaders(self: *SapAiCoreClient, auth_value: []const u8, headers_buf: []std.http.Header) ![]std.http.Header {
         headers_buf[0] = .{ .name = "Authorization", .value = auth_value };
         headers_buf[1] = .{ .name = "ai-resource-group", .value = self.resource_group };
         headers_buf[2] = .{ .name = "Content-Type", .value = "application/json" };
@@ -146,10 +147,12 @@ pub const SapAiCoreClient = struct {
         var url_buffer: [512]u8 = undefined;
         const url = try std.fmt.bufPrint(&url_buffer, "{s}/v2/lm/scenarios/foundation-models/models", .{self.api_domain});
 
-        // Build headers (JWT tokens can be 7000+ chars)
-        var auth_buffer: [8192]u8 = undefined;
+        // Build headers. Heap-allocate "Bearer <token>": JWTs are unbounded
+        // (8KB+ observed), a fixed buffer overflows with error.NoSpaceLeft.
+        const auth_value = try std.fmt.allocPrint(self.allocator, "Bearer {s}", .{access_token});
+        defer self.allocator.free(auth_value);
         var headers_buf: [3]std.http.Header = undefined;
-        const headers = try self.buildHeaders(&auth_buffer, &headers_buf, access_token);
+        const headers = try self.buildHeaders(auth_value, &headers_buf);
 
         // Make GET request
         var response = try self.client.getJson(url, headers);
@@ -250,10 +253,12 @@ pub const SapAiCoreClient = struct {
         var url_buffer: [512]u8 = undefined;
         const url = try self.buildApiUrl(&url_buffer);
 
-        // Build headers
-        var auth_buffer: [8192]u8 = undefined;
+        // Build headers. Heap-allocate "Bearer <token>": JWTs are unbounded
+        // (8KB+ observed), a fixed buffer overflows with error.NoSpaceLeft.
+        const auth_value = try std.fmt.allocPrint(self.allocator, "Bearer {s}", .{access_token});
+        defer self.allocator.free(auth_value);
         var headers_buf: [3]std.http.Header = undefined;
-        const headers = try self.buildHeaders(&auth_buffer, &headers_buf, access_token);
+        const headers = try self.buildHeaders(auth_value, &headers_buf);
 
         // Serialize request to JSON
         var request_body = std.ArrayList(u8).empty;
@@ -347,10 +352,12 @@ pub const SapAiCoreClient = struct {
         request_body.print(self.allocator, "{f}", .{std.json.fmt(request, .{})}) catch {};
         log.debug("[SAP] [STREAM] Request payload: {s}", .{request_body.items});
 
-        // Build headers
-        var auth_buffer: [8192]u8 = undefined;
+        // Build headers. Heap-allocate "Bearer <token>": JWTs are unbounded
+        // (8KB+ observed), a fixed buffer overflows with error.NoSpaceLeft.
+        const auth_value = try std.fmt.allocPrint(self.allocator, "Bearer {s}", .{access_token});
+        defer self.allocator.free(auth_value);
         var headers_buf: [3]std.http.Header = undefined;
-        const headers = try self.buildHeaders(&auth_buffer, &headers_buf, access_token);
+        const headers = try self.buildHeaders(auth_value, &headers_buf);
 
         // Make streaming POST request
         const result = try self.client.postStreaming(SSEIterator, url, headers, request);
