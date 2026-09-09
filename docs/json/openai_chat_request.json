@@ -1,0 +1,136 @@
+{
+  "model": "gpt-4o",
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are a helpful assistant."
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "Analyze this image and answer my question."
+        },
+        {
+          "type": "image_url",
+          "image_url": {
+            "url": "https://example.com/image.jpg",
+            "detail": "high"
+          }
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": "I'll use the get_weather tool to check that.",
+      "tool_calls": [
+        {
+          "id": "call_abc123",
+          "type": "function",
+          "function": {
+            "name": "get_weather",
+            "arguments": "{\"location\":\"Berlin\",\"unit\":\"celsius\"}"
+          }
+        }
+      ],
+      "refusal": null
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "call_abc123",
+      "content": "The weather in Berlin is 18°C and partly cloudy."
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "get_weather",
+        "description": "Get the current weather in a location.",
+        "strict": false,
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "location": {
+              "type": "string",
+              "description": "City name or coordinates"
+            },
+            "unit": {
+              "type": "string",
+              "enum": ["celsius", "fahrenheit"],
+              "description": "Temperature unit"
+            }
+          },
+          "required": ["location"],
+          "additionalProperties": false
+        }
+      }
+    }
+  ],
+  "tool_choice": {
+    "type": "function",
+    "function": {
+      "name": "get_weather"
+    }
+  },
+  "parallel_tool_calls": true,
+  "response_format": {
+    "type": "json_schema",
+    "json_schema": {
+      "name": "weather_response",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "answer": {
+            "type": "string",
+            "description": "The answer to the question"
+          },
+          "confidence": {
+            "type": "number"
+          }
+        },
+        "required": ["answer", "confidence"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "stream": true,
+  "stream_options": {
+    "include_usage": true
+  },
+  "temperature": 0.7,
+  "top_p": 0.95,
+  "n": 1,
+  "_comment_max_tokens": "max_tokens is deprecated — use max_completion_tokens instead. Kept here to show both; not compatible with o-series models.",
+  "max_tokens": 4096,
+  "max_completion_tokens": 4096,
+  "stop": ["<END>", "Human:"],
+  "frequency_penalty": 0.0,
+  "presence_penalty": 0.0,
+  "logit_bias": {
+    "50256": -100
+  },
+  "logprobs": false,
+  "top_logprobs": null,
+  "_comment_seed": "seed is deprecated (beta). Included for completeness.",
+  "seed": 42,
+  "reasoning_effort": "medium",
+  "modalities": ["text"],
+  "audio": {
+    "voice": "alloy",
+    "format": "mp3"
+  },
+  "prediction": {
+    "type": "content",
+    "content": "The weather in Berlin is"
+  },
+  "service_tier": "auto",
+  "store": false,
+  "metadata": {
+    "user_id": "user_abc123",
+    "session_id": "sess_xyz789"
+  },
+  "user": "user_abc123"
+}

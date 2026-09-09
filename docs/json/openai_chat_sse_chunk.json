@@ -1,0 +1,243 @@
+{
+  "_comment": "Full SSE stream sequence — each top-level key is one SSE event. Format: data: <json>\\n\\n  (OpenAI does not use a separate 'event:' line; all chunks are 'data:' lines). Stream ends with: data: [DONE]. Note: system_fingerprint is deprecated.",
+  "events": [
+    {
+      "_comment": "First chunk: role delta only, no content yet. obfuscation appears by default; suppress with stream_options.include_obfuscation=false.",
+      "data": {
+        "id": "chatcmpl-abc123xyz",
+        "object": "chat.completion.chunk",
+        "created": 1757500000,
+        "model": "gpt-4o-2024-08-06",
+        "system_fingerprint": "fp_abc123def456",
+        "service_tier": "default",
+        "obfuscation": "obf_abc123xyz",
+        "choices": [
+          {
+            "index": 0,
+            "delta": {
+              "role": "assistant",
+              "content": null
+            },
+            "finish_reason": null,
+            "logprobs": null
+          }
+        ],
+        "usage": null
+      }
+    },
+    {
+      "_comment": "Text content delta chunk",
+      "data": {
+        "id": "chatcmpl-abc123xyz",
+        "object": "chat.completion.chunk",
+        "created": 1757500000,
+        "model": "gpt-4o-2024-08-06",
+        "system_fingerprint": "fp_abc123def456",
+        "service_tier": "default",
+        "choices": [
+          {
+            "index": 0,
+            "delta": {
+              "content": "I'll look up"
+            },
+            "finish_reason": null,
+            "logprobs": null
+          }
+        ],
+        "usage": null
+      }
+    },
+    {
+      "_comment": "Continued text delta",
+      "data": {
+        "id": "chatcmpl-abc123xyz",
+        "object": "chat.completion.chunk",
+        "created": 1757500000,
+        "model": "gpt-4o-2024-08-06",
+        "system_fingerprint": "fp_abc123def456",
+        "service_tier": "default",
+        "choices": [
+          {
+            "index": 0,
+            "delta": {
+              "content": " the weather for you."
+            },
+            "finish_reason": null,
+            "logprobs": null
+          }
+        ],
+        "usage": null
+      }
+    },
+    {
+      "_comment": "Tool call start: first chunk carrying tool_calls with id + function name (arguments is empty string)",
+      "data": {
+        "id": "chatcmpl-abc123xyz",
+        "object": "chat.completion.chunk",
+        "created": 1757500000,
+        "model": "gpt-4o-2024-08-06",
+        "system_fingerprint": "fp_abc123def456",
+        "service_tier": "default",
+        "choices": [
+          {
+            "index": 0,
+            "delta": {
+              "tool_calls": [
+                {
+                  "index": 0,
+                  "id": "call_abc123",
+                  "type": "function",
+                  "function": {
+                    "name": "get_weather",
+                    "arguments": ""
+                  }
+                }
+              ]
+            },
+            "finish_reason": null,
+            "logprobs": null
+          }
+        ],
+        "usage": null
+      }
+    },
+    {
+      "_comment": "Tool call arguments delta: partial JSON — accumulate until finish_reason=tool_calls",
+      "data": {
+        "id": "chatcmpl-abc123xyz",
+        "object": "chat.completion.chunk",
+        "created": 1757500000,
+        "model": "gpt-4o-2024-08-06",
+        "system_fingerprint": "fp_abc123def456",
+        "service_tier": "default",
+        "choices": [
+          {
+            "index": 0,
+            "delta": {
+              "tool_calls": [
+                {
+                  "index": 0,
+                  "function": {
+                    "arguments": "{\"location\":"
+                  }
+                }
+              ]
+            },
+            "finish_reason": null,
+            "logprobs": null
+          }
+        ],
+        "usage": null
+      }
+    },
+    {
+      "_comment": "Tool call arguments delta continued",
+      "data": {
+        "id": "chatcmpl-abc123xyz",
+        "object": "chat.completion.chunk",
+        "created": 1757500000,
+        "model": "gpt-4o-2024-08-06",
+        "system_fingerprint": "fp_abc123def456",
+        "service_tier": "default",
+        "choices": [
+          {
+            "index": 0,
+            "delta": {
+              "tool_calls": [
+                {
+                  "index": 0,
+                  "function": {
+                    "arguments": " \"Berlin\", \"unit\": \"celsius\"}"
+                  }
+                }
+              ]
+            },
+            "finish_reason": null,
+            "logprobs": null
+          }
+        ],
+        "usage": null
+      }
+    },
+    {
+      "_comment": "Final chunk: finish_reason set, empty delta. finish_reason values: stop | tool_calls | length | content_filter | function_call",
+      "data": {
+        "id": "chatcmpl-abc123xyz",
+        "object": "chat.completion.chunk",
+        "created": 1757500000,
+        "model": "gpt-4o-2024-08-06",
+        "system_fingerprint": "fp_abc123def456",
+        "service_tier": "default",
+        "choices": [
+          {
+            "index": 0,
+            "delta": {},
+            "finish_reason": "tool_calls",
+            "logprobs": null
+          }
+        ],
+        "usage": null
+      }
+    },
+    {
+      "_comment": "Usage chunk: sent after the final choices chunk when stream_options.include_usage=true. choices is empty array.",
+      "data": {
+        "id": "chatcmpl-abc123xyz",
+        "object": "chat.completion.chunk",
+        "created": 1757500000,
+        "model": "gpt-4o-2024-08-06",
+        "system_fingerprint": "fp_abc123def456",
+        "service_tier": "default",
+        "choices": [],
+        "usage": {
+          "prompt_tokens": 82,
+          "completion_tokens": 23,
+          "total_tokens": 105,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "audio_tokens": 0,
+            "text_tokens": 82,
+            "image_tokens": 0
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "audio_tokens": 0,
+            "text_tokens": 23,
+            "accepted_prediction_tokens": 0,
+            "rejected_prediction_tokens": 0
+          }
+        }
+      }
+    },
+    {
+      "_comment": "Stream terminator — literal line sent by the server: data: [DONE]",
+      "data": "[DONE]"
+    }
+  ],
+  "_schema": {
+    "_comment": "Key facts about OpenAI SSE streaming",
+    "sse_format": "Each event is a single 'data: <json>\\n\\n' line. No separate 'event:' type line.",
+    "object_value": "chat.completion.chunk",
+    "delta_fields": [
+      "role",
+      "content",
+      "refusal",
+      "tool_calls",
+      "audio"
+    ],
+    "finish_reason_values": [
+      null,
+      "stop",
+      "tool_calls",
+      "length",
+      "content_filter",
+      "function_call"
+    ],
+    "tool_call_streaming_notes": [
+      "First tool_call chunk carries id, type, and function.name with arguments=''",
+      "Subsequent chunks carry only index and function.arguments (partial JSON)",
+      "Accumulate function.arguments across all chunks before parsing"
+    ],
+    "usage_notes": "Usage chunk only appears when stream_options.include_usage=true; it has choices=[]"
+  }
+}
