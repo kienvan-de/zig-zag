@@ -1,0 +1,246 @@
+{
+  "_comment": "SSE stream from POST https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent?alt=sse&key=API_KEY",
+  "_comment_type": "Each SSE 'data:' line is a full GenerateContentResponse JSON object (StreamChunk = GenerateContentResponse)",
+  "_comment_format": "Each entry below represents one SSE event line: 'data: {json}\\n\\n'",
+  "_comment_terminal": "The final chunk carries a non-empty finishReason and the authoritative usageMetadata totals",
+  "_ref": "https://ai.google.dev/api/generate-content#v1beta.GenerateContentResponse",
+
+  "events": [
+    {
+      "_event_index": 0,
+      "_description": "First chunk — partial text delta, no finishReason, usage counts are zero",
+      "candidates": [
+        {
+          "content": {
+            "role": "model",
+            "parts": [
+              {
+                "text": "The population"
+              }
+            ]
+          },
+          "index": 0,
+          "safetyRatings": [
+            {
+              "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+              "probability": "NEGLIGIBLE",
+              "blocked": false
+            },
+            {
+              "category": "HARM_CATEGORY_HATE_SPEECH",
+              "probability": "NEGLIGIBLE",
+              "blocked": false
+            },
+            {
+              "category": "HARM_CATEGORY_HARASSMENT",
+              "probability": "NEGLIGIBLE",
+              "blocked": false
+            },
+            {
+              "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+              "probability": "NEGLIGIBLE",
+              "blocked": false
+            }
+          ]
+        }
+      ],
+      "usageMetadata": {
+        "promptTokenCount": 0,
+        "candidatesTokenCount": 0,
+        "totalTokenCount": 0,
+        "cachedContentTokenCount": 0,
+        "thoughtsTokenCount": 0,
+        "toolUsePromptTokenCount": 0
+      },
+      "modelVersion": "gemini-1.5-flash-001"
+    },
+
+    {
+      "_event_index": 1,
+      "_description": "Mid-stream chunk — another text delta",
+      "candidates": [
+        {
+          "content": {
+            "role": "model",
+            "parts": [
+              {
+                "text": " of Paris is approximately"
+              }
+            ]
+          },
+          "index": 0,
+          "safetyRatings": [
+            {
+              "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+              "probability": "NEGLIGIBLE",
+              "blocked": false
+            },
+            {
+              "category": "HARM_CATEGORY_HATE_SPEECH",
+              "probability": "NEGLIGIBLE",
+              "blocked": false
+            },
+            {
+              "category": "HARM_CATEGORY_HARASSMENT",
+              "probability": "NEGLIGIBLE",
+              "blocked": false
+            },
+            {
+              "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+              "probability": "NEGLIGIBLE",
+              "blocked": false
+            }
+          ]
+        }
+      ],
+      "usageMetadata": {
+        "promptTokenCount": 0,
+        "candidatesTokenCount": 0,
+        "totalTokenCount": 0,
+        "cachedContentTokenCount": 0,
+        "thoughtsTokenCount": 0,
+        "toolUsePromptTokenCount": 0
+      },
+      "modelVersion": "gemini-1.5-flash-001"
+    },
+
+    {
+      "_event_index": 2,
+      "_description": "Terminal chunk — non-empty finishReason signals end of stream; usageMetadata carries authoritative totals",
+      "candidates": [
+        {
+          "content": {
+            "role": "model",
+            "parts": [
+              {
+                "text": " 2.1 million people."
+              }
+            ]
+          },
+          "finishReason": "STOP",
+          "_comment_finishReason_values": "FINISH_REASON_UNSPECIFIED | STOP | MAX_TOKENS | SAFETY | RECITATION | LANGUAGE | OTHER | BLOCKLIST | PROHIBITED_CONTENT | SPII | MALFORMED_FUNCTION_CALL | IMAGE_SAFETY | UNEXPECTED_TOOL_CALL | MAX_TOOL_USE_REACHED",
+          "index": 0,
+          "tokenCount": 10,
+          "avgLogprobs": -0.08765,
+          "safetyRatings": [
+            {
+              "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+              "probability": "NEGLIGIBLE",
+              "blocked": false
+            },
+            {
+              "category": "HARM_CATEGORY_HATE_SPEECH",
+              "probability": "NEGLIGIBLE",
+              "blocked": false
+            },
+            {
+              "category": "HARM_CATEGORY_HARASSMENT",
+              "probability": "NEGLIGIBLE",
+              "blocked": false
+            },
+            {
+              "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+              "probability": "NEGLIGIBLE",
+              "blocked": false
+            }
+          ],
+          "citationMetadata": {
+            "citations": [
+              {
+                "startIndex": 0,
+                "endIndex": 20,
+                "uri": "https://en.wikipedia.org/wiki/Paris",
+                "title": "Paris — Wikipedia",
+                "license": "",
+                "publicationDate": {
+                  "year": 2024,
+                  "month": 3,
+                  "day": 15
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "usageMetadata": {
+        "promptTokenCount": 42,
+        "candidatesTokenCount": 10,
+        "totalTokenCount": 52,
+        "cachedContentTokenCount": 0,
+        "thoughtsTokenCount": 0,
+        "toolUsePromptTokenCount": 0
+      },
+      "modelVersion": "gemini-1.5-flash-001"
+    },
+
+    {
+      "_event_index": 3,
+      "_description": "Optional usage-only trailing chunk — empty candidates array; emitted by some Gemini model versions",
+      "candidates": [],
+      "usageMetadata": {
+        "promptTokenCount": 42,
+        "candidatesTokenCount": 10,
+        "totalTokenCount": 52,
+        "cachedContentTokenCount": 0,
+        "thoughtsTokenCount": 0,
+        "toolUsePromptTokenCount": 0
+      },
+      "modelVersion": "gemini-1.5-flash-001"
+    }
+  ],
+
+  "_comment_function_call_chunk": "When the model calls a tool, the terminal chunk looks like this instead",
+  "function_call_terminal_chunk_example": {
+    "candidates": [
+      {
+        "content": {
+          "role": "model",
+          "parts": [
+            {
+              "functionCall": {
+                "name": "get_population",
+                "args": {
+                  "city": "Paris",
+                  "country": "France"
+                }
+              }
+            }
+          ]
+        },
+        "finishReason": "FUNCTION_CALL",
+        "index": 0,
+        "safetyRatings": [
+          {
+            "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+            "probability": "NEGLIGIBLE",
+            "blocked": false
+          },
+          {
+            "category": "HARM_CATEGORY_HATE_SPEECH",
+            "probability": "NEGLIGIBLE",
+            "blocked": false
+          },
+          {
+            "category": "HARM_CATEGORY_HARASSMENT",
+            "probability": "NEGLIGIBLE",
+            "blocked": false
+          },
+          {
+            "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+            "probability": "NEGLIGIBLE",
+            "blocked": false
+          }
+        ]
+      }
+    ],
+    "usageMetadata": {
+      "promptTokenCount": 55,
+      "candidatesTokenCount": 18,
+      "totalTokenCount": 73,
+      "cachedContentTokenCount": 0,
+      "thoughtsTokenCount": 0,
+      "toolUsePromptTokenCount": 0
+    },
+    "modelVersion": "gemini-1.5-flash-001"
+  }
+}

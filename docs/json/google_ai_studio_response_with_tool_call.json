@@ -1,0 +1,31 @@
+{
+  "_comment": "Response from POST https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key=API_KEY",
+  "_comment_type": "Google.Response — response body when the model issues a function call",
+
+  "candidates": [
+    {
+      "content": {
+        "role": "model",
+        "parts": [
+          {
+            "functionCall": {
+              "name": "get_population",
+              "args": {
+                "city": "Paris",
+                "country": "France"
+              }
+            }
+          }
+        ]
+      },
+      "finishReason": "FUNCTION_CALL",
+      "index": 0
+    }
+  ],
+
+  "usageMetadata": {
+    "promptTokenCount": 55,
+    "candidatesTokenCount": 18,
+    "totalTokenCount": 73
+  }
+}

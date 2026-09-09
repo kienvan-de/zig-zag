@@ -1,0 +1,207 @@
+{
+  "_comment": "POST https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key=API_KEY",
+  "_comment_stream": "POST https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent?alt=sse&key=API_KEY",
+  "_comment_note": "The model name is embedded in the URL, not in the JSON body. This document shows the full JSON payload (GenerateContentRequest).",
+  "_ref": "https://ai.google.dev/api/generate-content#v1beta.GenerateContentRequest",
+
+  "contents": [
+    {
+      "role": "user",
+      "parts": [
+        {
+          "text": "What is the capital of France?"
+        }
+      ]
+    },
+    {
+      "role": "model",
+      "parts": [
+        {
+          "text": "The capital of France is Paris."
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "parts": [
+        {
+          "text": "Describe this image and tell me the population."
+        },
+        {
+          "_comment_part_variant": "inlineData — base64-encoded media bytes (image, audio, video, document)",
+          "inlineData": {
+            "mimeType": "image/jpeg",
+            "data": "/9j/4AAQSkZJRgABAQAAAQABAAD..."
+          }
+        },
+        {
+          "_comment_part_variant": "fileData — reference to a file uploaded via the Google File API",
+          "fileData": {
+            "mimeType": "image/png",
+            "fileUri": "https://generativelanguage.googleapis.com/v1beta/files/abc123"
+          }
+        },
+        {
+          "_comment_part_variant": "executableCode — code the model can execute (requires codeExecution tool)",
+          "executableCode": {
+            "language": "PYTHON",
+            "code": "print('Hello, world!')"
+          }
+        },
+        {
+          "_comment_part_variant": "codeExecutionResult — result of previously executed code",
+          "codeExecutionResult": {
+            "outcome": "OUTCOME_OK",
+            "_comment_outcome_values": "OUTCOME_UNSPECIFIED | OUTCOME_OK | OUTCOME_FAILED | OUTCOME_DEADLINE_EXCEEDED",
+            "output": "Hello, world!\n"
+          }
+        },
+        {
+          "_comment_part_variant": "functionCall — model requesting a tool call",
+          "functionCall": {
+            "name": "get_population",
+            "args": {
+              "city": "Paris",
+              "country": "France"
+            }
+          }
+        },
+        {
+          "_comment_part_variant": "functionResponse — result returned to the model after a tool call",
+          "functionResponse": {
+            "name": "get_population",
+            "response": {
+              "output": "The population of Paris is approximately 2.1 million within the city proper."
+            }
+          }
+        }
+      ]
+    }
+  ],
+
+  "systemInstruction": {
+    "parts": [
+      {
+        "text": "You are a helpful geography assistant. Always provide accurate and concise answers."
+      }
+    ]
+  },
+
+  "tools": [
+    {
+      "_comment_tool_variant": "functionDeclarations — custom functions the model may call",
+      "functionDeclarations": [
+        {
+          "name": "get_population",
+          "description": "Retrieves the population of a given city.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "city": {
+                "type": "string",
+                "description": "The name of the city."
+              },
+              "country": {
+                "type": "string",
+                "description": "The country the city is located in."
+              }
+            },
+            "required": ["city"]
+          },
+          "response": {
+            "type": "object",
+            "properties": {
+              "output": {
+                "type": "string",
+                "description": "A human-readable population description."
+              }
+            }
+          },
+          "behavior": "NON_BLOCKING",
+          "_comment_behavior_values": "BEHAVIOR_UNSPECIFIED | NON_BLOCKING"
+        },
+        {
+          "name": "get_weather",
+          "description": "Returns the current weather for a location.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "location": {
+                "type": "string",
+                "description": "City and country, e.g. 'Paris, France'."
+              },
+              "unit": {
+                "type": "string",
+                "enum": ["celsius", "fahrenheit"],
+                "description": "Temperature unit."
+              }
+            },
+            "required": ["location"]
+          }
+        }
+      ]
+    },
+    {
+      "_comment_tool_variant": "googleSearch — built-in grounding tool; use empty object to enable",
+      "googleSearch": {}
+    },
+    {
+      "_comment_tool_variant": "codeExecution — built-in code execution tool; use empty object to enable",
+      "codeExecution": {}
+    }
+  ],
+
+  "toolConfig": {
+    "functionCallingConfig": {
+      "mode": "AUTO",
+      "_comment_mode_values": "AUTO | ANY | NONE",
+      "allowedFunctionNames": ["get_population", "get_weather"]
+    }
+  },
+
+  "safetySettings": [
+    {
+      "category": "HARM_CATEGORY_HARASSMENT",
+      "threshold": "BLOCK_MEDIUM_AND_ABOVE",
+      "_comment_category_values": "HARM_CATEGORY_HARASSMENT | HARM_CATEGORY_HATE_SPEECH | HARM_CATEGORY_SEXUALLY_EXPLICIT | HARM_CATEGORY_DANGEROUS_CONTENT | HARM_CATEGORY_CIVIC_INTEGRITY",
+      "_comment_threshold_values": "BLOCK_NONE | BLOCK_ONLY_HIGH | BLOCK_MEDIUM_AND_ABOVE | BLOCK_LOW_AND_ABOVE | HARM_BLOCK_THRESHOLD_UNSPECIFIED"
+    },
+    {
+      "category": "HARM_CATEGORY_HATE_SPEECH",
+      "threshold": "BLOCK_MEDIUM_AND_ABOVE"
+    },
+    {
+      "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+      "threshold": "BLOCK_MEDIUM_AND_ABOVE"
+    },
+    {
+      "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+      "threshold": "BLOCK_MEDIUM_AND_ABOVE"
+    }
+  ],
+
+  "cachedContent": "cachedContents/abc123xyz",
+
+  "generationConfig": {
+    "temperature": 0.7,
+    "topP": 0.95,
+    "topK": 40,
+    "candidateCount": 1,
+    "maxOutputTokens": 1024,
+    "stopSequences": ["END", "STOP"],
+    "presencePenalty": 0.0,
+    "frequencyPenalty": 0.0,
+    "responseLogprobs": false,
+    "logprobs": 0,
+    "responseMimeType": "text/plain",
+    "_comment_responseMimeType_values": "text/plain | application/json | text/x.enum | application/x.protobuf",
+    "seed": 42,
+    "audioTimestamp": false,
+    "mediaResolution": "MEDIA_RESOLUTION_MEDIUM",
+    "_comment_mediaResolution_values": "MEDIA_RESOLUTION_LOW | MEDIA_RESOLUTION_MEDIUM | MEDIA_RESOLUTION_HIGH",
+    "thinkingConfig": {
+      "thinkingBudget": 1024,
+      "includeThoughts": true
+    }
+  }
+}

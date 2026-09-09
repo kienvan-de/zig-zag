@@ -31,6 +31,22 @@ pub const Part = union(enum) {
     text: struct {
         text: []const u8,
     },
+    inline_data: struct {
+        mime_type: []const u8,
+        data: []const u8,
+    },
+    file_data: struct {
+        mime_type: []const u8,
+        file_uri: []const u8,
+    },
+    executable_code: struct {
+        language: []const u8,
+        code: []const u8,
+    },
+    code_execution_result: struct {
+        outcome: []const u8,
+        output: []const u8,
+    },
     function_call: struct {
         name: []const u8,
         args: std.json.Value,
@@ -53,6 +69,34 @@ pub const Part = union(enum) {
 
         if (obj.get("text")) |tv| {
             if (tv == .string) return .{ .text = .{ .text = tv.string } };
+        }
+        if (obj.get("inlineData")) |v| {
+            if (v == .object) {
+                const mime = if (v.object.get("mimeType")) |m| (if (m == .string) m.string else "") else "";
+                const data = if (v.object.get("data")) |d| (if (d == .string) d.string else "") else "";
+                return .{ .inline_data = .{ .mime_type = mime, .data = data } };
+            }
+        }
+        if (obj.get("fileData")) |v| {
+            if (v == .object) {
+                const mime = if (v.object.get("mimeType")) |m| (if (m == .string) m.string else "") else "";
+                const uri = if (v.object.get("fileUri")) |u| (if (u == .string) u.string else "") else "";
+                return .{ .file_data = .{ .mime_type = mime, .file_uri = uri } };
+            }
+        }
+        if (obj.get("executableCode")) |v| {
+            if (v == .object) {
+                const lang = if (v.object.get("language")) |l| (if (l == .string) l.string else "") else "";
+                const code = if (v.object.get("code")) |c| (if (c == .string) c.string else "") else "";
+                return .{ .executable_code = .{ .language = lang, .code = code } };
+            }
+        }
+        if (obj.get("codeExecutionResult")) |v| {
+            if (v == .object) {
+                const outcome = if (v.object.get("outcome")) |o| (if (o == .string) o.string else "") else "";
+                const output = if (v.object.get("output")) |o| (if (o == .string) o.string else "") else "";
+                return .{ .code_execution_result = .{ .outcome = outcome, .output = output } };
+            }
         }
         if (obj.get("functionCall")) |fc| {
             if (fc == .object) {
@@ -77,6 +121,42 @@ pub const Part = union(enum) {
                 try jw.beginObject();
                 try jw.objectField("text");
                 try jw.write(v.text);
+                try jw.endObject();
+            },
+            .inline_data => |v| {
+                try jw.beginObject();
+                try jw.objectField("inlineData");
+                try jw.beginObject();
+                try jw.objectField("mimeType"); try jw.write(v.mime_type);
+                try jw.objectField("data"); try jw.write(v.data);
+                try jw.endObject();
+                try jw.endObject();
+            },
+            .file_data => |v| {
+                try jw.beginObject();
+                try jw.objectField("fileData");
+                try jw.beginObject();
+                try jw.objectField("mimeType"); try jw.write(v.mime_type);
+                try jw.objectField("fileUri"); try jw.write(v.file_uri);
+                try jw.endObject();
+                try jw.endObject();
+            },
+            .executable_code => |v| {
+                try jw.beginObject();
+                try jw.objectField("executableCode");
+                try jw.beginObject();
+                try jw.objectField("language"); try jw.write(v.language);
+                try jw.objectField("code"); try jw.write(v.code);
+                try jw.endObject();
+                try jw.endObject();
+            },
+            .code_execution_result => |v| {
+                try jw.beginObject();
+                try jw.objectField("codeExecutionResult");
+                try jw.beginObject();
+                try jw.objectField("outcome"); try jw.write(v.outcome);
+                try jw.objectField("output"); try jw.write(v.output);
+                try jw.endObject();
                 try jw.endObject();
             },
             .function_call => |v| {
@@ -130,6 +210,8 @@ pub const FunctionDeclaration = struct {
     name: []const u8,
     description: ?[]const u8 = null,
     parameters: ?std.json.Value = null,
+    response: ?std.json.Value = null,
+    behavior: ?[]const u8 = null, // "NON_BLOCKING" | "BEHAVIOR_UNSPECIFIED"
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         try jw.beginObject();
@@ -143,12 +225,23 @@ pub const FunctionDeclaration = struct {
             try jw.objectField("parameters");
             try jw.write(p);
         }
+        if (self.response) |r| {
+            try jw.objectField("response");
+            try jw.write(r);
+        }
+        if (self.behavior) |b| {
+            try jw.objectField("behavior");
+            try jw.write(b);
+        }
         try jw.endObject();
     }
 };
 
+/// Tool definition — wraps function declarations or built-in tools (googleSearch, codeExecution).
 pub const GeminiTool = struct {
     function_declarations: ?[]const FunctionDeclaration = null,
+    google_search: ?std.json.Value = null,
+    code_execution: ?std.json.Value = null,
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         try jw.beginObject();
@@ -158,6 +251,8 @@ pub const GeminiTool = struct {
             for (fds) |fd| try jw.write(fd);
             try jw.endArray();
         }
+        if (self.google_search) |v| { try jw.objectField("googleSearch"); try jw.write(v); }
+        if (self.code_execution) |v| { try jw.objectField("codeExecution"); try jw.write(v); }
         try jw.endObject();
     }
 };
@@ -193,22 +288,60 @@ pub const ToolConfig = struct {
 };
 
 // ============================================================================
+// Safety settings
+// ============================================================================
+
+pub const SafetySetting = struct {
+    category: []const u8,
+    threshold: []const u8,
+
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("category"); try jw.write(self.category);
+        try jw.objectField("threshold"); try jw.write(self.threshold);
+        try jw.endObject();
+    }
+};
+
+// ============================================================================
 // GenerationConfig
 // ============================================================================
+
+pub const ThinkingConfig = struct {
+    thinking_budget: ?u32 = null,
+    include_thoughts: ?bool = null,
+
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        if (self.thinking_budget) |v| { try jw.objectField("thinkingBudget"); try jw.write(v); }
+        if (self.include_thoughts) |v| { try jw.objectField("includeThoughts"); try jw.write(v); }
+        try jw.endObject();
+    }
+};
 
 pub const GenerationConfig = struct {
     temperature: ?f32 = null,
     top_p: ?f32 = null,
     top_k: ?u32 = null,
+    candidate_count: ?u32 = null,
     max_output_tokens: ?u32 = null,
     stop_sequences: ?[]const []const u8 = null,
+    presence_penalty: ?f32 = null,
+    frequency_penalty: ?f32 = null,
+    response_logprobs: ?bool = null,
+    logprobs: ?u32 = null,
     response_mime_type: ?[]const u8 = null,
+    seed: ?i64 = null,
+    audio_timestamp: ?bool = null,
+    media_resolution: ?[]const u8 = null,
+    thinking_config: ?ThinkingConfig = null,
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         try jw.beginObject();
         if (self.temperature) |v| { try jw.objectField("temperature"); try jw.write(v); }
         if (self.top_p) |v| { try jw.objectField("topP"); try jw.write(v); }
         if (self.top_k) |v| { try jw.objectField("topK"); try jw.write(v); }
+        if (self.candidate_count) |v| { try jw.objectField("candidateCount"); try jw.write(v); }
         if (self.max_output_tokens) |v| { try jw.objectField("maxOutputTokens"); try jw.write(v); }
         if (self.stop_sequences) |ss| {
             try jw.objectField("stopSequences");
@@ -216,7 +349,15 @@ pub const GenerationConfig = struct {
             for (ss) |s| try jw.write(s);
             try jw.endArray();
         }
+        if (self.presence_penalty) |v| { try jw.objectField("presencePenalty"); try jw.write(v); }
+        if (self.frequency_penalty) |v| { try jw.objectField("frequencyPenalty"); try jw.write(v); }
+        if (self.response_logprobs) |v| { try jw.objectField("responseLogprobs"); try jw.write(v); }
+        if (self.logprobs) |v| { try jw.objectField("logprobs"); try jw.write(v); }
         if (self.response_mime_type) |m| { try jw.objectField("responseMimeType"); try jw.write(m); }
+        if (self.seed) |v| { try jw.objectField("seed"); try jw.write(v); }
+        if (self.audio_timestamp) |v| { try jw.objectField("audioTimestamp"); try jw.write(v); }
+        if (self.media_resolution) |v| { try jw.objectField("mediaResolution"); try jw.write(v); }
+        if (self.thinking_config) |v| { try jw.objectField("thinkingConfig"); try jw.write(v); }
         try jw.endObject();
     }
 };
@@ -254,6 +395,8 @@ pub const RequestPayload = struct {
     system_instruction: ?SystemInstruction = null,
     tools: ?[]const GeminiTool = null,
     tool_config: ?ToolConfig = null,
+    safety_settings: ?[]const SafetySetting = null,
+    cached_content: ?[]const u8 = null,
     generation_config: ?GenerationConfig = null,
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
@@ -276,6 +419,13 @@ pub const RequestPayload = struct {
             try jw.objectField("toolConfig");
             try jw.write(tc);
         }
+        if (self.safety_settings) |ss| {
+            try jw.objectField("safetySettings");
+            try jw.beginArray();
+            for (ss) |s| try jw.write(s);
+            try jw.endArray();
+        }
+        if (self.cached_content) |v| { try jw.objectField("cachedContent"); try jw.write(v); }
         if (self.generation_config) |gc| {
             try jw.objectField("generationConfig");
             try jw.write(gc);
@@ -302,10 +452,19 @@ pub const Request = struct {
 // Response
 // ============================================================================
 
+pub const SafetyRating = struct {
+    category: []const u8 = "",
+    probability: []const u8 = "",
+    blocked: ?bool = null,
+};
+
 pub const UsageMetadata = struct {
     prompt_token_count: u32 = 0,
     candidates_token_count: u32 = 0,
     total_token_count: u32 = 0,
+    cached_content_token_count: u32 = 0,
+    thoughts_token_count: u32 = 0,
+    tool_use_prompt_token_count: u32 = 0,
 };
 
 /// A single candidate in the response.
@@ -313,6 +472,12 @@ pub const Candidate = struct {
     content: Content,
     finish_reason: ?[]const u8 = null,
     index: ?u32 = null,
+    token_count: ?u32 = null,
+    avg_logprobs: ?f64 = null,
+    safety_ratings: ?std.json.Value = null,
+    citation_metadata: ?std.json.Value = null,
+    grounding_metadata: ?std.json.Value = null,
+    logprobs_result: ?std.json.Value = null,
 
     pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
         const v = try std.json.innerParse(std.json.Value, allocator, source, options);
@@ -324,7 +489,6 @@ pub const Candidate = struct {
         const obj = source.object;
 
         const content_val = obj.get("content") orelse {
-            // Some error responses omit content — return an empty content
             return .{
                 .content = .{ .role = "model", .parts = &.{} },
                 .finish_reason = null,
@@ -343,10 +507,27 @@ pub const Candidate = struct {
         else
             null;
 
+        const token_count: ?u32 = if (obj.get("tokenCount")) |v|
+            if (v == .integer) @intCast(v.integer) else null
+        else
+            null;
+
+        const avg_logprobs: ?f64 = if (obj.get("avgLogprobs")) |v| switch (v) {
+            .float => |f| f,
+            .integer => |i| @floatFromInt(i),
+            else => null,
+        } else null;
+
         return .{
             .content = content,
             .finish_reason = finish_reason,
             .index = index,
+            .token_count = token_count,
+            .avg_logprobs = avg_logprobs,
+            .safety_ratings = obj.get("safetyRatings"),
+            .citation_metadata = obj.get("citationMetadata"),
+            .grounding_metadata = obj.get("groundingMetadata"),
+            .logprobs_result = obj.get("logprobsResult"),
         };
     }
 };
@@ -378,11 +559,17 @@ pub fn parseUsageMetadata(source: std.json.Value) UsageMetadata {
     const prompt = if (obj.get("promptTokenCount")) |v| (if (v == .integer) @as(u32, @intCast(v.integer)) else 0) else 0;
     const candidates = if (obj.get("candidatesTokenCount")) |v| (if (v == .integer) @as(u32, @intCast(v.integer)) else 0) else 0;
     const total = if (obj.get("totalTokenCount")) |v| (if (v == .integer) @as(u32, @intCast(v.integer)) else 0) else 0;
+    const cached = if (obj.get("cachedContentTokenCount")) |v| (if (v == .integer) @as(u32, @intCast(v.integer)) else 0) else 0;
+    const thoughts = if (obj.get("thoughtsTokenCount")) |v| (if (v == .integer) @as(u32, @intCast(v.integer)) else 0) else 0;
+    const tool_use_prompt = if (obj.get("toolUsePromptTokenCount")) |v| (if (v == .integer) @as(u32, @intCast(v.integer)) else 0) else 0;
 
     return .{
         .prompt_token_count = prompt,
         .candidates_token_count = candidates,
         .total_token_count = total,
+        .cached_content_token_count = cached,
+        .thoughts_token_count = thoughts,
+        .tool_use_prompt_token_count = tool_use_prompt,
     };
 }
 
@@ -390,6 +577,8 @@ pub fn parseUsageMetadata(source: std.json.Value) UsageMetadata {
 pub const Response = struct {
     candidates: []const Candidate = &.{},
     usage_metadata: UsageMetadata = .{},
+    prompt_feedback: ?std.json.Value = null,
+    model_version: ?[]const u8 = null,
 
     pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
         const v = try std.json.innerParse(std.json.Value, allocator, source, options);
@@ -415,9 +604,16 @@ pub const Response = struct {
         else
             .{};
 
+        const model_version: ?[]const u8 = if (obj.get("modelVersion")) |v|
+            if (v == .string) v.string else null
+        else
+            null;
+
         return .{
             .candidates = candidates,
             .usage_metadata = usage,
+            .prompt_feedback = obj.get("promptFeedback"),
+            .model_version = model_version,
         };
     }
 };

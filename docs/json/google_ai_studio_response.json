@@ -1,0 +1,147 @@
+{
+  "_comment": "Response from POST https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key=API_KEY",
+  "_comment_type": "GenerateContentResponse — full non-streaming response body",
+  "_ref": "https://ai.google.dev/api/generate-content#v1beta.GenerateContentResponse",
+
+  "candidates": [
+    {
+      "content": {
+        "role": "model",
+        "parts": [
+          {
+            "text": "The population of Paris is approximately 2.1 million people within the city proper, and about 12 million in the greater metropolitan area."
+          }
+        ]
+      },
+      "finishReason": "STOP",
+      "_comment_finishReason_values": "FINISH_REASON_UNSPECIFIED | STOP | MAX_TOKENS | SAFETY | RECITATION | LANGUAGE | OTHER | BLOCKLIST | PROHIBITED_CONTENT | SPII | MALFORMED_FUNCTION_CALL | IMAGE_SAFETY | UNEXPECTED_TOOL_CALL | MAX_TOOL_USE_REACHED",
+      "index": 0,
+      "tokenCount": 31,
+      "avgLogprobs": -0.12345,
+      "safetyRatings": [
+        {
+          "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+          "probability": "NEGLIGIBLE",
+          "_comment_probability_values": "HARM_PROBABILITY_UNSPECIFIED | NEGLIGIBLE | LOW | MEDIUM | HIGH",
+          "blocked": false
+        },
+        {
+          "category": "HARM_CATEGORY_HATE_SPEECH",
+          "probability": "NEGLIGIBLE",
+          "blocked": false
+        },
+        {
+          "category": "HARM_CATEGORY_HARASSMENT",
+          "probability": "NEGLIGIBLE",
+          "blocked": false
+        },
+        {
+          "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+          "probability": "NEGLIGIBLE",
+          "blocked": false
+        }
+      ],
+      "citationMetadata": {
+        "citations": [
+          {
+            "startIndex": 0,
+            "endIndex": 50,
+            "uri": "https://en.wikipedia.org/wiki/Paris",
+            "title": "Paris — Wikipedia",
+            "license": "",
+            "publicationDate": {
+              "year": 2024,
+              "month": 3,
+              "day": 15
+            }
+          }
+        ]
+      },
+      "groundingMetadata": {
+        "_comment": "Populated when the googleSearch grounding tool was used",
+        "searchEntryPoint": {
+          "renderedContent": "<html>...</html>"
+        },
+        "groundingChunks": [
+          {
+            "web": {
+              "uri": "https://en.wikipedia.org/wiki/Paris",
+              "title": "Paris — Wikipedia"
+            }
+          }
+        ],
+        "groundingSupports": [
+          {
+            "segment": {
+              "startIndex": 0,
+              "endIndex": 50,
+              "text": "The population of Paris is approximately 2.1 million"
+            },
+            "groundingChunkIndices": [0],
+            "confidenceScores": [0.95]
+          }
+        ],
+        "webSearchQueries": ["Paris population 2024"]
+      },
+      "logprobsResult": {
+        "topCandidates": [
+          {
+            "candidates": [
+              {
+                "token": "The",
+                "tokenId": 464,
+                "logProbability": -0.002
+              }
+            ]
+          }
+        ],
+        "chosenCandidates": [
+          {
+            "token": "The",
+            "tokenId": 464,
+            "logProbability": -0.002
+          }
+        ]
+      }
+    }
+  ],
+
+  "promptFeedback": {
+    "_comment": "Feedback on the prompt before generation; present when the prompt itself was assessed",
+    "blockReason": null,
+    "_comment_blockReason_values": "BLOCK_REASON_UNSPECIFIED | SAFETY | OTHER | BLOCKLIST | PROHIBITED_CONTENT",
+    "safetyRatings": [
+      {
+        "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+        "probability": "NEGLIGIBLE",
+        "blocked": false
+      },
+      {
+        "category": "HARM_CATEGORY_HATE_SPEECH",
+        "probability": "NEGLIGIBLE",
+        "blocked": false
+      },
+      {
+        "category": "HARM_CATEGORY_HARASSMENT",
+        "probability": "NEGLIGIBLE",
+        "blocked": false
+      },
+      {
+        "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+        "probability": "NEGLIGIBLE",
+        "blocked": false
+      }
+    ]
+  },
+
+  "usageMetadata": {
+    "promptTokenCount": 42,
+    "candidatesTokenCount": 31,
+    "totalTokenCount": 73,
+    "cachedContentTokenCount": 0,
+    "thoughtsTokenCount": 0,
+    "toolUsePromptTokenCount": 0
+  },
+
+  "modelVersion": "gemini-1.5-flash-001"
+}
