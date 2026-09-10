@@ -34,7 +34,7 @@ pub fn handle(
     body: []const u8,
 ) !void {
     _ = method;
-    _ = path;
+    log.info("POST {s}", .{path});
 
     // Parse Anthropic request
     const anthropic_request = std.json.parseFromSlice(

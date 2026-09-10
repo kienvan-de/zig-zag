@@ -59,77 +59,202 @@ pub fn transformToolChoice(tool_choice: std.json.Value) ?Google.ToolConfig {
     }
 }
 
-/// Sanitize a JSON schema for Gemini: recursively drops keys Gemini rejects
-/// in `FunctionDeclaration.parameters` ($schema/$ref/$defs, format, numeric
-/// bounds, default/examples, title, additionalProperties). Allocates a fresh
-/// tree (object keys are borrowed from the input; containers are new).
-pub fn sanitizeSchema(value: std.json.Value, allocator: std.mem.Allocator) !std.json.Value {
-    switch (value) {
-        .object => |obj| {
-            var new_obj: std.json.ObjectMap = .{};
-            errdefer new_obj.deinit(allocator);
-            var it = obj.iterator();
+/// Map an arbitrary JSON Schema value to a typed GeminiSchema.
+/// Whitelist approach — only fields Gemini's Schema proto supports are emitted.
+/// Handles common OpenAI→Gemini translation:
+///   - lowercase type names → Gemini uppercase enum
+///   - anyOf with {"type":"null"} entry → sets nullable:true, strips the null variant
+///   - bare {} entries inside anyOf → dropped
+///   - unsupported keys ($ref, $defs, title, default, additionalProperties, etc.) → dropped
+pub fn mapToGeminiSchema(value: std.json.Value, allocator: std.mem.Allocator) error{OutOfMemory}!Google.GeminiSchema {
+    if (value != .object) return .{};
+    const obj = value.object;
+
+    var schema = Google.GeminiSchema{};
+
+    // type — map lowercase OpenAI names to Gemini uppercase enum
+    if (obj.get("type")) |tv| {
+        if (tv == .string) schema.type = mapSchemaType(tv.string);
+    }
+
+    // description
+    if (obj.get("description")) |v| {
+        if (v == .string) schema.description = v.string;
+    }
+
+    // nullable — detect {"type":"null"} inside anyOf or explicit type:null
+    if (obj.get("type")) |tv| {
+        if (tv == .string and std.mem.eql(u8, tv.string, "null")) schema.nullable = true;
+    }
+
+    // format — only pass through values Gemini understands
+    if (obj.get("format")) |v| {
+        if (v == .string and isGeminiFormat(v.string)) schema.format = v.string;
+    }
+
+    // pattern
+    if (obj.get("pattern")) |v| {
+        if (v == .string) schema.pattern = v.string;
+    }
+
+    // enum
+    if (obj.get("enum")) |v| {
+        if (v == .array) {
+            var enums: std.ArrayList([]const u8) = .empty;
+            errdefer enums.deinit(allocator);
+            for (v.array.items) |item| {
+                if (item == .string) try enums.append(allocator, item.string);
+            }
+            if (enums.items.len > 0)
+                schema.@"enum" = try enums.toOwnedSlice(allocator)
+            else
+                enums.deinit(allocator);
+        }
+    }
+
+    // properties — recurse
+    if (obj.get("properties")) |v| {
+        if (v == .object) {
+            var props: std.ArrayList(Google.GeminiSchemaProperty) = .empty;
+            errdefer {
+                for (props.items) |p| freeGeminiSchema(p.schema, allocator);
+                props.deinit(allocator);
+            }
+            var it = v.object.iterator();
             while (it.next()) |entry| {
-                const key = entry.key_ptr.*;
-                if (std.mem.eql(u8, key, "$schema") or
-                    std.mem.eql(u8, key, "$ref") or
-                    std.mem.eql(u8, key, "$defs") or
-                    std.mem.eql(u8, key, "format") or
-                    std.mem.eql(u8, key, "minimum") or
-                    std.mem.eql(u8, key, "maximum") or
-                    std.mem.eql(u8, key, "exclusiveMinimum") or
-                    std.mem.eql(u8, key, "exclusiveMaximum") or
-                    std.mem.eql(u8, key, "default") or
-                    std.mem.eql(u8, key, "examples") or
-                    std.mem.eql(u8, key, "title") or
-                    std.mem.eql(u8, key, "additionalProperties")) continue;
-                const sanitized = try sanitizeSchema(entry.value_ptr.*, allocator);
-                try new_obj.put(allocator, key, sanitized);
+                const child = try mapToGeminiSchema(entry.value_ptr.*, allocator);
+                try props.append(allocator, .{ .name = entry.key_ptr.*, .schema = child });
             }
-            return .{ .object = new_obj };
-        },
-        .array => |arr| {
-            var new_arr = std.json.Array.init(allocator);
-            errdefer new_arr.deinit();
-            for (arr.items) |item| {
-                try new_arr.append(try sanitizeSchema(item, allocator));
+            schema.properties = try props.toOwnedSlice(allocator);
+        }
+    }
+
+    // required
+    if (obj.get("required")) |v| {
+        if (v == .array) {
+            var req: std.ArrayList([]const u8) = .empty;
+            errdefer req.deinit(allocator);
+            for (v.array.items) |item| {
+                if (item == .string) try req.append(allocator, item.string);
             }
-            return .{ .array = new_arr };
-        },
-        else => return value,
+            if (req.items.len > 0)
+                schema.required = try req.toOwnedSlice(allocator)
+            else
+                req.deinit(allocator);
+        }
+    }
+
+    // items — recurse
+    if (obj.get("items")) |v| {
+        const child = try allocator.create(Google.GeminiSchema);
+        errdefer allocator.destroy(child);
+        child.* = try mapToGeminiSchema(v, allocator);
+        schema.items = child;
+    }
+
+    // anyOf — extract nullable signal, filter bare {} and null-type variants, recurse the rest
+    if (obj.get("anyOf")) |v| {
+        if (v == .array) {
+            var variants: std.ArrayList(Google.GeminiSchema) = .empty;
+            errdefer {
+                for (variants.items) |s| freeGeminiSchema(s, allocator);
+                variants.deinit(allocator);
+            }
+            for (v.array.items) |item| {
+                if (item != .object) continue;
+                // bare {} — drop
+                if (item.object.count() == 0) continue;
+                // {"type":"null"} — extract nullable:true, drop this variant
+                if (item.object.get("type")) |tv| {
+                    if (tv == .string and std.mem.eql(u8, tv.string, "null")) {
+                        schema.nullable = true;
+                        continue;
+                    }
+                }
+                try variants.append(allocator, try mapToGeminiSchema(item, allocator));
+            }
+            if (variants.items.len > 0)
+                schema.any_of = try variants.toOwnedSlice(allocator)
+            else
+                variants.deinit(allocator);
+        }
+    }
+
+    // numeric bounds
+    if (obj.get("minimum")) |v| schema.minimum = jsonToF64(v);
+    if (obj.get("maximum")) |v| schema.maximum = jsonToF64(v);
+
+    // array bounds
+    if (obj.get("minItems")) |v| schema.min_items = jsonToU64(v);
+    if (obj.get("maxItems")) |v| schema.max_items = jsonToU64(v);
+
+    return schema;
+}
+
+/// Free a GeminiSchema produced by mapToGeminiSchema.
+/// Only recursively-allocated containers are freed; string slices borrow from
+/// the inbound JSON parse and are not freed here.
+pub fn freeGeminiSchema(schema: Google.GeminiSchema, allocator: std.mem.Allocator) void {
+    if (schema.@"enum") |vs| allocator.free(vs);
+    if (schema.required) |vs| allocator.free(vs);
+    if (schema.properties) |props| {
+        for (props) |p| freeGeminiSchema(p.schema, allocator);
+        allocator.free(props);
+    }
+    if (schema.items) |child| {
+        freeGeminiSchema(child.*, allocator);
+        allocator.destroy(child);
+    }
+    if (schema.any_of) |variants| {
+        for (variants) |s| freeGeminiSchema(s, allocator);
+        allocator.free(variants);
     }
 }
 
-/// Free a tree produced by `sanitizeSchema`: its containers are freshly
-/// allocated (string leaves are borrowed, so only recursing containers +
-/// map index storage are freed here).
-pub fn freeSanitizedSchema(value: std.json.Value, allocator: std.mem.Allocator) void {
-    switch (value) {
-        .object => |obj| {
-            var it = obj.iterator();
-            while (it.next()) |entry| freeSanitizedSchema(entry.value_ptr.*, allocator);
-            var owned = obj; // mutable handle copy
-            owned.deinit(allocator);
-        },
-        .array => |arr| {
-            for (arr.items) |item| freeSanitizedSchema(item, allocator);
-            arr.deinit(); // Managed list frees via its stored allocator
-        },
-        else => {},
-    }
+fn mapSchemaType(t: []const u8) []const u8 {
+    if (std.mem.eql(u8, t, "string"))  return "STRING";
+    if (std.mem.eql(u8, t, "number"))  return "NUMBER";
+    if (std.mem.eql(u8, t, "integer")) return "INTEGER";
+    if (std.mem.eql(u8, t, "boolean")) return "BOOLEAN";
+    if (std.mem.eql(u8, t, "array"))   return "ARRAY";
+    if (std.mem.eql(u8, t, "object"))  return "OBJECT";
+    if (std.mem.eql(u8, t, "null"))    return "NULL";
+    return t; // already uppercase or unknown — pass through
+}
+
+fn isGeminiFormat(f: []const u8) bool {
+    const allowed = &[_][]const u8{ "int32", "int64", "float", "double", "byte", "date-time" };
+    for (allowed) |a| if (std.mem.eql(u8, f, a)) return true;
+    return false;
+}
+
+fn jsonToF64(v: std.json.Value) ?f64 {
+    return switch (v) {
+        .float => |f| f,
+        .integer => |i| @floatFromInt(i),
+        .number_string => |s| std.fmt.parseFloat(f64, s) catch null,
+        else => null,
+    };
+}
+
+fn jsonToU64(v: std.json.Value) ?u64 {
+    return switch (v) {
+        .integer => |i| if (i >= 0) @intCast(i) else null,
+        else => null,
+    };
 }
 
 /// Map OpenAI function tools to a single GeminiTool wrapping the declarations.
 /// Custom tools are skipped (no Gemini equivalent). Always returns an allocated
 /// slice (possibly empty, possibly with an empty declarations list). The
-/// `parameters` schemas are sanitized (see `sanitizeSchema`).
+/// `parameters` schemas are mapped via mapToGeminiSchema.
 /// Free a tools array produced by `transformTools`: the declarations slice,
-/// each declaration's sanitized schema tree, and the wrapping slice.
+/// each declaration's GeminiSchema, and the wrapping slice.
 pub fn cleanupTools(tools: []const Google.GeminiTool, allocator: std.mem.Allocator) void {
     for (tools) |tool| {
         if (tool.function_declarations) |fds| {
             for (fds) |fd| {
-                if (fd.parameters) |p| freeSanitizedSchema(p, allocator);
+                if (fd.parameters) |p| freeGeminiSchema(p, allocator);
             }
             allocator.free(fds);
         }
@@ -145,11 +270,11 @@ pub fn transformTools(
     errdefer declarations.deinit(allocator);
 
     for (tools) |f| {
-        const params = if (f.parameters) |p|
-            try sanitizeSchema(p, allocator)
+        const params: ?Google.GeminiSchema = if (f.parameters) |p|
+            try mapToGeminiSchema(p, allocator)
         else
             null;
-        errdefer if (params) |p| freeSanitizedSchema(p, allocator);
+        errdefer if (params) |p| freeGeminiSchema(p, allocator);
         try declarations.append(allocator, .{
             .name = f.name,
             .description = f.description,

@@ -30,7 +30,7 @@ run:
 
 # Run with custom config
 run-config config:
-    zig build run -- --config {{config}}
+    ZIG_ZAG_CONFIG={{config}} zig build run
 
 # === Test ===
 

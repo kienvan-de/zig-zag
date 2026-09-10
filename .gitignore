@@ -20,3 +20,4 @@ ui/macos/zig-zag/zig-zag/zig-zag.h
 
 # Planning docs (local only)
 .plan/
+.dev_config.json

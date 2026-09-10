@@ -279,7 +279,7 @@ pub const SapAiCoreClient = struct {
         }
 
         // Log response for debugging
-        log.debug("[SAP] [SYNC] Response payload: {s}", .{response.body});
+        log.debug("[SAP] [SYNC] Response: status={} body={s}", .{ response.status, response.body });
 
         // Parse response JSON
         return std.json.parseFromSlice(

@@ -206,11 +206,80 @@ pub const Content = struct {
 // Tool definition
 // ============================================================================
 
+/// Typed representation of the Gemini Schema proto.
+/// Only fields Gemini actually supports are present — this is the whitelist.
+/// Used for FunctionDeclaration.parameters and .response.
+pub const GeminiSchema = struct {
+    /// Gemini Type enum value: "STRING" | "INTEGER" | "NUMBER" | "BOOLEAN" | "ARRAY" | "OBJECT" | "NULL"
+    type: ?[]const u8 = null,
+    description: ?[]const u8 = null,
+    nullable: ?bool = null,
+    format: ?[]const u8 = null,
+    pattern: ?[]const u8 = null,
+    @"enum": ?[]const []const u8 = null,
+    properties: ?[]const GeminiSchemaProperty = null,
+    required: ?[]const []const u8 = null,
+    items: ?*const GeminiSchema = null,
+    any_of: ?[]const GeminiSchema = null,
+    minimum: ?f64 = null,
+    maximum: ?f64 = null,
+    min_items: ?u64 = null,
+    max_items: ?u64 = null,
+
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        if (self.type) |v| { try jw.objectField("type"); try jw.write(v); }
+        if (self.description) |v| { try jw.objectField("description"); try jw.write(v); }
+        if (self.nullable) |v| { try jw.objectField("nullable"); try jw.write(v); }
+        if (self.format) |v| { try jw.objectField("format"); try jw.write(v); }
+        if (self.pattern) |v| { try jw.objectField("pattern"); try jw.write(v); }
+        if (self.@"enum") |vs| {
+            try jw.objectField("enum");
+            try jw.beginArray();
+            for (vs) |v| try jw.write(v);
+            try jw.endArray();
+        }
+        if (self.properties) |props| {
+            try jw.objectField("properties");
+            try jw.beginObject();
+            for (props) |p| {
+                try jw.objectField(p.name);
+                try jw.write(p.schema);
+            }
+            try jw.endObject();
+        }
+        if (self.required) |vs| {
+            try jw.objectField("required");
+            try jw.beginArray();
+            for (vs) |v| try jw.write(v);
+            try jw.endArray();
+        }
+        if (self.items) |v| { try jw.objectField("items"); try jw.write(v.*); }
+        if (self.any_of) |vs| {
+            try jw.objectField("anyOf");
+            try jw.beginArray();
+            for (vs) |v| try jw.write(v);
+            try jw.endArray();
+        }
+        if (self.minimum) |v| { try jw.objectField("minimum"); try jw.write(v); }
+        if (self.maximum) |v| { try jw.objectField("maximum"); try jw.write(v); }
+        if (self.min_items) |v| { try jw.objectField("minItems"); try jw.write(v); }
+        if (self.max_items) |v| { try jw.objectField("maxItems"); try jw.write(v); }
+        try jw.endObject();
+    }
+};
+
+/// A named property entry inside GeminiSchema.properties.
+pub const GeminiSchemaProperty = struct {
+    name: []const u8,
+    schema: GeminiSchema,
+};
+
 pub const FunctionDeclaration = struct {
     name: []const u8,
     description: ?[]const u8 = null,
-    parameters: ?std.json.Value = null,
-    response: ?std.json.Value = null,
+    parameters: ?GeminiSchema = null,
+    response: ?GeminiSchema = null,
     behavior: ?[]const u8 = null, // "NON_BLOCKING" | "BEHAVIOR_UNSPECIFIED"
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {

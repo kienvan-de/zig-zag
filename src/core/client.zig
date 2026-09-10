@@ -460,6 +460,8 @@ pub const HttpClient = struct {
         const response_body = try reader.allocRemaining(self.allocator, std.Io.Limit.limited(self.max_response_size));
         defer self.allocator.free(response_body);
 
+        log.debug("[HTTP] postJson response: status={} body={s}", .{ response.head.status, response_body });
+
         // Parse response JSON
         return std.json.parseFromSlice(
             T,

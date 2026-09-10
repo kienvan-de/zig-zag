@@ -34,7 +34,7 @@ pub fn handle(
     body: []const u8,
 ) !void {
     _ = method;
-    _ = path;
+    log.info("POST {s}", .{path});
 
     // Parse OpenAI request
     const openai_request = std.json.parseFromSlice(
