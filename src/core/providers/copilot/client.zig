@@ -27,6 +27,7 @@ const time = @import("../../time.zig");
 const Allocator = std.mem.Allocator;
 const env = @import("../../env.zig");
 const OpenAIResponses = @import("../openai/responses_types.zig");
+const Anthropic = @import("../anthropic/types.zig");
 const openai_common = @import("../openai/types.zig");
 const config_mod = @import("../../config.zig");
 const http_client = @import("../../client.zig");
@@ -34,6 +35,20 @@ const log = @import("../../log.zig");
 const auth = @import("../../auth/mod.zig");
 const app_cache = @import("../../cache/app_cache.zig");
 const uri_mod = std.Uri;
+
+// ============================================================================
+// Comptime request routing helpers
+// ============================================================================
+
+/// Returns the API path for a given request type.
+fn apiPathFor(comptime Request: type) []const u8 {
+    return if (Request == Anthropic.Request) "/v1/messages" else "/responses";
+}
+
+/// Returns the response type to parse for a given request type.
+fn ResponseTypeFor(comptime Request: type) type {
+    return if (Request == Anthropic.Request) Anthropic.Response else OpenAIResponses.Response;
+}
 
 /// Iterator for SSE streaming responses
 pub const SSEIterator = http_client.SSEIterator;
@@ -61,6 +76,22 @@ const TOKEN_EXPIRY_BUFFER_SECONDS = 60;
 // ============================================================================
 // Public Types
 // ============================================================================
+
+/// Which transformer family a Copilot model requires.
+/// The client owns this mapping; completion.zig switches on it to select
+/// the correct comptime Transformer without hard-coding model prefixes.
+pub const TransformerTag = enum {
+    /// Anthropic Messages wire — use anthropic.transformer + /v1/messages
+    messages,
+    /// OpenAI Responses wire — use openai.responses_transformer + /responses
+    responses,
+};
+
+/// Return the transformer tag for a Copilot model name.
+/// Claude models use the Anthropic Messages API; all others use Responses.
+pub fn transformerFor(model: []const u8) TransformerTag {
+    return if (std.mem.startsWith(u8, model, "claude")) .messages else .responses;
+}
 
 pub const AuthStatus = enum { authenticated, configured, unauthenticated };
 
@@ -510,18 +541,26 @@ pub const CopilotClient = struct {
     /// - "agent" if last message is from assistant or tool (autonomous follow-up, free)
     /// - "user" otherwise (user-initiated, consumes premium request)
     /// See: https://docs.github.com/en/copilot/concepts/billing/copilot-requests
-    fn determineInitiator(request: OpenAIResponses.Request) []const u8 {
-        switch (request.input) {
-            .items => |items| {
-                if (items.len == 0) return "user";
-                const last = items[items.len - 1];
-                if (last != .object) return "user";
-                const role_val = last.object.get("role") orelse return "user";
-                if (role_val != .string) return "user";
-                const role = role_val.string;
-                return if (std.mem.eql(u8, role, "assistant") or std.mem.eql(u8, role, "tool")) "agent" else "user";
-            },
-            .text => return "user",
+    fn determineInitiator(request: anytype) []const u8 {
+        const Request = @TypeOf(request);
+        if (Request == Anthropic.Request) {
+            const msgs = request.messages;
+            if (msgs.len == 0) return "user";
+            const role = msgs[msgs.len - 1].role;
+            return if (role == .assistant) "agent" else "user";
+        } else {
+            switch (request.input) {
+                .items => |items| {
+                    if (items.len == 0) return "user";
+                    const last = items[items.len - 1];
+                    if (last != .object) return "user";
+                    const role_val = last.object.get("role") orelse return "user";
+                    if (role_val != .string) return "user";
+                    const role = role_val.string;
+                    return if (std.mem.eql(u8, role, "assistant") or std.mem.eql(u8, role, "tool")) "agent" else "user";
+                },
+                .text => return "user",
+            }
         }
     }
 
@@ -613,8 +652,10 @@ pub const CopilotClient = struct {
         return headers_buf[0..8];
     }
 
-    /// Send a non-streaming request to Copilot Responses API.
-    pub fn sendRequest(self: *CopilotClient, request: OpenAIResponses.Request) !std.json.Parsed(OpenAIResponses.Response) {
+    /// Send a non-streaming request. Routes to /v1/messages for Anthropic.Request,
+    /// /responses for OpenAIResponses.Request.
+    pub fn sendRequest(self: *CopilotClient, request: anytype) !std.json.Parsed(ResponseTypeFor(@TypeOf(request))) {
+        const Request = @TypeOf(request);
         log.debug("[Copilot] [SYNC] sendRequest - getting access token...", .{});
         const access_token = try self.getAccessToken();
         defer self.allocator.free(access_token);
@@ -622,7 +663,7 @@ pub const CopilotClient = struct {
         const api_base = self.api_base orelse return error.ApiBaseNotSet;
 
         var url_buf: [512]u8 = undefined;
-        const url = try std.fmt.bufPrint(&url_buf, "{s}/responses", .{api_base});
+        const url = try std.fmt.bufPrint(&url_buf, "{s}" ++ apiPathFor(Request), .{api_base});
         log.debug("[Copilot] [SYNC] sendRequest - URL: {s}", .{url});
 
         var auth_buf: [512]u8 = undefined;
@@ -630,14 +671,16 @@ pub const CopilotClient = struct {
         var headers_buf: [10]std.http.Header = undefined;
         const headers = try self.buildHeaders(access_token, determineInitiator(request), &auth_buf, &uuid_buf, &headers_buf);
 
-        return self.client.postJson(OpenAIResponses.Response, url, headers, request) catch |err| {
+        return self.client.postJson(ResponseTypeFor(Request), url, headers, request) catch |err| {
             log.err("[Copilot] [SYNC] sendRequest failed: {}", .{err});
             return err;
         };
     }
 
-    /// Send a streaming request to Copilot Responses API.
-    pub fn sendStreamingRequest(self: *CopilotClient, request: OpenAIResponses.Request) !*StreamingResult {
+    /// Send a streaming request. Routes to /v1/messages for Anthropic.Request,
+    /// /responses for OpenAIResponses.Request.
+    pub fn sendStreamingRequest(self: *CopilotClient, request: anytype) !*StreamingResult {
+        const Request = @TypeOf(request);
         log.debug("[Copilot] [STREAM] sendStreamingRequest - getting access token...", .{});
         const access_token = try self.getAccessToken();
         defer self.allocator.free(access_token);
@@ -645,7 +688,7 @@ pub const CopilotClient = struct {
         const api_base = self.api_base orelse return error.ApiBaseNotSet;
 
         var url_buf: [512]u8 = undefined;
-        const url = try std.fmt.bufPrint(&url_buf, "{s}/responses", .{api_base});
+        const url = try std.fmt.bufPrint(&url_buf, "{s}" ++ apiPathFor(Request), .{api_base});
         log.debug("[Copilot] [STREAM] sendStreamingRequest - URL: {s}", .{url});
 
         var auth_buf: [512]u8 = undefined;
