@@ -121,13 +121,9 @@ pub fn chatComplete(
     if (provider_mod.Provider.fromString(model_info.provider)) |native_provider| {
         switch (native_provider) {
             .anthropic => try dispatchChat(anthropic.client.AnthropicClient, anthropic.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
-            .openai => {
-                const schema = provider_config.getString("api_schema") orelse "legacy";
-                if (std.mem.eql(u8, schema, "latest")) {
-                    try dispatchChat(openai.client.OpenAIClient, openai.responses_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
-                } else {
-                    try dispatchChat(openai.client.OpenAIClient, openai.chat_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
-                }
+            .openai => switch (openai.client.transformerFor(provider_config)) {
+                .responses => try dispatchChat(openai.client.OpenAIClient, openai.responses_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
+                .chat      => try dispatchChat(openai.client.OpenAIClient, openai.chat_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
             },
             .sap_ai_core => try dispatchChat(sap_ai_core.client.SapAiCoreClient, sap_ai_core.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
             .hai => try dispatchChat(hai.client.HaiClient, openai.chat_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
@@ -143,13 +139,11 @@ pub fn chatComplete(
             log.err("Provider '{s}' not supported and no 'compatible' field specified", .{model_info.provider});
             return error.CompatibleFieldMissing;
         };
-        const schema = provider_config.getString("api_schema") orelse "legacy";
 
         if (std.mem.eql(u8, compatible, "openai")) {
-            if (std.mem.eql(u8, schema, "latest")) {
-                try dispatchChat(openai.client.OpenAIClient, openai.responses_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
-            } else {
-                try dispatchChat(openai.client.OpenAIClient, openai.chat_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
+            switch (openai.client.transformerFor(provider_config)) {
+                .responses => try dispatchChat(openai.client.OpenAIClient, openai.responses_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
+                .chat      => try dispatchChat(openai.client.OpenAIClient, openai.chat_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
             }
         } else if (std.mem.eql(u8, compatible, "anthropic")) {
             try dispatchChat(anthropic.client.AnthropicClient, anthropic.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
@@ -473,13 +467,9 @@ pub fn messagesComplete(
         switch (native_provider) {
             .anthropic => try dispatchMessages(anthropic.client.AnthropicClient, anthropic.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
             .hai => try dispatchMessages(hai.client.HaiClient, anthropic.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
-            .openai => {
-                const schema = provider_config.getString("api_schema") orelse "legacy";
-                if (std.mem.eql(u8, schema, "latest")) {
-                    try dispatchMessages(openai.client.OpenAIClient, openai.responses_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
-                } else {
-                    try dispatchMessages(openai.client.OpenAIClient, openai.chat_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
-                }
+            .openai => switch (openai.client.transformerFor(provider_config)) {
+                .responses => try dispatchMessages(openai.client.OpenAIClient, openai.responses_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
+                .chat      => try dispatchMessages(openai.client.OpenAIClient, openai.chat_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
             },
             .copilot => switch (copilot.client.transformerFor(model_info.model)) {
                 .messages  => try dispatchMessages(copilot.client.CopilotClient, anthropic.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
@@ -494,15 +484,13 @@ pub fn messagesComplete(
             log.err("Provider '{s}' not supported and no 'compatible' field specified", .{model_info.provider});
             return error.CompatibleFieldMissing;
         };
-        const schema = provider_config.getString("api_schema") orelse "legacy";
 
         if (std.mem.eql(u8, compatible, "anthropic")) {
             try dispatchMessages(anthropic.client.AnthropicClient, anthropic.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
         } else if (std.mem.eql(u8, compatible, "openai")) {
-            if (std.mem.eql(u8, schema, "latest")) {
-                try dispatchMessages(openai.client.OpenAIClient, openai.responses_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
-            } else {
-                try dispatchMessages(openai.client.OpenAIClient, openai.chat_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
+            switch (openai.client.transformerFor(provider_config)) {
+                .responses => try dispatchMessages(openai.client.OpenAIClient, openai.responses_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
+                .chat      => try dispatchMessages(openai.client.OpenAIClient, openai.chat_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
             }
         } else {
             log.err("Unknown compatible provider type: '{s}'", .{compatible});
@@ -1009,7 +997,7 @@ fn fetchModelsForProviderInner(
             .anthropic => try fetchModels(anthropic.client.AnthropicClient, anthropic.transformer, allocator, provider_name, provider_config),
             .sap_ai_core => try fetchModels(sap_ai_core.client.SapAiCoreClient, sap_ai_core.transformer, allocator, provider_name, provider_config),
             .hai => try fetchModels(hai.client.HaiClient, openai.chat_transformer, allocator, provider_name, provider_config),
-            .copilot => try fetchModels(copilot.client.CopilotClient, openai.responses_transformer, allocator, provider_name, provider_config),
+            .copilot => try fetchModels(copilot.client.CopilotClient, openai.chat_transformer, allocator, provider_name, provider_config),
             .google_ai_studio => try fetchModels(google_ai_studio.client.GoogleAiStudioClient, google_ai_studio.transformer, allocator, provider_name, provider_config),
         };
     } else |_| {

@@ -21,6 +21,24 @@ const http_client = @import("../../client.zig");
 const log = @import("../../log.zig");
 const app_cache = @import("../../cache/app_cache.zig");
 
+// ============================================================================
+// Transformer routing
+// ============================================================================
+
+pub const TransformerTag = enum {
+    /// OpenAI Chat wire — /v1/chat/completions
+    chat,
+    /// OpenAI Responses wire — /v1/responses
+    responses,
+};
+
+/// Return the transformer tag for an OpenAI provider config.
+/// Reads "api_schema" from config: "latest" → .responses, anything else → .chat.
+pub fn transformerFor(provider_config: *const config_mod.ProviderConfig) TransformerTag {
+    const schema = provider_config.getString("api_schema") orelse "legacy";
+    return if (std.mem.eql(u8, schema, "latest")) .responses else .chat;
+}
+
 /// Iterator for SSE streaming responses
 pub const SSEIterator = http_client.SSEIterator;
 
