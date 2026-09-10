@@ -197,9 +197,16 @@ pub fn formatFailedEvent(json_part: []const u8, allocator: std.mem.Allocator) ?[
     } else |_| {}
 
     var buf: std.ArrayList(u8) = .empty;
-    buf.print(allocator, "data: {{\"error\":{{\"message\":{f},\"type\":\"server_error\",\"code\":null,\"param\":null}}}}\n\n", .{
-        std.json.fmt(message, .{}),
-    }) catch return null;
+    var aw: std.Io.Writer.Allocating = .fromArrayList(allocator, &buf);
+    const payload = common.ErrorResponse{ .@"error" = .{
+        .message = message,
+        .type = "server_error",
+        .param = null,
+        .code = null,
+    }};
+    buf.appendSlice(allocator, "data: ") catch return null;
+    std.json.Stringify.value(payload, .{}, &aw.writer) catch return null;
+    buf.appendSlice(allocator, "\n\n") catch return null;
     return buf.toOwnedSlice(allocator) catch null;
 }
 
@@ -216,15 +223,31 @@ pub fn messagesOpen(
     allocator: std.mem.Allocator,
 ) ?[]const u8 {
     var buf: std.ArrayList(u8) = .empty;
-    buf.print(allocator,
-        \\event: message_start
-        \\data: {{"type":"message_start","message":{{"id":"msg_proxy","type":"message","role":"assistant","content":[],"model":"{s}","stop_reason":null,"stop_sequence":null,"usage":{{"input_tokens":{d},"output_tokens":0}}}}}}
-        \\
-        \\event: content_block_start
-        \\data: {{"type":"content_block_start","index":0,"content_block":{{"type":"text","text":""}}}}
-        \\
-        \\
-    , .{ original_model, input_tokens }) catch return null;
+    var aw: std.Io.Writer.Allocating = .fromArrayList(allocator, &buf);
+    const msg_start = Messages.MessageStart{
+        .type = "message_start",
+        .message = .{
+            .id = "msg_proxy",
+            .type = "message",
+            .role = "assistant",
+            .content = &.{},
+            .model = original_model,
+            .stop_reason = null,
+            .stop_sequence = null,
+            .usage = .{ .input_tokens = input_tokens, .output_tokens = 0 },
+        },
+    };
+    buf.appendSlice(allocator, "event: message_start\ndata: ") catch return null;
+    std.json.Stringify.value(msg_start, .{}, &aw.writer) catch return null;
+    buf.appendSlice(allocator, "\n\n") catch return null;
+    const cb_start = Messages.ContentBlockStart{
+        .type = "content_block_start",
+        .index = 0,
+        .content_block = .{ .type = "text", .text = "" },
+    };
+    buf.appendSlice(allocator, "event: content_block_start\ndata: ") catch return null;
+    std.json.Stringify.value(cb_start, .{}, &aw.writer) catch return null;
+    buf.appendSlice(allocator, "\n\n") catch return null;
     return buf.toOwnedSlice(allocator) catch null;
 }
 
@@ -235,17 +258,22 @@ pub fn messagesClose(
     allocator: std.mem.Allocator,
 ) ?[]const u8 {
     var buf: std.ArrayList(u8) = .empty;
-    buf.print(allocator,
-        \\event: content_block_stop
-        \\data: {{"type":"content_block_stop","index":0}}
-        \\
-        \\event: message_delta
-        \\data: {{"type":"message_delta","delta":{{"stop_reason":"{s}","stop_sequence":null}},"usage":{{"output_tokens":{d}}}}}
-        \\
-        \\event: message_stop
-        \\data: {{"type":"message_stop"}}
-        \\
-        \\
-    , .{ stop_reason, output_tokens }) catch return null;
+    var aw: std.Io.Writer.Allocating = .fromArrayList(allocator, &buf);
+    const cb_stop = Messages.ContentBlockStop{ .type = "content_block_stop", .index = 0 };
+    buf.appendSlice(allocator, "event: content_block_stop\ndata: ") catch return null;
+    std.json.Stringify.value(cb_stop, .{}, &aw.writer) catch return null;
+    buf.appendSlice(allocator, "\n\n") catch return null;
+    const msg_delta = Messages.MessageDelta{
+        .type = "message_delta",
+        .delta = .{ .stop_reason = stop_reason, .stop_sequence = null },
+        .usage = .{ .output_tokens = output_tokens },
+    };
+    buf.appendSlice(allocator, "event: message_delta\ndata: ") catch return null;
+    std.json.Stringify.value(msg_delta, .{}, &aw.writer) catch return null;
+    buf.appendSlice(allocator, "\n\n") catch return null;
+    const msg_stop = Messages.MessageStop{ .type = "message_stop" };
+    buf.appendSlice(allocator, "event: message_stop\ndata: ") catch return null;
+    std.json.Stringify.value(msg_stop, .{}, &aw.writer) catch return null;
+    buf.appendSlice(allocator, "\n\n") catch return null;
     return buf.toOwnedSlice(allocator) catch null;
 }

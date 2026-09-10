@@ -121,18 +121,29 @@ fn dispatchProviderAuth(
                 return http.sendJsonResponse(connection, .ok, "{\"status\":\"authenticated\"}");
             },
             .device_flow => |df| {
-                const resp = std.fmt.allocPrint(allocator,
-                    "{{\"user_code\":\"{s}\",\"verification_uri\":\"{s}\"}}",
-                    .{ df.user_code, df.verification_uri },
-                ) catch return http.sendInternalError(connection);
+                const DeviceFlowResponse = struct {
+                    user_code: []const u8,
+                    verification_uri: []const u8,
+                };
+                var buf = std.ArrayList(u8).empty;
+                var aw: std.Io.Writer.Allocating = .fromArrayList(allocator, &buf);
+                std.json.Stringify.value(DeviceFlowResponse{
+                    .user_code = df.user_code,
+                    .verification_uri = df.verification_uri,
+                }, .{}, &aw.writer) catch return http.sendInternalError(connection);
+                const resp = buf.toOwnedSlice(allocator) catch return http.sendInternalError(connection);
                 defer allocator.free(resp);
                 return http.sendJsonResponse(connection, .ok, resp);
             },
             .err => |e| {
-                const resp = std.fmt.allocPrint(allocator,
-                    "{{\"status\":\"error\",\"message\":\"{s}\"}}",
-                    .{e.message},
-                ) catch return http.sendInternalError(connection);
+                const ErrorResp = struct { status: []const u8, message: []const u8 };
+                var buf = std.ArrayList(u8).empty;
+                var aw: std.Io.Writer.Allocating = .fromArrayList(allocator, &buf);
+                std.json.Stringify.value(ErrorResp{
+                    .status = "error",
+                    .message = e.message,
+                }, .{}, &aw.writer) catch return http.sendInternalError(connection);
+                const resp = buf.toOwnedSlice(allocator) catch return http.sendInternalError(connection);
                 defer allocator.free(resp);
                 return http.sendJsonResponse(connection, .bad_request, resp);
             },
