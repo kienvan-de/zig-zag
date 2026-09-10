@@ -521,7 +521,9 @@ pub const HttpClient = struct {
         // Log request/response details for debugging (only on error to avoid huge logs)
         if (result.response.head.status != .ok) {
             log.err("HTTP POST streaming failed | Status: {} | URL: {s}", .{ result.response.head.status, url });
-            log.err("HTTP POST streaming failed | Request body: {s}", .{request_body.items});
+            const body = request_body.items;
+            const tail = if (body.len > 2000) body[body.len - 2000 ..] else body;
+            log.err("HTTP POST streaming failed | Request body tail: {s}", .{tail});
         }
 
         // Get reader for streaming - reads from socket on-demand
