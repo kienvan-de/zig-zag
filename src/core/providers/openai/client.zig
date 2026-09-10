@@ -13,6 +13,7 @@
 // limitations under the License.
 
 const std = @import("std");
+const common = @import("../openai/types.zig"); // shared primitives
 const OpenAIChat = @import("chat_types.zig");
 const OpenAIResponses = @import("responses_types.zig");
 const config_mod = @import("../../config.zig");
@@ -97,7 +98,7 @@ pub const OpenAIClient = struct {
     }
 
     /// Fetch list of available models from OpenAI API
-    pub fn listModels(self: *OpenAIClient) !std.json.Parsed(OpenAIChat.ModelsResponse) {
+    pub fn listModels(self: *OpenAIClient) !std.json.Parsed(common.ModelsResponse) {
         var cache_key_buf: [128]u8 = undefined;
         const cache_key = std.fmt.bufPrint(&cache_key_buf, "models:{s}", .{self.config.name}) catch "models:openai";
 
@@ -105,7 +106,7 @@ pub const OpenAIClient = struct {
             defer self.allocator.free(cached_body);
             log.debug("Models cache hit for '{s}'", .{self.config.name});
             if (std.json.parseFromSlice(
-                OpenAIChat.ModelsResponse,
+                common.ModelsResponse,
                 self.allocator,
                 cached_body,
                 .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
@@ -132,7 +133,7 @@ pub const OpenAIClient = struct {
         };
 
         return std.json.parseFromSlice(
-            OpenAIChat.ModelsResponse,
+            common.ModelsResponse,
             self.allocator,
             response.body,
             .{ .allocate = .alloc_always, .ignore_unknown_fields = true },

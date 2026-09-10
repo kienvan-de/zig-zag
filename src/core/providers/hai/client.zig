@@ -37,6 +37,7 @@
 //! ```
 
 const std = @import("std");
+const common = @import("../openai/types.zig"); // shared primitives
 const Allocator = std.mem.Allocator;
 const OpenAIChat = @import("../openai/chat_types.zig");
 const Anthropic = @import("../anthropic/types.zig");
@@ -315,7 +316,7 @@ pub const HaiClient = struct {
     }
 
     /// Fetch list of available models from HAI API
-    pub fn listModels(self: *HaiClient) !std.json.Parsed(OpenAIChat.ModelsResponse) {
+    pub fn listModels(self: *HaiClient) !std.json.Parsed(common.ModelsResponse) {
         // Build cache key using provider name from config
         var cache_key_buf: [128]u8 = undefined;
         const cache_key = std.fmt.bufPrint(&cache_key_buf, "models:{s}", .{self.config.name}) catch "models:hai";
@@ -326,7 +327,7 @@ pub const HaiClient = struct {
             log.debug("[HAI] Models cache hit for '{s}'", .{self.config.name});
 
             if (std.json.parseFromSlice(
-                OpenAIChat.ModelsResponse,
+                common.ModelsResponse,
                 self.allocator,
                 cached_body,
                 .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
@@ -375,7 +376,7 @@ pub const HaiClient = struct {
 
         // Parse response
         return std.json.parseFromSlice(
-            OpenAIChat.ModelsResponse,
+            common.ModelsResponse,
             self.allocator,
             response.body,
             .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
