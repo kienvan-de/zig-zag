@@ -20,7 +20,7 @@
 const std = @import("std");
 const net = @import("zag-core").net;
 const core = @import("zag-core");
-const OpenAIChat = core.openai_types;
+const OpenAICommon = core.openai_common_types;
 const errors = core.errors;
 const log = core.log;
 const http = @import("../http.zig");
@@ -51,7 +51,7 @@ pub fn handle(
     };
     defer core.completion.freeModels(allocator, models);
 
-    const response = OpenAIChat.ModelsResponse{
+    const response = OpenAICommon.ModelsResponse{
         .data = models,
     };
 

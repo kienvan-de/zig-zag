@@ -99,6 +99,9 @@ pub const platform = @import("platform.zig");
 /// OpenAI chat/completions type definitions.
 pub const openai_types = @import("providers/openai/chat_types.zig");
 
+/// OpenAI shared primitive types (Model, ModelsResponse, Role, ToolFunction, etc.)
+pub const openai_common_types = @import("providers/openai/types.zig");
+
 /// OpenAI /v1/responses type definitions.
 pub const openai_responses_types = @import("providers/openai/responses_types.zig");
 
