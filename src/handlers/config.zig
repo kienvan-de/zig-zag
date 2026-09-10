@@ -126,11 +126,10 @@ fn dispatchProviderAuth(
                     verification_uri: []const u8,
                 };
                 var buf = std.ArrayList(u8).empty;
-                var aw: std.Io.Writer.Allocating = .fromArrayList(allocator, &buf);
-                std.json.Stringify.value(DeviceFlowResponse{
+                buf.print(allocator, "{f}", .{std.json.fmt(DeviceFlowResponse{
                     .user_code = df.user_code,
                     .verification_uri = df.verification_uri,
-                }, .{}, &aw.writer) catch return http.sendInternalError(connection);
+                }, .{})}) catch return http.sendInternalError(connection);
                 const resp = buf.toOwnedSlice(allocator) catch return http.sendInternalError(connection);
                 defer allocator.free(resp);
                 return http.sendJsonResponse(connection, .ok, resp);
@@ -138,11 +137,10 @@ fn dispatchProviderAuth(
             .err => |e| {
                 const ErrorResp = struct { status: []const u8, message: []const u8 };
                 var buf = std.ArrayList(u8).empty;
-                var aw: std.Io.Writer.Allocating = .fromArrayList(allocator, &buf);
-                std.json.Stringify.value(ErrorResp{
+                buf.print(allocator, "{f}", .{std.json.fmt(ErrorResp{
                     .status = "error",
                     .message = e.message,
-                }, .{}, &aw.writer) catch return http.sendInternalError(connection);
+                }, .{})}) catch return http.sendInternalError(connection);
                 const resp = buf.toOwnedSlice(allocator) catch return http.sendInternalError(connection);
                 defer allocator.free(resp);
                 return http.sendJsonResponse(connection, .bad_request, resp);

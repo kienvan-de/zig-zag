@@ -790,24 +790,22 @@ pub const StreamEvent = union(enum) {
                 const type_name = self.eventTypeName();
                 try buf.appendSlice(allocator, "event: ");
                 try buf.appendSlice(allocator, type_name);
-                try buf.append(allocator, '\n');
-                try buf.appendSlice(allocator, "data: ");
-                var aw: std.Io.Writer.Allocating = .fromArrayList(allocator, buf);
+                try buf.appendSlice(allocator, "\ndata: ");
                 switch (self) {
-                    .response_created => |v| std.json.Stringify.value(v, .{}, &aw.writer) catch return error.OutOfMemory,
-                    .response_in_progress => |v| std.json.Stringify.value(v, .{}, &aw.writer) catch return error.OutOfMemory,
-                    .response_completed => |v| std.json.Stringify.value(v, .{}, &aw.writer) catch return error.OutOfMemory,
-                    .response_failed => |v| std.json.Stringify.value(v, .{}, &aw.writer) catch return error.OutOfMemory,
-                    .response_incomplete => |v| std.json.Stringify.value(v, .{}, &aw.writer) catch return error.OutOfMemory,
-                    .output_item_added => |v| std.json.Stringify.value(v, .{}, &aw.writer) catch return error.OutOfMemory,
-                    .output_item_done => |v| std.json.Stringify.value(v, .{}, &aw.writer) catch return error.OutOfMemory,
-                    .content_part_added => |v| std.json.Stringify.value(v, .{}, &aw.writer) catch return error.OutOfMemory,
-                    .content_part_done => |v| std.json.Stringify.value(v, .{}, &aw.writer) catch return error.OutOfMemory,
-                    .output_text_delta => |v| std.json.Stringify.value(v, .{}, &aw.writer) catch return error.OutOfMemory,
-                    .output_text_done => |v| std.json.Stringify.value(v, .{}, &aw.writer) catch return error.OutOfMemory,
-                    .function_call_arguments_delta => |v| std.json.Stringify.value(v, .{}, &aw.writer) catch return error.OutOfMemory,
-                    .function_call_arguments_done => |v| std.json.Stringify.value(v, .{}, &aw.writer) catch return error.OutOfMemory,
-                    .stream_error => |v| std.json.Stringify.value(v, .{}, &aw.writer) catch return error.OutOfMemory,
+                    .response_created => |v| try buf.print(allocator, "{f}", .{std.json.fmt(v, .{})}),
+                    .response_in_progress => |v| try buf.print(allocator, "{f}", .{std.json.fmt(v, .{})}),
+                    .response_completed => |v| try buf.print(allocator, "{f}", .{std.json.fmt(v, .{})}),
+                    .response_failed => |v| try buf.print(allocator, "{f}", .{std.json.fmt(v, .{})}),
+                    .response_incomplete => |v| try buf.print(allocator, "{f}", .{std.json.fmt(v, .{})}),
+                    .output_item_added => |v| try buf.print(allocator, "{f}", .{std.json.fmt(v, .{})}),
+                    .output_item_done => |v| try buf.print(allocator, "{f}", .{std.json.fmt(v, .{})}),
+                    .content_part_added => |v| try buf.print(allocator, "{f}", .{std.json.fmt(v, .{})}),
+                    .content_part_done => |v| try buf.print(allocator, "{f}", .{std.json.fmt(v, .{})}),
+                    .output_text_delta => |v| try buf.print(allocator, "{f}", .{std.json.fmt(v, .{})}),
+                    .output_text_done => |v| try buf.print(allocator, "{f}", .{std.json.fmt(v, .{})}),
+                    .function_call_arguments_delta => |v| try buf.print(allocator, "{f}", .{std.json.fmt(v, .{})}),
+                    .function_call_arguments_done => |v| try buf.print(allocator, "{f}", .{std.json.fmt(v, .{})}),
+                    .stream_error => |v| try buf.print(allocator, "{f}", .{std.json.fmt(v, .{})}),
                     .raw_bytes => unreachable,
                 }
                 try buf.appendSlice(allocator, "\n\n");
