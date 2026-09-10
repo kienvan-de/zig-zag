@@ -51,6 +51,7 @@ const std = @import("std");
 const Messages = @import("types.zig"); // Anthropic Messages wire types
 const Chat = @import("../openai/chat_types.zig"); // inbound chat schema (shapes only)
 const Responses = @import("../openai/responses_types.zig"); // inbound responses schema (shapes only)
+const common = @import("../openai/types.zig"); // shared primitives (ToolFunction)
 const content = @import("content.zig"); // own mapping internals
 const log = @import("../../log.zig");
 const time = @import("../../time.zig");
@@ -83,10 +84,10 @@ pub fn transformModelsResponse(
     allocator: std.mem.Allocator,
     response: std.json.Parsed(Messages.ModelsResponse),
     provider_name: []const u8,
-) ![]Chat.Model {
+) ![]common.Model {
     const data = response.value.data;
 
-    var models = try allocator.alloc(Chat.Model, data.len);
+    var models = try allocator.alloc(common.Model, data.len);
     errdefer allocator.free(models);
 
     for (data, 0..) |entry, i| {
@@ -147,7 +148,15 @@ pub fn transformChatRequest(
         .top_p = request.top_p,
         .stream = request.stream,
         .stop_sequences = request.stop,
-        .tools = if (request.tools) |tools| try content.transformTools(tools, allocator) else null,
+        .tools = if (request.tools) |chat_tools| blk: {
+            var fns: std.ArrayList(common.ToolFunction) = .empty;
+            defer fns.deinit(allocator);
+            for (chat_tools) |t| switch (t) {
+                .function => |f| try fns.append(allocator, f.function),
+                .custom => {},
+            };
+            break :blk if (fns.items.len > 0) try content.transformTools(fns.items, allocator) else null;
+        } else null,
         .tool_choice = if (request.tool_choice) |tool_choice| content.transformToolChoice(tool_choice) else null,
         .metadata = if (request.user) |user| .{ .user_id = user } else null,
     };
@@ -390,7 +399,7 @@ pub fn transformChatStreamLine(
         const finish_reason = content.transformStopReason(parsed.value.delta.stop_reason);
         state.finish_reason = finish_reason;
 
-        const usage = Chat.Usage{
+        const usage = common.Usage{
             .prompt_tokens = state.input_tokens,
             .completion_tokens = state.output_tokens,
             .total_tokens = state.input_tokens + state.output_tokens,
@@ -622,10 +631,9 @@ pub fn transformResponsesRequest(
     // custom tools (no Anthropic equivalent) are skipped (P11 note in content.zig).
     var tools: ?[]Messages.Tool = null;
     if (request.tools) |req_tools| blk: {
-        const chat_tools: []const Chat.Tool = req_tools;
-        tools = content.transformTools(chat_tools, allocator) catch |err| {
+        tools = content.transformResponsesTools(req_tools, allocator) catch |err| {
             if (err == error.OutOfMemory) return err;
-            break :blk; // empty map -> no tools
+            break :blk;
         };
         if (tools != null and tools.?.len == 0) {
             allocator.free(tools.?);
@@ -695,7 +703,10 @@ pub fn transformResponsesResponse(
                     .status = "completed",
                 } });
             },
-            .thinking, .redacted_thinking => {}, // no Responses equivalent
+            .thinking, .redacted_thinking,
+            .server_tool_use, .tool_result, .web_search_tool_result, .web_fetch_tool_result,
+            .code_execution_tool_result, .bash_code_execution_tool_result,
+            .text_editor_code_execution_tool_result, .tool_search_tool_result => {}, // no Responses equivalent
         }
     }
 

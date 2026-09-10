@@ -33,9 +33,11 @@ const std = @import("std");
 
 const Messages = @import("types.zig"); // Anthropic Messages wire types
 const Chat = @import("../openai/chat_types.zig"); // inbound chat schema (shapes only)
+const Responses = @import("../openai/responses_types.zig"); // Responses API schema
+const common = @import("../openai/types.zig"); // shared primitives (ToolFunction)
 const log = @import("../../log.zig");
 
-const MessageContent = Chat.MessageContent;
+const MessageContent = common.MessageContent;
 
 // ============================================================================
 // Inbound chat schema → Anthropic wire (request side)
@@ -189,7 +191,25 @@ pub fn transformToolResult(
 /// `parameters` becomes an empty input schema (Anthropic requires the field).
 /// Freshly allocated — caller owns it.
 pub fn transformTools(
-    tools: []const Chat.Tool,
+    tools: []const common.ToolFunction,
+    allocator: std.mem.Allocator,
+) ![]Messages.Tool {
+    var mapped = std.ArrayList(Messages.Tool).empty;
+    errdefer mapped.deinit(allocator);
+
+    for (tools) |f| {
+        try mapped.append(allocator, .{
+            .name = f.name,
+            .description = f.description,
+            .input_schema = f.parameters orelse std.json.Value{ .object = std.json.ObjectMap{} },
+        });
+    }
+
+    return try mapped.toOwnedSlice(allocator);
+}
+
+pub fn transformResponsesTools(
+    tools: []const Responses.Tool,
     allocator: std.mem.Allocator,
 ) ![]Messages.Tool {
     var mapped = std.ArrayList(Messages.Tool).empty;
@@ -404,7 +424,10 @@ pub fn extractTextFromBlocks(
     for (blocks) |block| {
         switch (block) {
             .text => |t| if (t.text.len > 0) try parts.append(allocator, t.text),
-            .tool_use, .thinking, .redacted_thinking => {},
+            .tool_use, .thinking, .redacted_thinking,
+            .server_tool_use, .tool_result, .web_search_tool_result, .web_fetch_tool_result,
+            .code_execution_tool_result, .bash_code_execution_tool_result,
+            .text_editor_code_execution_tool_result, .tool_search_tool_result => {},
         }
     }
 
@@ -443,7 +466,10 @@ pub fn extractToolCalls(
                     },
                 } });
             },
-            .text, .thinking, .redacted_thinking => {},
+            .text, .thinking, .redacted_thinking,
+            .server_tool_use, .tool_result, .web_search_tool_result, .web_fetch_tool_result,
+            .code_execution_tool_result, .bash_code_execution_tool_result,
+            .text_editor_code_execution_tool_result, .tool_search_tool_result => {},
         }
     }
 
@@ -458,7 +484,7 @@ pub fn extractToolCalls(
 /// Borrows the message; allocates nothing.
 pub fn transformErrorResponse(
     error_response: Messages.ErrorResponse,
-) Chat.ErrorResponse {
+) common.ErrorResponse {
     const kind = error_response.@"error".type;
     const provider_side = std.mem.eql(u8, kind, "overloaded_error");
 
@@ -479,7 +505,7 @@ pub fn transformErrorResponse(
 pub fn tryParseError(
     json_part: []const u8,
     allocator: std.mem.Allocator,
-) ?Chat.ErrorResponse {
+) ?common.ErrorResponse {
     const parsed = std.json.parseFromSlice(
         Messages.ErrorResponse,
         allocator,
@@ -509,7 +535,7 @@ pub fn tryParseError(
 }
 
 /// Free what `tryParseError` returned.
-pub fn freeError(error_response: Chat.ErrorResponse, allocator: std.mem.Allocator) void {
+pub fn freeError(error_response: common.ErrorResponse, allocator: std.mem.Allocator) void {
     allocator.free(error_response.@"error".message);
     if (error_response.@"error".code) |code| allocator.free(code);
 }
@@ -536,7 +562,7 @@ pub fn buildChatChunk(
     ctx: ChatChunkContext,
     delta: Chat.Delta,
     finish_reason: ?[]const u8,
-    usage: ?Chat.Usage,
+    usage: ?common.Usage,
     allocator: std.mem.Allocator,
 ) ?[]const u8 {
     const choices = [_]Chat.StreamChoice{.{
@@ -564,7 +590,7 @@ pub fn buildChatChunk(
 /// allocation failure. The error's owned strings stay with the caller
 /// (free with `freeError` afterwards).
 pub fn formatChatError(
-    error_response: Chat.ErrorResponse,
+    error_response: common.ErrorResponse,
     allocator: std.mem.Allocator,
 ) ?[]const u8 {
     var buf = std.ArrayList(u8).empty;
