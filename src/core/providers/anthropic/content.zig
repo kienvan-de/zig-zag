@@ -37,7 +37,7 @@ const Responses = @import("../openai/responses_types.zig"); // Responses API sch
 const common = @import("../openai/types.zig"); // shared primitives (ToolFunction)
 const log = @import("../../log.zig");
 
-const MessageContent = common.MessageContent;
+const MessageContent = Chat.MessageContent;
 
 // ============================================================================
 // Inbound chat schema → Anthropic wire (request side)
@@ -112,8 +112,6 @@ pub fn transformContent(
                             } });
                         }
                     },
-                    // No Anthropic equivalent — dropped silently.
-                    .input_audio, .file, .refusal => {},
                 }
             }
         },
@@ -133,27 +131,18 @@ pub fn transformToolCalls(
     errdefer blocks.deinit(allocator);
 
     for (tool_calls) |tool_call| {
-        switch (tool_call) {
-            .function => |f| {
-                // Arguments arrive as a JSON string; Anthropic wants an object.
-                // Unparseable arguments degrade to an empty object instead of
-                // failing the whole request. The parsed value is retained by the
-                // outgoing request, so it is deliberately not deinited here.
-                // parseFromSliceLeaky allocates each node directly with the given
-                // allocator (no arena), so freeJsonValue can release it piece by
-                // piece later.
-                var input: std.json.Value = .{ .object = std.json.ObjectMap{} };
-                if (std.json.parseFromSliceLeaky(std.json.Value, allocator, f.function.arguments, .{})) |parsed| {
-                    input = parsed;
-                } else |_| {}
-                try blocks.append(allocator, .{ .tool_use = .{
-                    .type = "tool_use",
-                    .id = f.id,
-                    .name = f.function.name,
-                    .input = input,
-                } });
-            },
-            .custom => {}, // No Anthropic equivalent for custom tool calls.
+        {
+            // Arguments arrive as a JSON string; Anthropic wants an object.
+            var input: std.json.Value = .{ .object = std.json.ObjectMap{} };
+            if (std.json.parseFromSliceLeaky(std.json.Value, allocator, tool_call.function.arguments, .{})) |parsed| {
+                input = parsed;
+            } else |_| {}
+            try blocks.append(allocator, .{ .tool_use = .{
+                .type = "tool_use",
+                .id = tool_call.id,
+                .name = tool_call.function.name,
+                .input = input,
+            } });
         }
     }
 
@@ -222,7 +211,7 @@ pub fn transformResponsesTools(
                 .description = f.function.description,
                 .input_schema = f.function.parameters orelse std.json.Value{ .object = std.json.ObjectMap{} },
             }),
-            .custom => {}, // No Anthropic equivalent for custom tools.
+            .other => {}, // No Anthropic equivalent for custom/built-in tools.
         }
     }
 
@@ -288,13 +277,13 @@ pub fn normalizeMessages(
             .user => .user,
             .assistant => .assistant,
             .system, .developer => unreachable, // filtered above
-            .tool, .function => .user, // tool responses ride the user turn
+            .tool => .user, // tool responses ride the user turn
         };
 
         var blocks = std.ArrayList(Messages.ContentBlockParam).empty;
         defer blocks.deinit(allocator);
 
-        if (msg.role == .tool or msg.role == .function) {
+        if (msg.role == .tool) {
             try blocks.append(allocator, try transformToolResult(msg.tool_call_id orelse "", msg.content, allocator));
         } else {
             if (msg.content) |c| {
@@ -446,7 +435,7 @@ pub fn extractToolCalls(
     var tool_calls = std.ArrayList(Chat.ToolCall).empty;
     errdefer {
         for (tool_calls.items) |tc| {
-            if (tc == .function) allocator.free(tc.function.function.arguments);
+            allocator.free(tc.function.arguments);
         }
         tool_calls.deinit(allocator);
     }
@@ -457,14 +446,14 @@ pub fn extractToolCalls(
                 var buf = std.ArrayList(u8).empty;
                 defer buf.deinit(allocator);
                 try buf.print(allocator, "{f}", .{std.json.fmt(tu.input, .{})});
-                try tool_calls.append(allocator, .{ .function = .{
+                try tool_calls.append(allocator, .{
                     .id = tu.id,
                     .type = "function",
                     .function = .{
                         .name = tu.name,
                         .arguments = try buf.toOwnedSlice(allocator),
                     },
-                } });
+                });
             },
             .text, .thinking, .redacted_thinking,
             .server_tool_use, .tool_result, .web_search_tool_result, .web_fetch_tool_result,
@@ -562,7 +551,7 @@ pub fn buildChatChunk(
     ctx: ChatChunkContext,
     delta: Chat.Delta,
     finish_reason: ?[]const u8,
-    usage: ?common.Usage,
+    usage: ?Chat.Usage,
     allocator: std.mem.Allocator,
 ) ?[]const u8 {
     const choices = [_]Chat.StreamChoice{.{
@@ -615,7 +604,7 @@ pub fn formatChatErrorLine(
 /// variant owns its `arguments` string, and the slice itself is owned.
 pub fn freeToolCalls(tool_calls: []const Chat.ToolCall, allocator: std.mem.Allocator) void {
     for (tool_calls) |tool_call| {
-        if (tool_call == .function) allocator.free(tool_call.function.function.arguments);
+        allocator.free(tool_call.function.arguments);
     }
     allocator.free(tool_calls);
 }

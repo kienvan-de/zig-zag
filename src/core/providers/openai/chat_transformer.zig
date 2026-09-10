@@ -374,7 +374,7 @@ pub fn transformMessagesRequest(
 
                 // Assistant message with text + tool_calls.
                 if (text_parts.items.len > 0 or tool_use_blocks.items.len > 0) {
-                    const content_text: ?common.MessageContent = if (text_parts.items.len > 0) blk: {
+                    const content_text: ?Chat.MessageContent = if (text_parts.items.len > 0) blk: {
                         break :blk .{ .text = try std.mem.join(allocator, "", text_parts.items) };
                     } else null;
 
@@ -678,7 +678,7 @@ pub fn transformResponsesRequest(
             const role = std.meta.stringToEnum(common.Role, role_val.string) orelse continue;
 
             const content_val = item.object.get("content");
-            const message_content: ?common.MessageContent = blk: {
+            const message_content: ?Chat.MessageContent = blk: {
                 const cv = content_val orelse break :blk null;
                 switch (cv) {
                     .string => |s| break :blk .{ .text = s },
@@ -734,10 +734,6 @@ pub fn transformResponsesRequest(
         .parallel_tool_calls = request.parallel_tool_calls,
         .store = request.store,
         .metadata = request.metadata,
-        .moderation = request.moderation,
-        .safety_identifier = request.safety_identifier,
-        .prompt_cache_key = request.prompt_cache_key,
-        .prompt_cache_options = request.prompt_cache_options,
         .user = request.user,
         .service_tier = request.service_tier,
         .response_format = if (request.text) |txt| txt.format else null,

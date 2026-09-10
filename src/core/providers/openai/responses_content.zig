@@ -87,7 +87,7 @@ pub fn buildChatChunk(
     ctx: ChatChunkContext,
     delta: Chat.Delta,
     finish_reason: ?[]const u8,
-    usage: ?common.Usage,
+    usage: ?Chat.Usage,
     allocator: std.mem.Allocator,
 ) ?[]const u8 {
     const choices = [_]Chat.StreamChoice{.{

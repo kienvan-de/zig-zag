@@ -151,10 +151,7 @@ pub fn transformChatRequest(
         .tools = if (request.tools) |chat_tools| blk: {
             var fns: std.ArrayList(common.ToolFunction) = .empty;
             defer fns.deinit(allocator);
-            for (chat_tools) |t| switch (t) {
-                .function => |f| try fns.append(allocator, f.function),
-                .custom => {},
-            };
+            for (chat_tools) |t| try fns.append(allocator, t.function);
             break :blk if (fns.items.len > 0) try content.transformTools(fns.items, allocator) else null;
         } else null,
         .tool_choice = if (request.tool_choice) |tool_choice| content.transformToolChoice(tool_choice) else null,
@@ -213,7 +210,6 @@ pub fn transformChatResponse(
             .role = .assistant,
             .content = message_text,
             .tool_calls = tool_calls,
-            .function_call = null,
         },
         .finish_reason = content.transformStopReason(upstream_response.stop_reason),
         .logprobs = null,
@@ -399,7 +395,7 @@ pub fn transformChatStreamLine(
         const finish_reason = content.transformStopReason(parsed.value.delta.stop_reason);
         state.finish_reason = finish_reason;
 
-        const usage = common.Usage{
+        const usage = Chat.Usage{
             .prompt_tokens = state.input_tokens,
             .completion_tokens = state.output_tokens,
             .total_tokens = state.input_tokens + state.output_tokens,
@@ -652,8 +648,8 @@ pub fn transformResponsesRequest(
         .stream = request.stream,
         .tools = tools,
         .tool_choice = content.responsesToolChoice(request.tool_choice),
-        .thinking = request.thinking,
-        .betas = request.betas,
+        .thinking = null,
+        .betas = null,
         .service_tier = request.service_tier,
     };
 }

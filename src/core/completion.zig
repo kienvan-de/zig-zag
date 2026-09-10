@@ -1211,8 +1211,8 @@ fn dispatchResponses(
                 defer buf.deinit(allocator);
                 try buf.print(allocator, "{f}", .{std.json.fmt(resp, .{})});
                 recordTokenUsage(
-                    resp.usage.input_tokens,
-                    resp.usage.output_tokens,
+                    if (resp.usage) |u| u.input_tokens else 0,
+                    if (resp.usage) |u| u.output_tokens else 0,
                     model,
                     provider_name,
                 );
@@ -1233,8 +1233,8 @@ fn dispatchResponses(
         try buf.print(allocator, "{f}", .{std.json.fmt(resp, .{})});
         try writer.writeAll(buf.items);
         recordTokenUsage(
-            resp.usage.input_tokens,
-            resp.usage.output_tokens,
+            if (resp.usage) |u| u.input_tokens else 0,
+            if (resp.usage) |u| u.output_tokens else 0,
             model,
             provider_name,
         );
