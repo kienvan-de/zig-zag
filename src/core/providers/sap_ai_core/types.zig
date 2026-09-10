@@ -16,6 +16,7 @@ const std = @import("std");
 
 // Reuse OpenAI types for the inner content
 pub const OpenAIChat = @import("../openai/chat_types.zig");
+const openai_common = @import("../openai/types.zig");
 
 // ============================================================================
 // SAP AI Core Orchestration API Data Structures
@@ -59,7 +60,7 @@ pub const PromptConfig = struct {
     /// Default values for template {{placeholders}}
     defaults: ?std.json.Value = null,
     /// Output format constraint (text, json_object, json_schema)
-    response_format: ?OpenAIChat.ResponseFormat = null,
+    response_format: ?openai_common.ResponseFormat = null,
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         try jw.beginObject();
