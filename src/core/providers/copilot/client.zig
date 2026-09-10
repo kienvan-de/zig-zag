@@ -28,6 +28,7 @@ const Allocator = std.mem.Allocator;
 const env = @import("../../env.zig");
 const OpenAIResponses = @import("../openai/responses_types.zig");
 const Anthropic = @import("../anthropic/types.zig");
+const OpenAIChat = @import("../openai/chat_types.zig");
 const openai_common = @import("../openai/types.zig");
 const config_mod = @import("../../config.zig");
 const http_client = @import("../../client.zig");
@@ -42,12 +43,16 @@ const uri_mod = std.Uri;
 
 /// Returns the API path for a given request type.
 fn apiPathFor(comptime Request: type) []const u8 {
-    return if (Request == Anthropic.Request) "/v1/messages" else "/responses";
+    if (Request == Anthropic.Request) return "/v1/messages";
+    if (Request == OpenAIChat.Request) return "/chat/completions";
+    return "/responses";
 }
 
 /// Returns the response type to parse for a given request type.
 fn ResponseTypeFor(comptime Request: type) type {
-    return if (Request == Anthropic.Request) Anthropic.Response else OpenAIResponses.Response;
+    if (Request == Anthropic.Request) return Anthropic.Response;
+    if (Request == OpenAIChat.Request) return OpenAIChat.Response;
+    return OpenAIResponses.Response;
 }
 
 /// Iterator for SSE streaming responses
@@ -85,12 +90,16 @@ pub const TransformerTag = enum {
     messages,
     /// OpenAI Responses wire — use openai.responses_transformer + /responses
     responses,
+    /// OpenAI Chat wire — use openai.chat_transformer + /chat/completions
+    chat,
 };
 
 /// Return the transformer tag for a Copilot model name.
-/// Claude models use the Anthropic Messages API; all others use Responses.
+/// Claude models → Messages wire, gpt-5.x → Responses wire, everything else → Chat wire.
 pub fn transformerFor(model: []const u8) TransformerTag {
-    return if (std.mem.startsWith(u8, model, "claude")) .messages else .responses;
+    if (std.mem.startsWith(u8, model, "claude")) return .messages;
+    if (std.mem.startsWith(u8, model, "gpt-5")) return .responses;
+    return .chat;
 }
 
 pub const AuthStatus = enum { authenticated, configured, unauthenticated };
@@ -548,6 +557,11 @@ pub const CopilotClient = struct {
             if (msgs.len == 0) return "user";
             const role = msgs[msgs.len - 1].role;
             return if (role == .assistant) "agent" else "user";
+        } else if (Request == OpenAIChat.Request) {
+            const msgs = request.messages;
+            if (msgs.len == 0) return "user";
+            const last = msgs[msgs.len - 1];
+            return if (last.role == .assistant) "agent" else "user";
         } else {
             switch (request.input) {
                 .items => |items| {
