@@ -39,6 +39,7 @@ const worker_pool = @import("worker_pool.zig");
 const chat_types = @import("providers/openai/chat_types.zig");
 const responses_types = @import("providers/openai/responses_types.zig");
 const messages_types = @import("providers/anthropic/types.zig");
+const openai_common = @import("providers/openai/types.zig");
 
 // Provider modules — direct imports for comptime dispatch
 // The OpenAI wire formats are treated as two separate sub-providers:
@@ -130,7 +131,7 @@ pub fn chatComplete(
             },
             .sap_ai_core => try dispatchChat(sap_ai_core.client.SapAiCoreClient, sap_ai_core.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
             .hai => try dispatchChat(hai.client.HaiClient, openai.chat_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
-            .copilot => try dispatchChat(copilot.client.CopilotClient, openai.chat_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
+            .copilot => try dispatchChat(copilot.client.CopilotClient, openai.responses_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
             .google_ai_studio => try dispatchChat(google_ai_studio.client.GoogleAiStudioClient, google_ai_studio.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
         }
     } else |_| {
@@ -476,7 +477,7 @@ pub fn messagesComplete(
                     try dispatchMessages(openai.client.OpenAIClient, openai.chat_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
                 }
             },
-            .copilot => try dispatchMessages(copilot.client.CopilotClient, openai.chat_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
+            .copilot => try dispatchMessages(copilot.client.CopilotClient, openai.responses_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
             .sap_ai_core => try dispatchMessages(sap_ai_core.client.SapAiCoreClient, sap_ai_core.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
             .google_ai_studio => try dispatchMessages(google_ai_studio.client.GoogleAiStudioClient, google_ai_studio.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
         }
@@ -765,7 +766,7 @@ const ThreadSafeAllocator = struct {
 /// Result from a provider fetch task
 const FetchResult = struct {
     provider_name: []const u8,
-    models: ?[]chat_types.Model,
+    models: ?[]openai_common.Model,
     err: ?anyerror,
     elapsed_ms: i64,
 };
@@ -790,14 +791,14 @@ const FetchContext = struct {
 /// The returned slice is **caller-owned**. Free it with `freeModels()` when
 /// done — that function handles freeing both the slice and the heap-allocated
 /// strings inside each `Model`.
-pub fn listModels(allocator: std.mem.Allocator) ![]chat_types.Model {
+pub fn listModels(allocator: std.mem.Allocator) ![]openai_common.Model {
     const cfg = config_mod.get();
     const provider_count = cfg.providers.count();
 
     log.info("GET /v1/models - starting fetch from {d} providers", .{provider_count});
 
     if (provider_count == 0) {
-        return try allocator.alloc(chat_types.Model, 0);
+        return try allocator.alloc(openai_common.Model, 0);
     }
 
     // If a pool backend is available, fetch in parallel; else sequential
@@ -857,7 +858,7 @@ pub fn listModels(allocator: std.mem.Allocator) ![]chat_types.Model {
     wg.wait();
 
     // Aggregate results
-    var all_models = std.ArrayList(chat_types.Model).empty;
+    var all_models = std.ArrayList(openai_common.Model).empty;
     defer all_models.deinit(safe_allocator);
 
     for (results[0..provider_count]) |result| {
@@ -880,10 +881,10 @@ pub fn listModels(allocator: std.mem.Allocator) ![]chat_types.Model {
     log.info("GET /v1/models - total models: {d}", .{all_models.items.len});
 
     // Sort alphabetically by id
-    const sorted = try allocator.alloc(chat_types.Model, all_models.items.len);
+    const sorted = try allocator.alloc(openai_common.Model, all_models.items.len);
     @memcpy(sorted, all_models.items);
-    std.mem.sort(chat_types.Model, sorted, {}, struct {
-        fn lessThan(_: void, a: chat_types.Model, b: chat_types.Model) bool {
+    std.mem.sort(openai_common.Model, sorted, {}, struct {
+        fn lessThan(_: void, a: openai_common.Model, b: openai_common.Model) bool {
             return std.mem.order(u8, a.id, b.id) == .lt;
         }
     }.lessThan);
@@ -892,7 +893,7 @@ pub fn listModels(allocator: std.mem.Allocator) ![]chat_types.Model {
 }
 
 /// Free a model slice previously returned by `listModels`.
-pub fn freeModels(allocator: std.mem.Allocator, models: []chat_types.Model) void {
+pub fn freeModels(allocator: std.mem.Allocator, models: []openai_common.Model) void {
     for (models) |m| {
         allocator.free(m.id);
         allocator.free(m.owned_by);
@@ -925,8 +926,8 @@ fn fetchTask(ctx_ptr: *anyopaque) void {
     ctx.result.elapsed_ms = time.milliTimestamp() - start_time;
 }
 
-fn listModelsSequential(allocator: std.mem.Allocator, cfg: *const config_mod.Config) ![]chat_types.Model {
-    var all_models = std.ArrayList(chat_types.Model).empty;
+fn listModelsSequential(allocator: std.mem.Allocator, cfg: *const config_mod.Config) ![]openai_common.Model {
+    var all_models = std.ArrayList(openai_common.Model).empty;
     defer all_models.deinit(allocator);
 
     var provider_iter = cfg.providers.iterator();
@@ -955,10 +956,10 @@ fn listModelsSequential(allocator: std.mem.Allocator, cfg: *const config_mod.Con
     }
 
     // Sort alphabetically by id
-    const sorted = try allocator.alloc(chat_types.Model, all_models.items.len);
+    const sorted = try allocator.alloc(openai_common.Model, all_models.items.len);
     @memcpy(sorted, all_models.items);
-    std.mem.sort(chat_types.Model, sorted, {}, struct {
-        fn lessThan(_: void, a: chat_types.Model, b: chat_types.Model) bool {
+    std.mem.sort(openai_common.Model, sorted, {}, struct {
+        fn lessThan(_: void, a: openai_common.Model, b: openai_common.Model) bool {
             return std.mem.order(u8, a.id, b.id) == .lt;
         }
     }.lessThan);
@@ -970,7 +971,7 @@ fn fetchModelsForProvider(
     allocator: std.mem.Allocator,
     provider_name: []const u8,
     provider_config: *const config_mod.ProviderConfig,
-) !?[]chat_types.Model {
+) !?[]openai_common.Model {
     return fetchModelsForProviderInner(allocator, provider_name, provider_config) catch |err| {
         if (err == error.AuthRequired and tryAutoReauth(allocator, provider_name)) {
             return fetchModelsForProviderInner(allocator, provider_name, provider_config);
@@ -983,7 +984,7 @@ fn fetchModelsForProviderInner(
     allocator: std.mem.Allocator,
     provider_name: []const u8,
     provider_config: *const config_mod.ProviderConfig,
-) !?[]chat_types.Model {
+) !?[]openai_common.Model {
     // Check for "compatible" field first (takes precedence)
     if (provider_config.getString("compatible")) |compatible| {
         if (std.mem.eql(u8, compatible, "openai")) {
@@ -1000,7 +1001,7 @@ fn fetchModelsForProviderInner(
             .anthropic => try fetchModels(anthropic.client.AnthropicClient, anthropic.transformer, allocator, provider_name, provider_config),
             .sap_ai_core => try fetchModels(sap_ai_core.client.SapAiCoreClient, sap_ai_core.transformer, allocator, provider_name, provider_config),
             .hai => try fetchModels(hai.client.HaiClient, openai.chat_transformer, allocator, provider_name, provider_config),
-            .copilot => try fetchModels(copilot.client.CopilotClient, openai.chat_transformer, allocator, provider_name, provider_config),
+            .copilot => try fetchModels(copilot.client.CopilotClient, openai.responses_transformer, allocator, provider_name, provider_config),
             .google_ai_studio => try fetchModels(google_ai_studio.client.GoogleAiStudioClient, google_ai_studio.transformer, allocator, provider_name, provider_config),
         };
     } else |_| {
@@ -1014,7 +1015,7 @@ fn fetchModels(
     allocator: std.mem.Allocator,
     provider_name: []const u8,
     provider_config: *const config_mod.ProviderConfig,
-) !?[]chat_types.Model {
+) !?[]openai_common.Model {
     var client = try ClientType.init(allocator, provider_config);
     defer client.deinit();
 
@@ -1111,7 +1112,7 @@ pub fn responsesComplete(
             .openai => try dispatchResponses(openai.client.OpenAIClient, openai.responses_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
             .sap_ai_core => try dispatchResponses(sap_ai_core.client.SapAiCoreClient, sap_ai_core.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
             .hai => try dispatchResponses(hai.client.HaiClient, openai.chat_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
-            .copilot => try dispatchResponses(copilot.client.CopilotClient, openai.chat_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
+            .copilot => try dispatchResponses(copilot.client.CopilotClient, openai.responses_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
             .google_ai_studio => try dispatchResponses(google_ai_studio.client.GoogleAiStudioClient, google_ai_studio.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
         }
     } else |_| {
