@@ -239,7 +239,7 @@ pub fn messagesOpen(
         .index = 0,
         .content_block = .{ .type = "text", .text = "" },
     };
-    buf.print(allocator, "event: content_block_start\ndata: {f}\n\n", .{std.json.fmt(cb_start, .{})}) catch return null;
+    buf.print(allocator, "event: content_block_start\ndata: {f}\n\n", .{std.json.fmt(cb_start, .{ .emit_null_optional_fields = false })}) catch return null;
     return buf.toOwnedSlice(allocator) catch null;
 }
 
