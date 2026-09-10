@@ -681,6 +681,7 @@ pub const ResponsesStreamState = struct {
     finish_reason: ?[]const u8 = null,
     input_tokens: u32 = 0,
     output_tokens: u32 = 0,
+    sequence_number: u32 = 0,
 
     pub fn init(allocator: std.mem.Allocator, original_model: []const u8) ResponsesStreamState {
         return .{
@@ -968,11 +969,13 @@ pub fn transformResponsesStreamLine(
         if (choice.delta.content) |text| {
             if (text.len > 0) {
                 var buf: std.ArrayList(u8) = .empty;
-                buf.print(
-                    allocator,
-                    "event: response.output_text.delta\ndata: {{\"type\":\"response.output_text.delta\",\"item_id\":\"{s}\",\"output_index\":0,\"content_index\":0,\"delta\":{f}}}\n\n",
-                    .{ state.response_id, std.json.fmt(text, .{}) },
-                ) catch return .{ .skip = {} };
+                const ev = Responses.StreamEvent{ .output_text_delta = .{
+                    .sequence_number = state.sequence_number,
+                    .item_id = state.response_id,
+                    .delta = text,
+                }};
+                ev.writeSSE(&buf, allocator) catch return .{ .skip = {} };
+                state.sequence_number += 1;
                 return .{ .output = buf.toOwnedSlice(allocator) catch return .{ .skip = {} } };
             }
         }
@@ -983,11 +986,13 @@ pub fn transformResponsesStreamLine(
                 const args = if (tcs[0].function) |f| (f.arguments orelse "") else "";
                 if (args.len > 0) {
                     var buf: std.ArrayList(u8) = .empty;
-                    buf.print(
-                        allocator,
-                        "event: response.function_call_arguments.delta\ndata: {{\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"{s}\",\"output_index\":0,\"delta\":{f}}}\n\n",
-                        .{ state.response_id, std.json.fmt(args, .{}) },
-                    ) catch return .{ .skip = {} };
+                    const ev = Responses.StreamEvent{ .function_call_arguments_delta = .{
+                        .sequence_number = state.sequence_number,
+                        .item_id = state.response_id,
+                        .delta = args,
+                    }};
+                    ev.writeSSE(&buf, allocator) catch return .{ .skip = {} };
+                    state.sequence_number += 1;
                     return .{ .output = buf.toOwnedSlice(allocator) catch return .{ .skip = {} } };
                 }
             }
@@ -1011,17 +1016,20 @@ pub fn flushResponsesStream(
     const output_tok = state.output_tokens;
 
     var buf: std.ArrayList(u8) = .empty;
-    buf.print(
-        allocator,
-        \\event: response.output_item.done
-        \\data: {{"type":"response.output_item.done","item":{{"id":"{s}","type":"message","role":"assistant","status":"{s}"}}}}
-        \\
-        \\event: response.completed
-        \\data: {{"type":"response.completed","response":{{"id":"{s}","object":"response","model":"{s}","status":"{s}","usage":{{"input_tokens":{d},"output_tokens":{d},"total_tokens":{d}}}}}}}
-        \\
-        \\
-    ,
-        .{ state.response_id, status, state.response_id, state.original_model, status, input_tok, output_tok, input_tok + output_tok },
-    ) catch return null;
+    const item_done = Responses.StreamEvent{ .output_item_done = .{
+        .sequence_number = state.sequence_number,
+        .item = .{ .message = .{ .id = state.response_id, .type = "message", .role = "assistant", .content = &.{}, .status = status } },
+    }};
+    item_done.writeSSE(&buf, allocator) catch return null;
+    state.sequence_number += 1;
+    const completed = Responses.StreamEvent{ .response_completed = .{
+        .sequence_number = state.sequence_number,
+        .response = .{ .id = state.response_id, .model = state.original_model, .status = status, .output = &.{}, .usage = .{
+            .input_tokens = input_tok,
+            .output_tokens = output_tok,
+            .total_tokens = input_tok + output_tok,
+        }},
+    }};
+    completed.writeSSE(&buf, allocator) catch { buf.deinit(allocator); return null; };
     return buf.toOwnedSlice(allocator) catch null;
 }

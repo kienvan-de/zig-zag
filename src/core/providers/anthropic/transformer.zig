@@ -558,6 +558,7 @@ pub const ResponsesStreamState = struct {
     finish_reason: ?[]const u8 = null,
     input_tokens: u32 = 0,
     output_tokens: u32 = 0,
+    sequence_number: u32 = 0,
 
     pub fn init(allocator: std.mem.Allocator, original_model: []const u8) ResponsesStreamState {
         return .{
@@ -820,9 +821,30 @@ pub fn transformResponsesStreamLine(
     const event_type = type_probe.value.type;
 
     if (std.mem.eql(u8, event_type, "error")) {
-        const bytes = content.formatResponsesError(json_part, allocator) orelse
-            return .{ .skip = {} };
-        return .{ .output = bytes };
+        const ErrPayload = struct {
+            @"error": struct {
+                type: []const u8 = "api_error",
+                message: []const u8 = "Upstream error",
+            } = .{},
+        };
+        var err_message: []const u8 = "Upstream error";
+        var err_code: []const u8 = "api_error";
+        if (std.json.parseFromSlice(ErrPayload, allocator, json_part, .{
+            .allocate = .alloc_always,
+            .ignore_unknown_fields = true,
+        })) |parsed| {
+            defer parsed.deinit();
+            err_message = parsed.value.@"error".message;
+            err_code = parsed.value.@"error".type;
+        } else |_| {}
+        var buf: std.ArrayList(u8) = .empty;
+        const ev = Responses.StreamEvent{ .stream_error = .{
+            .sequence_number = state.sequence_number,
+            .code = err_code,
+            .message = err_message,
+        }};
+        ev.writeSSE(&buf, allocator) catch return .{ .skip = {} };
+        return .{ .output = buf.toOwnedSlice(allocator) catch return .{ .skip = {} } };
     }
 
     if (std.mem.eql(u8, event_type, "message_start")) {
@@ -857,8 +879,9 @@ pub fn transformResponsesStreamLine(
         }) catch return .{ .skip = {} };
         defer parsed.deinit();
         const is_text = std.mem.eql(u8, parsed.value.content_block.type, "text");
-        const bytes = content.responsesOutputItemAdded(state.response_id, is_text, allocator) orelse
+        const bytes = Responses.outputItemAddedSSE(state.response_id, is_text, state.sequence_number, allocator) orelse
             return .{ .skip = {} };
+        state.sequence_number += 2;
         return .{ .output = bytes };
     }
 
@@ -879,29 +902,40 @@ pub fn transformResponsesStreamLine(
 
         if (std.mem.eql(u8, delta.type, "text_delta")) {
             if (delta.text.len == 0) return .{ .skip = {} };
-            const bytes = content.allocFmt(
-                allocator,
-                "event: response.output_text.delta\ndata: {{\"type\":\"response.output_text.delta\",\"item_id\":\"{s}\",\"output_index\":0,\"content_index\":0,\"delta\":{f}}}\n\n",
-                .{ state.response_id, std.json.fmt(delta.text, .{}) },
-            ) orelse return .{ .skip = {} };
-            return .{ .output = bytes };
+            var buf: std.ArrayList(u8) = .empty;
+            const ev = Responses.StreamEvent{ .output_text_delta = .{
+                .sequence_number = state.sequence_number,
+                .item_id = state.response_id,
+                .delta = delta.text,
+            }};
+            ev.writeSSE(&buf, allocator) catch return .{ .skip = {} };
+            state.sequence_number += 1;
+            return .{ .output = buf.toOwnedSlice(allocator) catch return .{ .skip = {} } };
         }
         if (std.mem.eql(u8, delta.type, "input_json_delta")) {
             if (delta.partial_json.len == 0) return .{ .skip = {} };
-            const bytes = content.allocFmt(
-                allocator,
-                "event: response.function_call_arguments.delta\ndata: {{\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"{s}\",\"output_index\":0,\"delta\":{f}}}\n\n",
-                .{ state.response_id, std.json.fmt(delta.partial_json, .{}) },
-            ) orelse return .{ .skip = {} };
-            return .{ .output = bytes };
+            var buf: std.ArrayList(u8) = .empty;
+            const ev = Responses.StreamEvent{ .function_call_arguments_delta = .{
+                .sequence_number = state.sequence_number,
+                .item_id = state.response_id,
+                .delta = delta.partial_json,
+            }};
+            ev.writeSSE(&buf, allocator) catch return .{ .skip = {} };
+            state.sequence_number += 1;
+            return .{ .output = buf.toOwnedSlice(allocator) catch return .{ .skip = {} } };
         }
         return .{ .skip = {} }; // thinking/signature deltas
     }
 
     if (std.mem.eql(u8, event_type, "content_block_stop")) {
-        const bytes = content.responsesOutputTextDone(state.response_id, allocator) orelse
-            return .{ .skip = {} };
-        return .{ .output = bytes };
+        var buf: std.ArrayList(u8) = .empty;
+        const ev = Responses.StreamEvent{ .output_text_done = .{
+            .sequence_number = state.sequence_number,
+            .item_id = state.response_id,
+        }};
+        ev.writeSSE(&buf, allocator) catch return .{ .skip = {} };
+        state.sequence_number += 1;
+        return .{ .output = buf.toOwnedSlice(allocator) catch return .{ .skip = {} } };
     }
 
     if (std.mem.eql(u8, event_type, "message_delta")) {
@@ -940,19 +974,37 @@ pub fn flushResponsesStream(
 ) ?[]const u8 {
     const reason = state.finish_reason orelse return null;
     const status: []const u8 = if (std.mem.eql(u8, reason, "max_tokens")) "incomplete" else "completed";
-    const input_tok = state.input_tokens;
-    const output_tok = state.output_tokens;
 
-    return content.allocFmt(
-        allocator,
-        \\event: response.output_item.done
-        \\data: {{"type":"response.output_item.done","item":{{"id":"{s}","type":"message","role":"assistant","status":"{s}"}}}}
-        \\
-        \\event: response.completed
-        \\data: {{"type":"response.completed","response":{{"id":"{s}","object":"response","model":"{s}","status":"{s}","usage":{{"input_tokens":{d},"output_tokens":{d},"total_tokens":{d}}}}}}}
-        \\
-        \\
-    ,
-        .{ state.response_id, status, state.response_id, state.original_model, status, input_tok, output_tok, input_tok + output_tok },
-    );
+    var buf: std.ArrayList(u8) = .empty;
+
+    const item_done = Responses.StreamEvent{ .output_item_done = .{
+        .sequence_number = state.sequence_number,
+        .item = .{ .message = .{
+            .id = state.response_id,
+            .type = "message",
+            .role = "assistant",
+            .content = &.{},
+            .status = status,
+        }},
+    }};
+    item_done.writeSSE(&buf, allocator) catch return null;
+    state.sequence_number += 1;
+
+    const completed = Responses.StreamEvent{ .response_completed = .{
+        .sequence_number = state.sequence_number,
+        .response = .{
+            .id = state.response_id,
+            .model = state.original_model,
+            .status = status,
+            .output = &.{},
+            .usage = .{
+                .input_tokens = state.input_tokens,
+                .output_tokens = state.output_tokens,
+                .total_tokens = state.input_tokens + state.output_tokens,
+            },
+        },
+    }};
+    completed.writeSSE(&buf, allocator) catch { buf.deinit(allocator); return null; };
+
+    return buf.toOwnedSlice(allocator) catch null;
 }

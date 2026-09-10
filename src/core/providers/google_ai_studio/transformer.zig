@@ -630,6 +630,7 @@ pub const ResponsesStreamState = struct {
     // --- responses-flow specifics ---
     /// Whether the synthetic output_item.added + content_part.added were emitted.
     sent_start: bool = false,
+    sequence_number: u32 = 0,
 
     pub fn init(allocator: std.mem.Allocator, original_model: []const u8) ResponsesStreamState {
         return .{
@@ -921,15 +922,14 @@ pub fn transformResponsesStreamLine(
     // Opening events, once per stream (the id is static — no wire ids).
     if (!state.sent_start) {
         state.sent_start = true;
-        out.print(allocator,
-            \\event: response.output_item.added
-            \\data: {{"type":"response.output_item.added","output_index":0,"item":{{"id":"{s}","type":"message","role":"assistant","status":"in_progress"}}}}
-            \\
-            \\event: response.content_part.added
-            \\data: {{"type":"response.content_part.added","item_id":"{s}","output_index":0,"content_index":0,"part":{{"type":"output_text","text":""}}}}
-            \\
-            \\
-        , .{ state.response_id, state.response_id }) catch return .{ .skip = {} };
+        const bytes = Responses.outputItemAddedSSE(state.response_id, true, state.sequence_number, allocator) orelse
+            return .{ .skip = {} };
+        state.sequence_number += 2;
+        out.appendSlice(allocator, bytes) catch {
+            allocator.free(bytes);
+            return .{ .skip = {} };
+        };
+        allocator.free(bytes);
     }
 
     if (parsed.value.candidates.len > 0) {
@@ -939,11 +939,16 @@ pub fn transformResponsesStreamLine(
             switch (part) {
                 .text => |tp| {
                     if (tp.text.len == 0) continue;
-                    out.print(
-                        allocator,
-                        "event: response.output_text.delta\ndata: {{\"type\":\"response.output_text.delta\",\"item_id\":\"{s}\",\"output_index\":0,\"content_index\":0,\"delta\":{f}}}\n\n",
-                        .{ state.response_id, std.json.fmt(tp.text, .{}) },
-                    ) catch continue;
+                    var ev_buf: std.ArrayList(u8) = .empty;
+                    const ev = Responses.StreamEvent{ .output_text_delta = .{
+                        .sequence_number = state.sequence_number,
+                        .item_id = state.response_id,
+                        .delta = tp.text,
+                    }};
+                    ev.writeSSE(&ev_buf, allocator) catch { ev_buf.deinit(allocator); continue; };
+                    state.sequence_number += 1;
+                    out.appendSlice(allocator, ev_buf.items) catch { ev_buf.deinit(allocator); continue; };
+                    ev_buf.deinit(allocator);
                 },
                 else => {},
             }
@@ -955,12 +960,18 @@ pub fn transformResponsesStreamLine(
                 state.output_tokens = parsed.value.usage_metadata.candidates_token_count;
                 state.finish_reason = content.transformStopReason(candidate.finish_reason);
 
-                out.print(allocator,
-                    \\event: response.output_text.done
-                    \\data: {{"type":"response.output_text.done","item_id":"{s}","output_index":0,"content_index":0,"text":""}}
-                    \\
-                    \\
-                , .{state.response_id}) catch return .{ .skip = {} };
+                var done_ev_buf: std.ArrayList(u8) = .empty;
+                const done_ev = Responses.StreamEvent{ .output_text_done = .{
+                    .sequence_number = state.sequence_number,
+                    .item_id = state.response_id,
+                }};
+                done_ev.writeSSE(&done_ev_buf, allocator) catch {
+                    done_ev_buf.deinit(allocator);
+                    return .{ .skip = {} };
+                };
+                state.sequence_number += 1;
+                out.appendSlice(allocator, done_ev_buf.items) catch { done_ev_buf.deinit(allocator); return .{ .skip = {} }; };
+                done_ev_buf.deinit(allocator);
             }
         }
     }
@@ -983,17 +994,34 @@ pub fn flushResponsesStream(
     const output_tok = state.output_tokens;
 
     var buf = std.ArrayList(u8).empty;
-    buf.print(
-        allocator,
-        \\event: response.output_item.done
-        \\data: {{"type":"response.output_item.done","item":{{"id":"{s}","type":"message","role":"assistant","status":"{s}"}}}}
-        \\
-        \\event: response.completed
-        \\data: {{"type":"response.completed","response":{{"id":"{s}","object":"response","model":"{s}","status":"{s}","usage":{{"input_tokens":{d},"output_tokens":{d},"total_tokens":{d}}}}}}}
-        \\
-        \\
-    ,
-        .{ state.response_id, status, state.response_id, state.original_model, status, input_tok, output_tok, input_tok + output_tok },
-    ) catch return null;
+
+    const item_done = Responses.StreamEvent{ .output_item_done = .{
+        .sequence_number = state.sequence_number,
+        .item = .{ .message = .{
+            .id = state.response_id,
+            .type = "message",
+            .role = "assistant",
+            .content = &.{},
+            .status = status,
+        }},
+    }};
+    item_done.writeSSE(&buf, allocator) catch return null;
+    state.sequence_number += 1;
+
+    const completed = Responses.StreamEvent{ .response_completed = .{
+        .sequence_number = state.sequence_number,
+        .response = .{
+            .id = state.response_id,
+            .model = state.original_model,
+            .status = status,
+            .output = &.{},
+            .usage = .{
+                .input_tokens = input_tok,
+                .output_tokens = output_tok,
+                .total_tokens = input_tok + output_tok,
+            },
+        },
+    }};
+    completed.writeSSE(&buf, allocator) catch { buf.deinit(allocator); return null; };
     return buf.toOwnedSlice(allocator) catch null;
 }

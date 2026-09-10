@@ -575,54 +575,365 @@ pub const Response = struct {
 // Streaming — SSE event wrapper + payload types
 // ============================================================================
 
-/// Outer SSE event envelope: {type, sequence_number, ...payload}
-/// The payload fields vary by event type; callers dispatch on `type`.
+/// Typed SSE event for the Responses streaming API.
+/// Every variant includes `sequence_number` (required by the official schema).
+/// Each payload struct also carries `type` so std.json.stringify emits it.
+/// Use writeSSE() to serialise to a complete SSE chunk.
 pub const StreamEvent = union(enum) {
-    /// response.created / response.in_progress / response.queued — initial response shell
-    response_created: Response,
-    /// response.output_text.delta — incremental text
+    // --- response lifecycle ---
+    response_created: struct {
+        type: []const u8 = "response.created",
+        sequence_number: u32,
+        response: Response,
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            try jw.objectField("response"); try self.response.jsonStringify(jw);
+            try jw.endObject();
+        }
+    },
+    response_in_progress: struct {
+        type: []const u8 = "response.in_progress",
+        sequence_number: u32,
+        response: Response,
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            try jw.objectField("response"); try self.response.jsonStringify(jw);
+            try jw.endObject();
+        }
+    },
+    response_completed: struct {
+        type: []const u8 = "response.completed",
+        sequence_number: u32,
+        response: Response,
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            try jw.objectField("response"); try self.response.jsonStringify(jw);
+            try jw.endObject();
+        }
+    },
+    response_failed: struct {
+        type: []const u8 = "response.failed",
+        sequence_number: u32,
+        response: Response,
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            try jw.objectField("response"); try self.response.jsonStringify(jw);
+            try jw.endObject();
+        }
+    },
+    response_incomplete: struct {
+        type: []const u8 = "response.incomplete",
+        sequence_number: u32,
+        response: Response,
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            try jw.objectField("response"); try self.response.jsonStringify(jw);
+            try jw.endObject();
+        }
+    },
+
+    // --- output item ---
+    output_item_added: struct {
+        type: []const u8 = "response.output_item.added",
+        sequence_number: u32,
+        output_index: u32 = 0,
+        item: OutputItem,
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            try jw.objectField("output_index"); try jw.write(self.output_index);
+            try jw.objectField("item"); try self.item.jsonStringify(jw);
+            try jw.endObject();
+        }
+    },
+    output_item_done: struct {
+        type: []const u8 = "response.output_item.done",
+        sequence_number: u32,
+        output_index: u32 = 0,
+        item: OutputItem,
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            try jw.objectField("output_index"); try jw.write(self.output_index);
+            try jw.objectField("item"); try self.item.jsonStringify(jw);
+            try jw.endObject();
+        }
+    },
+
+    // --- content part ---
+    content_part_added: struct {
+        type: []const u8 = "response.content_part.added",
+        sequence_number: u32,
+        output_index: u32 = 0,
+        item_id: []const u8 = "",
+        content_index: u32 = 0,
+        part: OutputContent,
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            try jw.objectField("output_index"); try jw.write(self.output_index);
+            try jw.objectField("item_id"); try jw.write(self.item_id);
+            try jw.objectField("content_index"); try jw.write(self.content_index);
+            try jw.objectField("part"); try self.part.jsonStringify(jw);
+            try jw.endObject();
+        }
+    },
+    content_part_done: struct {
+        type: []const u8 = "response.content_part.done",
+        sequence_number: u32,
+        output_index: u32 = 0,
+        item_id: []const u8 = "",
+        content_index: u32 = 0,
+        part: OutputContent,
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            try jw.objectField("output_index"); try jw.write(self.output_index);
+            try jw.objectField("item_id"); try jw.write(self.item_id);
+            try jw.objectField("content_index"); try jw.write(self.content_index);
+            try jw.objectField("part"); try self.part.jsonStringify(jw);
+            try jw.endObject();
+        }
+    },
+
+    // --- text streaming ---
     output_text_delta: struct {
         type: []const u8 = "response.output_text.delta",
-        item_id: []const u8 = "",
+        sequence_number: u32,
         output_index: u32 = 0,
+        item_id: []const u8 = "",
         content_index: u32 = 0,
         delta: []const u8 = "",
         logprobs: ?std.json.Value = null,
     },
-    /// response.output_text.done — text content complete
     output_text_done: struct {
         type: []const u8 = "response.output_text.done",
-        item_id: []const u8 = "",
+        sequence_number: u32,
         output_index: u32 = 0,
+        item_id: []const u8 = "",
         content_index: u32 = 0,
         text: []const u8 = "",
         logprobs: ?std.json.Value = null,
     },
-    /// response.completed — final response with all output
-    response_completed: Response,
-    /// response.failed / response.incomplete — terminal error/cutoff
-    response_failed: Response,
-    /// error event
-    @"error": common.ErrorResponse,
-    /// Any other event type — passed through opaquely
-    other: std.json.Value,
 
-    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+    // --- function call streaming ---
+    function_call_arguments_delta: struct {
+        type: []const u8 = "response.function_call_arguments.delta",
+        sequence_number: u32,
+        output_index: u32 = 0,
+        item_id: []const u8 = "",
+        call_id: ?[]const u8 = null,
+        delta: []const u8 = "",
+    },
+    function_call_arguments_done: struct {
+        type: []const u8 = "response.function_call_arguments.done",
+        sequence_number: u32,
+        output_index: u32 = 0,
+        item_id: []const u8 = "",
+        call_id: ?[]const u8 = null,
+        arguments: []const u8 = "",
+    },
+
+    // --- error ---
+    stream_error: struct {
+        type: []const u8 = "error",
+        sequence_number: u32,
+        code: ?[]const u8 = null,
+        message: []const u8 = "",
+    },
+
+    // --- pass-through (native Responses upstream bytes, e.g. copilot) ---
+    raw_bytes: []const u8,
+
+    /// Returns the SSE event-line type string for this event.
+    pub fn eventTypeName(self: @This()) []const u8 {
+        return switch (self) {
+            .response_created => "response.created",
+            .response_in_progress => "response.in_progress",
+            .response_completed => "response.completed",
+            .response_failed => "response.failed",
+            .response_incomplete => "response.incomplete",
+            .output_item_added => "response.output_item.added",
+            .output_item_done => "response.output_item.done",
+            .content_part_added => "response.content_part.added",
+            .content_part_done => "response.content_part.done",
+            .output_text_delta => "response.output_text.delta",
+            .output_text_done => "response.output_text.done",
+            .function_call_arguments_delta => "response.function_call_arguments.delta",
+            .function_call_arguments_done => "response.function_call_arguments.done",
+            .stream_error => "error",
+            .raw_bytes => "",
+        };
+    }
+
+    /// Serialise to a complete SSE chunk and append to `buf`.
+    /// Format: "event: <type>\ndata: <json>\n\n"
+    /// For raw_bytes: appends verbatim with no wrapping.
+    pub fn writeSSE(self: @This(), buf: *std.ArrayList(u8), allocator: std.mem.Allocator) error{OutOfMemory}!void {
         switch (self) {
-            .response_created => |v| try v.jsonStringify(jw),
-            .output_text_delta => |v| try jw.write(v),
-            .output_text_done => |v| try jw.write(v),
-            .response_completed => |v| try v.jsonStringify(jw),
-            .response_failed => |v| try v.jsonStringify(jw),
-            .@"error" => |v| try v.jsonStringify(jw),
-            .other => |v| try jw.write(v),
+            .raw_bytes => |bytes| try buf.appendSlice(allocator, bytes),
+            else => {
+                const type_name = self.eventTypeName();
+                try buf.appendSlice(allocator, "event: ");
+                try buf.appendSlice(allocator, type_name);
+                try buf.append(allocator, '\n');
+                try buf.appendSlice(allocator, "data: ");
+                var aw: std.Io.Writer.Allocating = .fromArrayList(allocator, buf);
+                switch (self) {
+                    .response_created => |v| std.json.Stringify.value(v, .{}, &aw.writer) catch return error.OutOfMemory,
+                    .response_in_progress => |v| std.json.Stringify.value(v, .{}, &aw.writer) catch return error.OutOfMemory,
+                    .response_completed => |v| std.json.Stringify.value(v, .{}, &aw.writer) catch return error.OutOfMemory,
+                    .response_failed => |v| std.json.Stringify.value(v, .{}, &aw.writer) catch return error.OutOfMemory,
+                    .response_incomplete => |v| std.json.Stringify.value(v, .{}, &aw.writer) catch return error.OutOfMemory,
+                    .output_item_added => |v| std.json.Stringify.value(v, .{}, &aw.writer) catch return error.OutOfMemory,
+                    .output_item_done => |v| std.json.Stringify.value(v, .{}, &aw.writer) catch return error.OutOfMemory,
+                    .content_part_added => |v| std.json.Stringify.value(v, .{}, &aw.writer) catch return error.OutOfMemory,
+                    .content_part_done => |v| std.json.Stringify.value(v, .{}, &aw.writer) catch return error.OutOfMemory,
+                    .output_text_delta => |v| std.json.Stringify.value(v, .{}, &aw.writer) catch return error.OutOfMemory,
+                    .output_text_done => |v| std.json.Stringify.value(v, .{}, &aw.writer) catch return error.OutOfMemory,
+                    .function_call_arguments_delta => |v| std.json.Stringify.value(v, .{}, &aw.writer) catch return error.OutOfMemory,
+                    .function_call_arguments_done => |v| std.json.Stringify.value(v, .{}, &aw.writer) catch return error.OutOfMemory,
+                    .stream_error => |v| std.json.Stringify.value(v, .{}, &aw.writer) catch return error.OutOfMemory,
+                    .raw_bytes => unreachable,
+                }
+                try buf.appendSlice(allocator, "\n\n");
+            },
         }
     }
 };
 
-/// Result type for responses stream line transformation
+// ============================================================================
+// Streaming helpers — typed SSE constructors for synthesized events
+// ============================================================================
+
+/// Produces "response.output_item.added" + "response.content_part.added" SSE bytes.
+/// `seq` is used for output_item.added; `seq+1` for content_part.added.
+/// `is_text` selects item type ("message"/"function_call") and part type ("output_text"/"").
+pub fn outputItemAddedSSE(
+    response_id: []const u8,
+    is_text: bool,
+    seq: u32,
+    allocator: std.mem.Allocator,
+) ?[]const u8 {
+    const item_type: []const u8 = if (is_text) "message" else "function_call";
+    const part_type: []const u8 = if (is_text) "output_text" else "input_json";
+    var buf: std.ArrayList(u8) = .empty;
+
+    const added = StreamEvent{ .output_item_added = .{
+        .sequence_number = seq,
+        .item = .{ .message = .{
+            .id = response_id,
+            .type = item_type,
+            .role = "assistant",
+            .content = &.{},
+            .status = "in_progress",
+        }},
+    }};
+    added.writeSSE(&buf, allocator) catch return null;
+
+    const part = StreamEvent{ .content_part_added = .{
+        .sequence_number = seq + 1,
+        .item_id = response_id,
+        .part = .{ .output_text = .{ .type = part_type, .text = "" } },
+    }};
+    part.writeSSE(&buf, allocator) catch { buf.deinit(allocator); return null; };
+
+    return buf.toOwnedSlice(allocator) catch null;
+}
+
+/// Produces "response.output_item.done" SSE bytes.
+pub fn outputItemDoneSSE(
+    response_id: []const u8,
+    status: []const u8,
+    seq: u32,
+    allocator: std.mem.Allocator,
+) ?[]const u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    const ev = StreamEvent{ .output_item_done = .{
+        .sequence_number = seq,
+        .item = .{ .message = .{
+            .id = response_id,
+            .type = "message",
+            .role = "assistant",
+            .content = &.{},
+            .status = status,
+        }},
+    }};
+    ev.writeSSE(&buf, allocator) catch return null;
+    return buf.toOwnedSlice(allocator) catch null;
+}
+
+/// Produces "response.completed" SSE bytes with usage.
+pub fn responseCompletedSSE(
+    response_id: []const u8,
+    model: []const u8,
+    status: []const u8,
+    input_tokens: u32,
+    output_tokens: u32,
+    seq: u32,
+    allocator: std.mem.Allocator,
+) ?[]const u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    const ev = StreamEvent{ .response_completed = .{
+        .sequence_number = seq,
+        .response = .{
+            .id = response_id,
+            .model = model,
+            .status = status,
+            .output = &.{},
+            .usage = .{
+                .input_tokens = input_tokens,
+                .output_tokens = output_tokens,
+                .total_tokens = input_tokens + output_tokens,
+            },
+        },
+    }};
+    ev.writeSSE(&buf, allocator) catch return null;
+    return buf.toOwnedSlice(allocator) catch null;
+}
+
+/// Produces "response.failed" SSE bytes with an error payload.
+pub fn responseFailedSSE(
+    response_id: []const u8,
+    model: []const u8,
+    err_code: ?[]const u8,
+    err_message: []const u8,
+    seq: u32,
+    allocator: std.mem.Allocator,
+) ?[]const u8 {
+    _ = err_code;
+    _ = err_message;
+    var buf: std.ArrayList(u8) = .empty;
+    const ev = StreamEvent{ .response_failed = .{
+        .sequence_number = seq,
+        .response = .{
+            .id = response_id,
+            .model = model,
+            .status = "failed",
+            .output = &.{},
+        },
+    }};
+    ev.writeSSE(&buf, allocator) catch return null;
+    return buf.toOwnedSlice(allocator) catch null;
+}
+
+/// Result type for responses stream line transformation.
+/// Transformers return `.output` (caller-owned []const u8 SSE bytes) or `.skip`.
 pub const StreamLineResult = union(enum) {
-    event: StreamEvent,
-    @"error": common.ErrorResponse,
+    output: []const u8,
     skip: void,
 };
