@@ -1122,7 +1122,10 @@ pub fn responsesComplete(
         };
 
         if (std.mem.eql(u8, compatible, "openai")) {
-            try dispatchResponses(openai.client.OpenAIClient, openai.responses_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
+            switch (openai.client.transformerFor(provider_config)) {
+                .responses => try dispatchResponses(openai.client.OpenAIClient, openai.responses_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
+                .chat      => try dispatchResponses(openai.client.OpenAIClient, openai.chat_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
+            }
         } else if (std.mem.eql(u8, compatible, "anthropic")) {
             try dispatchResponses(anthropic.client.AnthropicClient, anthropic.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
         } else {
