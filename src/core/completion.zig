@@ -1150,6 +1150,25 @@ fn dispatchResponses(
     provider_name: []const u8,
     provider_config: *const config_mod.ProviderConfig,
 ) !void {
+    responsesInner(Client, Transformer, writer, is_streaming, allocator, request, model, provider_name, provider_config) catch |err| {
+        if (err == error.AuthRequired and tryAutoReauth(allocator, provider_name)) {
+            return responsesInner(Client, Transformer, writer, is_streaming, allocator, request, model, provider_name, provider_config);
+        }
+        return err;
+    };
+}
+
+fn responsesInner(
+    comptime Client: type,
+    comptime Transformer: type,
+    writer: anytype,
+    is_streaming: bool,
+    allocator: std.mem.Allocator,
+    request: responses_types.Request,
+    model: []const u8,
+    provider_name: []const u8,
+    provider_config: *const config_mod.ProviderConfig,
+) !void {
     // Transform Request → provider wire format
     const provider_req = Transformer.transformResponsesRequest(request, model, allocator) catch |err| {
         log.err("[RESPONSES] transformResponsesRequest failed: {}", .{err});
@@ -1165,10 +1184,7 @@ fn dispatchResponses(
 
     if (is_streaming) {
         const stream_result = client.sendStreamingRequest(provider_req) catch |err| {
-            if (err == error.AuthRequired and tryAutoReauth(allocator, provider_name)) {
-                const retry = client.sendStreamingRequest(provider_req) catch return error.UpstreamError;
-                _ = retry;
-            }
+            if (err == error.AuthRequired) return error.AuthRequired;
             return error.UpstreamError;
         };
         defer client.freeStreamingResult(stream_result);
@@ -1205,22 +1221,7 @@ fn dispatchResponses(
         );
     } else {
         const provider_response = client.sendRequest(provider_req) catch |err| {
-            if (err == error.AuthRequired and tryAutoReauth(allocator, provider_name)) {
-                const retry_resp = client.sendRequest(provider_req) catch return error.UpstreamError;
-                defer retry_resp.deinit();
-                const resp = Transformer.transformResponsesResponse(retry_resp.value, request, allocator) catch return error.TransformResponseFailed;
-                defer Transformer.cleanupResponsesResponse(resp, allocator);
-                var buf = std.ArrayList(u8).empty;
-                defer buf.deinit(allocator);
-                try buf.print(allocator, "{f}", .{std.json.fmt(resp, .{})});
-                recordTokenUsage(
-                    if (resp.usage) |u| u.input_tokens else 0,
-                    if (resp.usage) |u| u.output_tokens else 0,
-                    model,
-                    provider_name,
-                );
-                return writer.writeAll(buf.items);
-            }
+            if (err == error.AuthRequired) return error.AuthRequired;
             return error.UpstreamError;
         };
         defer provider_response.deinit();
