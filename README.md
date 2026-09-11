@@ -324,7 +324,8 @@ When enabled:
     "redirect_port": 8335,
     "redirect_path": "/auth-code",
     "models_path": "/v1/models",
-    "chat_completions_path": "/v1/chat/completions"
+    "chat_completions_path": "/v1/chat/completions",
+    "messages_path": "/v1/messages"
   }
 }
 ```
