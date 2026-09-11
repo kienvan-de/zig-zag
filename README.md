@@ -29,18 +29,18 @@
 
 ## Features
 
-| Feature | Description |
-|---------|-------------|
-| **OpenAI-Compatible API** | Drop-in replacement for any OpenAI client |
-| **Anthropic Messages API** | Native `/v1/messages` endpoint — use Anthropic clients directly |
-| **Multi-Provider** | OpenAI, Anthropic, SAP AI Core, SAP HAI, GitHub Copilot, and any compatible provider |
-| **Unified Namespace** | Access all models via `{provider}/{model}` format |
-| **Streaming** | Full SSE streaming with chunked transfer encoding and automatic protocol translation |
-| **Pricing Engine** | Per-request cost tracking with auto-updating price tables |
-| **Budget Controls** | Budget enforcement — requests rejected when limit is reached, with automatic period resets |
-| **Config UI** | Web-based configuration UI served at `GET /v1/html/config` |
-| **Real-time Metrics** | CPU, memory, network I/O, token usage, and cost tracking — persisted across restarts |
-| **Cross-platform** | macOS (native app), Linux |
+- **OpenAI-compatible API** — drop-in replacement for any OpenAI client
+- **Anthropic Messages API** — native `/v1/messages` endpoint for Anthropic clients
+- **OpenAI Responses API** — `/v1/responses` endpoint support
+- **Multi-provider** — OpenAI, Anthropic, Google AI Studio, SAP AI Core, SAP HAI, GitHub Copilot, and any OpenAI/Anthropic-compatible provider
+- **Unified model namespace** — access all models via `{provider}/{model}`
+- **Streaming** — full SSE streaming with automatic protocol translation across providers
+- **Cost tracking** — per-request pricing with auto-updating price tables
+- **Budget controls** — reject requests when a spending limit is reached, with automatic period resets
+- **Config UI** — web-based configuration at `GET /v1/html/config`
+- **Real-time metrics** — CPU, memory, network I/O, token usage, and cost — persisted across restarts
+- **Native macOS app** — menu bar app with one-click start/stop and live stats
+- **Cross-platform** — macOS (Apple Silicon & Intel), Linux (x86_64 & ARM64)
 
 ## Supported Providers
 
@@ -51,6 +51,7 @@
 | `sap_ai_core` | Native | SAP AI Core with OAuth client credentials |
 | `hai` | Native | SAP HAI with OIDC browser auth + OAuth token refresh |
 | `copilot` | Native | GitHub Copilot with OAuth device flow + automatic token exchange |
+| `google_ai_studio` | Native | Google AI Studio (Gemini models) |
 | Any | Compatible | OpenAI/Anthropic-compatible APIs (Groq, Azure, Together, etc.) |
 
 ## Installation
@@ -181,6 +182,7 @@ open ui/macos/zig-zag/zig-zag.xcodeproj
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/v1/chat/completions` | POST | Chat completion — OpenAI format (streaming & non-streaming) |
+| `/v1/responses` | POST | Responses API — OpenAI Responses API format |
 | `/v1/messages` | POST | Chat completion — Anthropic Messages API format |
 | `/v1/models` | GET | List available models from all configured providers |
 | `/v1/html/config` | GET | Web-based configuration UI |
@@ -197,14 +199,16 @@ open ui/macos/zig-zag/zig-zag.xcodeproj
     "host": "0.0.0.0",
     "port": 8080,
     "http_pool_size": 8,
-    "io_pool_size": 4
+    "io_pool_size": 4,
+    "read_timeout_ms": 30000
   },
   "logging": {
     "level": "info",
+    "output": "stderr",
     "path": null,
     "max_file_size_mb": 10,
     "max_files": 5,
-    "buffer_size": 100,
+    "buffer_size": 8192,
     "flush_interval_ms": 1000
   }
 }
@@ -216,11 +220,13 @@ open ui/macos/zig-zag/zig-zag.xcodeproj
 | `server.port` | number | `8080` | Server port |
 | `server.http_pool_size` | number | auto | HTTP connection pool size |
 | `server.io_pool_size` | number | auto | I/O worker pool size |
+| `server.read_timeout_ms` | number | `30000` | Read timeout per connection in ms (0 = disabled) |
 | `logging.level` | string | `"info"` | Log level: `debug`, `info`, `warn`, `err` |
-| `logging.path` | string | `null` | Log file path (null for OS default) |
-| `logging.max_file_size_mb` | number | `10` | Max log file size before rotation |
-| `logging.max_files` | number | `5` | Number of rotated log files to keep |
-| `logging.buffer_size` | number | `100` | Messages to buffer before flush |
+| `logging.output` | string | `"stderr"` | Output destination: `"stderr"` or `"file"` |
+| `logging.path` | string | `null` | Log file path when `output` is `"file"` (null = OS default) |
+| `logging.max_file_size_mb` | number | `10` | Max log file size before rotation (file output only) |
+| `logging.max_files` | number | `5` | Number of rotated log files to keep (file output only) |
+| `logging.buffer_size` | number | `8192` | Buffer size in bytes before flush |
 | `logging.flush_interval_ms` | number | `1000` | Auto-flush interval in ms |
 
 ### Statistics Display
@@ -351,6 +357,16 @@ Optional overrides:
 }
 ```
 
+#### Google AI Studio
+
+```json
+{
+  "google_ai_studio": {
+    "api_key": "AIza-your-key"
+  }
+}
+```
+
 #### Compatible Providers (Groq, Azure, etc.)
 
 ```json
@@ -370,7 +386,7 @@ Optional overrides:
 | `api_key` | string | - | API key for authentication |
 | `api_url` | string | Provider default | Base URL for API |
 | `compatible` | string | - | `"openai"` or `"anthropic"` for compatible providers |
-| `max_response_size_mb` | number | `10` | Maximum response size in MB |
+| `api_schema` | string | `"legacy"` | API schema version: `"legacy"` or `"latest"` (OpenAI-compatible providers) |
 | `max_response_size_mb` | number | `10` | Maximum response size in MB |
 
 ## Model Naming
@@ -386,6 +402,7 @@ sap_ai_core/gpt-4o
 hai/anthropic--claude-4.5-opus
 copilot/gpt-4o
 copilot/claude-sonnet-4.5
+google_ai_studio/gemini-2.0-flash
 groq/llama-3.1-70b-versatile
 ```
 
@@ -451,41 +468,29 @@ just push-release
 │   ├── server.zig            # HTTP server
 │   ├── router.zig            # Request routing
 │   ├── config.zig            # Configuration loader
-│   ├── client.zig            # HTTP client for upstream providers
-│   ├── curl.zig              # Curl-based HTTP client (for TLS-constrained servers)
-│   ├── http.zig              # HTTP utilities
-│   ├── metrics.zig           # Metrics tracking (CPU, memory, tokens, costs)
-│   ├── log.zig               # Logging system
-│   ├── errors.zig            # Error types
-│   ├── utils.zig             # Utilities
-│   ├── provider.zig          # Provider abstraction
-│   ├── worker_pool.zig       # Thread pool for concurrent requests
-│   ├── auth/                 # Authentication modules
-│   │   ├── mod.zig           # Auth module exports
-│   │   ├── oidc.zig          # OIDC discovery
-│   │   ├── oauth.zig         # OAuth token exchange & refresh
-│   │   ├── pkce.zig          # PKCE challenge generation
-│   │   └── callback_server.zig  # Local callback server for browser auth
-│   ├── cache/
-│   │   ├── token_cache.zig   # OAuth token caching
-│   │   └── app_cache.zig     # Application-level cache (models, OIDC config)
-│   ├── pricing.zig           # Pricing engine (per-token cost tracking, auto-update)
+│   ├── core/                 # Core business logic
+│   │   ├── client.zig        # HTTP client for upstream providers
+│   │   ├── completion.zig    # Completion request handling
+│   │   ├── metrics.zig       # Metrics tracking (CPU, memory, tokens, costs)
+│   │   ├── pricing.zig       # Pricing engine (per-token cost tracking, auto-update)
+│   │   ├── provider.zig      # Provider abstraction
+│   │   ├── auth/             # Authentication modules (OIDC, OAuth, PKCE)
+│   │   ├── cache/            # Token & model caching
+│   │   └── providers/
+│   │       ├── openai/       # OpenAI provider
+│   │       ├── anthropic/    # Anthropic provider
+│   │       ├── sap_ai_core/  # SAP AI Core provider
+│   │       ├── hai/          # SAP HAI provider
+│   │       ├── copilot/      # GitHub Copilot provider
+│   │       └── google_ai_studio/ # Google AI Studio provider
 │   ├── handlers/
-│   │   ├── chat.zig          # /v1/chat/completions handler
-│   │   ├── messages.zig      # /v1/messages handler (Anthropic Messages API)
-│   │   ├── models.zig        # /v1/models handler
-│   │   ├── config.zig        # /v1/config/* handler (read/write config, auth flows)
-│   │   └── template.zig      # /v1/html/* handler (serves embedded HTML pages)
-│   ├── templates/
-│   │   ├── mod.zig           # Template registry (compile-time @embedFile)
-│   │   ├── config.html       # Web-based config UI
-│   │   └── device_flow.html  # GitHub Copilot device flow page
-│   └── providers/
-│       ├── openai/           # OpenAI provider (client, transformer, types)
-│       ├── anthropic/        # Anthropic provider (client, transformer, types)
-│       ├── sap_ai_core/      # SAP AI Core provider (client, transformer, types)
-│       ├── hai/              # SAP HAI provider (client only, uses Anthropic types)
-│       └── copilot/          # GitHub Copilot provider (client, device flow)
+│   │   ├── chat.zig          # /v1/chat/completions
+│   │   ├── responses.zig     # /v1/responses (OpenAI Responses API)
+│   │   ├── messages.zig      # /v1/messages (Anthropic Messages API)
+│   │   ├── models.zig        # /v1/models
+│   │   ├── config.zig        # /v1/config/*
+│   │   └── template.zig      # /v1/html/*
+│   └── templates/            # Embedded HTML pages (config UI, device flow)
 ├── include/
 │   └── zig-zag.h             # C header for FFI
 ├── ui/
@@ -494,17 +499,6 @@ just push-release
     ├── cases/                # Integration test cases
     └── integration/          # Integration test framework
 ```
-
-## Performance
-
-zig-zag is designed for minimal resource usage:
-
-| Metric | Value |
-|--------|-------|
-| Memory footprint | ~21 MB |
-| Startup time | < 10ms |
-| Request latency overhead | < 1ms |
-| Binary size | ~2 MB |
 
 ## License
 
