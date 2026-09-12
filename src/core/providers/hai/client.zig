@@ -262,10 +262,16 @@ pub const HaiClient = struct {
     /// Opens the system browser for user login, waits for the callback,
     /// exchanges the auth code for tokens, and caches them.
     /// Returns access_token (caller owns).
+    /// Options for `browserAuthFlow`.
+    pub const BrowserAuthOptions = struct {
+        success_html: ?[]const u8 = null,
+        error_html_template: ?[]const u8 = null,
+    };
+
     ///
     /// This is called explicitly by the config auth API
     /// (`POST /v1/config/hai/auth`), NOT during normal request flow.
-    pub fn browserAuthFlow(self: *HaiClient) ![]const u8 {
+    pub fn browserAuthFlow(self: *HaiClient, options: BrowserAuthOptions) ![]const u8 {
         // 1. Discover OIDC endpoints (use curl for TLS compatibility)
         log.debug("HAI: browserAuthFlow - discovering OIDC endpoints...", .{});
         _ = self.oidc.discover(&self.curl_client) catch |err| {
@@ -300,12 +306,15 @@ pub const HaiClient = struct {
         try auth.callback_server.openBrowser(auth_url.url);
 
         // 6. Wait for callback
-        var callback_result = try auth.callback_server.waitForCallback(self.allocator, .{
+        var cb_config = auth.callback_server.CallbackConfig{
             .port = self.redirect_port,
             .path = self.redirect_path,
             .expected_state = auth_url.state,
             .timeout_ms = 120_000,
-        });
+        };
+        if (options.success_html) |html| cb_config.success_html = html;
+        if (options.error_html_template) |html| cb_config.error_html_template = html;
+        var callback_result = try auth.callback_server.waitForCallback(self.allocator, cb_config);
         defer callback_result.deinit(self.allocator);
 
         // 7. Exchange code for tokens and cache (use curl for TLS compatibility)

@@ -31,6 +31,7 @@ const config_mod = core.config;
 const log = core.log;
 
 const http = @import("../http.zig");
+const templates = @import("../templates/mod.zig");
 
 // ============================================================================
 // Top-level dispatcher
@@ -115,7 +116,10 @@ fn dispatchProviderAuth(
     }
 
     if (eql(u8, method, "POST")) {
-        const result = config_mod.initiateAuth(allocator, provider_name);
+        const result = config_mod.initiateAuth(allocator, provider_name, .{
+            .callback_success_html = templates.callback_success,
+            .callback_error_html = templates.callback_error,
+        });
         switch (result) {
             .authenticated => {
                 return http.sendJsonResponse(connection, .ok, "{\"status\":\"authenticated\"}");

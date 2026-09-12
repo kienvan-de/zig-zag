@@ -28,3 +28,10 @@ pub const device_flow = @embedFile("device_flow.html");
 
 /// Web-based config UI page served at GET /v1/html/config
 pub const config_ui = @embedFile("config.html");
+
+/// OAuth callback success page (no placeholders)
+pub const callback_success = @embedFile("callback_success.html");
+
+/// OAuth callback error page.
+/// Placeholder: {{ERROR_MESSAGE}}
+pub const callback_error = @embedFile("callback_error.html");

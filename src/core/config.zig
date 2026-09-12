@@ -411,6 +411,17 @@ pub const AuthStatus = enum {
     unauthenticated,
 };
 
+/// Options for `initiateAuth`. All fields are optional — use `.{}` for defaults.
+pub const AuthOptions = struct {
+    /// HTML served to the browser on a successful OAuth callback.
+    /// Defaults to the built-in inline page in callback_server.zig.
+    callback_success_html: ?[]const u8 = null,
+    /// HTML template served on a failed OAuth callback.
+    /// Must contain a {{ERROR_MESSAGE}} placeholder.
+    /// Defaults to the built-in inline page in callback_server.zig.
+    callback_error_html: ?[]const u8 = null,
+};
+
 /// Result of `initiateAuth`.
 ///
 /// - `authenticated` — the provider authenticated synchronously (SAP AI Core,
@@ -492,7 +503,7 @@ pub fn checkAuthStatus(allocator: Allocator, provider_name: []const u8) AuthStat
 /// `.authenticated` on success or `.err` on failure.
 ///
 /// Unknown or unconfigured providers return `.err`.
-pub fn initiateAuth(allocator: Allocator, provider_name: []const u8) AuthResult {
+pub fn initiateAuth(allocator: Allocator, provider_name: []const u8, options: AuthOptions) AuthResult {
     const cfg = get();
     const eql = std.mem.eql;
 
@@ -505,7 +516,7 @@ pub fn initiateAuth(allocator: Allocator, provider_name: []const u8) AuthResult 
     }
 
     if (eql(u8, provider_name, "hai")) {
-        return initiateHaiAuth(allocator, cfg, provider_name);
+        return initiateHaiAuth(allocator, cfg, provider_name, options);
     }
 
     return .{ .err = .{ .message = "Unknown provider" } };
@@ -703,7 +714,7 @@ fn initiateSapAiCoreAuth(allocator: Allocator, cfg: *const Config, provider_name
 /// spin-wait for it to complete, then check the token cache.
 var hai_auth_in_progress: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
 
-fn initiateHaiAuth(allocator: Allocator, cfg: *const Config, provider_name: []const u8) AuthResult {
+fn initiateHaiAuth(allocator: Allocator, cfg: *const Config, provider_name: []const u8, options: AuthOptions) AuthResult {
     const provider_config = cfg.providers.getPtr(provider_name) orelse {
         return .{ .err = .{ .message = "Provider not configured" } };
     };
@@ -734,7 +745,10 @@ fn initiateHaiAuth(allocator: Allocator, cfg: *const Config, provider_name: []co
 
     // HAI requires browser-based OIDC login — this blocks until the user
     // completes authentication in their browser (up to 120s timeout).
-    const access_token = client.browserAuthFlow() catch {
+    const access_token = client.browserAuthFlow(.{
+        .success_html = options.callback_success_html,
+        .error_html_template = options.callback_error_html,
+    }) catch {
         return .{ .err = .{ .message = "Authentication failed" } };
     };
     allocator.free(access_token);

@@ -165,7 +165,7 @@ pub fn chatComplete(
 /// the caller should propagate `error.AuthRequired` to the transport layer.
 fn tryAutoReauth(allocator: std.mem.Allocator, provider_name: []const u8) bool {
     log.info("[AUTH] Attempting auto-reauth for provider '{s}'...", .{provider_name});
-    const result = config_mod.initiateAuth(allocator, provider_name);
+    const result = config_mod.initiateAuth(allocator, provider_name, .{});
     return switch (result) {
         .authenticated => true,
         .device_flow => false, // Copilot — async, can't retry

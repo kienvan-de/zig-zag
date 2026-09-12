@@ -58,6 +58,11 @@ pub const CallbackConfig = struct {
     path: []const u8,
     expected_state: []const u8,
     timeout_ms: u64 = 120_000, // 2 minutes default
+    /// HTML served on successful callback. Defaults to a minimal inline page.
+    success_html: []const u8 = SUCCESS_HTML,
+    /// HTML template served on error. Must contain a {s} placeholder for the
+    /// error message. Defaults to a minimal inline page.
+    error_html_template: []const u8 = ERROR_HTML_TEMPLATE,
 };
 
 /// Result from OAuth callback
@@ -263,7 +268,7 @@ fn handleConnection(
 
     // Parse query parameters
     const query_start = std.mem.indexOf(u8, target, "?") orelse {
-        try sendErrorResponseRaw(stream, "Missing query parameters");
+        try sendErrorResponseRaw(stream, config.error_html_template, "Missing query parameters");
         return error.MissingCode;
     };
 
@@ -282,24 +287,24 @@ fn handleConnection(
 
     // Validate required parameters
     if (code == null) {
-        try sendErrorResponseRaw(stream, "Missing authorization code");
+        try sendErrorResponseRaw(stream, config.error_html_template, "Missing authorization code");
         return error.MissingCode;
     }
 
     if (state == null) {
-        try sendErrorResponseRaw(stream, "Missing state parameter");
+        try sendErrorResponseRaw(stream, config.error_html_template, "Missing state parameter");
         return error.MissingState;
     }
 
     // Validate state matches
     if (!std.mem.eql(u8, state.?, config.expected_state)) {
         log.err("State mismatch: expected {s}, got {s}", .{ config.expected_state, state.? });
-        try sendErrorResponseRaw(stream, "Invalid state parameter (possible CSRF attack)");
+        try sendErrorResponseRaw(stream, config.error_html_template, "Invalid state parameter (possible CSRF attack)");
         return error.StateMismatch;
     }
 
     // Success! Send success page
-    try sendResponseRaw(stream, "200 OK", SUCCESS_HTML);
+    try sendResponseRaw(stream, "200 OK", config.success_html);
 
     log.info("OAuth callback received successfully", .{});
 
@@ -325,7 +330,7 @@ fn sendResponseRaw(stream: net.Connection, status: []const u8, body: []const u8)
 }
 
 /// Send error response with HTML (raw)
-fn sendErrorResponseRaw(stream: net.Connection, message: []const u8) !void {
+fn sendErrorResponseRaw(stream: net.Connection, html_template: []const u8, message: []const u8) !void {
     // Build error HTML manually to avoid format string issues
     var html_buf: [4096]u8 = undefined;
     const prefix =
@@ -348,7 +353,24 @@ fn sendErrorResponseRaw(stream: net.Connection, message: []const u8) !void {
         \\</html>
     ;
 
-    // Build error HTML by concatenating prefix + message + suffix into buffer
+    // Try substituting {{ERROR_MESSAGE}} in the provided template first
+    const placeholder = "{{ERROR_MESSAGE}}";
+    if (std.mem.indexOf(u8, html_template, placeholder)) |pos| {
+        const before = html_template[0..pos];
+        const after = html_template[pos + placeholder.len ..];
+        var end: usize = 0;
+        if (before.len + message.len + after.len <= html_buf.len) {
+            @memcpy(html_buf[end..][0..before.len], before);
+            end += before.len;
+            @memcpy(html_buf[end..][0..message.len], message);
+            end += message.len;
+            @memcpy(html_buf[end..][0..after.len], after);
+            end += after.len;
+            return sendResponseRaw(stream, "400 Bad Request", html_buf[0..end]);
+        }
+    }
+
+    // Fall back to building from the inline prefix/suffix
     var end: usize = 0;
     if (prefix.len + message.len + suffix.len <= html_buf.len) {
         @memcpy(html_buf[end..][0..prefix.len], prefix);
