@@ -135,7 +135,7 @@ pub fn chatComplete(
             .copilot => switch (copilot.client.transformerFor(model_info.model)) {
                 .messages  => try dispatchChat(copilot.client.CopilotClient, anthropic.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
                 .responses => try dispatchChat(copilot.client.CopilotClient, openai.responses_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
-                .chat      => try dispatchChat(copilot.client.CopilotClient, openai.chat_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
+                .gemini, .chat => try dispatchChat(copilot.client.CopilotClient, openai.chat_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
             },
             .google_ai_studio => try dispatchChat(google_ai_studio.client.GoogleAiStudioClient, google_ai_studio.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
         }
@@ -484,7 +484,7 @@ pub fn messagesComplete(
             .copilot => switch (copilot.client.transformerFor(model_info.model)) {
                 .messages  => try dispatchMessages(copilot.client.CopilotClient, anthropic.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
                 .responses => try dispatchMessages(copilot.client.CopilotClient, openai.responses_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
-                .chat      => try dispatchMessages(copilot.client.CopilotClient, openai.chat_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
+                .gemini, .chat => try dispatchMessages(copilot.client.CopilotClient, openai.chat_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
             },
             .sap_ai_core => try dispatchMessages(sap_ai_core.client.SapAiCoreClient, sap_ai_core.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
             .google_ai_studio => try dispatchMessages(google_ai_studio.client.GoogleAiStudioClient, google_ai_studio.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
@@ -1126,7 +1126,7 @@ pub fn responsesComplete(
             .copilot => switch (copilot.client.transformerFor(model_info.model)) {
                 .messages  => try dispatchResponses(copilot.client.CopilotClient, anthropic.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
                 .responses => try dispatchResponses(copilot.client.CopilotClient, openai.responses_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
-                .chat      => try dispatchResponses(copilot.client.CopilotClient, openai.chat_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
+                .gemini, .chat => try dispatchResponses(copilot.client.CopilotClient, openai.chat_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
             },
             .google_ai_studio => try dispatchResponses(google_ai_studio.client.GoogleAiStudioClient, google_ai_studio.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
         }

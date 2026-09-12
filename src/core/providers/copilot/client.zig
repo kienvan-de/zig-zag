@@ -36,6 +36,7 @@ const log = @import("../../log.zig");
 const auth = @import("../../auth/mod.zig");
 const app_cache = @import("../../cache/app_cache.zig");
 const uri_mod = std.Uri;
+const model_router = @import("../model_router.zig");
 
 // ============================================================================
 // Comptime request routing helpers
@@ -82,24 +83,9 @@ const TOKEN_EXPIRY_BUFFER_SECONDS = 60;
 // Public Types
 // ============================================================================
 
-/// Which transformer family a Copilot model requires.
-/// The client owns this mapping; completion.zig switches on it to select
-/// the correct comptime Transformer without hard-coding model prefixes.
-pub const TransformerTag = enum {
-    /// Anthropic Messages wire — use anthropic.transformer + /v1/messages
-    messages,
-    /// OpenAI Responses wire — use openai.responses_transformer + /responses
-    responses,
-    /// OpenAI Chat wire — use openai.chat_transformer + /chat/completions
-    chat,
-};
-
 /// Return the transformer tag for a Copilot model name.
-/// Claude models → Messages wire, gpt-5.x → Responses wire, everything else → Chat wire.
-pub fn transformerFor(model: []const u8) TransformerTag {
-    if (std.mem.startsWith(u8, model, "claude")) return .messages;
-    if (std.mem.startsWith(u8, model, "gpt-5")) return .responses;
-    return .chat;
+pub fn transformerFor(model: []const u8) model_router.TransformerTag {
+    return model_router.transformerForModel(model);
 }
 
 pub const AuthStatus = enum { authenticated, configured, unauthenticated };

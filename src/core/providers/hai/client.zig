@@ -49,6 +49,7 @@ const curl = @import("../../curl.zig");
 const log = @import("../../log.zig");
 const auth = @import("../../auth/mod.zig");
 const app_cache = @import("../../cache/app_cache.zig");
+const model_router = @import("../model_router.zig");
 
 /// Iterator for SSE streaming responses
 pub const SSEIterator = http_client.SSEIterator;
@@ -58,34 +59,15 @@ pub const AuthStatus = enum { authenticated, unauthenticated };
 /// Result of starting a streaming request
 pub const StreamingResult = http_client.SSEResult;
 
-/// Which transformer family a HAI model requires.
-pub const TransformerTag = enum {
-    /// Anthropic Messages wire — use anthropic.transformer + messages_path
-    messages,
-    /// OpenAI Responses wire — use openai.responses_transformer + responses_path
-    responses,
-    /// Google Gemini wire — use google_ai_studio.transformer + gemini_path
-    gemini,
-    /// OpenAI Chat wire — use openai.chat_transformer + chat_completions_path
-    chat,
-};
-
 /// Return the transformer tag for a HAI model name, falling back to .chat
-/// if the required path is not configured.
-pub fn transformerFor(model: []const u8, provider_config: *const config_mod.ProviderConfig) TransformerTag {
-    if (std.mem.startsWith(u8, model, "anthropic--")) {
-        const p = provider_config.getString("messages_path") orelse "";
-        if (p.len > 0) return .messages;
-    }
-    if (std.mem.startsWith(u8, model, "gpt-5")) {
-        const p = provider_config.getString("responses_path") orelse "";
-        if (p.len > 0) return .responses;
-    }
-    if (std.mem.startsWith(u8, model, "gemini")) {
-        const p = provider_config.getString("gemini_path") orelse "";
-        if (p.len > 0) return .gemini;
-    }
-    return .chat;
+/// if the required path is not configured in the provider config.
+pub fn transformerFor(model: []const u8, provider_config: *const config_mod.ProviderConfig) model_router.TransformerTag {
+    return switch (model_router.transformerForModel(model)) {
+        .messages => if (provider_config.getString("messages_path")) |p| (if (p.len > 0) .messages else .chat) else .chat,
+        .responses => if (provider_config.getString("responses_path")) |p| (if (p.len > 0) .responses else .chat) else .chat,
+        .gemini => if (provider_config.getString("gemini_path")) |p| (if (p.len > 0) .gemini else .chat) else .chat,
+        .chat => .chat,
+    };
 }
 
 // ============================================================================
