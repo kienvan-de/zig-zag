@@ -40,7 +40,9 @@ const std = @import("std");
 const common = @import("../openai/types.zig"); // shared primitives
 const Allocator = std.mem.Allocator;
 const OpenAIChat = @import("../openai/chat_types.zig");
+const OpenAIResponses = @import("../openai/responses_types.zig");
 const Anthropic = @import("../anthropic/types.zig");
+const Google = @import("../google_ai_studio/types.zig");
 const config_mod = @import("../../config.zig");
 const http_client = @import("../../client.zig");
 const curl = @import("../../curl.zig");
@@ -55,6 +57,36 @@ pub const AuthStatus = enum { authenticated, unauthenticated };
 
 /// Result of starting a streaming request
 pub const StreamingResult = http_client.SSEResult;
+
+/// Which transformer family a HAI model requires.
+pub const TransformerTag = enum {
+    /// Anthropic Messages wire — use anthropic.transformer + messages_path
+    messages,
+    /// OpenAI Responses wire — use openai.responses_transformer + responses_path
+    responses,
+    /// Google Gemini wire — use google_ai_studio.transformer + gemini_path
+    gemini,
+    /// OpenAI Chat wire — use openai.chat_transformer + chat_completions_path
+    chat,
+};
+
+/// Return the transformer tag for a HAI model name, falling back to .chat
+/// if the required path is not configured.
+pub fn transformerFor(model: []const u8, provider_config: *const config_mod.ProviderConfig) TransformerTag {
+    if (std.mem.startsWith(u8, model, "anthropic--")) {
+        const p = provider_config.getString("messages_path") orelse "";
+        if (p.len > 0) return .messages;
+    }
+    if (std.mem.startsWith(u8, model, "gpt-5")) {
+        const p = provider_config.getString("responses_path") orelse "";
+        if (p.len > 0) return .responses;
+    }
+    if (std.mem.startsWith(u8, model, "gemini")) {
+        const p = provider_config.getString("gemini_path") orelse "";
+        if (p.len > 0) return .gemini;
+    }
+    return .chat;
+}
 
 // ============================================================================
 // HAI Client
@@ -75,6 +107,9 @@ pub const HaiClient = struct {
     models_path: []const u8,
     chat_completions_path: []const u8,
     messages_path: []const u8,
+    responses_path: []const u8,
+    gemini_path: []const u8,
+    app_version: []const u8,
 
     pub fn init(allocator: Allocator, provider_config: *const config_mod.ProviderConfig) !HaiClient {
         // Extract ALL required config fields (no defaults for HAI-specific values)
@@ -119,10 +154,10 @@ pub const HaiClient = struct {
             return error.MissingConfig;
         };
 
-        const messages_path = provider_config.getString("messages_path") orelse {
-            log.err("HAI provider config missing 'messages_path' field", .{});
-            return error.MissingConfig;
-        };
+        const messages_path = provider_config.getString("messages_path") orelse "";
+        const responses_path = provider_config.getString("responses_path") orelse "";
+        const gemini_path = provider_config.getString("gemini_path") orelse "";
+        const app_version = provider_config.getString("app_version") orelse "hai-cli/1.4.3";
 
         // Optional timeout settings (these can have defaults as they're not HAI-specific)
         const timeout_ms = provider_config.getInt("timeout_ms") orelse config_mod.defaults.provider_timeout_ms;
@@ -146,6 +181,9 @@ pub const HaiClient = struct {
             .models_path = models_path,
             .chat_completions_path = chat_completions_path,
             .messages_path = messages_path,
+            .responses_path = responses_path,
+            .gemini_path = gemini_path,
+            .app_version = app_version,
         };
     }
 
@@ -306,13 +344,14 @@ pub const HaiClient = struct {
     // ========================================================================
 
     /// Build authorization headers for HAI API
-    fn buildHeaders(_: *HaiClient, access_token: []const u8, auth_buffer: []u8, headers_buf: []std.http.Header) ![]std.http.Header {
+    fn buildHeaders(self: *HaiClient, access_token: []const u8, auth_buffer: []u8, headers_buf: []std.http.Header) ![]std.http.Header {
         const auth_value = try std.fmt.bufPrint(auth_buffer, "Bearer {s}", .{access_token});
 
         headers_buf[0] = .{ .name = "Authorization", .value = auth_value };
         headers_buf[1] = .{ .name = "Content-Type", .value = "application/json" };
+        headers_buf[2] = .{ .name = "X-HAI-App-Version", .value = self.app_version };
 
-        return headers_buf[0..2];
+        return headers_buf[0..3];
     }
 
     /// Fetch list of available models from HAI API
@@ -351,7 +390,7 @@ pub const HaiClient = struct {
 
         // Build headers
         var auth_buffer: [4096]u8 = undefined;
-        var headers_buf: [2]std.http.Header = undefined;
+        var headers_buf: [3]std.http.Header = undefined;
         const headers = try self.buildHeaders(access_token, &auth_buffer, &headers_buf);
 
         // Make GET request
@@ -406,7 +445,7 @@ pub const HaiClient = struct {
         log.debug("[HAI] [SYNC] " ++ label ++ " - URL: {s}", .{url});
 
         var auth_buffer: [4096]u8 = undefined;
-        var headers_buf: [2]std.http.Header = undefined;
+        var headers_buf: [3]std.http.Header = undefined;
         const headers = try self.buildHeaders(access_token, &auth_buffer, &headers_buf);
 
         log.debug("[HAI] [SYNC] " ++ label ++ " - sending POST request...", .{});
@@ -432,7 +471,7 @@ pub const HaiClient = struct {
         log.debug("[HAI] [STREAM] " ++ label ++ " - URL: {s}", .{url});
 
         var auth_buffer: [4096]u8 = undefined;
-        var headers_buf: [2]std.http.Header = undefined;
+        var headers_buf: [3]std.http.Header = undefined;
         const headers = try self.buildHeaders(access_token, &auth_buffer, &headers_buf);
 
         log.debug("[HAI] [STREAM] " ++ label ++ " - sending POST request...", .{});
@@ -464,21 +503,27 @@ pub const HaiClient = struct {
     /// Map request type to response type at comptime
     fn ResponseType(comptime Req: type) type {
         if (Req == OpenAIChat.Request) return OpenAIChat.Response;
+        if (Req == OpenAIResponses.Request) return OpenAIResponses.Response;
         if (Req == Anthropic.Request) return Anthropic.Response;
-        @compileError("HaiClient: unsupported request type — expected OpenAIChat.Request or Anthropic.Request");
+        if (Req == Google.Request) return Google.Response;
+        @compileError("HaiClient: unsupported request type — expected OpenAIChat.Request, OpenAIResponses.Request, Anthropic.Request, or Google.Request");
     }
 
     /// Pick the URL path based on request type
     fn pathForRequest(self: *HaiClient, comptime Req: type) []const u8 {
         if (Req == OpenAIChat.Request) return self.chat_completions_path;
+        if (Req == OpenAIResponses.Request) return self.responses_path;
         if (Req == Anthropic.Request) return self.messages_path;
+        if (Req == Google.Request) return self.gemini_path;
         @compileError("HaiClient: unsupported request type");
     }
 
     /// Human-readable label for log messages
     fn requestLabel(comptime Req: type) []const u8 {
         if (Req == OpenAIChat.Request) return "sendRequest(OpenAI)";
+        if (Req == OpenAIResponses.Request) return "sendRequest(Responses)";
         if (Req == Anthropic.Request) return "sendRequest(Anthropic)";
+        if (Req == Google.Request) return "sendRequest(Gemini)";
         @compileError("HaiClient: unsupported request type");
     }
 };

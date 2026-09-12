@@ -325,12 +325,16 @@ When enabled:
     "redirect_path": "/auth-code",
     "models_path": "/v1/models",
     "chat_completions_path": "/v1/chat/completions",
-    "messages_path": "/v1/messages"
+    "messages_path": "/v1/messages",
+    "responses_path": "/v1/responses",
+    "gemini_path": "/v1/gemini/completions"
   }
 }
 ```
 
 > **Note:** HAI uses OIDC browser-based authentication. On first use, a browser window opens for login. Tokens are cached and automatically refreshed.
+>
+> `messages_path`, `responses_path`, and `gemini_path` are optional. When set, requests are routed to the matching transformer based on model name prefix (`anthropic--` → Messages, `gpt-5` → Responses, `gemini` → Gemini). All others fall back to `chat_completions_path`.
 
 #### GitHub Copilot
 
