@@ -36,6 +36,7 @@ const pricing = @import("pricing.zig");
 const provider_mod = @import("provider.zig");
 const utils = @import("utils.zig");
 const worker_pool = @import("worker_pool.zig");
+const smart_routing = @import("smart_routing.zig");
 const chat_types = @import("providers/openai/chat_types.zig");
 const responses_types = @import("providers/openai/responses_types.zig");
 const messages_types = @import("providers/anthropic/types.zig");
@@ -101,9 +102,58 @@ pub fn chatComplete(
     // Budget enforcement
     try utils.enforceBudget(cfg);
 
+    // Smart routing: resolve effective model and set up retry state
+    const sr = smart_routing.get();
+    const sr_group = if (sr) |s| s.lookup(request.model) else null;
+    var current_model_buf: ?[]u8 = if (sr_group) |g| try sr.?.getCurrentModel(g, allocator) else null;
+    defer if (current_model_buf) |buf| allocator.free(buf);
+    var did_rollover = false;
+
+    while (true) {
+        const effective_model = if (current_model_buf) |buf| buf else request.model;
+
+        const dispatch_err = chatCompleteInner(writer, allocator, cfg, request, effective_model);
+        if (dispatch_err) |_| {
+            // Persist working model to config on first successful rollover
+            if (did_rollover and sr != null) {
+                sr.?.writeBack(allocator) catch |e| {
+                    log.warn("[smart_routing] writeBack failed: {}", .{e});
+                };
+            }
+            return;
+        } else |err| {
+            const retryable = (err == error.RateLimitError or
+                err == error.AuthenticationError or
+                err == error.ServerError);
+            if (retryable and sr_group != null) {
+                log.warn("[smart_routing] Model '{s}' failed ({s}), attempting rollover...", .{ effective_model, @errorName(err) });
+                const next = sr.?.rollover(sr_group.?, allocator) catch null;
+                if (next) |n| {
+                    if (current_model_buf) |old| allocator.free(old);
+                    current_model_buf = n;
+                    did_rollover = true;
+                    log.info("[smart_routing] Rolling over to '{s}'", .{n});
+                    continue;
+                } else {
+                    log.err("[smart_routing] All alternatives exhausted for '{s}'", .{request.model});
+                }
+            }
+            return err;
+        }
+    }
+    unreachable;
+}
+
+fn chatCompleteInner(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    cfg: *const config_mod.Config,
+    request: chat_types.Request,
+    model_str: []const u8,
+) !void {
     // Parse model
-    const model_info = utils.parseModelString(request.model, allocator) catch |err| {
-        log.err("Model parsing error: {} for model '{s}'", .{ err, request.model });
+    const model_info = utils.parseModelString(model_str, allocator) catch |err| {
+        log.err("Model parsing error: {} for model '{s}'", .{ err, model_str });
         return error.InvalidModelFormat;
     };
     defer allocator.free(model_info.model);
@@ -242,6 +292,9 @@ fn chatSync(
     const provider_response = client.sendRequest(provider_request) catch |err| {
         log.err("[SYNC] Provider API error: {} for model '{s}'", .{ err, request.model });
         if (err == error.AuthRequired) return error.AuthRequired;
+        if (err == error.RateLimitError) return error.RateLimitError;
+        if (err == error.AuthenticationError) return error.AuthenticationError;
+        if (err == error.ServerError) return error.ServerError;
         return error.UpstreamError;
     };
     defer provider_response.deinit();
@@ -328,6 +381,9 @@ fn chatStreaming(
     const stream_result = client.sendStreamingRequest(provider_request) catch |err| {
         log.err("[STREAM] Provider streaming error: {} for model '{s}'", .{ err, request.model });
         if (err == error.AuthRequired) return error.AuthRequired;
+        if (err == error.RateLimitError) return error.RateLimitError;
+        if (err == error.AuthenticationError) return error.AuthenticationError;
+        if (err == error.ServerError) return error.ServerError;
         return error.UpstreamError;
     };
     defer client.freeStreamingResult(stream_result);
@@ -450,9 +506,57 @@ pub fn messagesComplete(
     // Budget enforcement
     try utils.enforceBudget(cfg);
 
+    // Smart routing: resolve effective model and set up retry state
+    const sr = smart_routing.get();
+    const sr_group = if (sr) |s| s.lookup(request.model) else null;
+    var current_model_buf: ?[]u8 = if (sr_group) |g| try sr.?.getCurrentModel(g, allocator) else null;
+    defer if (current_model_buf) |buf| allocator.free(buf);
+    var did_rollover = false;
+
+    while (true) {
+        const effective_model = if (current_model_buf) |buf| buf else request.model;
+
+        const dispatch_err = messagesCompleteInner(writer, allocator, cfg, request, effective_model);
+        if (dispatch_err) |_| {
+            if (did_rollover and sr != null) {
+                sr.?.writeBack(allocator) catch |e| {
+                    log.warn("[smart_routing] writeBack failed: {}", .{e});
+                };
+            }
+            return;
+        } else |err| {
+            const retryable = (err == error.RateLimitError or
+                err == error.AuthenticationError or
+                err == error.ServerError);
+            if (retryable and sr_group != null) {
+                log.warn("[smart_routing] Model '{s}' failed ({s}), attempting rollover...", .{ effective_model, @errorName(err) });
+                const next = sr.?.rollover(sr_group.?, allocator) catch null;
+                if (next) |n| {
+                    if (current_model_buf) |old| allocator.free(old);
+                    current_model_buf = n;
+                    did_rollover = true;
+                    log.info("[smart_routing] Rolling over to '{s}'", .{n});
+                    continue;
+                } else {
+                    log.err("[smart_routing] All alternatives exhausted for '{s}'", .{request.model});
+                }
+            }
+            return err;
+        }
+    }
+    unreachable;
+}
+
+fn messagesCompleteInner(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    cfg: *const config_mod.Config,
+    request: messages_types.Request,
+    model_str: []const u8,
+) !void {
     // Parse model
-    const model_info = utils.parseModelString(request.model, allocator) catch |err| {
-        log.err("Model parsing error: {} for model '{s}'", .{ err, request.model });
+    const model_info = utils.parseModelString(model_str, allocator) catch |err| {
+        log.err("Model parsing error: {} for model '{s}'", .{ err, model_str });
         return error.InvalidModelFormat;
     };
     defer allocator.free(model_info.model);
@@ -575,6 +679,9 @@ fn messagesSync(
     const provider_response = client.sendRequest(provider_request) catch |err| {
         log.err("[SYNC] Provider API error: {} for model '{s}/{s}'", .{ err, provider_name, model });
         if (err == error.AuthRequired) return error.AuthRequired;
+        if (err == error.RateLimitError) return error.RateLimitError;
+        if (err == error.AuthenticationError) return error.AuthenticationError;
+        if (err == error.ServerError) return error.ServerError;
         return error.UpstreamError;
     };
     defer provider_response.deinit();
@@ -655,6 +762,9 @@ fn messagesStreaming(
     const stream_result = client.sendStreamingRequest(provider_request) catch |err| {
         log.err("[STREAM] Provider streaming error: {} for model '{s}/{s}'", .{ err, provider_name, model });
         if (err == error.AuthRequired) return error.AuthRequired;
+        if (err == error.RateLimitError) return error.RateLimitError;
+        if (err == error.AuthenticationError) return error.AuthenticationError;
+        if (err == error.ServerError) return error.ServerError;
         return error.UpstreamError;
     };
     defer client.freeStreamingResult(stream_result);
@@ -886,6 +996,11 @@ pub fn listModels(allocator: std.mem.Allocator) ![]openai_common.Model {
 
     log.info("GET /v1/models - total models: {d}", .{all_models.items.len});
 
+    // Append smart routing group models (api_key as id, owned_by = "zig-zag")
+    appendGroupModels(safe_allocator, &all_models) catch |err| {
+        log.warn("Failed to append smart routing models: {}", .{err});
+    };
+
     // Sort alphabetically by id
     const sorted = try allocator.alloc(openai_common.Model, all_models.items.len);
     @memcpy(sorted, all_models.items);
@@ -932,6 +1047,22 @@ fn fetchTask(ctx_ptr: *anyopaque) void {
     ctx.result.elapsed_ms = time.milliTimestamp() - start_time;
 }
 
+/// Append smart routing group models to an existing model list.
+/// Each group with a non-empty api_key gets an entry with owned_by = "zig-zag".
+/// id and owned_by are heap-allocated so freeModels() can free them uniformly.
+fn appendGroupModels(allocator: std.mem.Allocator, list: *std.ArrayList(openai_common.Model)) !void {
+    const sr = smart_routing.get() orelse return;
+    for (sr.groups) |*g| {
+        if (g.api_key.len == 0) continue;
+        try list.append(allocator, openai_common.Model{
+            .id = try allocator.dupe(u8, g.api_key),
+            .object = "model",
+            .created = 0,
+            .owned_by = try allocator.dupe(u8, "zig-zag"),
+        });
+    }
+}
+
 fn listModelsSequential(allocator: std.mem.Allocator, cfg: *const config_mod.Config) ![]openai_common.Model {
     var all_models = std.ArrayList(openai_common.Model).empty;
     defer all_models.deinit(allocator);
@@ -960,6 +1091,11 @@ fn listModelsSequential(allocator: std.mem.Allocator, cfg: *const config_mod.Con
             log.debug("Provider '{s}' returned no models in {d}ms", .{ pname, elapsed });
         }
     }
+
+    // Append smart routing group models (api_key as id, owned_by = "zig-zag")
+    appendGroupModels(allocator, &all_models) catch |err| {
+        log.warn("Failed to append smart routing models: {}", .{err});
+    };
 
     // Sort alphabetically by id
     const sorted = try allocator.alloc(openai_common.Model, all_models.items.len);
@@ -1098,8 +1234,56 @@ pub fn responsesComplete(
     const cfg = config_mod.get();
     try utils.enforceBudget(cfg);
 
-    const model_info = utils.parseModelString(request.model, allocator) catch |err| {
-        log.err("Model parsing error: {} for model '{s}'", .{ err, request.model });
+    // Smart routing: resolve effective model and set up retry state
+    const sr = smart_routing.get();
+    const sr_group = if (sr) |s| s.lookup(request.model) else null;
+    var current_model_buf: ?[]u8 = if (sr_group) |g| try sr.?.getCurrentModel(g, allocator) else null;
+    defer if (current_model_buf) |buf| allocator.free(buf);
+    var did_rollover = false;
+
+    while (true) {
+        const effective_model = if (current_model_buf) |buf| buf else request.model;
+
+        const dispatch_err = responsesCompleteInner(writer, allocator, cfg, request, effective_model);
+        if (dispatch_err) |_| {
+            if (did_rollover and sr != null) {
+                sr.?.writeBack(allocator) catch |e| {
+                    log.warn("[smart_routing] writeBack failed: {}", .{e});
+                };
+            }
+            return;
+        } else |err| {
+            const retryable = (err == error.RateLimitError or
+                err == error.AuthenticationError or
+                err == error.ServerError);
+            if (retryable and sr_group != null) {
+                log.warn("[smart_routing] Model '{s}' failed ({s}), attempting rollover...", .{ effective_model, @errorName(err) });
+                const next = sr.?.rollover(sr_group.?, allocator) catch null;
+                if (next) |n| {
+                    if (current_model_buf) |old| allocator.free(old);
+                    current_model_buf = n;
+                    did_rollover = true;
+                    log.info("[smart_routing] Rolling over to '{s}'", .{n});
+                    continue;
+                } else {
+                    log.err("[smart_routing] All alternatives exhausted for '{s}'", .{request.model});
+                }
+            }
+            return err;
+        }
+    }
+    unreachable;
+}
+
+fn responsesCompleteInner(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    cfg: *const config_mod.Config,
+    request: responses_types.Request,
+    model_str: []const u8,
+) !void {
+    const model_info = utils.parseModelString(model_str, allocator) catch |err| {
+        log.err("Model parsing error: {} for model '{s}'", .{ err, model_str });
         return error.InvalidModelFormat;
     };
     defer allocator.free(model_info.model);
@@ -1200,6 +1384,9 @@ fn responsesInner(
     if (is_streaming) {
         const stream_result = client.sendStreamingRequest(provider_req) catch |err| {
             if (err == error.AuthRequired) return error.AuthRequired;
+            if (err == error.RateLimitError) return error.RateLimitError;
+            if (err == error.AuthenticationError) return error.AuthenticationError;
+            if (err == error.ServerError) return error.ServerError;
             return error.UpstreamError;
         };
         defer client.freeStreamingResult(stream_result);
@@ -1237,6 +1424,9 @@ fn responsesInner(
     } else {
         const provider_response = client.sendRequest(provider_req) catch |err| {
             if (err == error.AuthRequired) return error.AuthRequired;
+            if (err == error.RateLimitError) return error.RateLimitError;
+            if (err == error.AuthenticationError) return error.AuthenticationError;
+            if (err == error.ServerError) return error.ServerError;
             return error.UpstreamError;
         };
         defer provider_response.deinit();

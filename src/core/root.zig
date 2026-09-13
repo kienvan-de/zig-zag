@@ -53,6 +53,9 @@ pub const pricing = @import("pricing.zig");
 /// Utility functions: model parsing, budget enforcement.
 pub const utils = @import("utils.zig");
 
+/// Smart routing: ordered model fallback groups with thread-safe rollover.
+pub const smart_routing = @import("smart_routing.zig");
+
 /// Provider enum and helper functions.
 pub const provider = @import("provider.zig");
 

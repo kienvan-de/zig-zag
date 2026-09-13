@@ -37,6 +37,7 @@
 - **Streaming** — full SSE streaming with automatic protocol translation across providers
 - **Cost tracking** — per-request pricing with auto-updating price tables
 - **Budget controls** — reject requests when a spending limit is reached, with automatic period resets
+- **Smart Routing** — automatic failover across models when a provider hits quota or goes down
 - **Config UI** — web-based configuration at `GET /v1/html/config`
 - **Real-time metrics** — CPU, memory, network I/O, token usage, and cost — persisted across restarts
 - **Native macOS app** — menu bar app with one-click start/stop and live stats
@@ -188,6 +189,7 @@ open ui/macos/zig-zag/zig-zag.xcodeproj
 | `/v1/html/config` | GET | Web-based configuration UI |
 | `/v1/config/data` | GET / POST | Read / write `config.json` via REST |
 | `/v1/config/{provider}/auth` | GET / POST / DELETE | Provider auth status, start auth flow, revoke |
+| `/v1/config/smart_routing/{idx}/reset` | POST | Reset a smart routing group's active model back to its main model |
 
 ## Configuration
 
@@ -274,6 +276,49 @@ When enabled:
 - The budget period is checked **at startup** — if the period expired while the proxy was offline, costs and tokens reset immediately before any request is served
 - The period resets automatically on the first request after expiry
 - The macOS cost row always shows **remaining budget** instead of total spent; the icon changes color as budget depletes (gray → orange at 20% → red at 0%)
+
+### Smart Routing
+
+Automatically fail over to alternative models when the active model returns a quota error (429) or a provider error (4xx/5xx). No client reconfiguration needed.
+
+```json
+{
+  "smart_routing": [
+    {
+      "name": "My Claude",
+      "enabled": true,
+      "main_model": "hai/claude-opus-4.8",
+      "alternatives": [
+        "copilot/claude-opus-5",
+        "sap_ai_core/anthropic--claude-4.8-opus"
+      ],
+      "current_model": "hai/claude-opus-4.8"
+    }
+  ]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Display name for the group (shown in the config UI) |
+| `enabled` | bool | When `false`, the group is skipped and requests pass through unchanged |
+| `main_model` | string | The model string clients send (e.g. what you set in Claude Code). Must be unique across all groups. |
+| `alternatives` | array | Ordered list of fallback models tried when the active model fails |
+| `current_model` | string | The model currently being used. Written back to config on first successful failover. |
+
+**How it works:**
+
+1. A request arrives for `main_model` (e.g. `hai/claude-opus-4.8`)
+2. zig-zag looks up the group and forwards to `current_model`
+3. If the upstream returns 429, 401, 403, or 5xx, it rolls over to the next alternative and retries transparently
+4. On success after a rollover, `current_model` is written to `config.json` so subsequent requests skip the broken model
+5. If all alternatives are exhausted, the original error is returned to the client
+
+**Resetting:** Open the config UI, navigate to Smart Routing → your group, and click **Reset** to restore `current_model` to `main_model`. You can also `POST /v1/config/smart_routing/{idx}/reset`.
+
+**Streaming:** Failover only applies if the upstream fails before any response bytes are sent. A mid-stream failure is returned as an error.
+
+> **Tip:** Configure smart routing in the web UI at `GET /v1/html/config` — the Smart Routing section fetches all available models from all configured providers automatically.
 
 ### Provider Examples
 
@@ -479,6 +524,7 @@ just push-release
 │   │   ├── metrics.zig       # Metrics tracking (CPU, memory, tokens, costs)
 │   │   ├── pricing.zig       # Pricing engine (per-token cost tracking, auto-update)
 │   │   ├── provider.zig      # Provider abstraction
+│   │   ├── smart_routing.zig # Model failover groups (quota/error-based rollover)
 │   │   ├── auth/             # Authentication modules (OIDC, OAuth, PKCE)
 │   │   ├── cache/            # Token & model caching
 │   │   └── providers/

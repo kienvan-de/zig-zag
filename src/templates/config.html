@@ -256,6 +256,40 @@ body{
   align-self:flex-start;
 }
 
+/* ── Smart routing panel divider ───────────────────── */
+.sr-divider{
+  height:1px;
+  margin:24px 0;
+  background:linear-gradient(
+    to right,
+    transparent 0%,
+    var(--accent) 25%,
+    var(--accent) 75%,
+    transparent 100%
+  );
+  opacity:0.5;
+  border:none;
+  box-shadow:0 0 8px 1px var(--accent-glow);
+}
+
+/* ── Filterable model picker ────────────────────────── */
+.model-picker{position:relative;display:block;width:100%;}
+.model-picker-input{width:100%;box-sizing:border-box;}
+.model-picker-dropdown{
+  position:fixed;z-index:9999;
+  background:var(--surface-solid);border:1px solid var(--border);
+  border-radius:var(--radius);
+  max-height:220px;overflow-y:auto;
+  box-shadow:0 8px 24px rgba(0,0,0,0.4);
+}
+.model-picker-option{
+  padding:7px 10px;font-size:13px;cursor:pointer;
+  border-bottom:1px solid var(--border);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.model-picker-option:last-child{border-bottom:none;}
+.model-picker-option:hover,.model-picker-option.active{background:var(--accent-glow);color:var(--accent);}
+.model-picker-empty{padding:8px 10px;font-size:13px;color:var(--text-muted);font-style:italic;}
+
 .panel-header{
   display:flex;
   align-items:center;
@@ -699,6 +733,17 @@ body{
 
     <div class="sidebar-divider"></div>
 
+    <!-- Smart Routing section -->
+    <div class="sidebar-section" id="sidebar-smart-routing">
+      <div class="section-title">Smart Routing</div>
+      <!-- nav-items rendered by JS -->
+    </div>
+    <div class="sidebar-section">
+      <button class="nav-add" id="add-route-btn">+ Add group</button>
+    </div>
+
+    <div class="sidebar-divider"></div>
+
     <!-- Settings section -->
     <div class="sidebar-section" id="sidebar-settings">
       <div class="section-title">Settings</div>
@@ -732,8 +777,9 @@ const state = {
   config: {},        // last-saved config from GET /v1/config/data
   dirty: {},         // in-memory edits (deep clone, then mutated)
   hasUnsaved: false, // true when dirty !== config
-  activeType: null,  // 'provider' | 'settings' | 'add-provider'
-  activeKey: null,   // provider key or settings section name
+  activeType: null,  // 'provider' | 'settings' | 'add-provider' | 'smart-routing' | 'add-route'
+  activeKey: null,   // provider key, settings section name, or smart_routing group index (number)
+  modelsCache: null, // cached list of model ids from GET /v1/models
 };
 
 /* ── Deep clone / deep equal helpers ────────────────── */
@@ -755,11 +801,13 @@ const $banner     = document.getElementById('unsaved-banner');
 const $saveBanner = document.getElementById('save-btn-banner');
 const $saveBtn    = document.getElementById('save-btn');
 const $sidebar    = document.getElementById('sidebar');
-const $providers  = document.getElementById('sidebar-providers');
-const $settings   = document.getElementById('sidebar-settings');
-const $mainPanel  = document.getElementById('main-panel');
-const $toasts     = document.getElementById('toast-container');
-const $addBtn     = document.getElementById('add-provider-btn');
+const $providers     = document.getElementById('sidebar-providers');
+const $settings      = document.getElementById('sidebar-settings');
+const $smartRouting  = document.getElementById('sidebar-smart-routing');
+const $mainPanel     = document.getElementById('main-panel');
+const $toasts        = document.getElementById('toast-container');
+const $addBtn        = document.getElementById('add-provider-btn');
+const $addRouteBtn   = document.getElementById('add-route-btn');
 
 /* ── Config load / save ─────────────────────────────── */
 async function loadConfig() {
@@ -893,6 +941,9 @@ function renderSidebar() {
       el.classList.toggle('active', el.dataset.key === state.activeKey);
     });
   }
+
+  // Render smart routing sidebar
+  renderSmartRoutingSidebar();
 }
 
 /* ── Delete provider ────────────────────────────────── */
@@ -912,6 +963,10 @@ function deleteProvider(key) {
 /* ── Add provider ───────────────────────────────────── */
 $addBtn.addEventListener('click', function () {
   selectItem('add-provider', null);
+});
+
+$addRouteBtn.addEventListener('click', function () {
+  selectItem('add-route', null);
 });
 
 /* ── Provider field schemas ─────────────────────────── */
@@ -1375,6 +1430,14 @@ function renderPanel(type, key) {
     renderSettingsPanel(key);
     return;
   }
+  if (type === 'smart-routing') {
+    renderSmartRoutingPanel(key);
+    return;
+  }
+  if (type === 'add-route') {
+    renderAddGroupPanel();
+    return;
+  }
   $mainPanel.innerHTML = '<div class="panel-placeholder">Select an item from the sidebar</div>';
 }
 
@@ -1621,10 +1684,11 @@ function renderAddProviderPanel() {
 function selectItem(type, key) {
   state.activeType = type;
   state.activeKey = key;
-  // highlight active nav item
+  // highlight active nav item — coerce key to string for dataset comparison
+  var keyStr = key === null ? null : String(key);
   document.querySelectorAll('.nav-item').forEach(function (el) {
     el.classList.toggle('active',
-      el.dataset.type === type && el.dataset.key === key);
+      el.dataset.type === type && el.dataset.key === keyStr);
   });
   renderPanel(type, key);
 }
@@ -1639,6 +1703,435 @@ $settings.querySelectorAll('.nav-item').forEach(function (el) {
     selectItem(el.dataset.type, el.dataset.key);
   });
 });
+
+/* ── Smart Routing sidebar ──────────────────────────── */
+function deriveApiKey(name) {
+  return name.toLowerCase()
+    .replace(/[^a-z0-9_]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+function renderSmartRoutingSidebar() {
+  var existing = $smartRouting.querySelectorAll('.nav-item');
+  existing.forEach(function (el) { el.remove(); });
+
+  var groups = (state.dirty && state.dirty.smart_routing) || [];
+  groups.forEach(function (g, idx) {
+    var item = document.createElement('div');
+    item.className = 'nav-item';
+    item.dataset.type = 'smart-routing';
+    item.dataset.key = String(idx);
+    if (state.activeType === 'smart-routing' && state.activeKey === idx) {
+      item.classList.add('active');
+    }
+
+    var content = document.createElement('div');
+    content.className = 'nav-item-content';
+
+    var label = document.createElement('span');
+    label.className = 'nav-item-label';
+    label.textContent = g.name || ('Group ' + (idx + 1));
+    content.appendChild(label);
+
+    if (!g.enabled) {
+      var chip = document.createElement('span');
+      chip.style.cssText = 'font-size:10px;color:var(--text-muted);margin-left:6px;';
+      chip.textContent = 'off';
+      content.appendChild(chip);
+    }
+
+    item.appendChild(content);
+
+    var del = document.createElement('button');
+    del.className = 'nav-delete';
+    del.textContent = '✕';
+    del.title = 'Delete group';
+    del.addEventListener('click', function (e) {
+      e.stopPropagation();
+      deleteRouteGroup(idx);
+    });
+    item.appendChild(del);
+
+    item.addEventListener('click', function () {
+      selectItem('smart-routing', idx);
+    });
+
+    $smartRouting.appendChild(item);
+  });
+}
+
+function deleteRouteGroup(idx) {
+  if (!state.dirty.smart_routing) return;
+  state.dirty.smart_routing.splice(idx, 1);
+  markDirty();
+  renderSidebar();
+  if (state.activeType === 'smart-routing' && state.activeKey === idx) {
+    state.activeType = null;
+    state.activeKey = null;
+    $mainPanel.innerHTML = '<div class="panel-placeholder">Select an item from the sidebar</div>';
+  }
+}
+
+/* ── Smart Routing panel ────────────────────────────── */
+async function fetchModels() {
+  if (state.modelsCache) return state.modelsCache;
+  try {
+    var res = await fetch('/v1/models');
+    if (!res.ok) return [];
+    var data = await res.json();
+    state.modelsCache = (data.data || []).map(function (m) { return m.id; });
+    return state.modelsCache;
+  } catch (e) {
+    return [];
+  }
+}
+
+/* ── Filterable model picker ────────────────────────── */
+// Renders HTML for a filterable model picker.
+// id: base id; models: string[]; selected: string; placeholder: string
+function modelPickerHtml(id, placeholder, selected) {
+  return '<div class="model-picker" id="' + id + '-wrap">' +
+    '<input type="text" class="model-picker-input" id="' + id + '" autocomplete="off" ' +
+    'placeholder="' + escHtml(placeholder) + '" value="' + escHtml(selected) + '">' +
+    '</div>';
+}
+
+// Wire a model picker. Dropdown is appended to <body> to avoid clipping from positioned ancestors.
+function wireModelPicker(id, models, onSelect) {
+  var wrap = document.getElementById(id + '-wrap');
+  var input = document.getElementById(id);
+  if (!wrap || !input) return;
+
+  // Create dropdown on body
+  var drop = document.createElement('div');
+  drop.id = id + '-drop';
+  drop.className = 'model-picker-dropdown';
+  drop.style.display = 'none';
+  document.body.appendChild(drop);
+
+  function render(filter) {
+    var q = (filter || '').toLowerCase();
+    var matches = q ? models.filter(function(m){ return m.toLowerCase().indexOf(q) !== -1; }) : models;
+    drop.innerHTML = matches.length
+      ? matches.slice(0, 100).map(function(m){
+          return '<div class="model-picker-option" data-value="' + escHtml(m) + '">' + escHtml(m) + '</div>';
+        }).join('')
+      : '<div class="model-picker-empty">No models match</div>';
+  }
+
+  function open() {
+    render(input.value);
+    var rect = input.getBoundingClientRect();
+    var fg = wrap.closest('.form-group') || wrap.parentElement;
+    var fgRect = fg.getBoundingClientRect();
+    var dropH = 220;
+    drop.style.width = fgRect.width + 'px';
+    drop.style.left = (fgRect.left + window.scrollX) + 'px';
+    if ((window.innerHeight - rect.bottom) < dropH && rect.top > dropH) {
+      drop.style.top = '';
+      drop.style.bottom = (window.innerHeight - rect.top + window.scrollY + 2) + 'px';
+    } else {
+      drop.style.top = (rect.bottom + window.scrollY + 2) + 'px';
+      drop.style.bottom = '';
+    }
+    drop.style.display = 'block';
+  }
+
+  function close() { drop.style.display = 'none'; }
+
+  input.addEventListener('focus', function() {
+    var self = this;
+    setTimeout(function(){ self.select(); }, 0);
+    open();
+  });
+  input.addEventListener('input', function() { open(); });
+  // On blur without selecting, restore display value for main model pickers
+  // (alt pickers get cleared by the + Add handler)
+  input.addEventListener('blur', function() {
+    setTimeout(close, 150);
+  });
+
+  drop.addEventListener('mousedown', function(e) {
+    var opt = e.target.closest('.model-picker-option');
+    if (!opt) return;
+    e.preventDefault();
+    input.value = opt.dataset.value;
+    close();
+    onSelect(opt.dataset.value);
+  });
+
+  document.addEventListener('mousedown', function(e) {
+    if (!wrap.contains(e.target) && !drop.contains(e.target)) close();
+  }, true);
+
+  // Remove body-appended dropdown when the picker is removed from DOM
+  new MutationObserver(function(_, obs) {
+    if (!document.body.contains(input)) { drop.remove(); obs.disconnect(); }
+  }).observe(document.body, { childList: true, subtree: true });
+}
+
+function renderSmartRoutingPanel(idx) {
+  var groups = (state.dirty && state.dirty.smart_routing) || [];
+  var g = groups[idx];
+  if (!g) {
+    $mainPanel.innerHTML = '<div class="panel-placeholder">Group not found</div>';
+    return;
+  }
+
+  var html = '<div class="panel"><div class="panel-header">';
+  html += '<div><div class="panel-title">' + escHtml(g.name || 'Smart Routing Group') + '</div></div>';
+  html += '<label class="toggle" style="display:flex;align-items:center;gap:6px;cursor:pointer;margin:0;">';
+  html += '<input type="checkbox" id="sr-enabled"' + (g.enabled !== false ? ' checked' : '') + '>';
+  html += '<span class="toggle-slider"></span>';
+  html += '</label>';
+  html += '</div><div class="panel-body">';
+
+  // Name
+  html += '<div class="form-group">';
+  html += '<label>Group name</label>';
+  html += '<input type="text" id="sr-name" value="' + escHtml(g.name || '') + '" placeholder="My Claude">';
+  html += '</div>';
+
+  // API key
+  html += '<div class="form-group">';
+  html += '<label>API key <span style="font-size:11px;color:var(--text-muted)">(use as model ID in your client)</span></label>';
+  html += '<input type="text" id="sr-api-key" value="' + escHtml(g.api_key || '') + '" placeholder="my-claude" style="font-family:var(--mono);">';
+  html += '<div style="font-size:11px;color:var(--text-muted);margin-top:4px;">Alphanumeric, - and _ only. Auto-derived from group name. Must be unique across groups.</div>';
+  html += '</div>';
+
+  // Current model (read-only)
+  html += '<div class="form-group">';
+  html += '<label>Current active model <span style="font-size:11px;color:var(--text-muted)">(read-only)</span></label>';
+  html += '<div style="display:flex;gap:8px;align-items:center;">';
+  html += '<input type="text" id="sr-current-model" value="' + escHtml(g.current_model || g.main_model || '') + '" readonly style="flex:1;opacity:0.7;">';
+  html += '<button class="btn btn-ghost" id="sr-reset-btn" title="Reset to main model">Reset</button>';
+  html += '</div>';
+  html += '</div>';
+
+  html += '<hr class="sr-divider">';
+
+  // Main model (filterable picker — populated after fetch)
+  html += '<div class="form-group">';
+  html += '<label>Main model</label>';
+  html += modelPickerHtml('sr-main-model', 'Search models…', g.main_model || '');
+  html += '<div style="font-size:11px;color:var(--text-muted);margin-top:4px;">The model sent to your LLM provider. Falls back to alternatives on failure.</div>';
+  html += '</div>';
+
+  // Alternatives
+  html += '<div class="form-group">';
+  html += '<label>Alternatives <span style="font-size:11px;color:var(--text-muted)">(in order — tried when main model fails)</span></label>';
+  html += '<div id="sr-alts-list">';
+  var alts = g.alternatives || [];
+  alts.forEach(function (alt, ai) {
+    html += renderAltRow(alt, ai, alts.length);
+  });
+  html += '</div>';
+  html += '<div style="display:flex;gap:6px;align-items:center;margin-top:4px;">';
+  html += '<div class="model-picker" id="sr-new-alt-wrap" style="flex:1;">';
+  html += '<input type="text" class="model-picker-input" id="sr-new-alt" autocomplete="off" placeholder="Search models to add…" style="font-size:13px;padding:6px 8px;">';
+  html += '</div>';
+  html += '<button class="btn" id="sr-add-alt-btn" style="width:96px;padding:4px 0;flex-shrink:0;">+ Add</button>';
+  html += '</div>';
+  html += '</div>';
+
+  html += '</div></div>';
+  $mainPanel.innerHTML = html;
+
+  // Wire model pickers and events
+  fetchModels().then(function (models) {
+    wireModelPicker('sr-main-model', models, function(val) {
+      if (!state.dirty.smart_routing) return;
+      state.dirty.smart_routing[idx].main_model = val;
+      state.dirty.smart_routing[idx].current_model = val;
+      document.getElementById('sr-current-model').value = val;
+      markDirty();
+    });
+    wireModelPicker('sr-new-alt', models, function() {});
+    // Alt picker: clear on focus so previous search doesn't accumulate
+    var altInp = document.getElementById('sr-new-alt');
+    if (altInp) altInp.addEventListener('focus', function() { this.value = ''; }, true);
+  });
+
+  document.getElementById('sr-add-alt-btn').addEventListener('click', function () {
+    var input = document.getElementById('sr-new-alt');
+    var val = input ? input.value.trim() : '';
+    if (!val) return;
+    if (!state.dirty.smart_routing) return;
+    if (!state.dirty.smart_routing[idx].alternatives) state.dirty.smart_routing[idx].alternatives = [];
+    state.dirty.smart_routing[idx].alternatives.push(val);
+    markDirty();
+    renderSmartRoutingPanel(idx);
+  });
+
+  document.getElementById('sr-name').addEventListener('input', function () {
+    if (!state.dirty.smart_routing) return;
+    var oldName = state.dirty.smart_routing[idx].name || '';
+    var oldDerived = deriveApiKey(oldName);
+    var currentApiKey = state.dirty.smart_routing[idx].api_key || '';
+    state.dirty.smart_routing[idx].name = this.value;
+    if (currentApiKey === oldDerived || currentApiKey === '') {
+      var newKey = deriveApiKey(this.value);
+      state.dirty.smart_routing[idx].api_key = newKey;
+      var apiKeyInput = document.getElementById('sr-api-key');
+      if (apiKeyInput) apiKeyInput.value = newKey;
+    }
+    markDirty();
+    renderSmartRoutingSidebar();
+  });
+
+  document.getElementById('sr-api-key').addEventListener('input', function () {
+    if (!state.dirty.smart_routing) return;
+    var clean = this.value.toLowerCase().replace(/[^a-z0-9_-]/g, '');
+    if (clean !== this.value) { this.value = clean; }
+    var groups = state.dirty.smart_routing || [];
+    for (var i = 0; i < groups.length; i++) {
+      if (i !== idx && groups[i].api_key === clean && clean !== '') {
+        this.style.borderColor = 'var(--danger)';
+        return;
+      }
+    }
+    this.style.borderColor = '';
+    state.dirty.smart_routing[idx].api_key = clean;
+    markDirty();
+  });
+
+  document.getElementById('sr-enabled').addEventListener('change', function () {
+    if (!state.dirty.smart_routing) return;
+    state.dirty.smart_routing[idx].enabled = this.checked;
+    markDirty();
+    renderSmartRoutingSidebar();
+  });
+
+  document.getElementById('sr-reset-btn').addEventListener('click', async function () {
+    var btn = this;
+    btn.disabled = true;
+    try {
+      var res = await fetch('/v1/config/smart_routing/' + idx + '/reset', { method: 'POST' });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      await loadConfig();
+      selectItem('smart-routing', idx);
+      showToast('Reset to main model', 'success');
+    } catch (e) {
+      showToast('Reset failed: ' + e.message, 'error');
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+
+  // Up/Down/Remove alt buttons — delegated
+  document.getElementById('sr-alts-list').addEventListener('click', function (e) {
+    var btn = e.target.closest('button[data-alt-action]');
+    if (!btn) return;
+    var action = btn.dataset.altAction;
+    var ai = parseInt(btn.dataset.altIdx, 10);
+    var alts = state.dirty.smart_routing[idx].alternatives;
+    if (action === 'remove') {
+      alts.splice(ai, 1);
+    } else if (action === 'up' && ai > 0) {
+      var tmp = alts[ai - 1]; alts[ai - 1] = alts[ai]; alts[ai] = tmp;
+    } else if (action === 'down' && ai < alts.length - 1) {
+      var tmp2 = alts[ai]; alts[ai] = alts[ai + 1]; alts[ai + 1] = tmp2;
+    }
+    markDirty();
+    var list = document.getElementById('sr-alts-list');
+    var newHtml = '';
+    alts.forEach(function (a, i) { newHtml += renderAltRow(a, i, alts.length); });
+    list.innerHTML = newHtml;
+  });
+}
+
+function renderAltRow(alt, ai, total) {
+  var html = '<div style="display:flex;gap:6px;align-items:center;margin-bottom:4px;">';
+  html += '<span style="flex:1;font-size:13px;padding:6px 8px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);">' + escHtml(alt) + '</span>';
+  html += '<button class="btn btn-ghost" data-alt-action="up" data-alt-idx="' + ai + '"' + (ai === 0 ? ' disabled' : '') + ' style="padding:4px 8px;" title="Move up">↑</button>';
+  html += '<button class="btn btn-ghost" data-alt-action="down" data-alt-idx="' + ai + '"' + (ai === total - 1 ? ' disabled' : '') + ' style="padding:4px 8px;" title="Move down">↓</button>';
+  html += '<button class="btn btn-danger" data-alt-action="remove" data-alt-idx="' + ai + '" style="padding:4px 8px;" title="Remove">✕</button>';
+  html += '</div>';
+  return html;
+}
+
+function populateModelSelect(sel, models, selected) {
+  if (!sel) return;
+  var html = '<option value="">-- select model --</option>';
+  models.forEach(function (m) {
+    html += '<option value="' + escHtml(m) + '"' + (m === selected ? ' selected' : '') + '>' + escHtml(m) + '</option>';
+  });
+  sel.innerHTML = html;
+}
+
+/* ── Add Smart Routing group panel ──────────────────── */
+function renderAddGroupPanel() {
+  var html = '<div class="panel"><div class="panel-header"><div>';
+  html += '<div class="panel-title">New Smart Routing Group</div>';
+  html += '<div class="panel-subtitle">Route a model alias to a chain of fallback providers</div>';
+  html += '</div></div><div class="panel-body">';
+  html += '<div class="form-group">';
+  html += '<label>Group name</label>';
+  html += '<input type="text" id="new-route-name" placeholder="My Claude">';
+  html += '</div>';
+  html += '<div class="form-group">';
+  html += '<label>API key <span style="font-size:11px;color:var(--text-muted)">(use as model ID in your client)</span></label>';
+  html += '<input type="text" id="new-route-api-key" placeholder="my-claude" style="font-family:var(--mono);">';
+  html += '<div style="font-size:11px;color:var(--text-muted);margin-top:4px;">Auto-derived from group name. Must be unique across groups.</div>';
+  html += '</div>';
+  html += '<div class="form-group">';
+  html += '<label>Main model</label>';
+  html += modelPickerHtml('new-route-main', 'Search models…', '');
+  html += '</div>';
+  html += '<button class="btn btn-primary" id="new-route-create-btn" style="margin-top:4px;">Create group</button>';
+  html += '</div></div>';
+  $mainPanel.innerHTML = html;
+
+  fetchModels().then(function (models) {
+    wireModelPicker('new-route-main', models, function() {});
+  });
+
+  // Auto-derive api_key from name
+  document.getElementById('new-route-name').addEventListener('input', function () {
+    var apiKeyInput = document.getElementById('new-route-api-key');
+    if (!apiKeyInput) return;
+    var derived = deriveApiKey(this.value);
+    apiKeyInput.value = derived;
+  });
+
+  // Strip invalid chars from api_key
+  document.getElementById('new-route-api-key').addEventListener('input', function () {
+    var clean = this.value.toLowerCase().replace(/[^a-z0-9_-]/g, '');
+    if (clean !== this.value) this.value = clean;
+  });
+
+  document.getElementById('new-route-create-btn').addEventListener('click', function () {
+    var name = document.getElementById('new-route-name').value.trim();
+    var apiKey = document.getElementById('new-route-api-key').value.trim();
+    var mainModel = document.getElementById('new-route-main').value.trim();
+    if (!name) { showToast('Please enter a group name', 'error'); return; }
+    if (!mainModel) { showToast('Please select a main model', 'error'); return; }
+
+    // Uniqueness check on api_key
+    var groups = state.dirty.smart_routing || [];
+    if (apiKey) {
+      for (var i = 0; i < groups.length; i++) {
+        if (groups[i].api_key === apiKey) {
+          showToast('API key "' + apiKey + '" is already used by group "' + (groups[i].name || i) + '"', 'error');
+          return;
+        }
+      }
+    }
+
+    if (!state.dirty.smart_routing) state.dirty.smart_routing = [];
+    state.dirty.smart_routing.push({
+      name: name,
+      api_key: apiKey,
+      enabled: true,
+      main_model: mainModel,
+      alternatives: [],
+      current_model: mainModel,
+    });
+    markDirty();
+    renderSidebar();
+    selectItem('smart-routing', state.dirty.smart_routing.length - 1);
+  });
+}
 
 /* ── Init ───────────────────────────────────────────── */
 document.addEventListener('DOMContentLoaded', function () {

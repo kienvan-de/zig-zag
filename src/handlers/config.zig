@@ -17,17 +17,19 @@
 //! Handles all requests to /v1/config/* routes.
 //! Dispatches internally by method + path:
 //!
-//!   GET    /v1/config/data                  -> handleGet
-//!   POST   /v1/config/data                  -> handlePost
-//!   GET    /v1/config/{provider}/auth        -> provider auth status
-//!   POST   /v1/config/{provider}/auth        -> start provider auth flow
-//!   DELETE /v1/config/{provider}/auth        -> revoke provider auth
+//!   GET    /v1/config/data                          -> handleGet
+//!   POST   /v1/config/data                          -> handlePost
+//!   GET    /v1/config/{provider}/auth               -> provider auth status
+//!   POST   /v1/config/{provider}/auth               -> start provider auth flow
+//!   DELETE /v1/config/{provider}/auth               -> revoke provider auth
+//!   POST   /v1/config/smart_routing/{idx}/reset     -> reset group current_model
 
 const std = @import("std");
 const net = @import("zag-core").net;
 const core = @import("zag-core");
 const errors = core.errors;
 const config_mod = core.config;
+const smart_routing = core.smart_routing;
 const log = core.log;
 
 const http = @import("../http.zig");
@@ -49,6 +51,22 @@ pub fn handle(
     if (eql(u8, path, "/v1/config/data")) {
         if (eql(u8, method, "GET")) return handleGet(allocator, connection);
         if (eql(u8, method, "POST")) return handlePost(allocator, connection, body);
+    }
+
+    // Match POST /v1/config/smart_routing/{idx}/reset
+    const sr_prefix = "/v1/config/smart_routing/";
+    const sr_reset_suffix = "/reset";
+    if (eql(u8, method, "POST") and
+        std.mem.startsWith(u8, path, sr_prefix) and
+        std.mem.endsWith(u8, path, sr_reset_suffix))
+    {
+        const inner = path[sr_prefix.len .. path.len - sr_reset_suffix.len];
+        if (inner.len > 0 and std.mem.indexOfScalar(u8, inner, '/') == null) {
+            const idx = std.fmt.parseUnsigned(usize, inner, 10) catch {
+                return http.sendJsonResponse(connection, .bad_request, "{\"error\":\"invalid group index\"}");
+            };
+            return handleSmartRoutingReset(allocator, connection, idx);
+        }
     }
 
     // Match /v1/config/{provider}/auth
@@ -89,6 +107,27 @@ fn handlePost(allocator: std.mem.Allocator, connection: net.Connection, body: []
         const error_json = try errors.createErrorResponse(allocator, msg, .invalid_request_error, null);
         defer allocator.free(error_json);
         return http.sendJsonResponse(connection, .bad_request, error_json);
+    };
+    // Reload smart routing state to reflect config changes
+    smart_routing.reload(allocator, body);
+    try http.sendJsonResponse(connection, .ok, "{\"ok\":true}");
+}
+
+// ============================================================================
+// Smart Routing -- reset current_model
+// ============================================================================
+
+fn handleSmartRoutingReset(allocator: std.mem.Allocator, connection: net.Connection, idx: usize) !void {
+    const sr = smart_routing.get() orelse {
+        return http.sendJsonResponse(connection, .bad_request, "{\"error\":\"smart_routing not configured\"}");
+    };
+    if (idx >= sr.groups.len) {
+        return http.sendJsonResponse(connection, .bad_request, "{\"error\":\"group index out of range\"}");
+    }
+    const group = &sr.groups[idx];
+    sr.resetGroup(group, allocator) catch |err| {
+        log.err("Smart routing reset failed: {}", .{err});
+        return http.sendInternalError(connection);
     };
     try http.sendJsonResponse(connection, .ok, "{\"ok\":true}");
 }

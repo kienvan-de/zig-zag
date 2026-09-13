@@ -26,6 +26,7 @@ const metrics = core.metrics;
 const provider = core.provider;
 const pricing = core.pricing;
 const utils = core.utils;
+const smart_routing = core.smart_routing;
 const app_config = @import("config.zig");
 const server = @import("server.zig");
 
@@ -190,6 +191,15 @@ fn serverThreadFn(s: *State) void {
 
     // Set global config singleton + config file path for core module access
     core_config.set(&cfg.core, config_path);
+
+    // Initialize smart routing from config
+    {
+        const raw = core_config.readRaw(allocator) catch null;
+        if (raw) |r| {
+            defer allocator.free(r);
+            smart_routing.init(allocator, r);
+        }
+    }
 
     // All init successful - transition to running state
     server_status.store(.running, .release);

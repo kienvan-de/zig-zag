@@ -60,5 +60,17 @@
     "host": "0.0.0.0",
     "http_pool_size": 8,
     "io_pool_size": 4
-  }
+  },
+  "smart_routing": [
+    {
+      "name": "My Claude",
+      "enabled": true,
+      "main_model": "hai/claude-opus-4.8",
+      "alternatives": [
+        "copilot/claude-opus-4.6",
+        "anthropic/claude-opus-5"
+      ],
+      "current_model": "hai/claude-opus-4.8"
+    }
+  ]
 }
