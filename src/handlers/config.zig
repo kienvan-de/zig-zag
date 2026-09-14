@@ -109,7 +109,7 @@ fn handlePost(allocator: std.mem.Allocator, connection: net.Connection, body: []
         return http.sendJsonResponse(connection, .bad_request, error_json);
     };
     // Reload smart routing state to reflect config changes
-    smart_routing.reload(allocator, body);
+    smart_routing.reload(body);
     try http.sendJsonResponse(connection, .ok, "{\"ok\":true}");
 }
 

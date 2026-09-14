@@ -367,6 +367,9 @@ pub fn deriveApiKey(allocator: Allocator, name: []const u8) ![]u8 {
 
 var g_routing: ?SmartRouting = null;
 var g_mutex: sync.Mutex = .{};
+// Stored once at init() time; reload() always uses this stable allocator so
+// deinit() of the previous SmartRouting never touches a freed arena.
+var g_allocator: ?Allocator = null;
 
 /// Initialise the global smart routing state from raw config JSON.
 /// Called once at server startup. Safe to call again (replaces state).
@@ -374,6 +377,7 @@ pub fn init(allocator: Allocator, raw_json: []const u8) void {
     g_mutex.lock();
     defer g_mutex.unlock();
 
+    g_allocator = allocator;
     if (g_routing) |*old| old.deinit();
     g_routing = SmartRouting.parse(allocator, raw_json) catch |err| {
         log.err("[smart_routing] init: parse failed: {}", .{err});
@@ -384,8 +388,11 @@ pub fn init(allocator: Allocator, raw_json: []const u8) void {
     }
 }
 
-/// Reload after a config save. Same as init — replaces existing state.
-pub fn reload(allocator: Allocator, raw_json: []const u8) void {
+/// Reload after a config save. Always uses the allocator from the initial
+/// init() call so the previous SmartRouting is freed with the correct allocator,
+/// not the per-request arena that triggered the save.
+pub fn reload(raw_json: []const u8) void {
+    const allocator = g_allocator orelse return;
     init(allocator, raw_json);
 }
 
