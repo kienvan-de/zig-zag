@@ -616,6 +616,20 @@ pub const Response = struct {
             if (v.object.get("input_tokens")) |t| if (t == .integer) { u.input_tokens = @intCast(t.integer); };
             if (v.object.get("output_tokens")) |t| if (t == .integer) { u.output_tokens = @intCast(t.integer); };
             if (v.object.get("total_tokens")) |t| if (t == .integer) { u.total_tokens = @intCast(t.integer); };
+            if (v.object.get("input_tokens_details")) |t| if (t == .object) {
+                var d = common.PromptTokensDetails{};
+                if (t.object.get("cached_tokens")) |x| if (x == .integer) { d.cached_tokens = @intCast(x.integer); };
+                if (t.object.get("audio_tokens")) |x| if (x == .integer) { d.audio_tokens = @intCast(x.integer); };
+                u.input_tokens_details = d;
+            };
+            if (v.object.get("output_tokens_details")) |t| if (t == .object) {
+                var d = common.CompletionTokensDetails{};
+                if (t.object.get("reasoning_tokens")) |x| if (x == .integer) { d.reasoning_tokens = @intCast(x.integer); };
+                if (t.object.get("audio_tokens")) |x| if (x == .integer) { d.audio_tokens = @intCast(x.integer); };
+                if (t.object.get("accepted_prediction_tokens")) |x| if (x == .integer) { d.accepted_prediction_tokens = @intCast(x.integer); };
+                if (t.object.get("rejected_prediction_tokens")) |x| if (x == .integer) { d.rejected_prediction_tokens = @intCast(x.integer); };
+                u.output_tokens_details = d;
+            };
             resp.usage = u;
         };
         if (obj.get("service_tier")) |v| if (v == .string) { resp.service_tier = v.string; };
