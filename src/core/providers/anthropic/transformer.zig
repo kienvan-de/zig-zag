@@ -559,6 +559,10 @@ pub const ResponsesStreamState = struct {
     input_tokens: u32 = 0,
     output_tokens: u32 = 0,
     sequence_number: u32 = 0,
+    // --- responses-flow specifics ---
+    /// Type of the currently-open content block: "text" or "tool_use".
+    /// Used by content_block_stop to emit the correct *.done event.
+    open_block_type: []const u8 = "text",
 
     pub fn init(allocator: std.mem.Allocator, original_model: []const u8) ResponsesStreamState {
         return .{
@@ -578,51 +582,214 @@ pub const ResponsesStreamState = struct {
 /// Inbound responses request → Anthropic request (input items/messages →
 /// messages, instructions → system, reasoning effort → thinking, betas,
 /// service_tier, max_output_tokens → max_tokens), pinned to `model`.
+///
+/// Turn-grouping (§2B): contiguous same-role items are merged into one
+/// Anthropic message. Roles are assigned by item type:
+///   message (user/assistant/developer/system) → role from field
+///   function_call → assistant  (tool_use block)
+///   function_call_output       → user  (tool_result block)
+///   reasoning                  → assistant  (opaque; dropped — no Anthropic input equivalent)
 pub fn transformResponsesRequest(
     request: Responses.Request,
     model: []const u8,
     allocator: std.mem.Allocator,
 ) !Messages.Request {
+    // Accumulator for the turn currently being assembled.
+    var pending_blocks = std.ArrayList(Messages.ContentBlockParam).empty;
+    errdefer pending_blocks.deinit(allocator);
+    var pending_role: ?Messages.Role = null;
+
     var messages = std.ArrayList(Messages.Message).empty;
-    errdefer messages.deinit(allocator);
+    errdefer {
+        for (messages.items) |msg| {
+            if (msg.content == .blocks) content.freeMessageBlocks(msg.content.blocks, allocator);
+        }
+        messages.deinit(allocator);
+    }
+
+    // Flush `pending_blocks` into `messages` as a single turn.
+    const flushTurn = struct {
+        fn call(
+            msgs: *std.ArrayList(Messages.Message),
+            blocks: *std.ArrayList(Messages.ContentBlockParam),
+            role: Messages.Role,
+            alloc: std.mem.Allocator,
+        ) !void {
+            if (blocks.items.len == 0) return;
+            const owned = try blocks.toOwnedSlice(alloc);
+            try msgs.append(alloc, .{ .role = role, .content = .{ .blocks = owned } });
+        }
+    }.call;
 
     switch (request.input) {
         .text => |t| {
-            try messages.append(allocator, .{ .role = .user, .content = .{ .text = t } });
+            var blocks = std.ArrayList(Messages.ContentBlockParam).empty;
+            defer blocks.deinit(allocator);
+            try blocks.append(allocator, .{ .text = .{ .type = "text", .text = t } });
+            try messages.append(allocator, .{
+                .role = .user,
+                .content = .{ .blocks = try blocks.toOwnedSlice(allocator) },
+            });
         },
         .items => |items| for (items) |item| {
             if (item != .object) continue;
             const obj = item.object;
 
-            const role_val = obj.get("role") orelse continue;
-            if (role_val != .string) continue;
-            const role: Messages.Role = if (std.mem.eql(u8, role_val.string, "assistant"))
-                .assistant
-            else
-                .user;
+            // Determine effective role and block(s) from item type.
+            const item_type_val = obj.get("type") orelse continue;
+            if (item_type_val != .string) continue;
+            const item_type = item_type_val.string;
 
-            const content_val = obj.get("content") orelse continue;
-            const text: []const u8 = switch (content_val) {
-                .string => |s| s,
-                .array => |arr| blk: {
-                    // First non-empty text part wins; non-text parts (images,
-                    // item references) have no Anthropic equivalent here.
-                    for (arr.items) |part| {
-                        if (part != .object) continue;
-                        const tv = part.object.get("text") orelse continue;
-                        if (tv == .string and tv.string.len > 0) break :blk tv.string;
+            if (std.mem.eql(u8, item_type, "message")) {
+                // message items: role field drives Anthropic role.
+                const role_val = obj.get("role") orelse continue;
+                if (role_val != .string) continue;
+                const role_str = role_val.string;
+
+                // system/developer messages → prepend to system prompt (handled
+                // outside the turn list). Skip here; instructions field covers most
+                // cases and we don't support mid-conversation system injection.
+                if (std.mem.eql(u8, role_str, "system") or
+                    std.mem.eql(u8, role_str, "developer")) continue;
+
+                const role: Messages.Role = if (std.mem.eql(u8, role_str, "assistant"))
+                    .assistant
+                else
+                    .user;
+
+                // Flush if role changes.
+                if (pending_role) |open_role| {
+                    if (open_role != role) {
+                        try flushTurn(&messages, &pending_blocks, open_role, allocator);
+                        pending_role = null;
                     }
-                    break :blk "";
-                },
-                else => continue,
-            };
-            if (text.len == 0) continue;
+                }
+                pending_role = role;
 
-            try messages.append(allocator, .{ .role = role, .content = .{ .text = text } });
+                // Build content blocks from the item's content field.
+                const content_val = obj.get("content") orelse continue;
+                switch (content_val) {
+                    .string => |s| {
+                        if (s.len > 0)
+                            try pending_blocks.append(allocator, .{ .text = .{ .type = "text", .text = s } });
+                    },
+                    .array => |arr| for (arr.items) |part| {
+                        if (part != .object) continue;
+                        const ptype = (part.object.get("type") orelse continue);
+                        if (ptype != .string) continue;
+
+                        if (std.mem.eql(u8, ptype.string, "input_text") or
+                            std.mem.eql(u8, ptype.string, "text") or
+                            std.mem.eql(u8, ptype.string, "output_text"))
+                        {
+                            const tv = part.object.get("text") orelse continue;
+                            if (tv == .string and tv.string.len > 0)
+                                try pending_blocks.append(allocator, .{ .text = .{ .type = "text", .text = tv.string } });
+                        } else if (std.mem.eql(u8, ptype.string, "input_image") or
+                            std.mem.eql(u8, ptype.string, "image_url"))
+                        {
+                            // URL image: {"type":"input_image","image_url":"https://..."}
+                            const url_val = part.object.get("image_url") orelse continue;
+                            const url: []const u8 = switch (url_val) {
+                                .string => |s| s,
+                                .object => |o| blk: {
+                                    const uv = o.get("url") orelse break :blk "";
+                                    break :blk if (uv == .string) uv.string else "";
+                                },
+                                else => continue,
+                            };
+                            if (url.len == 0) continue;
+                            try pending_blocks.append(allocator, .{ .image = .{
+                                .type = "image",
+                                .source = .{ .url = .{ .type = "url", .url = url } },
+                            } });
+                        }
+                        // Other part types (input_file, refusal) — no lossless Anthropic target.
+                    },
+                    else => continue,
+                }
+            } else if (std.mem.eql(u8, item_type, "function_call")) {
+                // function_call → assistant tool_use block.
+                const name_val = obj.get("name") orelse continue;
+                if (name_val != .string) continue;
+                const args_val = obj.get("arguments") orelse std.json.Value{ .string = "{}" };
+                const args_str: []const u8 = if (args_val == .string) args_val.string else "{}";
+
+                // call_id is preferred as the tool_use id; fall back to id.
+                const id_val = obj.get("call_id") orelse obj.get("id") orelse continue;
+                if (id_val != .string) continue;
+
+                var input: std.json.Value = .{ .object = std.json.ObjectMap{} };
+                if (std.json.parseFromSliceLeaky(std.json.Value, allocator, args_str, .{})) |parsed| {
+                    input = parsed;
+                } else |_| {}
+
+                const role: Messages.Role = .assistant;
+                if (pending_role) |open_role| {
+                    if (open_role != role) {
+                        try flushTurn(&messages, &pending_blocks, open_role, allocator);
+                        pending_role = null;
+                    }
+                }
+                pending_role = role;
+                try pending_blocks.append(allocator, .{ .tool_use = .{
+                    .type = "tool_use",
+                    .id = id_val.string,
+                    .name = name_val.string,
+                    .input = input,
+                } });
+            } else if (std.mem.eql(u8, item_type, "function_call_output")) {
+                // function_call_output → user tool_result block.
+                // call_id maps to tool_use_id.
+                const call_id_val = obj.get("call_id") orelse continue;
+                if (call_id_val != .string) continue;
+
+                const output_str: ?[]const u8 = blk: {
+                    const ov = obj.get("output") orelse break :blk null;
+                    break :blk if (ov == .string) ov.string else null;
+                };
+
+                const is_error: ?bool = if (obj.get("error")) |ev| blk: {
+                    break :blk if (ev == .bool) ev.bool else null;
+                } else null;
+
+                const role: Messages.Role = .user;
+                if (pending_role) |open_role| {
+                    if (open_role != role) {
+                        try flushTurn(&messages, &pending_blocks, open_role, allocator);
+                        pending_role = null;
+                    }
+                }
+                pending_role = role;
+                try pending_blocks.append(allocator, .{ .tool_result = .{
+                    .type = "tool_result",
+                    .tool_use_id = call_id_val.string,
+                    .content = output_str,
+                    .is_error = is_error,
+                } });
+            }
+            // reasoning items: no Anthropic input equivalent — silently skip.
+            // (§12: do not normalize to plain text; dropping is the correct choice
+            // for the inbound direction since Anthropic stateless requests
+            // cannot accept prior thinking blocks as input.)
         },
     }
 
+    // Flush any remaining pending turn.
+    if (pending_role) |role| try flushTurn(&messages, &pending_blocks, role, allocator);
+
     if (messages.items.len == 0) return error.EmptyMessages;
+
+    // Ensure user-first (§2A): insert a synthetic opener if the first turn is
+    // assistant (e.g. a history starting with a function_call).
+    if (messages.items[0].role != .user) {
+        const synthetic = try allocator.alloc(Messages.ContentBlockParam, 1);
+        synthetic[0] = .{ .text = .{ .type = "text", .text = "[Conversation start]" } };
+        try messages.insert(allocator, 0, .{
+            .role = .user,
+            .content = .{ .blocks = synthetic },
+        });
+    }
 
     // Tool definitions: function tools map through content.transformTools;
     // custom tools (no Anthropic equivalent) are skipped (P11 note in content.zig).
@@ -638,6 +805,26 @@ pub fn transformResponsesRequest(
         }
     }
 
+    // parallel_tool_calls=false → disable_parallel_tool_use=true (§10).
+    // Only set if explicitly false; omit otherwise so we don't force a value
+    // when the client left it unset.
+    const tool_choice_val = content.responsesToolChoice(request.tool_choice);
+    const tool_choice_with_parallel: ?Messages.ToolChoice = if (request.parallel_tool_calls) |ptc| blk: {
+        if (!ptc) {
+            // Inject disable flag into whatever tool_choice was derived.
+            break :blk switch (tool_choice_val orelse Messages.ToolChoice{ .auto = .{} }) {
+                .auto => |tc| Messages.ToolChoice{ .auto = .{ .type = tc.type, .disable_parallel_tool_use = true } },
+                .any => |tc| Messages.ToolChoice{ .any = .{ .type = tc.type, .disable_parallel_tool_use = true } },
+                .tool => |tc| Messages.ToolChoice{ .tool = .{ .type = tc.type, .name = tc.name, .disable_parallel_tool_use = true } },
+                .none => tool_choice_val,
+            };
+        }
+        break :blk tool_choice_val;
+    } else tool_choice_val;
+
+    // stop: Responses `stop` → Anthropic `stop_sequences` rename (§1).
+    const stop_sequences: ?[]const []const u8 = request.stop;
+
     return .{
         .model = model,
         .messages = try messages.toOwnedSlice(allocator),
@@ -648,7 +835,8 @@ pub fn transformResponsesRequest(
         .top_p = request.top_p,
         .stream = request.stream,
         .tools = tools,
-        .tool_choice = content.responsesToolChoice(request.tool_choice),
+        .tool_choice = tool_choice_with_parallel,
+        .stop_sequences = stop_sequences,
         .thinking = null,
         .betas = null,
         .service_tier = request.service_tier,
@@ -659,6 +847,9 @@ pub fn cleanupResponsesRequest(
     request: Messages.Request,
     allocator: std.mem.Allocator,
 ) void {
+    for (request.messages) |msg| {
+        if (msg.content == .blocks) content.freeMessageBlocks(msg.content.blocks, allocator);
+    }
     allocator.free(request.messages);
     if (request.tools) |tools| allocator.free(tools);
 }
@@ -716,18 +907,28 @@ pub fn transformResponsesResponse(
         .status = "completed",
     } });
 
-    // stop_reason → status + incomplete_details
+    // stop_reason → status + incomplete_details (§23)
+    // end_turn / stop_sequence / tool_use / pause_turn → "completed"
+    // max_tokens / refusal / model_context_window_exceeded → "incomplete"
     var status: []const u8 = "completed";
     var incomplete_details: ?std.json.Value = null;
     if (upstream_response.stop_reason) |sr| {
-        if (std.mem.eql(u8, sr, "max_tokens")) {
+        const is_incomplete = std.mem.eql(u8, sr, "max_tokens") or
+            std.mem.eql(u8, sr, "refusal") or
+            std.mem.eql(u8, sr, "model_context_window_exceeded");
+        if (is_incomplete) {
             status = "incomplete";
-            // Build with owned strings: cleanupResponsesResponse frees the tree
-            // via freeJsonValue, which frees keys and string values.
+            const reason_str: []const u8 = if (std.mem.eql(u8, sr, "max_tokens"))
+                "max_output_tokens"
+            else if (std.mem.eql(u8, sr, "model_context_window_exceeded"))
+                "max_context_length"
+            else
+                "content_filter"; // refusal
+
             var obj = std.json.ObjectMap.empty;
             const key = try allocator.dupe(u8, "reason");
             errdefer allocator.free(key);
-            const value = try allocator.dupe(u8, "max_output_tokens");
+            const value = try allocator.dupe(u8, reason_str);
             errdefer allocator.free(value);
             try obj.put(allocator, key, .{ .string = value });
             incomplete_details = .{ .object = obj };
@@ -878,7 +1079,11 @@ pub fn transformResponsesStreamLine(
             .ignore_unknown_fields = true,
         }) catch return .{ .skip = {} };
         defer parsed.deinit();
-        const is_text = std.mem.eql(u8, parsed.value.content_block.type, "text");
+        const block_type = parsed.value.content_block.type;
+        const is_text = std.mem.eql(u8, block_type, "text");
+        // Record which block type is now open so content_block_stop can emit
+        // the correct *.done event (§24 gap 4).
+        state.open_block_type = if (is_text) "text" else "tool_use";
         const bytes = Responses.outputItemAddedSSE(state.response_id, is_text, state.sequence_number, allocator) orelse
             return .{ .skip = {} };
         state.sequence_number += 2;
@@ -929,11 +1134,22 @@ pub fn transformResponsesStreamLine(
 
     if (std.mem.eql(u8, event_type, "content_block_stop")) {
         var buf: std.ArrayList(u8) = .empty;
-        const ev = Responses.StreamEvent{ .output_text_done = .{
-            .sequence_number = state.sequence_number,
-            .item_id = state.response_id,
-        }};
-        ev.writeSSE(&buf, allocator) catch return .{ .skip = {} };
+        if (std.mem.eql(u8, state.open_block_type, "tool_use")) {
+            // tool_use block closed → function_call_arguments.done (§24).
+            const ev = Responses.StreamEvent{ .function_call_arguments_done = .{
+                .sequence_number = state.sequence_number,
+                .item_id = state.response_id,
+                .arguments = "",
+            }};
+            ev.writeSSE(&buf, allocator) catch return .{ .skip = {} };
+        } else {
+            // text block closed → output_text.done (§24).
+            const ev = Responses.StreamEvent{ .output_text_done = .{
+                .sequence_number = state.sequence_number,
+                .item_id = state.response_id,
+            }};
+            ev.writeSSE(&buf, allocator) catch return .{ .skip = {} };
+        }
         state.sequence_number += 1;
         return .{ .output = buf.toOwnedSlice(allocator) catch return .{ .skip = {} } };
     }
@@ -990,21 +1206,37 @@ pub fn flushResponsesStream(
     item_done.writeSSE(&buf, allocator) catch return null;
     state.sequence_number += 1;
 
-    const completed = Responses.StreamEvent{ .response_completed = .{
-        .sequence_number = state.sequence_number,
-        .response = .{
-            .id = state.response_id,
-            .model = state.original_model,
-            .status = status,
-            .output = &.{},
-            .usage = .{
-                .input_tokens = state.input_tokens,
-                .output_tokens = state.output_tokens,
-                .total_tokens = state.input_tokens + state.output_tokens,
+    const completed_ev = if (std.mem.eql(u8, status, "incomplete"))
+        Responses.StreamEvent{ .response_incomplete = .{
+            .sequence_number = state.sequence_number,
+            .response = .{
+                .id = state.response_id,
+                .model = state.original_model,
+                .status = status,
+                .output = &.{},
+                .usage = .{
+                    .input_tokens = state.input_tokens,
+                    .output_tokens = state.output_tokens,
+                    .total_tokens = state.input_tokens + state.output_tokens,
+                },
             },
-        },
-    }};
-    completed.writeSSE(&buf, allocator) catch { buf.deinit(allocator); return null; };
+        }}
+    else
+        Responses.StreamEvent{ .response_completed = .{
+            .sequence_number = state.sequence_number,
+            .response = .{
+                .id = state.response_id,
+                .model = state.original_model,
+                .status = status,
+                .output = &.{},
+                .usage = .{
+                    .input_tokens = state.input_tokens,
+                    .output_tokens = state.output_tokens,
+                    .total_tokens = state.input_tokens + state.output_tokens,
+                },
+            },
+        }};
+    completed_ev.writeSSE(&buf, allocator) catch { buf.deinit(allocator); return null; };
 
     return buf.toOwnedSlice(allocator) catch null;
 }

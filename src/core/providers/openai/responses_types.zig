@@ -159,6 +159,7 @@ pub const Request = struct {
     prompt_cache_options: ?std.json.Value = null,
     user: ?[]const u8 = null,
     prompt: ?PromptParam = null,
+    stop: ?[]const []const u8 = null,
 
     pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
         const val = try std.json.Value.jsonParse(allocator, source, options);
@@ -250,6 +251,21 @@ pub const Request = struct {
                 result.prompt = .{ .id = id, .version = ver, .variables = v.object.get("variables") };
             }
         }
+        if (obj.get("stop")) |v| {
+            switch (v) {
+                .string => |s| {
+                    const arr = try allocator.alloc([]const u8, 1);
+                    arr[0] = s;
+                    result.stop = arr;
+                },
+                .array => |arr| {
+                    const seqs = try allocator.alloc([]const u8, arr.items.len);
+                    for (arr.items, 0..) |item, i| seqs[i] = if (item == .string) item.string else "";
+                    result.stop = seqs;
+                },
+                else => {},
+            }
+        }
 
         return result;
     }
@@ -286,6 +302,7 @@ pub const Request = struct {
         if (self.prompt_cache_options) |v| { try jw.objectField("prompt_cache_options"); try jw.write(v); }
         if (self.user) |v| { try jw.objectField("user"); try jw.write(v); }
         if (self.prompt) |v| { try jw.objectField("prompt"); try jw.write(v); }
+        if (self.stop) |v| { try jw.objectField("stop"); try jw.write(v); }
         try jw.endObject();
     }
 };

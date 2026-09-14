@@ -741,6 +741,7 @@ pub fn transformResponsesRequest(
                 .temperature = request.temperature,
                 .top_p = request.top_p,
                 .max_output_tokens = if (raw_max_tokens) |m| @min(m, 65536) else null,
+                .stop_sequences = request.stop,
             },
         },
     };
@@ -1008,20 +1009,36 @@ pub fn flushResponsesStream(
     item_done.writeSSE(&buf, allocator) catch return null;
     state.sequence_number += 1;
 
-    const completed = Responses.StreamEvent{ .response_completed = .{
-        .sequence_number = state.sequence_number,
-        .response = .{
-            .id = state.response_id,
-            .model = state.original_model,
-            .status = status,
-            .output = &.{},
-            .usage = .{
-                .input_tokens = input_tok,
-                .output_tokens = output_tok,
-                .total_tokens = input_tok + output_tok,
+    const completed_ev = if (std.mem.eql(u8, status, "incomplete"))
+        Responses.StreamEvent{ .response_incomplete = .{
+            .sequence_number = state.sequence_number,
+            .response = .{
+                .id = state.response_id,
+                .model = state.original_model,
+                .status = status,
+                .output = &.{},
+                .usage = .{
+                    .input_tokens = input_tok,
+                    .output_tokens = output_tok,
+                    .total_tokens = input_tok + output_tok,
+                },
             },
-        },
-    }};
-    completed.writeSSE(&buf, allocator) catch { buf.deinit(allocator); return null; };
+        }}
+    else
+        Responses.StreamEvent{ .response_completed = .{
+            .sequence_number = state.sequence_number,
+            .response = .{
+                .id = state.response_id,
+                .model = state.original_model,
+                .status = status,
+                .output = &.{},
+                .usage = .{
+                    .input_tokens = input_tok,
+                    .output_tokens = output_tok,
+                    .total_tokens = input_tok + output_tok,
+                },
+            },
+        }};
+    completed_ev.writeSSE(&buf, allocator) catch { buf.deinit(allocator); return null; };
     return buf.toOwnedSlice(allocator) catch null;
 }

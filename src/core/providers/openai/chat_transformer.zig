@@ -737,6 +737,7 @@ pub fn transformResponsesRequest(
         .metadata = request.metadata,
         .user = request.user,
         .service_tier = request.service_tier,
+        .stop = request.stop,
         .response_format = if (request.text) |txt| txt.format else null,
         .reasoning_effort = if (request.reasoning) |r| blk: {
             if (r == .object) {
@@ -819,12 +820,19 @@ pub fn transformResponsesResponse(
         } });
     }
 
+    // finish_reason → top-level response status (§23).
+    const top_status: []const u8 = if (upstream_response.choices.len > 0 and
+        std.mem.eql(u8, upstream_response.choices[0].finish_reason, "length"))
+        "incomplete"
+    else
+        "completed";
+
     return .{
         .id = try allocator.dupe(u8, upstream_response.id),
         .object = "response",
         .created_at = @floatFromInt(upstream_response.created),
         .model = try allocator.dupe(u8, original_req.model),
-        .status = "completed",
+        .status = top_status,
         .output = try output_items.toOwnedSlice(allocator),
         .usage = .{
             .input_tokens = if (upstream_response.usage) |u| u.prompt_tokens else 0,
@@ -930,23 +938,26 @@ pub fn transformResponsesStreamLine(
         }
     }
 
-    // Tool-call argument delta → response.function_call_arguments.delta
+    // Tool-call argument deltas → response.function_call_arguments.delta.
+    // Loop over all entries so parallel tool calls are fully forwarded.
     if (delta.tool_calls) |tcs| {
-        if (tcs.len > 0) {
-            const tc = tcs[0];
+        var buf: std.ArrayList(u8) = .empty;
+        errdefer buf.deinit(allocator);
+        for (tcs) |tc| {
             const args = if (tc.function) |f| (f.arguments orelse "") else "";
-            if (args.len > 0) {
-                var buf: std.ArrayList(u8) = .empty;
-                const ev = Responses.StreamEvent{ .function_call_arguments_delta = .{
-                    .sequence_number = state.sequence_number,
-                    .item_id = state.response_id,
-                    .delta = args,
-                }};
-                ev.writeSSE(&buf, allocator) catch return .{ .skip = {} };
-                state.sequence_number += 1;
-                return .{ .output = buf.toOwnedSlice(allocator) catch return .{ .skip = {} } };
-            }
+            if (args.len == 0) continue;
+            const ev = Responses.StreamEvent{ .function_call_arguments_delta = .{
+                .sequence_number = state.sequence_number,
+                .item_id = state.response_id,
+                .delta = args,
+            }};
+            ev.writeSSE(&buf, allocator) catch continue;
+            state.sequence_number += 1;
         }
+        if (buf.items.len > 0) {
+            return .{ .output = buf.toOwnedSlice(allocator) catch return .{ .skip = {} } };
+        }
+        buf.deinit(allocator);
     }
 
     return .{ .skip = {} };
@@ -972,14 +983,24 @@ pub fn flushResponsesStream(
     }};
     item_done.writeSSE(&buf, allocator) catch return null;
     state.sequence_number += 1;
-    const completed = Responses.StreamEvent{ .response_completed = .{
-        .sequence_number = state.sequence_number,
-        .response = .{ .id = state.response_id, .model = state.original_model, .status = status, .output = &.{}, .usage = .{
-            .input_tokens = input_tok,
-            .output_tokens = output_tok,
-            .total_tokens = input_tok + output_tok,
-        }},
-    }};
-    completed.writeSSE(&buf, allocator) catch { buf.deinit(allocator); return null; };
+    const completed_ev = if (std.mem.eql(u8, status, "incomplete"))
+        Responses.StreamEvent{ .response_incomplete = .{
+            .sequence_number = state.sequence_number,
+            .response = .{ .id = state.response_id, .model = state.original_model, .status = status, .output = &.{}, .usage = .{
+                .input_tokens = input_tok,
+                .output_tokens = output_tok,
+                .total_tokens = input_tok + output_tok,
+            }},
+        }}
+    else
+        Responses.StreamEvent{ .response_completed = .{
+            .sequence_number = state.sequence_number,
+            .response = .{ .id = state.response_id, .model = state.original_model, .status = status, .output = &.{}, .usage = .{
+                .input_tokens = input_tok,
+                .output_tokens = output_tok,
+                .total_tokens = input_tok + output_tok,
+            }},
+        }};
+    completed_ev.writeSSE(&buf, allocator) catch { buf.deinit(allocator); return null; };
     return buf.toOwnedSlice(allocator) catch null;
 }
