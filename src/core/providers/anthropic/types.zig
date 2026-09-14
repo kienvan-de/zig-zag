@@ -285,6 +285,85 @@ pub const Caller = struct {
 /// Citations on a text content block
 pub const CitationEntry = std.json.Value;
 
+// ============================================================================
+// Tool result content types (Group B — fixed schemas)
+// ============================================================================
+
+pub const WebSearchResult = struct {
+    type: []const u8 = "web_search_result",
+    title: []const u8 = "",
+    url: []const u8 = "",
+    encrypted_content: []const u8 = "",
+    page_age: ?[]const u8 = null,
+};
+
+/// The nested document returned by a web_fetch tool call.
+pub const WebFetchDocument = struct {
+    type: []const u8 = "document",
+    source: DocumentSource,
+};
+
+pub const WebFetchResult = struct {
+    type: []const u8 = "web_fetch_result",
+    url: []const u8 = "",
+    retrieved_at: []const u8 = "",
+    content: ?WebFetchDocument = null,
+};
+
+pub const CodeExecutionOutput = struct {
+    type: []const u8 = "code_execution_output",
+    file_id: []const u8 = "",
+};
+
+pub const CodeExecutionResult = struct {
+    type: []const u8 = "code_execution_result",
+    stdout: []const u8 = "",
+    stderr: []const u8 = "",
+    return_code: i32 = 0,
+    content: []const CodeExecutionOutput = &.{},
+};
+
+pub const BashCodeExecutionOutput = struct {
+    type: []const u8 = "bash_code_execution_output",
+    file_id: []const u8 = "",
+};
+
+pub const BashCodeExecutionResult = struct {
+    type: []const u8 = "bash_code_execution_result",
+    stdout: []const u8 = "",
+    stderr: []const u8 = "",
+    return_code: i32 = 0,
+    content: []const BashCodeExecutionOutput = &.{},
+};
+
+pub const TextEditorCodeExecutionResult = struct {
+    type: []const u8 = "text_editor_code_execution_view_result",
+    content: []const u8 = "",
+    file_type: []const u8 = "",
+    num_lines: u32 = 0,
+    start_line: u32 = 1,
+    total_lines: u32 = 0,
+};
+
+pub const ToolReference = struct {
+    type: []const u8 = "tool_reference",
+    tool_name: []const u8 = "",
+};
+
+pub const ToolSearchToolSearchResult = struct {
+    type: []const u8 = "tool_search_tool_search_result",
+    tool_references: []const ToolReference = &.{},
+};
+
+pub const SearchResultTextContent = struct {
+    type: []const u8 = "text",
+    text: []const u8 = "",
+};
+
+pub const SearchResultCitations = struct {
+    enabled: bool = false,
+};
+
 /// Content block param for messages (request)
 pub const ContentBlockParam = union(enum) {
     text: struct {
@@ -328,47 +407,47 @@ pub const ContentBlockParam = union(enum) {
     web_search_tool_result: struct {
         type: []const u8 = "web_search_tool_result",
         tool_use_id: []const u8,
-        content: std.json.Value,
+        content: []const WebSearchResult,
         cache_control: ?CacheControl = null,
         caller: ?Caller = null,
     },
     web_fetch_tool_result: struct {
         type: []const u8 = "web_fetch_tool_result",
         tool_use_id: []const u8,
-        content: std.json.Value,
+        content: WebFetchResult,
         cache_control: ?CacheControl = null,
         caller: ?Caller = null,
     },
     code_execution_tool_result: struct {
         type: []const u8 = "code_execution_tool_result",
         tool_use_id: []const u8,
-        content: std.json.Value,
+        content: CodeExecutionResult,
     },
     bash_code_execution_tool_result: struct {
         type: []const u8 = "bash_code_execution_tool_result",
         tool_use_id: []const u8,
-        content: std.json.Value,
+        content: BashCodeExecutionResult,
         cache_control: ?CacheControl = null,
     },
     text_editor_code_execution_tool_result: struct {
         type: []const u8 = "text_editor_code_execution_tool_result",
         tool_use_id: []const u8,
-        content: std.json.Value,
+        content: TextEditorCodeExecutionResult,
         cache_control: ?CacheControl = null,
     },
     tool_search_tool_result: struct {
         type: []const u8 = "tool_search_tool_result",
         tool_use_id: []const u8,
-        content: std.json.Value,
+        content: ToolSearchToolSearchResult,
         cache_control: ?CacheControl = null,
     },
     search_result: struct {
         type: []const u8 = "search_result",
         title: ?[]const u8 = null,
         source: ?[]const u8 = null,
-        content: std.json.Value,
+        content: []const SearchResultTextContent,
         cache_control: ?CacheControl = null,
-        citations: ?std.json.Value = null,
+        citations: ?SearchResultCitations = null,
     },
     thinking: struct {
         type: []const u8 = "thinking",
@@ -487,7 +566,7 @@ pub const ContentBlockParam = union(enum) {
                 null;
             return .{ .web_search_tool_result = .{
                 .tool_use_id = tuid.string,
-                .content = content_val,
+                .content = try std.json.innerParseFromValue([]const WebSearchResult, allocator, content_val, options),
                 .cache_control = cache_control,
                 .caller = caller,
             } };
@@ -501,7 +580,7 @@ pub const ContentBlockParam = union(enum) {
                 null;
             return .{ .web_fetch_tool_result = .{
                 .tool_use_id = tuid.string,
-                .content = content_val,
+                .content = try std.json.innerParseFromValue(WebFetchResult, allocator, content_val, options),
                 .cache_control = cache_control,
                 .caller = caller,
             } };
@@ -511,7 +590,7 @@ pub const ContentBlockParam = union(enum) {
             const content_val = obj.get("content") orelse return error.MissingField;
             return .{ .code_execution_tool_result = .{
                 .tool_use_id = tuid.string,
-                .content = content_val,
+                .content = try std.json.innerParseFromValue(CodeExecutionResult, allocator, content_val, options),
             } };
         } else if (std.mem.eql(u8, type_str, "bash_code_execution_tool_result")) {
             const tuid = obj.get("tool_use_id") orelse return error.MissingField;
@@ -519,7 +598,7 @@ pub const ContentBlockParam = union(enum) {
             const content_val = obj.get("content") orelse return error.MissingField;
             return .{ .bash_code_execution_tool_result = .{
                 .tool_use_id = tuid.string,
-                .content = content_val,
+                .content = try std.json.innerParseFromValue(BashCodeExecutionResult, allocator, content_val, options),
                 .cache_control = cache_control,
             } };
         } else if (std.mem.eql(u8, type_str, "text_editor_code_execution_tool_result")) {
@@ -528,7 +607,7 @@ pub const ContentBlockParam = union(enum) {
             const content_val = obj.get("content") orelse return error.MissingField;
             return .{ .text_editor_code_execution_tool_result = .{
                 .tool_use_id = tuid.string,
-                .content = content_val,
+                .content = try std.json.innerParseFromValue(TextEditorCodeExecutionResult, allocator, content_val, options),
                 .cache_control = cache_control,
             } };
         } else if (std.mem.eql(u8, type_str, "tool_search_tool_result")) {
@@ -537,19 +616,23 @@ pub const ContentBlockParam = union(enum) {
             const content_val = obj.get("content") orelse return error.MissingField;
             return .{ .tool_search_tool_result = .{
                 .tool_use_id = tuid.string,
-                .content = content_val,
+                .content = try std.json.innerParseFromValue(ToolSearchToolSearchResult, allocator, content_val, options),
                 .cache_control = cache_control,
             } };
         } else if (std.mem.eql(u8, type_str, "search_result")) {
             const title = if (obj.get("title")) |v| (if (v == .string) v.string else null) else null;
             const src = if (obj.get("source")) |v| (if (v == .string) v.string else null) else null;
             const content_val = obj.get("content") orelse std.json.Value{ .null = {} };
+            const citations: ?SearchResultCitations = if (obj.get("citations")) |v|
+                try std.json.innerParseFromValue(SearchResultCitations, allocator, v, options)
+            else
+                null;
             return .{ .search_result = .{
                 .title = title,
                 .source = src,
-                .content = content_val,
+                .content = try std.json.innerParseFromValue([]const SearchResultTextContent, allocator, content_val, options),
                 .cache_control = cache_control,
-                .citations = obj.get("citations"),
+                .citations = citations,
             } };
         } else if (std.mem.eql(u8, type_str, "thinking")) {
             const thinking_val = obj.get("thinking") orelse return error.MissingField;
@@ -1348,34 +1431,34 @@ pub const ContentBlock = union(enum) {
     web_search_tool_result: struct {
         type: []const u8,
         tool_use_id: []const u8,
-        content: std.json.Value,
+        content: []const WebSearchResult,
         caller: ?Caller = null,
     },
     web_fetch_tool_result: struct {
         type: []const u8,
         tool_use_id: []const u8,
-        content: std.json.Value,
+        content: WebFetchResult,
         caller: ?Caller = null,
     },
     code_execution_tool_result: struct {
         type: []const u8,
         tool_use_id: []const u8,
-        content: std.json.Value,
+        content: CodeExecutionResult,
     },
     bash_code_execution_tool_result: struct {
         type: []const u8,
         tool_use_id: []const u8,
-        content: std.json.Value,
+        content: BashCodeExecutionResult,
     },
     text_editor_code_execution_tool_result: struct {
         type: []const u8,
         tool_use_id: []const u8,
-        content: std.json.Value,
+        content: TextEditorCodeExecutionResult,
     },
     tool_search_tool_result: struct {
         type: []const u8,
         tool_use_id: []const u8,
-        content: std.json.Value,
+        content: ToolSearchToolSearchResult,
     },
 
     pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
@@ -1475,7 +1558,7 @@ pub const ContentBlock = union(enum) {
             return .{ .web_search_tool_result = .{
                 .type = type_str,
                 .tool_use_id = tuid.string,
-                .content = content_val,
+                .content = try std.json.innerParseFromValue([]const WebSearchResult, allocator, content_val, options),
                 .caller = caller,
             } };
         } else if (std.mem.eql(u8, type_str, "web_fetch_tool_result")) {
@@ -1489,7 +1572,7 @@ pub const ContentBlock = union(enum) {
             return .{ .web_fetch_tool_result = .{
                 .type = type_str,
                 .tool_use_id = tuid.string,
-                .content = content_val,
+                .content = try std.json.innerParseFromValue(WebFetchResult, allocator, content_val, options),
                 .caller = caller,
             } };
         } else if (std.mem.eql(u8, type_str, "code_execution_tool_result")) {
@@ -1499,7 +1582,7 @@ pub const ContentBlock = union(enum) {
             return .{ .code_execution_tool_result = .{
                 .type = type_str,
                 .tool_use_id = tuid.string,
-                .content = content_val,
+                .content = try std.json.innerParseFromValue(CodeExecutionResult, allocator, content_val, options),
             } };
         } else if (std.mem.eql(u8, type_str, "bash_code_execution_tool_result")) {
             const tuid = obj.get("tool_use_id") orelse return error.MissingField;
@@ -1508,7 +1591,7 @@ pub const ContentBlock = union(enum) {
             return .{ .bash_code_execution_tool_result = .{
                 .type = type_str,
                 .tool_use_id = tuid.string,
-                .content = content_val,
+                .content = try std.json.innerParseFromValue(BashCodeExecutionResult, allocator, content_val, options),
             } };
         } else if (std.mem.eql(u8, type_str, "text_editor_code_execution_tool_result")) {
             const tuid = obj.get("tool_use_id") orelse return error.MissingField;
@@ -1517,7 +1600,7 @@ pub const ContentBlock = union(enum) {
             return .{ .text_editor_code_execution_tool_result = .{
                 .type = type_str,
                 .tool_use_id = tuid.string,
-                .content = content_val,
+                .content = try std.json.innerParseFromValue(TextEditorCodeExecutionResult, allocator, content_val, options),
             } };
         } else if (std.mem.eql(u8, type_str, "tool_search_tool_result")) {
             const tuid = obj.get("tool_use_id") orelse return error.MissingField;
@@ -1526,7 +1609,7 @@ pub const ContentBlock = union(enum) {
             return .{ .tool_search_tool_result = .{
                 .type = type_str,
                 .tool_use_id = tuid.string,
-                .content = content_val,
+                .content = try std.json.innerParseFromValue(ToolSearchToolSearchResult, allocator, content_val, options),
             } };
         } else {
             // Unknown block type — skip gracefully instead of failing
@@ -1708,7 +1791,7 @@ pub const ContentBlockInfo = struct {
     signature: ?[]const u8 = null,
     data: ?[]const u8 = null,
     tool_use_id: ?[]const u8 = null, // web_search_tool_result block
-    content: ?std.json.Value = null, // web_search_tool_result block (complete, no deltas)
+    content: ?[]const WebSearchResult = null, // web_search_tool_result block (complete, no deltas)
 };
 
 /// Content block delta event

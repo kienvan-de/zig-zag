@@ -84,8 +84,8 @@ pub const Usage = struct {
     prompt_tokens: u32,
     completion_tokens: u32,
     total_tokens: u32,
-    prompt_tokens_details: ?std.json.Value = null,
-    completion_tokens_details: ?std.json.Value = null,
+    prompt_tokens_details: ?common.PromptTokensDetails = null,
+    completion_tokens_details: ?common.CompletionTokensDetails = null,
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         try jw.beginObject();
@@ -533,7 +533,7 @@ pub const StreamChoice = struct {
     index: u32 = 0,
     delta: Delta = .{},
     finish_reason: ?[]const u8 = null,
-    logprobs: ?std.json.Value = null,
+    logprobs: ?common.ChoiceLogprobs = null,
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         try jw.beginObject();
@@ -605,7 +605,7 @@ pub const ResponseChoice = struct {
     index: u32 = 0,
     message: ResponseMessage,
     finish_reason: []const u8 = "stop",
-    logprobs: ?std.json.Value = null,
+    logprobs: ?common.ChoiceLogprobs = null,
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         try jw.beginObject();

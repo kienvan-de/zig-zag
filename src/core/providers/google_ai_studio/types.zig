@@ -543,10 +543,10 @@ pub const Candidate = struct {
     index: ?u32 = null,
     token_count: ?u32 = null,
     avg_logprobs: ?f64 = null,
-    safety_ratings: ?std.json.Value = null,
-    citation_metadata: ?std.json.Value = null,
-    grounding_metadata: ?std.json.Value = null,
-    logprobs_result: ?std.json.Value = null,
+    safety_ratings: ?[]const SafetyRating = null,
+    citation_metadata: ?CitationMetadata = null,
+    grounding_metadata: ?GroundingMetadata = null,
+    logprobs_result: ?LogprobsResult = null,
 
     pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
         const v = try std.json.innerParse(std.json.Value, allocator, source, options);
@@ -593,10 +593,18 @@ pub const Candidate = struct {
             .index = index,
             .token_count = token_count,
             .avg_logprobs = avg_logprobs,
-            .safety_ratings = obj.get("safetyRatings"),
-            .citation_metadata = obj.get("citationMetadata"),
-            .grounding_metadata = obj.get("groundingMetadata"),
-            .logprobs_result = obj.get("logprobsResult"),
+            .safety_ratings = if (obj.get("safetyRatings")) |v|
+                try std.json.innerParseFromValue([]const SafetyRating, allocator, v, options)
+            else null,
+            .citation_metadata = if (obj.get("citationMetadata")) |v|
+                try std.json.innerParseFromValue(CitationMetadata, allocator, v, options)
+            else null,
+            .grounding_metadata = if (obj.get("groundingMetadata")) |v|
+                try std.json.innerParseFromValue(GroundingMetadata, allocator, v, options)
+            else null,
+            .logprobs_result = if (obj.get("logprobsResult")) |v|
+                try std.json.innerParseFromValue(LogprobsResult, allocator, v, options)
+            else null,
         };
     }
 };
@@ -646,7 +654,7 @@ pub fn parseUsageMetadata(source: std.json.Value) UsageMetadata {
 pub const Response = struct {
     candidates: []const Candidate = &.{},
     usage_metadata: UsageMetadata = .{},
-    prompt_feedback: ?std.json.Value = null,
+    prompt_feedback: ?PromptFeedback = null,
     model_version: ?[]const u8 = null,
 
     pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
@@ -681,7 +689,9 @@ pub const Response = struct {
         return .{
             .candidates = candidates,
             .usage_metadata = usage,
-            .prompt_feedback = obj.get("promptFeedback"),
+            .prompt_feedback = if (obj.get("promptFeedback")) |v|
+                try std.json.innerParseFromValue(PromptFeedback, allocator, v, options)
+            else null,
             .model_version = model_version,
         };
     }
@@ -770,6 +780,56 @@ pub const ModelsResponse = struct {
 
 /// Each SSE data chunk from streamGenerateContent is a full Response JSON object.
 pub const StreamChunk = Response;
+
+// ============================================================================
+// Gemini metadata types (Group B — fixed schemas)
+// ============================================================================
+
+pub const CitationSource = struct {
+    startIndex: ?u32 = null,
+    endIndex: ?u32 = null,
+    uri: ?[]const u8 = null,
+    license: ?[]const u8 = null,
+};
+
+pub const CitationMetadata = struct {
+    citations: []const CitationSource = &.{},
+};
+
+pub const GroundingChunk = struct {
+    web: ?struct {
+        uri: []const u8 = "",
+        title: []const u8 = "",
+    } = null,
+};
+
+pub const GroundingMetadata = struct {
+    webSearchQueries: []const []const u8 = &.{},
+    groundingChunks: []const GroundingChunk = &.{},
+    searchEntryPoint: ?struct {
+        renderedContent: []const u8 = "",
+    } = null,
+};
+
+pub const LogprobCandidate = struct {
+    token: []const u8 = "",
+    tokenId: u32 = 0,
+    logProbability: f64 = 0,
+};
+
+pub const TopCandidates = struct {
+    candidates: []const LogprobCandidate = &.{},
+};
+
+pub const LogprobsResult = struct {
+    topCandidates: []const TopCandidates = &.{},
+    chosenCandidates: []const LogprobCandidate = &.{},
+};
+
+pub const PromptFeedback = struct {
+    blockReason: ?[]const u8 = null,
+    safetyRatings: []const SafetyRating = &.{},
+};
 
 // ============================================================================
 // Conversion Helpers

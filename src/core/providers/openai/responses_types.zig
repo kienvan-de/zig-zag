@@ -488,8 +488,8 @@ pub const Usage = struct {
     input_tokens: u32 = 0,
     output_tokens: u32 = 0,
     total_tokens: u32 = 0,
-    input_tokens_details: ?std.json.Value = null,
-    output_tokens_details: ?std.json.Value = null,
+    input_tokens_details: ?common.PromptTokensDetails = null,
+    output_tokens_details: ?common.CompletionTokensDetails = null,
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         try jw.beginObject();
@@ -775,7 +775,7 @@ pub const StreamEvent = union(enum) {
         item_id: []const u8 = "",
         content_index: u32 = 0,
         delta: []const u8 = "",
-        logprobs: ?std.json.Value = null,
+        logprobs: ?common.ChoiceLogprobs = null,
     },
     output_text_done: struct {
         type: []const u8 = "response.output_text.done",
@@ -784,7 +784,7 @@ pub const StreamEvent = union(enum) {
         item_id: []const u8 = "",
         content_index: u32 = 0,
         text: []const u8 = "",
-        logprobs: ?std.json.Value = null,
+        logprobs: ?common.ChoiceLogprobs = null,
     },
 
     // --- function call streaming ---

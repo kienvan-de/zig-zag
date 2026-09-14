@@ -140,3 +140,66 @@ pub const ErrorResponse = struct {
         try jw.endObject();
     }
 };
+
+// ============================================================================
+// Shared token detail and logprob types
+// ============================================================================
+
+/// Breakdown of prompt / input token categories.
+pub const PromptTokensDetails = struct {
+    cached_tokens: u32 = 0,
+    audio_tokens: u32 = 0,
+};
+
+/// Breakdown of completion / output token categories.
+pub const CompletionTokensDetails = struct {
+    reasoning_tokens: u32 = 0,
+    audio_tokens: u32 = 0,
+    accepted_prediction_tokens: u32 = 0,
+    rejected_prediction_tokens: u32 = 0,
+};
+
+/// One candidate token with its log-probability.
+pub const TopLogprob = struct {
+    token: []const u8 = "",
+    logprob: f64 = 0,
+    bytes: ?[]const u32 = null,
+
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("token"); try jw.write(self.token);
+        try jw.objectField("logprob"); try jw.write(self.logprob);
+        if (self.bytes) |v| { try jw.objectField("bytes"); try jw.write(v); }
+        try jw.endObject();
+    }
+};
+
+/// Log-probability entry for a single output token.
+pub const LogprobEntry = struct {
+    token: []const u8 = "",
+    logprob: f64 = 0,
+    bytes: ?[]const u32 = null,
+    top_logprobs: []const TopLogprob = &.{},
+
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("token"); try jw.write(self.token);
+        try jw.objectField("logprob"); try jw.write(self.logprob);
+        if (self.bytes) |v| { try jw.objectField("bytes"); try jw.write(v); }
+        try jw.objectField("top_logprobs"); try jw.write(self.top_logprobs);
+        try jw.endObject();
+    }
+};
+
+/// Log-probability data for a choice — present when logprobs was requested.
+pub const ChoiceLogprobs = struct {
+    content: ?[]const LogprobEntry = null,
+    refusal: ?[]const LogprobEntry = null,
+
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        if (self.content) |v| { try jw.objectField("content"); try jw.write(v); }
+        if (self.refusal) |v| { try jw.objectField("refusal"); try jw.write(v); }
+        try jw.endObject();
+    }
+};
