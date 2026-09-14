@@ -36,12 +36,8 @@ const time = @import("../../time.zig");
 // Contract
 // ============================================================================
 
-/// Result of transforming one upstream SSE line (P4): already-formatted bytes
-/// the pipeline writes verbatim, or nothing. Owned by the caller when `.output`.
-pub const StreamLineResult = union(enum) {
-    output: []const u8,
-    skip: void,
-};
+/// Re-export from anthropic/types.zig so callers can use `Transformer.StreamLineResult`.
+pub const StreamLineResult = Messages.StreamLineResult;
 
 /// Chat and Messages pipelines append their own `[DONE]` sentinel; the
 /// Responses pipeline does not (native Responses upstreams end silently).
@@ -653,10 +649,15 @@ pub fn transformMessagesStreamLine(
         // matching the other bridged providers).
         if (choice.delta.content) |text| {
             if (text.len > 0) {
+                const delta_ev = Messages.ContentBlockDelta{
+                    .type = "content_block_delta",
+                    .index = 0,
+                    .delta = .{ .type = "text_delta", .text = text },
+                };
                 out.print(
                     allocator,
-                    "event: content_block_delta\ndata: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"text_delta\",\"text\":{f}}}}}\n\n",
-                    .{std.json.fmt(text, .{})},
+                    "event: content_block_delta\ndata: {f}\n\n",
+                    .{std.json.fmt(delta_ev, .{})},
                 ) catch return .{ .skip = {} };
             }
         }

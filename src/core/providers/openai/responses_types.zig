@@ -586,6 +586,46 @@ pub const Response = struct {
         if (self.text) |v| { try jw.objectField("text"); try jw.write(v); }
         try jw.endObject();
     }
+
+    /// Parse a Response from a std.json.Value object map.
+    /// `allocator` is used to dupe the `model` string (which may be mutated).
+    /// All other fields are stored by reference from `src` — caller must keep
+    /// `src` alive for the lifetime of the returned Response.
+    pub fn jsonParseFromValue(src: std.json.Value, allocator: std.mem.Allocator) !Response {
+        if (src != .object) return error.UnexpectedToken;
+        const obj = src.object;
+        const id_v = obj.get("id") orelse return error.MissingField;
+        const model_v = obj.get("model") orelse return error.MissingField;
+        if (id_v != .string or model_v != .string) return error.UnexpectedToken;
+        var resp = Response{
+            .id = id_v.string,
+            .model = try allocator.dupe(u8, model_v.string),
+            .output = &.{},
+        };
+        if (obj.get("object")) |v| if (v == .string) { resp.object = v.string; };
+        if (obj.get("created_at")) |v| if (v == .float) { resp.created_at = v.float; }
+            else if (v == .integer) { resp.created_at = @floatFromInt(v.integer); };
+        if (obj.get("completed_at")) |v| if (v == .float) { resp.completed_at = v.float; }
+            else if (v == .integer) { resp.completed_at = @floatFromInt(v.integer); };
+        if (obj.get("status")) |v| if (v == .string) { resp.status = v.string; };
+        if (obj.get("incomplete_details")) |v| resp.incomplete_details = v;
+        if (obj.get("error")) |v| resp.@"error" = v;
+        if (obj.get("metadata")) |v| resp.metadata = v;
+        if (obj.get("usage")) |v| if (v == .object) {
+            var u = Usage{};
+            if (v.object.get("input_tokens")) |t| if (t == .integer) { u.input_tokens = @intCast(t.integer); };
+            if (v.object.get("output_tokens")) |t| if (t == .integer) { u.output_tokens = @intCast(t.integer); };
+            if (v.object.get("total_tokens")) |t| if (t == .integer) { u.total_tokens = @intCast(t.integer); };
+            resp.usage = u;
+        };
+        if (obj.get("service_tier")) |v| if (v == .string) { resp.service_tier = v.string; };
+        return resp;
+    }
+
+    /// Free only the fields allocated by jsonParseFromValue (currently just `model`).
+    pub fn deinitParsed(self: Response, allocator: std.mem.Allocator) void {
+        allocator.free(self.model);
+    }
 };
 
 // ============================================================================
@@ -800,8 +840,7 @@ pub const StreamEvent = union(enum) {
     /// Serialise to a complete SSE chunk and append to `buf`.
     /// Format: "event: <type>\ndata: <json>\n\n"
     /// For raw_bytes: appends verbatim with no wrapping.
-    pub fn writeSSE(self: @This(), buf: *std.ArrayList(u8), allocator: std.mem.Allocator) error{OutOfMemory}!void {
-        switch (self) {
+    pub fn writeSSE(self: @This(), buf: *std.ArrayList(u8), allocator: std.mem.Allocator) error{OutOfMemory}!void {        switch (self) {
             .raw_bytes => |bytes| try buf.appendSlice(allocator, bytes),
             else => {
                 const type_name = self.eventTypeName();
@@ -951,4 +990,41 @@ pub fn responseFailedSSE(
 pub const StreamLineResult = union(enum) {
     output: []const u8,
     skip: void,
+};
+
+// ============================================================================
+// Upstream SSE parse targets (used by transformers; defined here per Rule 1)
+// ============================================================================
+
+/// Minimal parse target for upstream chat-wire SSE events when the proxy
+/// converts them to Responses-protocol output (chat and messages faces of
+/// responses_transformer.zig).
+pub const NativeChatStreamEvent = struct {
+    type: []const u8 = "",
+    /// response.output_text.delta
+    delta: ?[]const u8 = null,
+    /// response.function_call_arguments.delta
+    arguments: ?[]const u8 = null,
+    item_id: []const u8 = "",
+    /// response.failed / error payloads
+    @"error": ?std.json.Value = null,
+    /// response.completed / response.incomplete: nested response object
+    response: ?struct {
+        usage: Usage = .{},
+        incomplete_details: ?struct {
+            reason: []const u8 = "",
+        } = null,
+    } = null,
+};
+
+/// Minimal parse target for upstream Responses-wire SSE events when the proxy
+/// forwards them verbatim but needs to capture usage and rewrite the model field
+/// (pass-through face of responses_transformer.zig).
+pub const NativeResponsesStreamEvent = struct {
+    type: []const u8 = "",
+    sequence_number: u32 = 0,
+    response: ?struct {
+        model: []const u8 = "",
+        usage: Usage = .{},
+    } = null,
 };

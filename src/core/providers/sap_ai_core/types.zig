@@ -420,3 +420,15 @@ pub const SapModelsResponse = struct {
     count: u64 = 0,
     resources: []const SapModel = &.{},
 };
+
+// ============================================================================
+// Request Helpers
+// ============================================================================
+
+/// Sampling parameters extracted from any inbound request, mapped onto the
+/// SAP `model.params` wire object.
+pub const SapParams = struct {
+    temperature: ?f32 = null,
+    max_tokens: ?u32 = null,
+    top_p: ?f32 = null,
+};

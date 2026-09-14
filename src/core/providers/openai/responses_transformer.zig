@@ -35,38 +35,16 @@ const time = @import("../../time.zig");
 // Contract
 // ============================================================================
 
-/// Result of transforming one upstream SSE line (P4): already-formatted bytes
-/// the pipeline writes verbatim, or nothing. Owned by the caller when `.output`.
-pub const StreamLineResult = union(enum) {
-    output: []const u8,
-    skip: void,
-};
+/// Re-export from responses_types.zig so callers can use `Transformer.StreamLineResult`.
+pub const StreamLineResult = Responses.StreamLineResult;
 
 /// The chat and messages faces must synthesize their own closing frames — the
 /// Responses wire has no `[DONE]` sentinel, so the pipeline must not append
 /// one. The native responses face forwards upstream events verbatim.
 pub const appendsDoneMarker = false;
 
-/// The subset of Responses SSE event payloads the transformer inspects
-/// (shared by the chat and messages stream faces).
-const ResponsesEventData = struct {
-    type: []const u8 = "",
-    /// response.output_text.delta
-    delta: ?[]const u8 = null,
-    /// response.function_call_arguments.delta
-    arguments: ?[]const u8 = null,
-    item_id: []const u8 = "",
-    /// response.failed / error payloads
-    @"error": ?std.json.Value = null,
-    /// response.completed / response.incomplete: nested response object
-    response: ?struct {
-        usage: Responses.Usage = .{},
-        /// response.incomplete: nested incomplete_details.reason
-        incomplete_details: ?struct {
-            reason: []const u8 = "",
-        } = null,
-    } = null,
-};
+/// Upstream chat-wire SSE event parse target — defined in responses_types.zig (Rule 1).
+const ResponsesEventData = Responses.NativeChatStreamEvent;
 
 // ============================================================================
 // Flow: /v1/models
@@ -237,7 +215,6 @@ pub fn transformChatResponse(
     original_req: Chat.Request,
     allocator: std.mem.Allocator,
 ) !Chat.Response {
-    _ = original_req; // the Responses wire echoes the requested model already
 
     var text_parts: std.ArrayList([]const u8) = .empty;
     defer text_parts.deinit(allocator);
@@ -310,7 +287,7 @@ pub fn transformChatResponse(
         .id = try allocator.dupe(u8, upstream_response.id),
         .object = "chat.completion",
         .created = @intFromFloat(upstream_response.created_at),
-        .model = try allocator.dupe(u8, upstream_response.model),
+        .model = try allocator.dupe(u8, original_req.model),
         .choices = choices,
         .usage = if (upstream_response.usage) |u| .{
             .prompt_tokens = u.input_tokens,
@@ -726,10 +703,15 @@ pub fn transformMessagesStreamLine(
             state.sent_content_block_start = true;
         }
 
+        const delta_ev = Messages.ContentBlockDelta{
+            .type = "content_block_delta",
+            .index = 0,
+            .delta = .{ .type = "text_delta", .text = text },
+        };
         out.print(
             allocator,
-            "event: content_block_delta\ndata: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"text_delta\",\"text\":{f}}}}}\n\n",
-            .{std.json.fmt(text, .{})},
+            "event: content_block_delta\ndata: {f}\n\n",
+            .{std.json.fmt(delta_ev, .{})},
         ) catch return .{ .skip = {} };
 
         return .{ .output = out.toOwnedSlice(allocator) catch return .{ .skip = {} } };
@@ -770,18 +752,17 @@ pub fn transformResponsesResponse(
     original_req: Responses.Request,
     allocator: std.mem.Allocator,
 ) !Responses.Response {
-    _ = original_req;
-    _ = allocator;
-    return upstream_response;
+    var resp = upstream_response;
+    resp.model = try allocator.dupe(u8, original_req.model);
+    return resp;
 }
 
-/// No-op: all memory belongs to the client response's parsed arena.
+/// Free the model string allocated by transformResponsesResponse.
 pub fn cleanupResponsesResponse(
     inbound_response: Responses.Response,
     allocator: std.mem.Allocator,
 ) void {
-    _ = inbound_response;
-    _ = allocator;
+    allocator.free(inbound_response.model);
 }
 
 /// Stream state for the pass-through: captures usage from the terminal
@@ -808,16 +789,13 @@ pub const ResponsesStreamState = struct {
     }
 };
 
-/// The subset of stream event payloads the pass-through inspects.
-const NativeStreamEvent = struct {
-    type: []const u8 = "",
-    response: ?struct { usage: Responses.Usage = .{} } = null,
-};
+/// Upstream Responses-wire SSE event parse target — defined in responses_types.zig (Rule 1).
+const NativeStreamEvent = Responses.NativeResponsesStreamEvent;
 
-/// Pass each SSE line through verbatim, re-terminated with a blank line,
-/// capturing usage from terminal events. Lines are forwarded unfiltered —
-/// including `event:` and blank lines — so the client sees exactly the
-/// upstream byte stream.
+/// Pass each SSE line through, rewriting the `model` field in response.*
+/// lifecycle events to echo `state.original_model` rather than the upstream
+/// backend model name.  All other content (including `event:` and blank lines)
+/// is forwarded unfiltered so the client sees a byte-compatible stream.
 pub fn transformResponsesStreamLine(
     line: []const u8,
     state: *ResponsesStreamState,
@@ -825,24 +803,73 @@ pub fn transformResponsesStreamLine(
 ) StreamLineResult {
     if (std.mem.startsWith(u8, line, "data: ")) {
         const json_part = line["data: ".len..];
+        // Slim parse: capture type, sequence_number, model, and usage in one shot.
         if (std.json.parseFromSlice(
             NativeStreamEvent,
             allocator,
             json_part,
             .{ .ignore_unknown_fields = true },
-        )) |parsed| {
-            defer parsed.deinit();
-            const event = parsed.value;
-            if (std.mem.eql(u8, event.type, "response.completed") or
-                std.mem.eql(u8, event.type, "response.incomplete"))
+        )) |slim| {
+            defer slim.deinit();
+            const ev = slim.value;
+            if (std.mem.eql(u8, ev.type, "response.completed") or
+                std.mem.eql(u8, ev.type, "response.incomplete"))
             {
-                if (event.response) |r| {
+                if (ev.response) |r| {
                     state.input_tokens = r.usage.input_tokens;
                     state.output_tokens = r.usage.output_tokens;
                 }
             }
+            // R3: deserialise → mutate model → re-serialise for lifecycle events.
+            // Uses ev.sequence_number (now in slim parse) so no second full-event
+            // parse is needed — only the response sub-object is parsed via
+            // Response.jsonParseFromValue.
+            if (ev.response) |r| {
+                if (r.model.len > 0 and !std.mem.eql(u8, r.model, state.original_model)) {
+                    if (std.json.parseFromSlice(
+                        std.json.Value,
+                        allocator,
+                        json_part,
+                        .{ .allocate = .alloc_always },
+                    )) |full_parsed| {
+                        defer full_parsed.deinit();
+                        const resp_v = if (full_parsed.value == .object)
+                            full_parsed.value.object.get("response")
+                        else
+                            null;
+                        if (resp_v) |rv| {
+                            var resp = Responses.Response.jsonParseFromValue(rv, allocator)
+                                catch return passThrough(allocator, line);
+                            defer resp.deinitParsed(allocator);
+                            resp.model = state.original_model;
+                            const patched = buildLifecycleEvent(ev.type, ev.sequence_number, resp)
+                                orelse return passThrough(allocator, line);
+                            var buf: std.ArrayList(u8) = .empty;
+                            patched.writeSSE(&buf, allocator) catch return passThrough(allocator, line);
+                            const owned = buf.toOwnedSlice(allocator) catch {
+                                buf.deinit(allocator);
+                                return passThrough(allocator, line);
+                            };
+                            return .{ .output = owned };
+                        }
+                    } else |_| {}
+                }
+            }
         } else |_| {}
     }
+    return passThrough(allocator, line);
+}
+
+fn buildLifecycleEvent(t: []const u8, seq: u32, resp: Responses.Response) ?Responses.StreamEvent {
+    if (std.mem.eql(u8, t, "response.created"))     return .{ .response_created     = .{ .sequence_number = seq, .response = resp } };
+    if (std.mem.eql(u8, t, "response.in_progress")) return .{ .response_in_progress = .{ .sequence_number = seq, .response = resp } };
+    if (std.mem.eql(u8, t, "response.completed"))   return .{ .response_completed   = .{ .sequence_number = seq, .response = resp } };
+    if (std.mem.eql(u8, t, "response.failed"))      return .{ .response_failed      = .{ .sequence_number = seq, .response = resp } };
+    if (std.mem.eql(u8, t, "response.incomplete"))  return .{ .response_incomplete  = .{ .sequence_number = seq, .response = resp } };
+    return null;
+}
+
+fn passThrough(allocator: std.mem.Allocator, line: []const u8) StreamLineResult {
     const bytes = std.fmt.allocPrint(allocator, "{s}\n\n", .{line}) catch
         return .{ .skip = {} };
     return .{ .output = bytes };

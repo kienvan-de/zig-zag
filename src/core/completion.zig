@@ -421,7 +421,13 @@ fn chatStreaming(
             // Write SSE error event to client
             var buffer = std.ArrayList(u8).empty;
             defer buffer.deinit(sa);
-            buffer.print(sa, "data: {{\"error\":{{\"message\":\"Upstream connection lost while streaming response\",\"type\":\"server_error\",\"code\":null}}}}\n\n", .{}) catch break;
+            const err_payload = openai_common.ErrorResponse{ .@"error" = .{
+                .message = "Upstream connection lost while streaming response",
+                .type = "server_error",
+                .param = null,
+                .code = null,
+            }};
+            buffer.print(sa, "data: {f}\n\n", .{std.json.fmt(err_payload, .{ .emit_null_optional_fields = false })}) catch break;
             writer.writeAll(buffer.items) catch {};
             break;
         };

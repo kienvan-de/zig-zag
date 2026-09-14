@@ -538,11 +538,9 @@ pub fn freeError(error_response: common.ErrorResponse, allocator: std.mem.Alloca
 // (no cycle). Parsing and state mutation stay in the flow's main function.
 
 /// Everything a chat chunk carries besides its delta.
-pub const ChatChunkContext = struct {
-    id: []const u8,
-    created: i64,
-    original_model: []const u8,
-};
+/// Defined in anthropic/types.zig (the canonical home); re-exported here so
+/// callers that import content.zig don't need an extra import.
+pub const ChatChunkContext = Messages.ChatChunkContext;
 
 /// Serialize one `chat.completion.chunk` as a ready `data: {json}\n\n` line.
 /// The chunk borrows from `ctx` and `delta`, so the caller writes the result

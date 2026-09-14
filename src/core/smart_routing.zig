@@ -105,6 +105,7 @@ pub const SmartRouting = struct {
 
             // Parse alternatives array
             var alts: []const []const u8 = &.{};
+            errdefer if (alts.len > 0) allocator.free(alts);
             if (obj.get("alternatives")) |alts_val| {
                 if (alts_val == .array) {
                     const alt_items = alts_val.array.items;
@@ -137,6 +138,7 @@ pub const SmartRouting = struct {
                 .current_model = try allocator.dupe(u8, current_model_str),
             };
             groups_init += 1;
+            alts = &.{}; // transferred to group — disarm outer errdefer
         }
 
         // Build lookup index: api_key -> *RouteGroup (skip groups with empty api_key)
@@ -236,9 +238,9 @@ pub const SmartRouting = struct {
             }
         }
 
-        // current_model not found in chain (stale state) — reset to first alternative
-        if (group.alternatives.len == 0) return null;
-        const next = group.alternatives[0];
+        // current_model not found in chain (stale state after config rename) — reset to main_model
+        if (group.main_model.len == 0) return null;
+        const next = group.main_model;
         const new_cur = try allocator.dupe(u8, next);
         const ret = allocator.dupe(u8, next) catch |e| { allocator.free(new_cur); return e; };
         allocator.free(group.current_model);
@@ -262,6 +264,8 @@ pub const SmartRouting = struct {
     /// Persist current_model values for all groups back to config.json.
     /// Reads the raw JSON, patches each group's "current_model" field, writes back.
     pub fn writeBack(self: *SmartRouting, allocator: Allocator) !void {
+        g_config_mutex.lock();
+        defer g_config_mutex.unlock();
         const raw = config_mod.readRaw(allocator) catch |err| {
             log.err("[smart_routing] writeBack: failed to read config: {}", .{err});
             return err;
@@ -382,6 +386,11 @@ var g_rwlock: sync.RwLock = .{};
 // deinit() of the previous SmartRouting never touches a freed arena.
 // Read and written only while holding g_rwlock exclusive.
 var g_allocator: ?Allocator = null;
+// Serialises the readRaw/patchCurrentModels/writeRaw triple in writeBack() so
+// concurrent rollovers and config saves cannot interleave file writes.
+// Separate from g_rwlock to avoid a deadlock: callers hold g_rwlock shared
+// while calling writeBack(), so writeBack() must not acquire g_rwlock exclusive.
+var g_config_mutex: sync.Mutex = .{};
 
 /// RAII guard returned by acquire(). Holds the shared read-lock for its lifetime.
 /// Call release() (or defer handle.release()) when done with the SmartRouting pointer.
@@ -399,7 +408,24 @@ pub const SmartRoutingHandle = struct {
 pub fn init(allocator: Allocator, raw_json: []const u8) void {
     g_rwlock.lock();
     defer g_rwlock.unlock();
+    initLocked(allocator, raw_json);
+}
 
+/// Reload after a config save. Always uses the allocator from the initial
+/// init() call so the previous SmartRouting is freed with the correct allocator,
+/// not the per-request arena that triggered the save.
+pub fn reload(raw_json: []const u8) void {
+    g_rwlock.lock();
+    defer g_rwlock.unlock();
+    const allocator = g_allocator orelse {
+        log.warn("[smart_routing] reload: skipped (not yet initialised)", .{});
+        return;
+    };
+    initLocked(allocator, raw_json);
+}
+
+/// Must be called with g_rwlock held exclusively.
+fn initLocked(allocator: Allocator, raw_json: []const u8) void {
     // g_allocator written under exclusive lock — no TOCTOU.
     g_allocator = allocator;
 
@@ -435,23 +461,6 @@ pub fn init(allocator: Allocator, raw_json: []const u8) void {
     if (g_routing) |sr| {
         log.info("[smart_routing] Loaded {d} group(s), {d} routable", .{ sr.groups.len, sr.index.count() });
     }
-}
-
-/// Reload after a config save. Always uses the allocator from the initial
-/// init() call so the previous SmartRouting is freed with the correct allocator,
-/// not the per-request arena that triggered the save.
-pub fn reload(raw_json: []const u8) void {
-    // Acquire exclusive lock first so g_allocator is read atomically with the
-    // rest of init — no TOCTOU between reading g_allocator and taking the lock.
-    g_rwlock.lock();
-    const allocator = g_allocator orelse {
-        log.warn("[smart_routing] reload: skipped (not yet initialised)", .{});
-        g_rwlock.unlock();
-        return;
-    };
-    g_rwlock.unlock();
-    // init() will re-acquire the exclusive lock.
-    init(allocator, raw_json);
 }
 
 /// Acquire a read-lock on the global SmartRouting and return a RAII handle.

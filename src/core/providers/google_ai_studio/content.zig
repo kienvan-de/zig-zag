@@ -289,12 +289,6 @@ pub fn transformTools(
     return gemini_tools;
 }
 
-pub const BuiltContents = struct {
-    contents: []Google.Content,
-    /// Joined system/developer message text; null when none. Freshly allocated.
-    system_text: ?[]const u8,
-};
-
 /// Convert OpenAI chat messages to Gemini contents. System/developer messages
 /// are joined into `system_text` (caller passes it as systemInstruction);
 /// assistant tool_calls become function_call parts (arguments re-parsed into
@@ -303,7 +297,7 @@ pub const BuiltContents = struct {
 pub fn buildContents(
     messages: []const Chat.Message,
     allocator: std.mem.Allocator,
-) !BuiltContents {
+) !Google.BuiltContents {
     var system_parts: std.ArrayList([]const u8) = .empty;
     defer system_parts.deinit(allocator);
 
@@ -522,11 +516,9 @@ pub fn transformStopReasonToMessages(reason: ?[]const u8) []const u8 {
 // ============================================================================
 
 /// Everything a chat chunk carries besides its delta.
-pub const ChatChunkContext = struct {
-    id: []const u8,
-    created: i64,
-    original_model: []const u8,
-};
+/// Defined in anthropic/types.zig; re-exported here for callers that import
+/// this module without needing to know about the anthropic types path.
+pub const ChatChunkContext = Messages.ChatChunkContext;
 
 /// Serialize one `chat.completion.chunk` as a ready `data: {json}\n\n` line.
 /// The chunk borrows from `ctx` and `delta`, so the caller writes the result

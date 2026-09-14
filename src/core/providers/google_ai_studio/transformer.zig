@@ -35,12 +35,8 @@ const time = @import("../../time.zig");
 // Contract
 // ============================================================================
 
-/// Result of transforming one upstream SSE line (P4): already-formatted bytes
-/// the pipeline writes verbatim, or nothing. Owned by the caller when `.output`.
-pub const StreamLineResult = union(enum) {
-    output: []const u8,
-    skip: void,
-};
+/// Re-export from anthropic/types.zig so callers can use `Transformer.StreamLineResult`.
+pub const StreamLineResult = Messages.StreamLineResult;
 
 /// Chat and Messages pipelines append their own `[DONE]` sentinel; the
 /// Responses pipeline does not (native Responses upstreams end silently).
@@ -549,32 +545,47 @@ pub fn transformMessagesStreamLine(
     // Synthetic protocol opening, once per stream.
     if (!state.sent_start) {
         state.sent_start = true;
-        out.print(allocator,
-            \\event: message_start
-            \\data: {{"type":"message_start","message":{{"id":"{s}","type":"message","role":"assistant","content":[],"model":"{s}","stop_reason":null,"stop_sequence":null,"usage":{{"input_tokens":0,"output_tokens":0}}}}}}
-            \\
-            \\event: content_block_start
-            \\data: {{"type":"content_block_start","index":0,"content_block":{{"type":"text","text":""}}}}
-            \\
-            \\event: ping
-            \\data: {{"type":"ping"}}
-            \\
-            \\
-        , .{ state.response_id, state.original_model }) catch return .{ .skip = {} };
+        const msg_start = Messages.MessageStart{
+            .type = "message_start",
+            .message = .{
+                .id = state.response_id,
+                .type = "message",
+                .role = "assistant",
+                .content = &.{},
+                .model = state.original_model,
+                .stop_reason = null,
+                .stop_sequence = null,
+                .usage = .{ .input_tokens = 0, .output_tokens = 0 },
+            },
+        };
+        out.print(allocator, "event: message_start\ndata: {f}\n\n", .{std.json.fmt(msg_start, .{})}) catch return .{ .skip = {} };
+        const cb_start = Messages.ContentBlockStart{
+            .type = "content_block_start",
+            .index = 0,
+            .content_block = .{ .type = "text", .text = "" },
+        };
+        out.print(allocator, "event: content_block_start\ndata: {f}\n\n", .{std.json.fmt(cb_start, .{ .emit_null_optional_fields = false })}) catch return .{ .skip = {} };
+        const ping = Messages.Ping{};
+        out.print(allocator, "event: ping\ndata: {f}\n\n", .{std.json.fmt(ping, .{})}) catch return .{ .skip = {} };
     }
 
     if (parsed.value.candidates.len > 0) {
         const candidate = parsed.value.candidates[0];
 
-        // Text deltas — std.json.fmt embedding handles JSON escaping.
+        // Text deltas.
         for (candidate.content.parts) |part| {
             switch (part) {
                 .text => |tp| {
                     if (tp.text.len == 0) continue;
+                    const delta_ev = Messages.ContentBlockDelta{
+                        .type = "content_block_delta",
+                        .index = 0,
+                        .delta = .{ .type = "text_delta", .text = tp.text },
+                    };
                     out.print(
                         allocator,
-                        "event: content_block_delta\ndata: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"text_delta\",\"text\":{f}}}}}\n\n",
-                        .{std.json.fmt(tp.text, .{})},
+                        "event: content_block_delta\ndata: {f}\n\n",
+                        .{std.json.fmt(delta_ev, .{})},
                     ) catch continue;
                 },
                 else => {},
@@ -589,18 +600,16 @@ pub fn transformMessagesStreamLine(
                 const stop_reason = content.transformStopReasonToMessages(candidate.finish_reason);
                 state.finish_reason = stop_reason;
 
-                out.print(allocator,
-                    \\event: content_block_stop
-                    \\data: {{"type":"content_block_stop","index":0}}
-                    \\
-                    \\event: message_delta
-                    \\data: {{"type":"message_delta","delta":{{"stop_reason":"{s}","stop_sequence":null}},"usage":{{"output_tokens":{d}}}}}
-                    \\
-                    \\event: message_stop
-                    \\data: {{"type":"message_stop"}}
-                    \\
-                    \\
-                , .{ stop_reason, state.output_tokens }) catch return .{ .skip = {} };
+                const cb_stop = Messages.ContentBlockStop{ .type = "content_block_stop", .index = 0 };
+                out.print(allocator, "event: content_block_stop\ndata: {f}\n\n", .{std.json.fmt(cb_stop, .{})}) catch return .{ .skip = {} };
+                const msg_delta = Messages.MessageDelta{
+                    .type = "message_delta",
+                    .delta = .{ .stop_reason = stop_reason, .stop_sequence = null },
+                    .usage = .{ .output_tokens = state.output_tokens },
+                };
+                out.print(allocator, "event: message_delta\ndata: {f}\n\n", .{std.json.fmt(msg_delta, .{})}) catch return .{ .skip = {} };
+                const msg_stop = Messages.MessageStop{ .type = "message_stop" };
+                out.print(allocator, "event: message_stop\ndata: {f}\n\n", .{std.json.fmt(msg_stop, .{})}) catch return .{ .skip = {} };
             }
         }
     }

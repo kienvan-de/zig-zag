@@ -60,12 +60,8 @@ const time = @import("../../time.zig");
 // Contract (shared by all flows)
 // ============================================================================
 
-/// Result of feeding one upstream SSE line through a flow's stream transform.
-/// `output` is ready-to-write SSE bytes owned by the caller's allocator.
-pub const StreamLineResult = union(enum) {
-    output: []const u8,
-    skip: void,
-};
+/// Re-export from types.zig so callers can use `Transformer.StreamLineResult`.
+pub const StreamLineResult = Messages.StreamLineResult;
 
 /// The responses flow synthesizes its own terminal events; the pipeline appends
 /// the `[DONE]` sentinel afterwards.
@@ -183,9 +179,6 @@ pub fn transformChatResponse(
     original_req: Chat.Request,
     allocator: std.mem.Allocator,
 ) !Chat.Response {
-    // The upstream echoes the concrete model id it served. `original_req` is
-    // kept for P8 response-signature uniformity (and future echo fields).
-    _ = original_req;
 
     var message_text: ?[]const u8 = try content.extractTextFromBlocks(upstream_response.content, allocator);
     errdefer if (message_text) |t| allocator.free(t);
@@ -220,7 +213,7 @@ pub fn transformChatResponse(
         .id = try allocator.dupe(u8, upstream_response.id),
         .object = "chat.completion",
         .created = time.timestamp(),
-        .model = try std.fmt.allocPrint(allocator, "anthropic/{s}", .{upstream_response.model}),
+        .model = try allocator.dupe(u8, original_req.model),
         .choices = choices,
         .usage = .{
             .prompt_tokens = upstream_response.usage.input_tokens,
@@ -563,6 +556,10 @@ pub const ResponsesStreamState = struct {
     /// Type of the currently-open content block: "text" or "tool_use".
     /// Used by content_block_stop to emit the correct *.done event.
     open_block_type: []const u8 = "text",
+    /// Accumulates text_delta fragments so output_text.done can emit the full text.
+    text_buf: std.ArrayList(u8) = .empty,
+    /// Accumulates input_json_delta fragments so function_call_arguments.done can emit the full arguments.
+    arguments_buf: std.ArrayList(u8) = .empty,
 
     pub fn init(allocator: std.mem.Allocator, original_model: []const u8) ResponsesStreamState {
         return .{
@@ -576,6 +573,8 @@ pub const ResponsesStreamState = struct {
         if (self.finish_reason) |reason| self.allocator.free(reason);
         self.response_id = "";
         self.finish_reason = null;
+        self.text_buf.deinit(self.allocator);
+        self.arguments_buf.deinit(self.allocator);
     }
 };
 
@@ -596,7 +595,12 @@ pub fn transformResponsesRequest(
 ) !Messages.Request {
     // Accumulator for the turn currently being assembled.
     var pending_blocks = std.ArrayList(Messages.ContentBlockParam).empty;
-    errdefer pending_blocks.deinit(allocator);
+    errdefer {
+        for (pending_blocks.items) |block| {
+            if (block == .tool_use) content.freeJsonValue(allocator, block.tool_use.input);
+        }
+        pending_blocks.deinit(allocator);
+    }
     var pending_role: ?Messages.Role = null;
 
     var messages = std.ArrayList(Messages.Message).empty;
@@ -1022,15 +1026,9 @@ pub fn transformResponsesStreamLine(
     const event_type = type_probe.value.type;
 
     if (std.mem.eql(u8, event_type, "error")) {
-        const ErrPayload = struct {
-            @"error": struct {
-                type: []const u8 = "api_error",
-                message: []const u8 = "Upstream error",
-            } = .{},
-        };
         var err_message: []const u8 = "Upstream error";
         var err_code: []const u8 = "api_error";
-        if (std.json.parseFromSlice(ErrPayload, allocator, json_part, .{
+        if (std.json.parseFromSlice(Messages.SseErrorEvent, allocator, json_part, .{
             .allocate = .alloc_always,
             .ignore_unknown_fields = true,
         })) |parsed| {
@@ -1049,13 +1047,7 @@ pub fn transformResponsesStreamLine(
     }
 
     if (std.mem.eql(u8, event_type, "message_start")) {
-        const MsgStart = struct {
-            message: struct {
-                id: []const u8 = "",
-                usage: struct { input_tokens: u32 = 0 } = .{},
-            } = .{},
-        };
-        if (std.json.parseFromSlice(MsgStart, allocator, json_part, .{
+        if (std.json.parseFromSlice(Messages.MessageStart, allocator, json_part, .{
             .allocate = .alloc_always,
             .ignore_unknown_fields = true,
         })) |parsed| {
@@ -1069,12 +1061,7 @@ pub fn transformResponsesStreamLine(
     }
 
     if (std.mem.eql(u8, event_type, "content_block_start")) {
-        const BlockStart = struct {
-            content_block: struct {
-                type: []const u8 = "",
-            } = .{},
-        };
-        const parsed = std.json.parseFromSlice(BlockStart, allocator, json_part, .{
+        const parsed = std.json.parseFromSlice(Messages.ContentBlockStart, allocator, json_part, .{
             .allocate = .alloc_always,
             .ignore_unknown_fields = true,
         }) catch return .{ .skip = {} };
@@ -1084,6 +1071,8 @@ pub fn transformResponsesStreamLine(
         // Record which block type is now open so content_block_stop can emit
         // the correct *.done event (§24 gap 4).
         state.open_block_type = if (is_text) "text" else "tool_use";
+        state.text_buf.clearRetainingCapacity();
+        state.arguments_buf.clearRetainingCapacity();
         const bytes = Responses.outputItemAddedSSE(state.response_id, is_text, state.sequence_number, allocator) orelse
             return .{ .skip = {} };
         state.sequence_number += 2;
@@ -1091,14 +1080,7 @@ pub fn transformResponsesStreamLine(
     }
 
     if (std.mem.eql(u8, event_type, "content_block_delta")) {
-        const Delta = struct {
-            delta: struct {
-                type: []const u8 = "",
-                text: []const u8 = "",
-                partial_json: []const u8 = "",
-            } = .{},
-        };
-        const parsed = std.json.parseFromSlice(Delta, allocator, json_part, .{
+        const parsed = std.json.parseFromSlice(Messages.ContentBlockDelta, allocator, json_part, .{
             .allocate = .alloc_always,
             .ignore_unknown_fields = true,
         }) catch return .{ .skip = {} };
@@ -1106,24 +1088,28 @@ pub fn transformResponsesStreamLine(
         const delta = parsed.value.delta;
 
         if (std.mem.eql(u8, delta.type, "text_delta")) {
-            if (delta.text.len == 0) return .{ .skip = {} };
+            const text = delta.text orelse return .{ .skip = {} };
+            if (text.len == 0) return .{ .skip = {} };
+            state.text_buf.appendSlice(allocator, text) catch return .{ .skip = {} };
             var buf: std.ArrayList(u8) = .empty;
             const ev = Responses.StreamEvent{ .output_text_delta = .{
                 .sequence_number = state.sequence_number,
                 .item_id = state.response_id,
-                .delta = delta.text,
+                .delta = text,
             }};
             ev.writeSSE(&buf, allocator) catch return .{ .skip = {} };
             state.sequence_number += 1;
             return .{ .output = buf.toOwnedSlice(allocator) catch return .{ .skip = {} } };
         }
         if (std.mem.eql(u8, delta.type, "input_json_delta")) {
-            if (delta.partial_json.len == 0) return .{ .skip = {} };
+            const partial = delta.partial_json orelse return .{ .skip = {} };
+            if (partial.len == 0) return .{ .skip = {} };
+            state.arguments_buf.appendSlice(allocator, partial) catch return .{ .skip = {} };
             var buf: std.ArrayList(u8) = .empty;
             const ev = Responses.StreamEvent{ .function_call_arguments_delta = .{
                 .sequence_number = state.sequence_number,
                 .item_id = state.response_id,
-                .delta = delta.partial_json,
+                .delta = partial,
             }};
             ev.writeSSE(&buf, allocator) catch return .{ .skip = {} };
             state.sequence_number += 1;
@@ -1139,7 +1125,7 @@ pub fn transformResponsesStreamLine(
             const ev = Responses.StreamEvent{ .function_call_arguments_done = .{
                 .sequence_number = state.sequence_number,
                 .item_id = state.response_id,
-                .arguments = "",
+                .arguments = state.arguments_buf.items,
             }};
             ev.writeSSE(&buf, allocator) catch return .{ .skip = {} };
         } else {
@@ -1147,6 +1133,7 @@ pub fn transformResponsesStreamLine(
             const ev = Responses.StreamEvent{ .output_text_done = .{
                 .sequence_number = state.sequence_number,
                 .item_id = state.response_id,
+                .text = state.text_buf.items,
             }};
             ev.writeSSE(&buf, allocator) catch return .{ .skip = {} };
         }
@@ -1155,23 +1142,17 @@ pub fn transformResponsesStreamLine(
     }
 
     if (std.mem.eql(u8, event_type, "message_delta")) {
-        const MsgDelta = struct {
-            delta: struct { stop_reason: []const u8 = "" } = .{},
-            usage: struct { output_tokens: u32 = 0 } = .{},
-        };
-        if (std.json.parseFromSlice(MsgDelta, allocator, json_part, .{
+        if (std.json.parseFromSlice(Messages.MessageDelta, allocator, json_part, .{
             .allocate = .alloc_always,
             .ignore_unknown_fields = true,
         })) |parsed| {
             defer parsed.deinit();
             state.output_tokens = parsed.value.usage.output_tokens;
-            const reason = parsed.value.delta.stop_reason;
-            if (reason.len > 0) {
-                // Own the reason: it borrows from `parsed`, which dies below.
-                // message_delta arrives at most once upstream, but guard anyway
-                // so a repeat can't leak the previous dupe.
-                if (state.finish_reason) |prev| allocator.free(prev);
-                state.finish_reason = allocator.dupe(u8, reason) catch null;
+            if (parsed.value.delta.stop_reason) |reason| {
+                if (reason.len > 0) {
+                    if (state.finish_reason) |prev| allocator.free(prev);
+                    state.finish_reason = allocator.dupe(u8, reason) catch null;
+                }
             }
         } else |_| {}
         return .{ .skip = {} };

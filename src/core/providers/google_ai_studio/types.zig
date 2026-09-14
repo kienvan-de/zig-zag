@@ -770,3 +770,15 @@ pub const ModelsResponse = struct {
 
 /// Each SSE data chunk from streamGenerateContent is a full Response JSON object.
 pub const StreamChunk = Response;
+
+// ============================================================================
+// Conversion Helpers
+// ============================================================================
+
+/// Result of converting OpenAI messages to Gemini contents.
+/// `contents` is the converted message array; `system_text` is the joined
+/// system/developer message text (null when none).
+pub const BuiltContents = struct {
+    contents: []Content,
+    system_text: ?[]const u8,
+};

@@ -109,7 +109,19 @@ pub const ToolCall = struct {
     function: ToolCallFunction,
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
-        try jw.write(self);
+        try jw.beginObject();
+        try jw.objectField("id");
+        try jw.write(self.id);
+        try jw.objectField("type");
+        try jw.write(self.type);
+        try jw.objectField("function");
+        try jw.beginObject();
+        try jw.objectField("name");
+        try jw.write(self.function.name);
+        try jw.objectField("arguments");
+        try jw.write(self.function.arguments);
+        try jw.endObject();
+        try jw.endObject();
     }
 
     pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {

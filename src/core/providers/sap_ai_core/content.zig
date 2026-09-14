@@ -39,19 +39,11 @@ const Sap = @import("types.zig"); // SAP AI Core wire types
 // Request envelope
 // ============================================================================
 
-/// Sampling params extracted from any inbound request, mapped onto the SAP
-/// `model.params` object.
-pub const SapParams = struct {
-    temperature: ?f32 = null,
-    max_tokens: ?u32 = null,
-    top_p: ?f32 = null,
-};
-
 /// Build the `model.params` object from the given fields. Returns null when
 /// no field is set (the object is omitted on the wire). The returned value
 /// owns its map — freed by `freeParams`.
 pub fn buildParams(
-    sap_params: SapParams,
+    sap_params: Sap.SapParams,
     allocator: std.mem.Allocator,
 ) !?std.json.Value {
     var params_obj: std.json.ObjectMap = .{};
@@ -205,11 +197,9 @@ pub fn formatSapErrorLine(
 // ============================================================================
 
 /// Everything a chat chunk carries besides its delta.
-pub const ChatChunkContext = struct {
-    id: []const u8,
-    created: i64,
-    original_model: []const u8,
-};
+/// Defined in anthropic/types.zig; re-exported here for callers that import
+/// this module without needing to know about the anthropic types path.
+pub const ChatChunkContext = Messages.ChatChunkContext;
 
 /// Serialize one `chat.completion.chunk` as ready `data: {json}\n\n` bytes.
 pub fn buildChatChunk(

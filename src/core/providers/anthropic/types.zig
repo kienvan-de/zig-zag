@@ -1622,7 +1622,7 @@ pub const ContentBlock = union(enum) {
 /// Usage statistics
 pub const Usage = struct {
     input_tokens: u32,
-    output_tokens: u32,
+    output_tokens: u32 = 0,
     cache_creation_input_tokens: ?u32 = null, // GAP-12
     cache_read_input_tokens: ?u32 = null,      // GAP-12
 
@@ -1680,13 +1680,13 @@ pub const MessageStart = struct {
     type: []const u8,
     message: struct {
         id: []const u8,
-        type: []const u8,
-        role: []const u8,
-        content: []const std.json.Value,
-        model: []const u8,
-        stop_reason: ?[]const u8,
-        stop_sequence: ?[]const u8,
-        usage: Usage,
+        type: []const u8 = "",
+        role: []const u8 = "",
+        content: []const std.json.Value = &.{},
+        model: []const u8 = "",
+        stop_reason: ?[]const u8 = null,
+        stop_sequence: ?[]const u8 = null,
+        usage: Usage = .{ .input_tokens = 0 },
     },
 };
 
@@ -1725,6 +1725,29 @@ pub const DeltaContent = struct {
     partial_json: ?[]const u8 = null,
     thinking: ?[]const u8 = null,
     signature: ?[]const u8 = null,
+
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type");
+        try jw.write(self.type);
+        if (self.text) |v| {
+            try jw.objectField("text");
+            try jw.write(v);
+        }
+        if (self.partial_json) |v| {
+            try jw.objectField("partial_json");
+            try jw.write(v);
+        }
+        if (self.thinking) |v| {
+            try jw.objectField("thinking");
+            try jw.write(v);
+        }
+        if (self.signature) |v| {
+            try jw.objectField("signature");
+            try jw.write(v);
+        }
+        try jw.endObject();
+    }
 };
 
 /// Content block stop event
@@ -1740,6 +1763,29 @@ pub const MessageDeltaUsage = struct {
     cache_creation_input_tokens: ?u32 = null,
     cache_read_input_tokens: ?u32 = null,
     server_tool_use: ?struct { web_search_requests: ?u32 = null } = null,
+
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        if (self.input_tokens) |v| {
+            try jw.objectField("input_tokens");
+            try jw.write(v);
+        }
+        try jw.objectField("output_tokens");
+        try jw.write(self.output_tokens);
+        if (self.cache_creation_input_tokens) |v| {
+            try jw.objectField("cache_creation_input_tokens");
+            try jw.write(v);
+        }
+        if (self.cache_read_input_tokens) |v| {
+            try jw.objectField("cache_read_input_tokens");
+            try jw.write(v);
+        }
+        if (self.server_tool_use) |v| {
+            try jw.objectField("server_tool_use");
+            try jw.write(v);
+        }
+        try jw.endObject();
+    }
 };
 
 /// Message delta event - contains stop reason
@@ -1774,13 +1820,28 @@ pub const StreamUsage = struct {
     output_tokens: u32,
 };
 
-/// Result of transforming a single SSE line to Anthropic format.
-/// Used by all transformers' `transformStreamLineToAnthropic` functions.
-pub const AnthropicStreamLineResult = union(enum) {
-    /// Formatted SSE bytes to write to the client (caller must free)
+/// Result of transforming a single SSE line — output bytes or skip.
+/// Used by all providers' Messages-flow stream transformers.
+pub const StreamLineResult = union(enum) {
     output: []const u8,
-    /// Nothing to send for this line
     skip: void,
+};
+
+/// Ping event — emitted periodically by Anthropic and synthesized by
+/// providers that bridge to the Messages wire protocol.
+pub const Ping = struct {
+    type: []const u8 = "ping",
+};
+
+/// Context carried alongside each streaming chat chunk (id, timestamp, model).
+/// The full superset — providers that don't use system_fingerprint/service_tier
+/// leave those fields at their null defaults.
+pub const ChatChunkContext = struct {
+    id: []const u8,
+    created: i64,
+    original_model: []const u8,
+    system_fingerprint: ?[]const u8 = null,
+    service_tier: ?[]const u8 = null,
 };
 
 // ============================================================================

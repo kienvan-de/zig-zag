@@ -103,13 +103,9 @@ pub fn formatChatErrorLine(
 // ============================================================================
 
 /// Everything a chat chunk carries besides its delta.
-pub const ChatChunkContext = struct {
-    id: []const u8,
-    created: i64,
-    original_model: []const u8,
-    system_fingerprint: ?[]const u8 = null,
-    service_tier: ?[]const u8 = null,
-};
+/// Defined in anthropic/types.zig; re-exported here for callers that import
+/// this module without needing to know about the anthropic types path.
+pub const ChatChunkContext = Messages.ChatChunkContext;
 
 /// Serialize one `chat.completion.chunk` as a ready `data: {json}\n\n` line.
 /// The chunk borrows from `ctx` and `delta`, so the caller writes the result
@@ -220,17 +216,28 @@ pub fn messagesOpen(
     original_model: []const u8,
     allocator: std.mem.Allocator,
 ) ?[]const u8 {
-    var out: std.ArrayList(u8) = .empty;
-    out.print(allocator,
-        \\event: message_start
-        \\data: {{"type":"message_start","message":{{"id":"msg_proxy","type":"message","role":"assistant","content":[],"model":"{s}","stop_reason":null,"stop_sequence":null,"usage":{{"input_tokens":0,"output_tokens":0}}}}}}
-        \\
-        \\event: content_block_start
-        \\data: {{"type":"content_block_start","index":0,"content_block":{{"type":"text","text":""}}}}
-        \\
-        \\
-    , .{original_model}) catch return null;
-    return out.toOwnedSlice(allocator) catch null;
+    var buf: std.ArrayList(u8) = .empty;
+    const msg_start = Messages.MessageStart{
+        .type = "message_start",
+        .message = .{
+            .id = "msg_proxy",
+            .type = "message",
+            .role = "assistant",
+            .content = &.{},
+            .model = original_model,
+            .stop_reason = null,
+            .stop_sequence = null,
+            .usage = .{ .input_tokens = 0, .output_tokens = 0 },
+        },
+    };
+    buf.print(allocator, "event: message_start\ndata: {f}\n\n", .{std.json.fmt(msg_start, .{})}) catch return null;
+    const cb_start = Messages.ContentBlockStart{
+        .type = "content_block_start",
+        .index = 0,
+        .content_block = .{ .type = "text", .text = "" },
+    };
+    buf.print(allocator, "event: content_block_start\ndata: {f}\n\n", .{std.json.fmt(cb_start, .{ .emit_null_optional_fields = false })}) catch return null;
+    return buf.toOwnedSlice(allocator) catch null;
 }
 
 /// Closing frames of the synthesized Messages protocol: `content_block_stop`,
@@ -240,20 +247,18 @@ pub fn messagesClose(
     output_tokens: u32,
     allocator: std.mem.Allocator,
 ) ?[]const u8 {
-    var out: std.ArrayList(u8) = .empty;
-    out.print(allocator,
-        \\event: content_block_stop
-        \\data: {{"type":"content_block_stop","index":0}}
-        \\
-        \\event: message_delta
-        \\data: {{"type":"message_delta","delta":{{"stop_reason":"{s}","stop_sequence":null}},"usage":{{"output_tokens":{d}}}}}
-        \\
-        \\event: message_stop
-        \\data: {{"type":"message_stop"}}
-        \\
-        \\
-    , .{ stop_reason, output_tokens }) catch return null;
-    return out.toOwnedSlice(allocator) catch null;
+    var buf: std.ArrayList(u8) = .empty;
+    const cb_stop = Messages.ContentBlockStop{ .type = "content_block_stop", .index = 0 };
+    buf.print(allocator, "event: content_block_stop\ndata: {f}\n\n", .{std.json.fmt(cb_stop, .{})}) catch return null;
+    const msg_delta = Messages.MessageDelta{
+        .type = "message_delta",
+        .delta = .{ .stop_reason = stop_reason, .stop_sequence = null },
+        .usage = .{ .output_tokens = output_tokens },
+    };
+    buf.print(allocator, "event: message_delta\ndata: {f}\n\n", .{std.json.fmt(msg_delta, .{})}) catch return null;
+    const msg_stop = Messages.MessageStop{ .type = "message_stop" };
+    buf.print(allocator, "event: message_stop\ndata: {f}\n\n", .{std.json.fmt(msg_stop, .{})}) catch return null;
+    return buf.toOwnedSlice(allocator) catch null;
 }
 
 /// Free a tool_choice object built by the messages-flow request transform
