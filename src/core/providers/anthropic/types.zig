@@ -323,6 +323,28 @@ pub const CodeExecutionResult = struct {
     content: []const CodeExecutionOutput = &.{},
 };
 
+/// Variant returned when PFC / web_search is active — stdout is encrypted.
+pub const EncryptedCodeExecutionResult = struct {
+    type: []const u8 = "encrypted_code_execution_result",
+    encrypted_stdout: []const u8 = "",
+    stderr: []const u8 = "",
+    return_code: i32 = 0,
+    content: []const CodeExecutionOutput = &.{},
+};
+
+/// Union covering both plain and encrypted code execution results.
+pub const CodeExecutionResultContent = union(enum) {
+    plain: CodeExecutionResult,
+    encrypted: EncryptedCodeExecutionResult,
+
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        switch (self) {
+            .plain => |v| try jw.write(v),
+            .encrypted => |v| try jw.write(v),
+        }
+    }
+};
+
 pub const BashCodeExecutionOutput = struct {
     type: []const u8 = "bash_code_execution_output",
     file_id: []const u8 = "",
@@ -336,18 +358,42 @@ pub const BashCodeExecutionResult = struct {
     content: []const BashCodeExecutionOutput = &.{},
 };
 
-pub const TextEditorCodeExecutionResult = struct {
-    type: []const u8 = "text_editor_code_execution_view_result",
-    content: []const u8 = "",
-    file_type: []const u8 = "",
-    num_lines: u32 = 0,
-    start_line: u32 = 1,
-    total_lines: u32 = 0,
+/// Union covering all three text editor command result shapes.
+pub const TextEditorCodeExecutionResult = union(enum) {
+    view: struct {
+        type: []const u8 = "text_editor_code_execution_view_result",
+        content: []const u8 = "",
+        file_type: []const u8 = "",
+        num_lines: u32 = 0,
+        start_line: u32 = 1,
+        total_lines: u32 = 0,
+    },
+    create: struct {
+        type: []const u8 = "text_editor_code_execution_create_result",
+        is_file_update: bool = false,
+    },
+    str_replace: struct {
+        type: []const u8 = "text_editor_code_execution_str_replace_result",
+        old_start: u32 = 0,
+        old_lines: u32 = 0,
+        new_start: u32 = 0,
+        new_lines: u32 = 0,
+        lines: []const []const u8 = &.{},
+    },
+
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        switch (self) {
+            .view => |v| try jw.write(v),
+            .create => |v| try jw.write(v),
+            .str_replace => |v| try jw.write(v),
+        }
+    }
 };
 
 pub const ToolReference = struct {
     type: []const u8 = "tool_reference",
     tool_name: []const u8 = "",
+    cache_control: ?CacheControl = null,
 };
 
 pub const ToolSearchToolSearchResult = struct {
@@ -421,7 +467,7 @@ pub const ContentBlockParam = union(enum) {
     code_execution_tool_result: struct {
         type: []const u8 = "code_execution_tool_result",
         tool_use_id: []const u8,
-        content: CodeExecutionResult,
+        content: CodeExecutionResultContent,
     },
     bash_code_execution_tool_result: struct {
         type: []const u8 = "bash_code_execution_tool_result",
@@ -588,9 +634,15 @@ pub const ContentBlockParam = union(enum) {
             const tuid = obj.get("tool_use_id") orelse return error.MissingField;
             if (tuid != .string) return error.UnexpectedToken;
             const content_val = obj.get("content") orelse return error.MissingField;
+            const content_type = if (content_val == .object) content_val.object.get("type") else null;
+            const is_encrypted = if (content_type) |t| (t == .string and std.mem.eql(u8, t.string, "encrypted_code_execution_result")) else false;
+            const content: CodeExecutionResultContent = if (is_encrypted)
+                .{ .encrypted = try std.json.innerParseFromValue(EncryptedCodeExecutionResult, allocator, content_val, options) }
+            else
+                .{ .plain = try std.json.innerParseFromValue(CodeExecutionResult, allocator, content_val, options) };
             return .{ .code_execution_tool_result = .{
                 .tool_use_id = tuid.string,
-                .content = try std.json.innerParseFromValue(CodeExecutionResult, allocator, content_val, options),
+                .content = content,
             } };
         } else if (std.mem.eql(u8, type_str, "bash_code_execution_tool_result")) {
             const tuid = obj.get("tool_use_id") orelse return error.MissingField;
@@ -607,7 +659,7 @@ pub const ContentBlockParam = union(enum) {
             const content_val = obj.get("content") orelse return error.MissingField;
             return .{ .text_editor_code_execution_tool_result = .{
                 .tool_use_id = tuid.string,
-                .content = try std.json.innerParseFromValue(TextEditorCodeExecutionResult, allocator, content_val, options),
+                .content = try parseTextEditorResult(allocator, content_val, options),
                 .cache_control = cache_control,
             } };
         } else if (std.mem.eql(u8, type_str, "tool_search_tool_result")) {
@@ -1443,7 +1495,7 @@ pub const ContentBlock = union(enum) {
     code_execution_tool_result: struct {
         type: []const u8,
         tool_use_id: []const u8,
-        content: CodeExecutionResult,
+        content: CodeExecutionResultContent,
     },
     bash_code_execution_tool_result: struct {
         type: []const u8,
@@ -1579,10 +1631,16 @@ pub const ContentBlock = union(enum) {
             const tuid = obj.get("tool_use_id") orelse return error.MissingField;
             if (tuid != .string) return error.UnexpectedToken;
             const content_val = obj.get("content") orelse std.json.Value{ .null = {} };
+            const content_type = if (content_val == .object) content_val.object.get("type") else null;
+            const is_encrypted = if (content_type) |t| (t == .string and std.mem.eql(u8, t.string, "encrypted_code_execution_result")) else false;
+            const content: CodeExecutionResultContent = if (is_encrypted)
+                .{ .encrypted = try std.json.innerParseFromValue(EncryptedCodeExecutionResult, allocator, content_val, options) }
+            else
+                .{ .plain = try std.json.innerParseFromValue(CodeExecutionResult, allocator, content_val, options) };
             return .{ .code_execution_tool_result = .{
                 .type = type_str,
                 .tool_use_id = tuid.string,
-                .content = try std.json.innerParseFromValue(CodeExecutionResult, allocator, content_val, options),
+                .content = content,
             } };
         } else if (std.mem.eql(u8, type_str, "bash_code_execution_tool_result")) {
             const tuid = obj.get("tool_use_id") orelse return error.MissingField;
@@ -1600,7 +1658,7 @@ pub const ContentBlock = union(enum) {
             return .{ .text_editor_code_execution_tool_result = .{
                 .type = type_str,
                 .tool_use_id = tuid.string,
-                .content = try std.json.innerParseFromValue(TextEditorCodeExecutionResult, allocator, content_val, options),
+                .content = try parseTextEditorResult(allocator, content_val, options),
             } };
         } else if (std.mem.eql(u8, type_str, "tool_search_tool_result")) {
             const tuid = obj.get("tool_use_id") orelse return error.MissingField;
@@ -1701,6 +1759,24 @@ pub const ContentBlock = union(enum) {
         }
     }
 };
+
+/// Parse a TextEditorCodeExecutionResult union from a JSON value, dispatching
+/// on the `type` field to select the correct variant.
+fn parseTextEditorResult(
+    allocator: std.mem.Allocator,
+    v: std.json.Value,
+    options: std.json.ParseOptions,
+) !TextEditorCodeExecutionResult {
+    if (v == .object) {
+        if (v.object.get("type")) |t| if (t == .string) {
+            if (std.mem.eql(u8, t.string, "text_editor_code_execution_create_result"))
+                return .{ .create = try std.json.innerParseFromValue(@TypeOf(@as(TextEditorCodeExecutionResult, undefined).create), allocator, v, options) };
+            if (std.mem.eql(u8, t.string, "text_editor_code_execution_str_replace_result"))
+                return .{ .str_replace = try std.json.innerParseFromValue(@TypeOf(@as(TextEditorCodeExecutionResult, undefined).str_replace), allocator, v, options) };
+        };
+    }
+    return .{ .view = try std.json.innerParseFromValue(@TypeOf(@as(TextEditorCodeExecutionResult, undefined).view), allocator, v, options) };
+}
 
 /// Usage statistics
 pub const Usage = struct {
