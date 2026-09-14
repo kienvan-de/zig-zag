@@ -1764,10 +1764,17 @@ function deleteRouteGroup(idx) {
   state.dirty.smart_routing.splice(idx, 1);
   markDirty();
   renderSidebar();
-  if (state.activeType === 'smart-routing' && state.activeKey === idx) {
-    state.activeType = null;
-    state.activeKey = null;
-    $mainPanel.innerHTML = '<div class="panel-placeholder">Select an item from the sidebar</div>';
+  if (state.activeType === 'smart-routing' && state.activeKey !== null) {
+    if (state.activeKey === idx) {
+      // The active group was deleted — clear the panel.
+      state.activeType = null;
+      state.activeKey = null;
+      $mainPanel.innerHTML = '<div class="panel-placeholder">Select an item from the sidebar</div>';
+    } else if (state.activeKey > idx) {
+      // Groups above the deleted index shifted down by one; keep the panel open
+      // but update the key so subsequent edits target the correct group.
+      state.activeKey -= 1;
+    }
   }
 }
 

@@ -300,16 +300,25 @@ fn patchCurrentModels(allocator: Allocator, raw_json: []const u8, groups: []Rout
 
     // Collect heap copies so we can free them after stringification (bug #10 fix)
     var copies = try allocator.alloc([]u8, count);
+    var n_copies: usize = 0;
     defer {
-        for (copies) |c| allocator.free(c);
+        // Only free the n_copies entries that were actually initialised — freeing
+        // the full `count` slots would call free() on uninitialised memory when
+        // some items are skipped via `continue` below.
+        for (copies[0..n_copies]) |c| allocator.free(c);
         allocator.free(copies);
     }
-    var n_copies: usize = 0;
 
     for (0..count) |i| {
         if (items[i] != .object) continue;
-        const cur = groups[i].current_model;
-        const cur_copy = try allocator.dupe(u8, cur);
+        // Read current_model under the per-group mutex to avoid a data race with
+        // concurrent rollover() / resetGroup() calls.
+        groups[i].mutex.lock();
+        const cur_copy = allocator.dupe(u8, groups[i].current_model) catch |e| {
+            groups[i].mutex.unlock();
+            return e;
+        };
+        groups[i].mutex.unlock();
         copies[n_copies] = cur_copy;
         n_copies += 1;
         try items[i].object.put(allocator, "current_model", std.json.Value{ .string = cur_copy });
@@ -366,23 +375,63 @@ pub fn deriveApiKey(allocator: Allocator, name: []const u8) ![]u8 {
 // ============================================================================
 
 var g_routing: ?SmartRouting = null;
-var g_mutex: sync.Mutex = .{};
+// RwLock: shared (read) for callers of acquire(); exclusive (write) for init/reload.
+// This prevents use-after-free: reload() blocks until all in-flight handles release.
+var g_rwlock: sync.RwLock = .{};
 // Stored once at init() time; reload() always uses this stable allocator so
 // deinit() of the previous SmartRouting never touches a freed arena.
+// Read and written only while holding g_rwlock exclusive.
 var g_allocator: ?Allocator = null;
+
+/// RAII guard returned by acquire(). Holds the shared read-lock for its lifetime.
+/// Call release() (or defer handle.release()) when done with the SmartRouting pointer.
+pub const SmartRoutingHandle = struct {
+    sr: *SmartRouting,
+
+    pub fn release(self: SmartRoutingHandle) void {
+        _ = self;
+        g_rwlock.unlockShared();
+    }
+};
 
 /// Initialise the global smart routing state from raw config JSON.
 /// Called once at server startup. Safe to call again (replaces state).
 pub fn init(allocator: Allocator, raw_json: []const u8) void {
-    g_mutex.lock();
-    defer g_mutex.unlock();
+    g_rwlock.lock();
+    defer g_rwlock.unlock();
 
+    // g_allocator written under exclusive lock — no TOCTOU.
     g_allocator = allocator;
-    if (g_routing) |*old| old.deinit();
-    g_routing = SmartRouting.parse(allocator, raw_json) catch |err| {
+
+    const maybe_new = SmartRouting.parse(allocator, raw_json) catch |err| {
         log.err("[smart_routing] init: parse failed: {}", .{err});
+        if (g_routing) |*old| old.deinit();
+        g_routing = null;
         return;
     };
+
+    // Preserve in-memory current_model values across reloads so a stale UI save
+    // (with pre-failover current_model in its body) does not revert failover state.
+    if (maybe_new) |*new_sr| {
+        if (g_routing) |*old_sr| {
+            for (new_sr.groups) |*new_g| {
+                if (new_g.api_key.len == 0) continue;
+                const old_g = old_sr.index.get(new_g.api_key) orelse continue;
+                old_g.mutex.lock();
+                const preserved = allocator.dupe(u8, old_g.current_model) catch {
+                    old_g.mutex.unlock();
+                    continue;
+                };
+                old_g.mutex.unlock();
+                allocator.free(new_g.current_model);
+                new_g.current_model = preserved;
+            }
+        }
+    }
+
+    if (g_routing) |*old| old.deinit();
+    g_routing = maybe_new;
+
     if (g_routing) |sr| {
         log.info("[smart_routing] Loaded {d} group(s), {d} routable", .{ sr.groups.len, sr.index.count() });
     }
@@ -392,16 +441,28 @@ pub fn init(allocator: Allocator, raw_json: []const u8) void {
 /// init() call so the previous SmartRouting is freed with the correct allocator,
 /// not the per-request arena that triggered the save.
 pub fn reload(raw_json: []const u8) void {
-    const allocator = g_allocator orelse return;
+    // Acquire exclusive lock first so g_allocator is read atomically with the
+    // rest of init — no TOCTOU between reading g_allocator and taking the lock.
+    g_rwlock.lock();
+    const allocator = g_allocator orelse {
+        log.warn("[smart_routing] reload: skipped (not yet initialised)", .{});
+        g_rwlock.unlock();
+        return;
+    };
+    g_rwlock.unlock();
+    // init() will re-acquire the exclusive lock.
     init(allocator, raw_json);
 }
 
-/// Return a pointer to the global SmartRouting, or null if not initialised
-/// or if no smart_routing key was present in config.
-/// The pointer is stable for the lifetime of the current config (until the
-/// next reload). Do not hold across a config save boundary.
-pub fn get() ?*SmartRouting {
-    g_mutex.lock();
-    defer g_mutex.unlock();
-    return if (g_routing) |*sr| sr else null;
+/// Acquire a read-lock on the global SmartRouting and return a RAII handle.
+/// Returns null if smart routing is not initialised or has no groups configured.
+/// The caller MUST call handle.release() (typically via defer) when done.
+/// The handle prevents concurrent reload() from freeing the SmartRouting.
+pub fn acquire() ?SmartRoutingHandle {
+    g_rwlock.lockShared();
+    if (g_routing) |*sr| {
+        return SmartRoutingHandle{ .sr = sr };
+    }
+    g_rwlock.unlockShared();
+    return null;
 }

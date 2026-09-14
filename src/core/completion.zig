@@ -102,8 +102,11 @@ pub fn chatComplete(
     // Budget enforcement
     try utils.enforceBudget(cfg);
 
-    // Smart routing: resolve effective model and set up retry state
-    const sr = smart_routing.get();
+    // Smart routing: acquire a read-lock guard that prevents concurrent reload()
+    // from freeing the SmartRouting while this request is in flight.
+    const sr_handle = smart_routing.acquire();
+    defer if (sr_handle) |h| h.release();
+    const sr = if (sr_handle) |h| h.sr else null;
     const sr_group = if (sr) |s| s.lookup(request.model) else null;
     var current_model_buf: ?[]u8 = if (sr_group) |g| try sr.?.getCurrentModel(g, allocator) else null;
     defer if (current_model_buf) |buf| allocator.free(buf);
@@ -506,8 +509,11 @@ pub fn messagesComplete(
     // Budget enforcement
     try utils.enforceBudget(cfg);
 
-    // Smart routing: resolve effective model and set up retry state
-    const sr = smart_routing.get();
+    // Smart routing: acquire a read-lock guard that prevents concurrent reload()
+    // from freeing the SmartRouting while this request is in flight.
+    const sr_handle = smart_routing.acquire();
+    defer if (sr_handle) |h| h.release();
+    const sr = if (sr_handle) |h| h.sr else null;
     const sr_group = if (sr) |s| s.lookup(request.model) else null;
     var current_model_buf: ?[]u8 = if (sr_group) |g| try sr.?.getCurrentModel(g, allocator) else null;
     defer if (current_model_buf) |buf| allocator.free(buf);
@@ -1051,8 +1057,9 @@ fn fetchTask(ctx_ptr: *anyopaque) void {
 /// Each group with a non-empty api_key gets an entry with owned_by = "zig-zag".
 /// id and owned_by are heap-allocated so freeModels() can free them uniformly.
 fn appendGroupModels(allocator: std.mem.Allocator, list: *std.ArrayList(openai_common.Model)) !void {
-    const sr = smart_routing.get() orelse return;
-    for (sr.groups) |*g| {
+    const handle = smart_routing.acquire() orelse return;
+    defer handle.release();
+    for (handle.sr.groups) |*g| {
         if (g.api_key.len == 0) continue;
         try list.append(allocator, openai_common.Model{
             .id = try allocator.dupe(u8, g.api_key),
@@ -1234,8 +1241,11 @@ pub fn responsesComplete(
     const cfg = config_mod.get();
     try utils.enforceBudget(cfg);
 
-    // Smart routing: resolve effective model and set up retry state
-    const sr = smart_routing.get();
+    // Smart routing: acquire a read-lock guard that prevents concurrent reload()
+    // from freeing the SmartRouting while this request is in flight.
+    const sr_handle = smart_routing.acquire();
+    defer if (sr_handle) |h| h.release();
+    const sr = if (sr_handle) |h| h.sr else null;
     const sr_group = if (sr) |s| s.lookup(request.model) else null;
     var current_model_buf: ?[]u8 = if (sr_group) |g| try sr.?.getCurrentModel(g, allocator) else null;
     defer if (current_model_buf) |buf| allocator.free(buf);

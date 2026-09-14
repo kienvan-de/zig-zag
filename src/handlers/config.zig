@@ -118,14 +118,15 @@ fn handlePost(allocator: std.mem.Allocator, connection: net.Connection, body: []
 // ============================================================================
 
 fn handleSmartRoutingReset(allocator: std.mem.Allocator, connection: net.Connection, idx: usize) !void {
-    const sr = smart_routing.get() orelse {
+    const sr_handle = smart_routing.acquire() orelse {
         return http.sendJsonResponse(connection, .bad_request, "{\"error\":\"smart_routing not configured\"}");
     };
-    if (idx >= sr.groups.len) {
+    defer sr_handle.release();
+    if (idx >= sr_handle.sr.groups.len) {
         return http.sendJsonResponse(connection, .bad_request, "{\"error\":\"group index out of range\"}");
     }
-    const group = &sr.groups[idx];
-    sr.resetGroup(group, allocator) catch |err| {
+    const group = &sr_handle.sr.groups[idx];
+    sr_handle.sr.resetGroup(group, allocator) catch |err| {
         log.err("Smart routing reset failed: {}", .{err});
         return http.sendInternalError(connection);
     };
