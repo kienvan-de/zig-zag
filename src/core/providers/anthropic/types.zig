@@ -2154,6 +2154,26 @@ pub const Ping = struct {
     type: []const u8 = "ping",
 };
 
+/// Typed union of all Anthropic SSE events. Returned by transformer stream
+/// functions so callers own serialization — the transformer only transforms.
+pub const SseEvent = union(enum) {
+    message_start: MessageStart,
+    content_block_start: ContentBlockStart,
+    content_block_delta: ContentBlockDelta,
+    content_block_stop: ContentBlockStop,
+    message_delta: MessageDelta,
+    message_stop: MessageStop,
+    ping: Ping,
+    error_event: SseErrorEvent,
+};
+
+/// Result type for Messages-flow stream line transforms.
+/// The transformer returns a typed SseEvent; the caller serializes to wire bytes.
+pub const MessagesStreamLineResult = union(enum) {
+    event: SseEvent,
+    skip: void,
+};
+
 // ============================================================================
 // Models API Structures
 // ============================================================================
