@@ -12,39 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Anthropic wire-format transformer — one file, four flows.
+//! Anthropic wire-format transformer — four flows.
 //!
-//! ## Principles
-//!
-//! - **P1** One transformer per upstream wire format: this file converts between
-//!   the inbound API schemas and the Anthropic wire, and nothing else.
-//! - **P2** Four flows, named after the *inbound* schema: `Models`, `Chat`,
-//!   `Messages`, `Responses`. Each request/response/stream flow exposes exactly
-//!   `transform{Flow}Request`, `cleanup{Flow}Request`, `transform{Flow}Response`,
-//!   `cleanup{Flow}Response`, `transform{Flow}StreamLine`. `Models` is
-//!   response-only. `Responses` additionally owns `flushResponsesStream`.
-//! - **P3** Three owned stream states (`ChatStreamState`, `MessagesStreamState`,
-//!   `ResponsesStreamState`), each with the uniform core
-//!   `allocator, original_model, response_id, finish_reason, input_tokens, output_tokens`
-//!   plus flow-specific fields. Usage is read from these fields at end of stream —
-//!   never scraped from individual chunks by pipelines.
-//! - **P4** One streaming result type, `StreamLineResult`. `output` carries
-//!   formatted SSE bytes ready to write (caller frees); errors are rendered
-//!   *inside* this transformer into the flow's own wire format.
-//! - **P5** No re-exports, no aliases: every `pub` symbol here is defined here.
-//! - **P6** Main surface only: mapping/streaming support code lives in `content.zig`.
-//! - **P7** Flow prefixes only in names (`Chat`/`Messages`/`Responses`/`Models`) —
-//!   including import aliases, so a reader sees the same vocabulary everywhere.
-//!   `Anthropic` names the wire format and appears only in prose.
-//! - **P8** Parameter order is fixed: request `(request, model, allocator)`,
-//!   response `(upstream_response, original_req, allocator)` — every response
-//!   carries the original inbound request so flow-specific echo fields
-//!   (e.g. Responses temperature/store) and the requested model are available;
-//!   stream `(line, *state, allocator)`, cleanup `(value, allocator)`.
-//!   Exception: `transformModelsResponse` keeps its pre-existing order.
-//! - **P11** Self-contained: depends on shared *type definitions* and its own
-//!   `content.zig` only — never on another provider's transformer/converter.
-//!   Conversion duplicated across providers is accepted; isolation over DRY.
+//! Flows (named after the inbound schema): Models, Chat, Messages, Responses.
+//! Each flow exposes transform/cleanup functions for request, response, and stream.
+//! Stream states carry usage; SSE bytes are caller-freed.
+//! Mapping helpers live in content.zig.
 
 const std = @import("std");
 
@@ -56,23 +29,18 @@ const content = @import("content.zig"); // own mapping internals
 const log = @import("../../log.zig");
 const time = @import("../../time.zig");
 
-// ============================================================================
-// Contract (shared by all flows)
-// ============================================================================
+/// One streaming line result. `output` carries formatted SSE bytes (caller frees). `skip` means nothing to emit.
+pub const StreamLineResult = union(enum) {
+    output: []const u8,
+    skip: void,
+};
 
-/// Re-export from types.zig so callers can use `Transformer.StreamLineResult`.
-pub const StreamLineResult = Messages.StreamLineResult;
-
-/// The responses flow synthesizes its own terminal events; the pipeline appends
-/// the `[DONE]` sentinel afterwards.
-/// TODO(review): this is file-level today but only the Responses flow needs it —
-/// decide between per-flow flags or leaving it here.
+/// The responses flow synthesizes its own terminal events; the pipeline appends the `[DONE]` sentinel afterwards.
 pub const appendsDoneMarker = true;
 
 // ============================================================================
 // Flow: /v1/models
 // ============================================================================
-// Response-only: GET, no request body, no streaming (P2).
 
 /// Map the Anthropic models listing to inbound `Model` entries, prefixing ids
 /// with the provider name.
@@ -102,17 +70,14 @@ pub fn transformModelsResponse(
 // Flow: /v1/chat/completions — inbound chat schema → Anthropic wire
 // ============================================================================
 
-/// Stream state for the chat flow: Anthropic events are stateful, so context
-/// (open tool call, whether a role has been emitted) must survive across lines.
+/// Stream state for the chat flow.
 pub const ChatStreamState = struct {
-    // --- uniform core (P3) ---
     allocator: std.mem.Allocator,
     original_model: []const u8,
     response_id: []const u8 = "",
     finish_reason: ?[]const u8 = null,
     input_tokens: u32 = 0,
     output_tokens: u32 = 0,
-    // --- chat-flow specifics ---
     created: i64,
 
     pub fn init(allocator: std.mem.Allocator, original_model: []const u8) ChatStreamState {
@@ -130,40 +95,79 @@ pub const ChatStreamState = struct {
 };
 
 /// Inbound chat request → Anthropic request, pinned to `model`.
+///
+/// Field mapping (Chat.Request → Messages.Request):
+///   model                           → model (overridden by `model` param)
+///   messages                        → messages (normalizeMessages: drop system/dev, fold tool results)
+///   system/developer messages       → system (extractSystemPrompt)
+///   max_tokens | max_completion_tokens → max_tokens (first non-null; 4096 only if both omitted)
+///   temperature                     → temperature
+///   top_p                           → top_p
+///   stream                          → stream
+///   stop[]                          → stop_sequences[]
+///   tools[].function                → tools[] (transformTools via ToolFunction)
+///   tool_choice                     → tool_choice (transformToolChoice)
+///   user                            → metadata.user_id
+///   parallel_tool_calls             → tool_choice.disable_parallel_tool_use (inverted; explicit for both true and false)
+///   (no mapping) n, presence_penalty, frequency_penalty, response_format,
+///                logit_bias, logprobs, top_logprobs, seed, reasoning_effort,
+///                modalities, audio, store, metadata, prediction, service_tier,
+///                web_search_options, moderation, verbosity, stream_options
+///   (upstream ignored) type, role, model — always "message"/"assistant"/served model
 pub fn transformChatRequest(
     request: Chat.Request,
     model: []const u8,
     allocator: std.mem.Allocator,
 ) !Messages.Request {
+    var tools: ?[]Messages.Tool = null;
+    if (request.tools) |chat_tools| {
+        var fns: std.ArrayList(common.ToolFunction) = .empty;
+        defer fns.deinit(allocator);
+        for (chat_tools) |t| try fns.append(allocator, t.function);
+        if (fns.items.len > 0) {
+            tools = try content.transformTools(fns.items, allocator);
+        }
+    }
+
+    var tool_choice_val = if (request.tool_choice) |tc| content.transformToolChoice(tc) else null;
+
+    // parallel_tool_calls → disable_parallel_tool_use (inverted).
+    // false → disable=true; true → disable=false (explicit).
+    if (request.parallel_tool_calls) |ptc| {
+        const disable = !ptc;
+        tool_choice_val = switch (tool_choice_val orelse Messages.ToolChoice{ .auto = .{} }) {
+            .auto => |tc| Messages.ToolChoice{ .auto = .{ .type = tc.type, .disable_parallel_tool_use = disable } },
+            .any => |tc| Messages.ToolChoice{ .any = .{ .type = tc.type, .disable_parallel_tool_use = disable } },
+            .tool => |tc| Messages.ToolChoice{ .tool = .{ .type = tc.type, .name = tc.name, .disable_parallel_tool_use = disable } },
+            .none => tool_choice_val,
+        };
+    }
+
     return .{
         .model = model,
         .messages = try content.normalizeMessages(request.messages, allocator),
-        .system = try content.extractSystemPrompt(request.messages, allocator),
+        .system = if (try content.extractSystemPrompt(request.messages, allocator)) |s| .{ .text = s } else null,
         .max_tokens = request.max_tokens orelse request.max_completion_tokens orelse 4096,
         .temperature = request.temperature,
         .top_p = request.top_p,
         .stream = request.stream,
         .stop_sequences = request.stop,
-        .tools = if (request.tools) |chat_tools| blk: {
-            var fns: std.ArrayList(common.ToolFunction) = .empty;
-            defer fns.deinit(allocator);
-            for (chat_tools) |t| try fns.append(allocator, t.function);
-            break :blk if (fns.items.len > 0) try content.transformTools(fns.items, allocator) else null;
-        } else null,
-        .tool_choice = if (request.tool_choice) |tool_choice| content.transformToolChoice(tool_choice) else null,
+        .tools = tools,
+        .tool_choice = tool_choice_val,
         .metadata = if (request.user) |user| .{ .user_id = user } else null,
+        .service_tier = request.service_tier,
     };
 }
 
-/// Free what `transformChatRequest` allocated: the system prompt, every turn's
-/// content blocks (including the parsed `tool_use.input` trees), the message
-/// slice, and the tool slice. Everything else borrows from the parsed inbound
-/// request and is freed with it.
+/// Free what `transformChatRequest` allocated.
 pub fn cleanupChatRequest(
     request: Messages.Request,
     allocator: std.mem.Allocator,
 ) void {
-    if (request.system) |system_prompt| allocator.free(system_prompt);
+    if (request.system) |sys| switch (sys) {
+        .text => |s| allocator.free(s),
+        .blocks => |blks| allocator.free(blks),
+    };
     for (request.messages) |msg| {
         if (msg.content == .blocks) content.freeMessageBlocks(msg.content.blocks, allocator);
     }
@@ -171,20 +175,35 @@ pub fn cleanupChatRequest(
     if (request.tools) |tools| allocator.free(tools);
 }
 
-/// Free a slice of inbound tool calls produced by this flow (each `function`
-/// variant owns its serialized `arguments` string).
 /// Anthropic response → inbound chat response.
+///
+/// Field mapping (Messages.Response → Chat.Response):
+///   id                          → id (duped)
+///   "chat.completion"           → object
+///   now                         → created
+///   original_req.model          → model (duped)
+///   content[text blocks]        → choices[0].message.content (joined)
+///   content[tool_use blocks]    → choices[0].message.tool_calls
+///   stop_reason                 → choices[0].finish_reason (transformStopReason)
+///   usage.input_tokens          → usage.prompt_tokens
+///   usage.output_tokens         → usage.completion_tokens
+///   input+output                → usage.total_tokens
+///   usage.cache_creation_input_tokens → usage.prompt_tokens_details.cache_write_tokens
+///   usage.cache_read_input_tokens     → usage.prompt_tokens_details.cached_tokens
+///   upstream_response.usage.service_tier → service_tier
+///   (not mapped) output_tokens_details, server_tool_use, cache_creation,
+///                stop_sequence, container, stop_details, metadata, moderation
+///   (upstream ignored) type, role, model — always "message"/"assistant"/served model
+///   (target null) system_fingerprint, refusal, annotations, audio, logprobs,
+///                 completion_tokens_details (no Anthropic source)
 pub fn transformChatResponse(
     upstream_response: Messages.Response,
     original_req: Chat.Request,
     allocator: std.mem.Allocator,
 ) !Chat.Response {
-
     var message_text: ?[]const u8 = try content.extractTextFromBlocks(upstream_response.content, allocator);
     errdefer if (message_text) |t| allocator.free(t);
 
-    // An empty text body is reported as `null` content, so the empty join is
-    // dropped rather than carried as a zero-length string.
     if (message_text) |t| {
         if (t.len == 0) {
             allocator.free(t);
@@ -209,7 +228,6 @@ pub fn transformChatResponse(
     };
 
     return .{
-        // Duplicated: the caller keeps this after the upstream parse is freed.
         .id = try allocator.dupe(u8, upstream_response.id),
         .object = "chat.completion",
         .created = time.timestamp(),
@@ -219,9 +237,14 @@ pub fn transformChatResponse(
             .prompt_tokens = upstream_response.usage.input_tokens,
             .completion_tokens = upstream_response.usage.output_tokens,
             .total_tokens = upstream_response.usage.input_tokens + upstream_response.usage.output_tokens,
+            .prompt_tokens_details = if (upstream_response.usage.cache_creation_input_tokens != null or
+                upstream_response.usage.cache_read_input_tokens != null) .{
+                .cache_write_tokens = upstream_response.usage.cache_creation_input_tokens orelse 0,
+                .cached_tokens = upstream_response.usage.cache_read_input_tokens orelse 0,
+            } else null,
         },
         .system_fingerprint = null,
-        .service_tier = null,
+        .service_tier = upstream_response.usage.service_tier,
     };
 }
 
@@ -240,13 +263,17 @@ pub fn cleanupChatResponse(
     allocator.free(inbound_response.model);
 }
 
-/// Serialize a chat `StreamChunk` into a `data: {json}\n\n` SSE line.
-/// The chunk borrows from `state` and the caller's parsed event, so it is
-/// consumed here immediately — no parse round-trip.
 /// One Anthropic SSE line → zero or one chat-format SSE chunk, as ready bytes.
-/// Parses the event, mutates `state`, and delegates byte formatting to
-/// `content.buildChatChunk` (P6: all helpers in content.zig). Upstream `error`
-/// events render into chat-format error bytes inline (P4).
+///
+/// Event mapping (Anthropic → Chat SSE):
+///   message_start          → role:assistant chunk (captures id + input_tokens)
+///   content_block_start    → tool_use open chunk (if tool_use block)
+///   content_block_delta    → text_delta → content chunk
+///                            input_json_delta → tool_call arguments chunk
+///   message_delta          → finish_reason + usage chunk (captures output_tokens)
+///   content_block_stop,
+///   message_stop, ping, …  → skipped
+///   error                  → chat-format error bytes
 pub fn transformChatStreamLine(
     line: []const u8,
     state: *ChatStreamState,
@@ -255,7 +282,6 @@ pub fn transformChatStreamLine(
     if (!std.mem.startsWith(u8, line, "data: ")) return .{ .skip = {} };
     const json_part = line["data: ".len..];
 
-    // Cheap type probe first; a failure here may instead be an error payload.
     const type_info = std.json.parseFromSlice(
         struct { type: []const u8 },
         allocator,
@@ -288,8 +314,6 @@ pub fn transformChatStreamLine(
         };
         defer parsed.deinit();
 
-        // Id is owned by the state (the parsed event dies on return). Guarded so
-        // a duplicate message_start can't leak the previous dupe.
         if (state.response_id.len == 0 and parsed.value.message.id.len > 0) {
             state.response_id = allocator.dupe(u8, parsed.value.message.id) catch return .{ .skip = {} };
         }
@@ -315,7 +339,6 @@ pub fn transformChatStreamLine(
         };
         defer parsed.deinit();
 
-        // A `tool_use` block opens with id + name; text blocks wait for deltas.
         const block = parsed.value.content_block;
         if (!std.mem.eql(u8, block.type, "tool_use")) return .{ .skip = {} };
 
@@ -345,7 +368,6 @@ pub fn transformChatStreamLine(
         };
         defer parsed.deinit();
 
-        // Text or partial tool-call arguments; thinking deltas are skipped.
         const delta = parsed.value.delta;
         if (std.mem.eql(u8, delta.type, "text_delta")) {
             const text = delta.text orelse return .{ .skip = {} };
@@ -369,6 +391,7 @@ pub fn transformChatStreamLine(
             }, .{ .tool_calls = &tool_calls }, null, null, allocator) orelse return .{ .skip = {} };
             return .{ .output = bytes };
         }
+        // thinking/signature deltas — nothing to emit.
         return .{ .skip = {} };
     }
 
@@ -401,7 +424,7 @@ pub fn transformChatStreamLine(
         return .{ .output = bytes };
     }
 
-    // message_stop, content_block_stop, ping, … — nothing to emit.
+    // content_block_stop, message_stop, ping, … — nothing to emit.
     return .{ .skip = {} };
 }
 
@@ -409,10 +432,8 @@ pub fn transformChatStreamLine(
 // Flow: /v1/messages — inbound messages schema → Anthropic wire (pass-through)
 // ============================================================================
 
-/// Stream state for the messages pass-through flow: lines are forwarded verbatim,
-/// the state exists only to carry usage out for metrics (P3).
+/// Stream state for the messages pass-through flow.
 pub const MessagesStreamState = struct {
-    // --- uniform core (P3) ---
     allocator: std.mem.Allocator,
     original_model: []const u8,
     response_id: []const u8 = "",
@@ -439,10 +460,6 @@ pub fn transformMessagesRequest(
     allocator: std.mem.Allocator,
 ) !Messages.Request {
     _ = allocator;
-    // Copy-and-override: the shallow copy borrows the inbound parse's slices,
-    // and any field added to the wire type later rides along automatically —
-    // which is exactly what a pass-through wants. The pipeline frees the
-    // inbound parse; no ownership transfers here.
     var pinned = request;
     pinned.model = model;
     return pinned;
@@ -479,22 +496,18 @@ pub fn cleanupMessagesResponse(
 }
 
 /// Forward one Anthropic SSE line verbatim, re-attaching the `event:` line the
-/// SSE iterator strips, and accumulate usage into `state`. The forwarded line
-/// is untouched — parsing here is only for metrics (P3/P4).
+/// SSE iterator strips, and accumulate usage into `state`.
 pub fn transformMessagesStreamLine(
     line: []const u8,
     state: *MessagesStreamState,
     allocator: std.mem.Allocator,
 ) StreamLineResult {
     if (!std.mem.startsWith(u8, line, "data: ")) {
-        // Non-data line (shouldn't happen with SSEIterator, but handle gracefully).
         const raw = std.fmt.allocPrint(allocator, "{s}\n", .{line}) catch return .{ .skip = {} };
         return .{ .output = raw };
     }
     const json_part = line["data: ".len..];
 
-    // Probe the event type once; dispatch usage extraction on it (the old code
-    // re-parsed every line three times).
     const type_probe = std.json.parseFromSlice(
         struct { type: []const u8 = "" },
         allocator,
@@ -528,7 +541,6 @@ pub fn transformMessagesStreamLine(
         const framed = std.fmt.allocPrint(allocator, "event: {s}\n{s}\n\n", .{ event_type, line }) catch return .{ .skip = {} };
         return .{ .output = framed };
     }
-    // No usable type field — emit the data line with proper SSE termination.
     const terminated = std.fmt.allocPrint(allocator, "{s}\n\n", .{line}) catch return .{ .skip = {} };
     return .{ .output = terminated };
 }
@@ -536,15 +548,9 @@ pub fn transformMessagesStreamLine(
 // ============================================================================
 // Flow: /v1/responses — inbound responses schema → Anthropic wire
 // ============================================================================
-// Conversion is written locally against the Anthropic Messages wire (P11): no
-// delegation to another provider's transformer. `content.zig` is not used here —
-// this flow shares no parsing with the chat/messages flows.
 
-/// Stream state for the responses flow: accumulates the Anthropic message id,
-/// terminal reason and usage so `flushResponsesStream` can synthesize the
-/// closing Responses events.
+/// Stream state for the responses flow.
 pub const ResponsesStreamState = struct {
-    // --- uniform core (P3) ---
     allocator: std.mem.Allocator,
     original_model: []const u8,
     response_id: []const u8 = "",
@@ -552,14 +558,18 @@ pub const ResponsesStreamState = struct {
     input_tokens: u32 = 0,
     output_tokens: u32 = 0,
     sequence_number: u32 = 0,
-    // --- responses-flow specifics ---
     /// Type of the currently-open content block: "text" or "tool_use".
-    /// Used by content_block_stop to emit the correct *.done event.
     open_block_type: []const u8 = "text",
-    /// Accumulates text_delta fragments so output_text.done can emit the full text.
+    /// Accumulates text_delta fragments for output_text.done.
     text_buf: std.ArrayList(u8) = .empty,
-    /// Accumulates input_json_delta fragments so function_call_arguments.done can emit the full arguments.
+    /// Accumulates input_json_delta fragments for function_call_arguments.done.
     arguments_buf: std.ArrayList(u8) = .empty,
+    /// id of the current tool_use block (from content_block_start).
+    tool_use_id: []const u8 = "",
+    /// name of the current tool_use block (from content_block_start).
+    tool_use_name: []const u8 = "",
+    /// output_index of the currently-open block (from ContentBlockStart.index).
+    output_index: u32 = 0,
 
     pub fn init(allocator: std.mem.Allocator, original_model: []const u8) ResponsesStreamState {
         return .{
@@ -578,22 +588,38 @@ pub const ResponsesStreamState = struct {
     }
 };
 
-/// Inbound responses request → Anthropic request (input items/messages →
-/// messages, instructions → system, reasoning effort → thinking, betas,
-/// service_tier, max_output_tokens → max_tokens), pinned to `model`.
+/// Inbound responses request → Anthropic request.
 ///
-/// Turn-grouping (§2B): contiguous same-role items are merged into one
-/// Anthropic message. Roles are assigned by item type:
-///   message (user/assistant/developer/system) → role from field
-///   function_call → assistant  (tool_use block)
-///   function_call_output       → user  (tool_result block)
-///   reasoning                  → assistant  (opaque; dropped — no Anthropic input equivalent)
+/// Field mapping (Responses.Request → Messages.Request):
+///   model                           → model (overridden by `model` param)
+///   input (text)                    → messages[{role:user,content:[{type:text,text:…}]}]
+///   input (items[])                 → messages[] (turn-grouping §2B):
+///     item.type=="message"          → role from field (system/developer skipped)
+///     item.type=="function_call"    → assistant tool_use block
+///     item.type=="function_call_output" → user tool_result block
+///     item.type=="reasoning"        → dropped (no Anthropic input equivalent)
+///   instructions                    → system
+///   max_output_tokens               → max_tokens (default 4096)
+///   temperature                     → temperature
+///   top_p                           → top_p
+///   stream                          → stream
+///   (no stop field in Responses.Request — stop_sequences not set)
+///   tools[].function                → tools[] (transformResponsesTools)
+///   tool_choice                     → tool_choice (responsesToolChoice)
+///   parallel_tool_calls             → tool_choice.disable_parallel_tool_use (inverted; explicit for both true and false)
+///   service_tier                    → service_tier
+///   user                            → metadata.user_id
+///   reasoning.budget_tokens         → thinking.budget_tokens (type="enabled"); effort dropped
+///   (not mapped) previous_response_id, text, store, include,
+///                truncation, background, max_tool_calls, conversation,
+///                context_management, metadata, top_logprobs, moderation,
+///                safety_identifier, prompt_cache_key, prompt_cache_options,
+///                prompt, verbosity, reasoning_effort, stream_options
 pub fn transformResponsesRequest(
     request: Responses.Request,
     model: []const u8,
     allocator: std.mem.Allocator,
 ) !Messages.Request {
-    // Accumulator for the turn currently being assembled.
     var pending_blocks = std.ArrayList(Messages.ContentBlockParam).empty;
     errdefer {
         for (pending_blocks.items) |block| {
@@ -611,7 +637,6 @@ pub fn transformResponsesRequest(
         messages.deinit(allocator);
     }
 
-    // Flush `pending_blocks` into `messages` as a single turn.
     const flushTurn = struct {
         fn call(
             msgs: *std.ArrayList(Messages.Message),
@@ -639,20 +664,16 @@ pub fn transformResponsesRequest(
             if (item != .object) continue;
             const obj = item.object;
 
-            // Determine effective role and block(s) from item type.
             const item_type_val = obj.get("type") orelse continue;
             if (item_type_val != .string) continue;
             const item_type = item_type_val.string;
 
             if (std.mem.eql(u8, item_type, "message")) {
-                // message items: role field drives Anthropic role.
                 const role_val = obj.get("role") orelse continue;
                 if (role_val != .string) continue;
                 const role_str = role_val.string;
 
-                // system/developer messages → prepend to system prompt (handled
-                // outside the turn list). Skip here; instructions field covers most
-                // cases and we don't support mid-conversation system injection.
+                // system/developer messages are not carried into Anthropic turns.
                 if (std.mem.eql(u8, role_str, "system") or
                     std.mem.eql(u8, role_str, "developer")) continue;
 
@@ -661,7 +682,6 @@ pub fn transformResponsesRequest(
                 else
                     .user;
 
-                // Flush if role changes.
                 if (pending_role) |open_role| {
                     if (open_role != role) {
                         try flushTurn(&messages, &pending_blocks, open_role, allocator);
@@ -670,7 +690,6 @@ pub fn transformResponsesRequest(
                 }
                 pending_role = role;
 
-                // Build content blocks from the item's content field.
                 const content_val = obj.get("content") orelse continue;
                 switch (content_val) {
                     .string => |s| {
@@ -692,7 +711,6 @@ pub fn transformResponsesRequest(
                         } else if (std.mem.eql(u8, ptype.string, "input_image") or
                             std.mem.eql(u8, ptype.string, "image_url"))
                         {
-                            // URL image: {"type":"input_image","image_url":"https://..."}
                             const url_val = part.object.get("image_url") orelse continue;
                             const url: []const u8 = switch (url_val) {
                                 .string => |s| s,
@@ -708,18 +726,17 @@ pub fn transformResponsesRequest(
                                 .source = .{ .url = .{ .type = "url", .url = url } },
                             } });
                         }
-                        // Other part types (input_file, refusal) — no lossless Anthropic target.
+                        // input_file, refusal, other → no lossless Anthropic target.
                     },
                     else => continue,
                 }
             } else if (std.mem.eql(u8, item_type, "function_call")) {
-                // function_call → assistant tool_use block.
                 const name_val = obj.get("name") orelse continue;
                 if (name_val != .string) continue;
                 const args_val = obj.get("arguments") orelse std.json.Value{ .string = "{}" };
                 const args_str: []const u8 = if (args_val == .string) args_val.string else "{}";
 
-                // call_id is preferred as the tool_use id; fall back to id.
+                // call_id preferred as tool_use id; fall back to id.
                 const id_val = obj.get("call_id") orelse obj.get("id") orelse continue;
                 if (id_val != .string) continue;
 
@@ -743,8 +760,6 @@ pub fn transformResponsesRequest(
                     .input = input,
                 } });
             } else if (std.mem.eql(u8, item_type, "function_call_output")) {
-                // function_call_output → user tool_result block.
-                // call_id maps to tool_use_id.
                 const call_id_val = obj.get("call_id") orelse continue;
                 if (call_id_val != .string) continue;
 
@@ -768,24 +783,19 @@ pub fn transformResponsesRequest(
                 try pending_blocks.append(allocator, .{ .tool_result = .{
                     .type = "tool_result",
                     .tool_use_id = call_id_val.string,
-                    .content = output_str,
+                    .content = if (output_str) |s| .{ .text = s } else null,
                     .is_error = is_error,
                 } });
             }
-            // reasoning items: no Anthropic input equivalent — silently skip.
-            // (§12: do not normalize to plain text; dropping is the correct choice
-            // for the inbound direction since Anthropic stateless requests
-            // cannot accept prior thinking blocks as input.)
+            // reasoning items: dropped.
         },
     }
 
-    // Flush any remaining pending turn.
     if (pending_role) |role| try flushTurn(&messages, &pending_blocks, role, allocator);
 
     if (messages.items.len == 0) return error.EmptyMessages;
 
-    // Ensure user-first (§2A): insert a synthetic opener if the first turn is
-    // assistant (e.g. a history starting with a function_call).
+    // Ensure user-first.
     if (messages.items[0].role != .user) {
         const synthetic = try allocator.alloc(Messages.ContentBlockParam, 1);
         synthetic[0] = .{ .text = .{ .type = "text", .text = "[Conversation start]" } };
@@ -795,8 +805,6 @@ pub fn transformResponsesRequest(
         });
     }
 
-    // Tool definitions: function tools map through content.transformTools;
-    // custom tools (no Anthropic equivalent) are skipped (P11 note in content.zig).
     var tools: ?[]Messages.Tool = null;
     if (request.tools) |req_tools| blk: {
         tools = content.transformResponsesTools(req_tools, allocator) catch |err| {
@@ -809,39 +817,39 @@ pub fn transformResponsesRequest(
         }
     }
 
-    // parallel_tool_calls=false → disable_parallel_tool_use=true (§10).
-    // Only set if explicitly false; omit otherwise so we don't force a value
-    // when the client left it unset.
     const tool_choice_val = content.responsesToolChoice(request.tool_choice);
     const tool_choice_with_parallel: ?Messages.ToolChoice = if (request.parallel_tool_calls) |ptc| blk: {
-        if (!ptc) {
-            // Inject disable flag into whatever tool_choice was derived.
-            break :blk switch (tool_choice_val orelse Messages.ToolChoice{ .auto = .{} }) {
-                .auto => |tc| Messages.ToolChoice{ .auto = .{ .type = tc.type, .disable_parallel_tool_use = true } },
-                .any => |tc| Messages.ToolChoice{ .any = .{ .type = tc.type, .disable_parallel_tool_use = true } },
-                .tool => |tc| Messages.ToolChoice{ .tool = .{ .type = tc.type, .name = tc.name, .disable_parallel_tool_use = true } },
-                .none => tool_choice_val,
-            };
-        }
-        break :blk tool_choice_val;
+        const disable = !ptc;
+        break :blk switch (tool_choice_val orelse Messages.ToolChoice{ .auto = .{} }) {
+            .auto => |tc| Messages.ToolChoice{ .auto = .{ .type = tc.type, .disable_parallel_tool_use = disable } },
+            .any => |tc| Messages.ToolChoice{ .any = .{ .type = tc.type, .disable_parallel_tool_use = disable } },
+            .tool => |tc| Messages.ToolChoice{ .tool = .{ .type = tc.type, .name = tc.name, .disable_parallel_tool_use = disable } },
+            .none => tool_choice_val,
+        };
     } else tool_choice_val;
-
-    // stop: Responses `stop` → Anthropic `stop_sequences` rename (§1).
-    const stop_sequences: ?[]const []const u8 = request.stop;
 
     return .{
         .model = model,
         .messages = try messages.toOwnedSlice(allocator),
-        // Anthropic requires a positive max_tokens; mirror the old default.
         .max_tokens = request.max_output_tokens orelse 4096,
-        .system = request.instructions,
+        .system = if (request.instructions) |instr| .{ .text = instr } else null,
         .temperature = request.temperature,
         .top_p = request.top_p,
         .stream = request.stream,
         .tools = tools,
         .tool_choice = tool_choice_with_parallel,
-        .stop_sequences = stop_sequences,
-        .thinking = null,
+        .stop_sequences = null,
+        .metadata = if (request.user) |user| .{ .user_id = user } else null,
+        .thinking = if (request.reasoning) |r| blk: {
+            // Partial mapping: budget_tokens is directly equivalent.
+            // effort ("low"/"medium"/"high") has no Anthropic equivalent — dropped.
+            // type forced to "enabled" when reasoning is present.
+            const budget: ?u32 = if (r == .object) b: {
+                const bt = r.object.get("budget_tokens") orelse break :b null;
+                break :b if (bt == .integer) @intCast(bt.integer) else null;
+            } else null;
+            break :blk Messages.ThinkingConfig{ .type = "enabled", .budget_tokens = budget };
+        } else null,
         .betas = null,
         .service_tier = request.service_tier,
     };
@@ -858,10 +866,47 @@ pub fn cleanupResponsesRequest(
     if (request.tools) |tools| allocator.free(tools);
 }
 
-/// Anthropic response → inbound responses response (content blocks → output
-/// items, stop_reason → status, usage passthrough) plus the request-echo
-/// fields the Responses schema carries (temperature, top_p, …) which have no
-/// upstream equivalent and are copied from `original_req`.
+/// Anthropic response → inbound responses response.
+///
+/// Field mapping (Messages.Response → Responses.Response):
+///   id                          → id (duped), output[0].message.id (duped)
+///   "response"                  → object
+///   time.timestamp()            → created_at, completed_at
+///   original_req.model          → model (duped)
+///   stop_reason                 → status ("completed" / "incomplete") + incomplete_details
+///     end_turn / tool_use / stop_sequence / pause_turn → "completed"
+///     max_tokens → "incomplete" + {reason:"max_output_tokens"}
+///     refusal    → "incomplete" + {reason:"content_filter"}
+///     model_context_window_exceeded → "incomplete" + {reason:"max_context_length"}
+///   content[text blocks]        → output[0].message.content[{type:output_text,text:…}] (duped)
+///   content[tool_use blocks]    → output[N].function_call (id/name/arguments duped)
+///   usage.input_tokens          → usage.input_tokens
+///   usage.output_tokens         → usage.output_tokens
+///   input+output                → usage.total_tokens
+///   original_req.temperature    → temperature
+///   original_req.top_p          → top_p
+///   original_req.top_logprobs   → top_logprobs
+///   original_req.parallel_tool_calls → parallel_tool_calls (default true)
+///   original_req.store          → store
+///   original_req.max_output_tokens → max_output_tokens
+///   original_req.metadata       → metadata
+///   original_req.instructions   → instructions
+///   original_req.tool_choice    → tool_choice
+///   original_req.tools          → tools (direct echo, borrows from request)
+///   original_req.background      → background
+///   original_req.max_tool_calls  → max_tool_calls
+///   original_req.conversation    → conversation
+///   original_req.previous_response_id → previous_response_id
+///   original_req.truncation     → truncation
+///   original_req.user           → user
+///   upstream_response.usage.service_tier → service_tier
+///   concat of output_text parts → output_text (convenience field)
+///   (not mapped) upstream model/type/role, stop_sequence, container, stop_details,
+///                cache stats, output_tokens_details, server_tool_use
+///   (upstream ignored) type, role, model — always "message"/"assistant"/served model
+///   (target null) error, reasoning, prompt_cache_diagnostics, prompt, text,
+///                 background, max_tool_calls, conversation, safety_identifier,
+///                 prompt_cache_key, prompt_cache_options, moderation (no source)
 pub fn transformResponsesResponse(
     upstream_response: Messages.Response,
     original_req: Responses.Request,
@@ -870,19 +915,18 @@ pub fn transformResponsesResponse(
     var output_items = std.ArrayList(Responses.OutputItem).empty;
     errdefer output_items.deinit(allocator);
 
-    var parts = std.ArrayList(Responses.OutputContent).empty;
-    errdefer parts.deinit(allocator);
+    var msg_content_parts = std.ArrayList(Responses.OutputContent).empty;
+    errdefer msg_content_parts.deinit(allocator);
 
     for (upstream_response.content) |block| {
         switch (block) {
             .text => |t| {
-                if (t.text.len > 0) try parts.append(allocator, .{ .output_text = .{
+                if (t.text.len > 0) try msg_content_parts.append(allocator, .{ .output_text = .{
                     .type = "output_text",
                     .text = try allocator.dupe(u8, t.text),
                 } });
             },
             .tool_use => |tu| {
-                // Arguments: serialize the parsed input tree back to a JSON string.
                 var args = std.ArrayList(u8).empty;
                 defer args.deinit(allocator);
                 try args.print(allocator, "{f}", .{std.json.fmt(tu.input, .{})});
@@ -892,17 +936,20 @@ pub fn transformResponsesResponse(
                     .type = "function_call",
                     .name = try allocator.dupe(u8, tu.name),
                     .arguments = try args.toOwnedSlice(allocator),
+                    .call_id = null,
                     .status = "completed",
                 } });
             },
-            .thinking, .redacted_thinking,
-            .server_tool_use, .tool_result, .web_search_tool_result, .web_fetch_tool_result,
+            .server_tool_use, .thinking, .redacted_thinking,
+            .tool_result, .web_search_tool_result, .web_fetch_tool_result,
             .code_execution_tool_result, .bash_code_execution_tool_result,
-            .text_editor_code_execution_tool_result, .tool_search_tool_result => {}, // no Responses equivalent
+            .text_editor_code_execution_tool_result, .tool_search_tool_result,
+            .fallback => {},
         }
     }
 
-    const content_slice = try parts.toOwnedSlice(allocator);
+    const content_slice = try msg_content_parts.toOwnedSlice(allocator);
+    // Insert message item at index 0 so message comes before any function_call items.
     try output_items.insert(allocator, 0, .{ .message = .{
         .id = try allocator.dupe(u8, upstream_response.id),
         .type = "message",
@@ -911,9 +958,7 @@ pub fn transformResponsesResponse(
         .status = "completed",
     } });
 
-    // stop_reason → status + incomplete_details (§23)
-    // end_turn / stop_sequence / tool_use / pause_turn → "completed"
-    // max_tokens / refusal / model_context_window_exceeded → "incomplete"
+    // stop_reason → status + incomplete_details.
     var status: []const u8 = "completed";
     var incomplete_details: ?std.json.Value = null;
     if (upstream_response.stop_reason) |sr| {
@@ -927,7 +972,7 @@ pub fn transformResponsesResponse(
             else if (std.mem.eql(u8, sr, "model_context_window_exceeded"))
                 "max_context_length"
             else
-                "content_filter"; // refusal
+                "content_filter";
 
             var obj = std.json.ObjectMap.empty;
             const key = try allocator.dupe(u8, "reason");
@@ -939,39 +984,66 @@ pub fn transformResponsesResponse(
         }
     }
 
+    // Concatenate all output_text parts for the convenience output_text field.
+    var output_text_buf = std.ArrayList(u8).empty;
+    defer output_text_buf.deinit(allocator);
+    for (upstream_response.content) |block| {
+        switch (block) {
+            .text => |t| if (t.text.len > 0) try output_text_buf.appendSlice(allocator, t.text),
+            else => {},
+        }
+    }
+    const output_text: ?[]const u8 = if (output_text_buf.items.len > 0)
+        try output_text_buf.toOwnedSlice(allocator)
+    else
+        null;
+    errdefer if (output_text) |s| allocator.free(s);
+
+    const now: f64 = @floatFromInt(time.timestamp());
+
     return .{
         .id = try allocator.dupe(u8, upstream_response.id),
         .object = "response",
-        .created_at = 0,
+        .created_at = now,
+        .completed_at = now,
         .model = try allocator.dupe(u8, original_req.model),
         .status = status,
         .output = try output_items.toOwnedSlice(allocator),
+        .output_text = output_text,
         .usage = .{
             .input_tokens = upstream_response.usage.input_tokens,
             .output_tokens = upstream_response.usage.output_tokens,
             .total_tokens = upstream_response.usage.input_tokens + upstream_response.usage.output_tokens,
         },
         .incomplete_details = incomplete_details,
-        // Request-echo fields (no upstream equivalent — part of the Responses contract).
         .temperature = original_req.temperature,
         .top_p = original_req.top_p,
+        .top_logprobs = original_req.top_logprobs,
         .parallel_tool_calls = original_req.parallel_tool_calls orelse true,
         .store = original_req.store,
         .max_output_tokens = original_req.max_output_tokens,
         .metadata = original_req.metadata,
+        .instructions = if (original_req.instructions) |s| .{ .string = s } else null,
+        .tool_choice = original_req.tool_choice,
+        .tools = original_req.tools,
+        .background = original_req.background,
+        .max_tool_calls = original_req.max_tool_calls,
+        .conversation = original_req.conversation,
+        .previous_response_id = original_req.previous_response_id,
+        .truncation = original_req.truncation,
+        .user = original_req.user,
+        .service_tier = upstream_response.usage.service_tier,
     };
 }
 
-/// Free what `transformResponsesResponse` allocated: id/model strings and the
-/// output tree. Echo fields (metadata, temperature, …) borrow from
-/// `original_req` and are freed with its parse.
+/// Free what `transformResponsesResponse` allocated.
 pub fn cleanupResponsesResponse(
     inbound_response: Responses.Response,
     allocator: std.mem.Allocator,
 ) void {
     allocator.free(inbound_response.id);
     allocator.free(inbound_response.model);
-    // `incomplete_details` is built here (ObjectMap) — free the value tree.
+    if (inbound_response.output_text) |s| allocator.free(s);
     if (inbound_response.incomplete_details) |details| content.freeJsonValue(allocator, details);
     for (inbound_response.output) |item| {
         switch (item) {
@@ -989,25 +1061,27 @@ pub fn cleanupResponsesResponse(
                 allocator.free(f.name);
                 allocator.free(f.arguments);
             },
-            .reasoning => {},
-            .other => {},
+            .reasoning, .web_search_call, .file_search_call, .code_interpreter_call,
+            .mcp_list_tools_item, .mcp_call_item, .image_generation_call,
+            .local_shell_call, .other => {},
         }
     }
     allocator.free(inbound_response.output);
 }
 
-/// One Anthropic SSE line → Responses SSE events as ready bytes; accumulates
-/// id / usage / terminal reason into `state`.
+/// One Anthropic SSE line → Responses SSE events as ready bytes.
 ///
-/// Event mapping:
-///   - `message_start`            → capture id + input usage, emit nothing
-///   - `content_block_start`      → `response.output_item.added` + `response.content_part.added`
-///   - `content_block_delta`      → text_delta → `response.output_text.delta`;
-///                                  input_json_delta → `response.function_call_arguments.delta`
-///   - `content_block_stop`       → `response.output_text.done` (text blocks only)
-///   - `message_delta`            → capture output usage + terminal reason, emit nothing
-///   - `message_stop`, `ping`, …  → skipped
-///   - `error`                    → rendered inline as `response.failed` (P4)
+/// Event mapping (Anthropic → Responses SSE):
+///   message_start        → capture id + input_tokens; emit nothing
+///   content_block_start  → response.output_item.added + response.content_part.added
+///                          (text: output_text part; tool_use: function_call item)
+///   content_block_delta  → text_delta → response.output_text.delta
+///                          input_json_delta → response.function_call_arguments.delta
+///   content_block_stop   → text: response.output_text.done
+///                          tool_use: response.function_call_arguments.done
+///   message_delta        → capture output_tokens + finish_reason; emit nothing
+///   message_stop, ping, … → skipped
+///   error                → error event
 pub fn transformResponsesStreamLine(
     line: []const u8,
     state: *ResponsesStreamState,
@@ -1027,7 +1101,7 @@ pub fn transformResponsesStreamLine(
 
     if (std.mem.eql(u8, event_type, "error")) {
         var err_message: []const u8 = "Upstream error";
-        var err_code: []const u8 = "api_error";
+        var err_code: ?[]const u8 = null;
         if (std.json.parseFromSlice(Messages.SseErrorEvent, allocator, json_part, .{
             .allocate = .alloc_always,
             .ignore_unknown_fields = true,
@@ -1042,7 +1116,8 @@ pub fn transformResponsesStreamLine(
             .code = err_code,
             .message = err_message,
         }};
-        ev.writeSSE(&buf, allocator) catch return .{ .skip = {} };
+        content.writeResponsesSSE(ev, &buf, allocator) catch return .{ .skip = {} };
+        state.sequence_number += 1;
         return .{ .output = buf.toOwnedSlice(allocator) catch return .{ .skip = {} } };
     }
 
@@ -1066,17 +1141,60 @@ pub fn transformResponsesStreamLine(
             .ignore_unknown_fields = true,
         }) catch return .{ .skip = {} };
         defer parsed.deinit();
-        const block_type = parsed.value.content_block.type;
-        const is_text = std.mem.eql(u8, block_type, "text");
-        // Record which block type is now open so content_block_stop can emit
-        // the correct *.done event (§24 gap 4).
+
+        const block = parsed.value.content_block;
+        const is_text = std.mem.eql(u8, block.type, "text");
         state.open_block_type = if (is_text) "text" else "tool_use";
+        state.output_index = parsed.value.index;
         state.text_buf.clearRetainingCapacity();
         state.arguments_buf.clearRetainingCapacity();
-        const bytes = Responses.outputItemAddedSSE(state.response_id, is_text, state.sequence_number, allocator) orelse
-            return .{ .skip = {} };
-        state.sequence_number += 2;
-        return .{ .output = bytes };
+        state.tool_use_id = block.id orelse "";
+        state.tool_use_name = block.name orelse "";
+
+        var buf: std.ArrayList(u8) = .empty;
+
+        if (is_text) {
+            const item_ev = Responses.StreamEvent{ .output_item_added = .{
+                .sequence_number = state.sequence_number,
+                .output_index = state.output_index,
+                .item = .{ .message = .{
+                    .id = state.response_id,
+                    .type = "message",
+                    .role = "assistant",
+                    .content = &.{},
+                    .status = "in_progress",
+                } },
+            }};
+            content.writeResponsesSSE(item_ev, &buf, allocator) catch return .{ .skip = {} };
+            state.sequence_number += 1;
+
+            const part_ev = Responses.StreamEvent{ .content_part_added = .{
+                .sequence_number = state.sequence_number,
+                .output_index = state.output_index,
+                .item_id = state.response_id,
+                .content_index = 0,
+                .part = .{ .output_text = .{ .type = "output_text", .text = "" } },
+            }};
+            content.writeResponsesSSE(part_ev, &buf, allocator) catch return .{ .skip = {} };
+            state.sequence_number += 1;
+        } else {
+            const fc_item = Responses.OutputItem{ .function_call = .{
+                .id = state.tool_use_id,
+                .type = "function_call",
+                .name = state.tool_use_name,
+                .arguments = "",
+                .status = "in_progress",
+            }};
+            const item_ev = Responses.StreamEvent{ .output_item_added = .{
+                .sequence_number = state.sequence_number,
+                .output_index = state.output_index,
+                .item = fc_item,
+            }};
+            content.writeResponsesSSE(item_ev, &buf, allocator) catch return .{ .skip = {} };
+            state.sequence_number += 1;
+        }
+
+        return .{ .output = buf.toOwnedSlice(allocator) catch return .{ .skip = {} } };
     }
 
     if (std.mem.eql(u8, event_type, "content_block_delta")) {
@@ -1094,10 +1212,12 @@ pub fn transformResponsesStreamLine(
             var buf: std.ArrayList(u8) = .empty;
             const ev = Responses.StreamEvent{ .output_text_delta = .{
                 .sequence_number = state.sequence_number,
+                .output_index = state.output_index,
                 .item_id = state.response_id,
+                .content_index = 0,
                 .delta = text,
             }};
-            ev.writeSSE(&buf, allocator) catch return .{ .skip = {} };
+            content.writeResponsesSSE(ev, &buf, allocator) catch return .{ .skip = {} };
             state.sequence_number += 1;
             return .{ .output = buf.toOwnedSlice(allocator) catch return .{ .skip = {} } };
         }
@@ -1108,10 +1228,12 @@ pub fn transformResponsesStreamLine(
             var buf: std.ArrayList(u8) = .empty;
             const ev = Responses.StreamEvent{ .function_call_arguments_delta = .{
                 .sequence_number = state.sequence_number,
+                .output_index = state.output_index,
                 .item_id = state.response_id,
+                .call_id = if (state.tool_use_id.len > 0) state.tool_use_id else null,
                 .delta = partial,
             }};
-            ev.writeSSE(&buf, allocator) catch return .{ .skip = {} };
+            content.writeResponsesSSE(ev, &buf, allocator) catch return .{ .skip = {} };
             state.sequence_number += 1;
             return .{ .output = buf.toOwnedSlice(allocator) catch return .{ .skip = {} } };
         }
@@ -1121,23 +1243,51 @@ pub fn transformResponsesStreamLine(
     if (std.mem.eql(u8, event_type, "content_block_stop")) {
         var buf: std.ArrayList(u8) = .empty;
         if (std.mem.eql(u8, state.open_block_type, "tool_use")) {
-            // tool_use block closed → function_call_arguments.done (§24).
             const ev = Responses.StreamEvent{ .function_call_arguments_done = .{
                 .sequence_number = state.sequence_number,
+                .output_index = state.output_index,
                 .item_id = state.response_id,
+                .call_id = if (state.tool_use_id.len > 0) state.tool_use_id else null,
                 .arguments = state.arguments_buf.items,
             }};
-            ev.writeSSE(&buf, allocator) catch return .{ .skip = {} };
+            content.writeResponsesSSE(ev, &buf, allocator) catch return .{ .skip = {} };
+            state.sequence_number += 1;
+
+            const fc_done = Responses.StreamEvent{ .output_item_done = .{
+                .sequence_number = state.sequence_number,
+                .output_index = state.output_index,
+                .item = .{ .function_call = .{
+                    .id = state.tool_use_id,
+                    .type = "function_call",
+                    .name = state.tool_use_name,
+                    .arguments = state.arguments_buf.items,
+                    .call_id = null,
+                    .status = "completed",
+                } },
+            }};
+            content.writeResponsesSSE(fc_done, &buf, allocator) catch return .{ .skip = {} };
+            state.sequence_number += 1;
         } else {
-            // text block closed → output_text.done (§24).
             const ev = Responses.StreamEvent{ .output_text_done = .{
                 .sequence_number = state.sequence_number,
+                .output_index = state.output_index,
                 .item_id = state.response_id,
+                .content_index = 0,
                 .text = state.text_buf.items,
             }};
-            ev.writeSSE(&buf, allocator) catch return .{ .skip = {} };
+            content.writeResponsesSSE(ev, &buf, allocator) catch return .{ .skip = {} };
+            state.sequence_number += 1;
+
+            const part_done = Responses.StreamEvent{ .content_part_done = .{
+                .sequence_number = state.sequence_number,
+                .output_index = state.output_index,
+                .item_id = state.response_id,
+                .content_index = 0,
+                .part = .{ .output_text = .{ .type = "output_text", .text = state.text_buf.items } },
+            }};
+            content.writeResponsesSSE(part_done, &buf, allocator) catch return .{ .skip = {} };
+            state.sequence_number += 1;
         }
-        state.sequence_number += 1;
         return .{ .output = buf.toOwnedSlice(allocator) catch return .{ .skip = {} } };
     }
 
@@ -1161,63 +1311,61 @@ pub fn transformResponsesStreamLine(
     return .{ .skip = {} }; // message_stop, ping, unknown
 }
 
-/// Emit the terminal Responses events after the upstream stream ends
-/// (`response.output_item.done` + `response.completed`, or `response.incomplete`
-/// when the reason is `max_tokens`) with the usage accumulated in `state`.
-/// Returns `null` when there is nothing to flush.
+/// Emit the terminal Responses events after the upstream stream ends:
+/// `response.output_item.done` (message item) + `response.completed` or
+/// `response.incomplete`. Returns `null` when there is nothing to flush.
 pub fn flushResponsesStream(
     state: *ResponsesStreamState,
     allocator: std.mem.Allocator,
 ) ?[]const u8 {
     const reason = state.finish_reason orelse return null;
-    const status: []const u8 = if (std.mem.eql(u8, reason, "max_tokens")) "incomplete" else "completed";
+    const is_incomplete = std.mem.eql(u8, reason, "max_tokens") or
+        std.mem.eql(u8, reason, "refusal") or
+        std.mem.eql(u8, reason, "model_context_window_exceeded");
+    const status: []const u8 = if (is_incomplete) "incomplete" else "completed";
 
     var buf: std.ArrayList(u8) = .empty;
 
     const item_done = Responses.StreamEvent{ .output_item_done = .{
         .sequence_number = state.sequence_number,
+        .output_index = 0,
         .item = .{ .message = .{
             .id = state.response_id,
             .type = "message",
             .role = "assistant",
             .content = &.{},
             .status = status,
-        }},
+        } },
     }};
-    item_done.writeSSE(&buf, allocator) catch return null;
+    content.writeResponsesSSE(item_done, &buf, allocator) catch return null;
     state.sequence_number += 1;
 
-    const completed_ev = if (std.mem.eql(u8, status, "incomplete"))
+    const terminal_response = Responses.Response{
+        .id = state.response_id,
+        .object = "response",
+        .created_at = @floatFromInt(time.timestamp()),
+        .model = state.original_model,
+        .status = status,
+        .output = &.{},
+        .usage = .{
+            .input_tokens = state.input_tokens,
+            .output_tokens = state.output_tokens,
+            .total_tokens = state.input_tokens + state.output_tokens,
+        },
+        .parallel_tool_calls = true,
+    };
+
+    const completed_ev = if (is_incomplete)
         Responses.StreamEvent{ .response_incomplete = .{
             .sequence_number = state.sequence_number,
-            .response = .{
-                .id = state.response_id,
-                .model = state.original_model,
-                .status = status,
-                .output = &.{},
-                .usage = .{
-                    .input_tokens = state.input_tokens,
-                    .output_tokens = state.output_tokens,
-                    .total_tokens = state.input_tokens + state.output_tokens,
-                },
-            },
+            .response = terminal_response,
         }}
     else
         Responses.StreamEvent{ .response_completed = .{
             .sequence_number = state.sequence_number,
-            .response = .{
-                .id = state.response_id,
-                .model = state.original_model,
-                .status = status,
-                .output = &.{},
-                .usage = .{
-                    .input_tokens = state.input_tokens,
-                    .output_tokens = state.output_tokens,
-                    .total_tokens = state.input_tokens + state.output_tokens,
-                },
-            },
+            .response = terminal_response,
         }};
-    completed_ev.writeSSE(&buf, allocator) catch { buf.deinit(allocator); return null; };
+    content.writeResponsesSSE(completed_ev, &buf, allocator) catch { buf.deinit(allocator); return null; };
 
     return buf.toOwnedSlice(allocator) catch null;
 }

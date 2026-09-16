@@ -12,22 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Mapping internals for the anthropic provider.
-//!
-//! `pub` here means **internal to the anthropic provider** — these are support
-//! functions for `transformer.zig`, not a public API. Nothing outside
-//! `src/core/providers/anthropic/` should import this module.
-//!
-//! Per P6: every helper lives here; `transformer.zig` holds only the four flow
-//! sections' main functions and stream states. Helpers are stateless — stream
-//! state stays in `transformer.zig`, so this module never imports it (no
-//! cycle); main functions pass the needed fields explicitly.
-//!
-//! Scope (P6/P11): pure value-to-value mapping helpers shared by the flow
-//! sections of `transformer.zig`. Deliberately **stateless** — no function here
-//! takes a stream state, because the states are owned by `transformer.zig`
-//! (P3) and importing them back here would create an import cycle. Stream-event
-//! handlers therefore live with their flow section.
+//! Mapping helpers for the Anthropic provider — internal to this provider.
+//! Stateless value-to-value transforms shared across the four flow functions in transformer.zig.
 
 const std = @import("std");
 
@@ -59,7 +45,6 @@ pub fn extractSystemPrompt(
         const text: []const u8 = if (msg.content) |c| switch (c) {
             .text => |s| s,
             .parts => |content_parts| blk: {
-                // Multi-part system content: each text part becomes its own entry.
                 for (content_parts) |part| {
                     if (part == .text) try parts.append(allocator, part.text.text);
                 }
@@ -77,13 +62,13 @@ pub fn extractSystemPrompt(
 /// Re-shape one inbound chat content value into Anthropic content blocks.
 /// The returned slice is freshly allocated — the caller owns it.
 pub fn transformContent(
-    content: MessageContent,
+    content_val: MessageContent,
     allocator: std.mem.Allocator,
 ) ![]Messages.ContentBlockParam {
     var blocks = std.ArrayList(Messages.ContentBlockParam).empty;
     errdefer blocks.deinit(allocator);
 
-    switch (content) {
+    switch (content_val) {
         .text => |text| try blocks.append(allocator, .{ .text = .{ .type = "text", .text = text } }),
         .parts => |parts| {
             for (parts) |part| {
@@ -112,6 +97,9 @@ pub fn transformContent(
                             } });
                         }
                     },
+                    .input_audio, .file => {
+                        // No Anthropic equivalent for audio/file content parts.
+                    },
                 }
             }
         },
@@ -131,34 +119,30 @@ pub fn transformToolCalls(
     errdefer blocks.deinit(allocator);
 
     for (tool_calls) |tool_call| {
-        {
-            // Arguments arrive as a JSON string; Anthropic wants an object.
-            var input: std.json.Value = .{ .object = std.json.ObjectMap{} };
-            if (std.json.parseFromSliceLeaky(std.json.Value, allocator, tool_call.function.arguments, .{})) |parsed| {
-                input = parsed;
-            } else |_| {}
-            try blocks.append(allocator, .{ .tool_use = .{
-                .type = "tool_use",
-                .id = tool_call.id,
-                .name = tool_call.function.name,
-                .input = input,
-            } });
-        }
+        var input: std.json.Value = .{ .object = std.json.ObjectMap{} };
+        if (std.json.parseFromSliceLeaky(std.json.Value, allocator, tool_call.function.arguments, .{})) |parsed| {
+            input = parsed;
+        } else |_| {}
+        try blocks.append(allocator, .{ .tool_use = .{
+            .type = "tool_use",
+            .id = tool_call.id,
+            .name = tool_call.function.name,
+            .input = input,
+        } });
     }
 
     return try blocks.toOwnedSlice(allocator);
 }
 
-/// Re-shape an inbound tool/function result into one Anthropic `tool_result`
-/// block. Borrows the content slice — allocates nothing.
+/// Re-shape an inbound tool/function result into one Anthropic `tool_result` block.
 pub fn transformToolResult(
     tool_call_id: []const u8,
-    content: ?MessageContent,
+    content_val: ?MessageContent,
     allocator: std.mem.Allocator,
 ) !Messages.ContentBlockParam {
     _ = allocator;
 
-    const text: ?[]const u8 = if (content) |c| switch (c) {
+    const text: ?[]const u8 = if (content_val) |c| switch (c) {
         .text => |t| t,
         .parts => |parts| blk: {
             for (parts) |part| {
@@ -171,13 +155,13 @@ pub fn transformToolResult(
     return .{ .tool_result = .{
         .type = "tool_result",
         .tool_use_id = tool_call_id,
-        .content = text,
+        .content = if (text) |t| .{ .text = t } else null,
         .is_error = null,
     } };
 }
 
-/// Map inbound tool definitions to Anthropic tool definitions. A missing
-/// `parameters` becomes an empty input schema (Anthropic requires the field).
+/// Map inbound tool definitions (Chat.Tool[]) to Anthropic tool definitions.
+/// A missing `parameters` becomes an empty input schema (Anthropic requires it).
 /// Freshly allocated — caller owns it.
 pub fn transformTools(
     tools: []const common.ToolFunction,
@@ -197,6 +181,8 @@ pub fn transformTools(
     return try mapped.toOwnedSlice(allocator);
 }
 
+/// Map Responses.Tool[] to Anthropic tool definitions.
+/// Only `.function` tools map; built-in tool types are skipped (no Anthropic equivalent).
 pub fn transformResponsesTools(
     tools: []const Responses.Tool,
     allocator: std.mem.Allocator,
@@ -211,16 +197,16 @@ pub fn transformResponsesTools(
                 .description = f.function.description,
                 .input_schema = f.function.parameters orelse std.json.Value{ .object = std.json.ObjectMap{} },
             }),
-            .other => {}, // No Anthropic equivalent for custom/built-in tools.
+            .web_search_preview, .file_search, .code_interpreter_tool, .mcp_tool, .other => {},
         }
     }
 
     return try mapped.toOwnedSlice(allocator);
 }
 
-/// Map inbound `tool_choice` (raw JSON) to Anthropic `tool_choice`.
-/// `"none"` returns `null` — Anthropic has no "decline tools" choice, so the
-/// field is omitted instead. Allocates nothing; returns borrowed/static values.
+/// Map inbound `tool_choice` (Chat raw JSON) to Anthropic `ToolChoice`.
+/// `"none"` returns `null` — Anthropic has no "decline tools" choice.
+/// Allocates nothing; returns borrowed/static values.
 pub fn transformToolChoice(
     tool_choice: std.json.Value,
 ) ?Messages.ToolChoice {
@@ -247,8 +233,34 @@ pub fn transformToolChoice(
     }
 }
 
+/// Map Responses-API `tool_choice` (JSON value) to Anthropic `ToolChoice`.
+/// Shapes: "none" | "auto" | "required" | {"type":"function","name":"..."}
+pub fn responsesToolChoice(tool_choice: ?std.json.Value) ?Messages.ToolChoice {
+    const value = tool_choice orelse return null;
+    switch (value) {
+        .string => |mode| {
+            if (std.mem.eql(u8, mode, "none")) return .{ .none = .{ .type = "none" } };
+            if (std.mem.eql(u8, mode, "required")) return .{ .any = .{ .type = "any" } };
+            return .{ .auto = .{ .type = "auto" } };
+        },
+        .object => |obj| {
+            const type_val = obj.get("type") orelse return .{ .auto = .{ .type = "auto" } };
+            if (type_val != .string) return .{ .auto = .{ .type = "auto" } };
+            if (std.mem.eql(u8, type_val.string, "function")) {
+                if (obj.get("name")) |name_val| {
+                    if (name_val == .string) {
+                        return .{ .tool = .{ .type = "tool", .name = name_val.string } };
+                    }
+                }
+            }
+            return .{ .auto = .{ .type = "auto" } };
+        },
+        else => return .{ .auto = .{ .type = "auto" } },
+    }
+}
+
 /// Normalize an inbound message list into Anthropic turns: drop system/developer
-/// (the caller extracts them first), fold `tool`/`function` roles into `user`
+/// (caller extracts them first), fold `tool`/`function` roles into `user`
 /// `tool_result` blocks, merge consecutive same-role turns, guarantee the
 /// conversation opens with a user turn, and reject an empty result.
 /// Freshly allocated — caller owns the slice and each message's blocks.
@@ -264,20 +276,18 @@ pub fn normalizeMessages(
         normalized.deinit(allocator);
     }
 
-    // Blocks of the turn currently being accumulated.
     var pending = std.ArrayList(Messages.ContentBlockParam).empty;
     defer pending.deinit(allocator);
     var pending_role: ?Messages.Role = null;
 
     for (messages) |msg| {
-        // System turns are the caller's responsibility (extractSystemPrompt).
         if (msg.role == .system or msg.role == .developer) continue;
 
         const role: Messages.Role = switch (msg.role) {
             .user => .user,
             .assistant => .assistant,
-            .system, .developer => unreachable, // filtered above
-            .tool => .user, // tool responses ride the user turn
+            .system, .developer => unreachable,
+            .tool => .user,
         };
 
         var blocks = std.ArrayList(Messages.ContentBlockParam).empty;
@@ -291,7 +301,6 @@ pub fn normalizeMessages(
                 defer allocator.free(transformed);
                 try blocks.appendSlice(allocator, transformed);
             }
-            // Assistant messages may carry only tool calls (content null).
             if (msg.tool_calls) |tool_calls| {
                 const tool_use_blocks = try transformToolCalls(tool_calls, allocator);
                 defer allocator.free(tool_use_blocks);
@@ -301,14 +310,12 @@ pub fn normalizeMessages(
 
         if (blocks.items.len == 0) continue;
 
-        // Same role as the open turn → keep accumulating; otherwise flush it.
         if (pending_role) |open_role| {
             if (open_role == role) {
                 try pending.appendSlice(allocator, blocks.items);
                 continue;
             }
             if (pending.items.len > 0) {
-                // toOwnedSlice leaves `pending` empty; the next turn starts fresh.
                 try normalized.append(allocator, .{
                     .role = open_role,
                     .content = .{ .blocks = try pending.toOwnedSlice(allocator) },
@@ -320,7 +327,6 @@ pub fn normalizeMessages(
         pending_role = role;
     }
 
-    // Flush the last open turn.
     if (pending_role) |open_role| {
         if (pending.items.len > 0) {
             try normalized.append(allocator, .{
@@ -332,9 +338,6 @@ pub fn normalizeMessages(
 
     if (normalized.items.len == 0) return error.EmptyMessages;
 
-    // Anthropic requires a user-first conversation; an assistant-first one gets
-    // a synthetic opener. Allocated (not a static literal) so the cleanup
-    // function can free every message's blocks uniformly.
     if (normalized.items[0].role != .user) {
         const synthetic = try allocator.alloc(Messages.ContentBlockParam, 1);
         synthetic[0] = .{ .text = .{ .type = "text", .text = "[Conversation start]" } };
@@ -352,10 +355,6 @@ pub fn normalizeMessages(
 // ============================================================================
 
 /// Recursively free everything a parsed dynamic `std.json.Value` owns.
-///
-/// Zig 0.16's `std.json.Value` has no `deinit`, and `Parsed(Value).deinit()`
-/// can't be used when the value is handed to the outgoing request (it would
-/// dangle). Callers that embed a parsed value must free it through here.
 pub fn freeJsonValue(allocator: std.mem.Allocator, value: std.json.Value) void {
     switch (value) {
         .object => |obj| {
@@ -365,12 +364,12 @@ pub fn freeJsonValue(allocator: std.mem.Allocator, value: std.json.Value) void {
                 freeJsonValue(allocator, entry.value_ptr.*);
             }
             var owned = obj;
-            owned.deinit(allocator); // frees the hash table's backing memory
+            owned.deinit(allocator);
         },
         .array => |arr| {
             for (arr.items) |item| freeJsonValue(allocator, item);
             var owned = arr;
-            owned.deinit(); // Managed list — frees via its own stored allocator
+            owned.deinit();
         },
         .string, .number_string => |s| allocator.free(s),
         .null, .bool, .integer, .float => {},
@@ -390,19 +389,19 @@ pub fn freeMessageBlocks(
     allocator.free(blocks);
 }
 
-/// Map an Anthropic `stop_reason` to an inbound finish reason.
+/// Map an Anthropic `stop_reason` to an inbound Chat finish reason.
 /// Unknown or absent reasons degrade to `"stop"`. Allocates nothing.
 pub fn transformStopReason(stop_reason: ?[]const u8) []const u8 {
     const reason = stop_reason orelse return "stop";
     if (std.mem.eql(u8, reason, "max_tokens")) return "length";
     if (std.mem.eql(u8, reason, "tool_use")) return "tool_calls";
-    // "end_turn", "stop_sequence" and anything else
+    // "end_turn", "stop_sequence", "pause_turn" and anything else
     return "stop";
 }
 
-/// Join Anthropic text blocks into one string. `tool_use` and thinking blocks
-/// are not text and are skipped. Returns an empty (allocated) string when there
-/// is no text. Freshly allocated — caller owns it.
+/// Join Anthropic text blocks into one string. Non-text blocks are skipped.
+/// Returns an empty (allocated) string when there is no text.
+/// Freshly allocated — caller owns it.
 pub fn extractTextFromBlocks(
     blocks: []const Messages.ContentBlock,
     allocator: std.mem.Allocator,
@@ -413,10 +412,11 @@ pub fn extractTextFromBlocks(
     for (blocks) |block| {
         switch (block) {
             .text => |t| if (t.text.len > 0) try parts.append(allocator, t.text),
-            .tool_use, .thinking, .redacted_thinking,
-            .server_tool_use, .tool_result, .web_search_tool_result, .web_fetch_tool_result,
+            .tool_use, .server_tool_use, .thinking, .redacted_thinking,
+            .tool_result, .web_search_tool_result, .web_fetch_tool_result,
             .code_execution_tool_result, .bash_code_execution_tool_result,
-            .text_editor_code_execution_tool_result, .tool_search_tool_result => {},
+            .text_editor_code_execution_tool_result, .tool_search_tool_result,
+            .fallback => {},
         }
     }
 
@@ -424,19 +424,17 @@ pub fn extractTextFromBlocks(
     return try std.mem.join(allocator, "", parts.items);
 }
 
-/// Collect Anthropic `tool_use` blocks into inbound tool calls, serializing each
-/// block's `input` object into the `arguments` JSON string.
-/// Returns `null` when the response has no tool calls. Freshly allocated —
-/// caller owns the slice and each `arguments` string.
+/// Collect Anthropic `tool_use` blocks into inbound Chat tool calls, serializing
+/// each block's `input` object into the `arguments` JSON string.
+/// Returns `null` when the response has no tool calls.
+/// Freshly allocated — caller owns the slice and each `arguments` string.
 pub fn extractToolCalls(
     blocks: []const Messages.ContentBlock,
     allocator: std.mem.Allocator,
 ) !?[]Chat.ToolCall {
     var tool_calls = std.ArrayList(Chat.ToolCall).empty;
     errdefer {
-        for (tool_calls.items) |tc| {
-            allocator.free(tc.function.arguments);
-        }
+        for (tool_calls.items) |tc| allocator.free(tc.function.arguments);
         tool_calls.deinit(allocator);
     }
 
@@ -455,10 +453,11 @@ pub fn extractToolCalls(
                     },
                 });
             },
-            .text, .thinking, .redacted_thinking,
-            .server_tool_use, .tool_result, .web_search_tool_result, .web_fetch_tool_result,
+            .text, .server_tool_use, .thinking, .redacted_thinking,
+            .tool_result, .web_search_tool_result, .web_fetch_tool_result,
             .code_execution_tool_result, .bash_code_execution_tool_result,
-            .text_editor_code_execution_tool_result, .tool_search_tool_result => {},
+            .text_editor_code_execution_tool_result, .tool_search_tool_result,
+            .fallback => {},
         }
     }
 
@@ -466,10 +465,7 @@ pub fn extractToolCalls(
     return try tool_calls.toOwnedSlice(allocator);
 }
 
-/// Map an Anthropic error payload to the chat-schema error shape.
-/// Anthropic's finer-grained types all collapse onto the two inbound ones:
-/// everything client-side is `invalid_request_error`, everything provider-side
-/// is `server_error`. The original Anthropic type is preserved in `code`.
+/// Map an Anthropic error payload to the common error shape.
 /// Borrows the message; allocates nothing.
 pub fn transformErrorResponse(
     error_response: Messages.ErrorResponse,
@@ -485,12 +481,11 @@ pub fn transformErrorResponse(
     } };
 }
 
-/// Best-effort parse of a raw JSON payload as an Anthropic error, mapped to the
-/// chat-schema error shape. Returns `null` when the payload is not an error.
+/// Best-effort parse of a raw JSON payload as an Anthropic error, mapped to
+/// the common error shape. Returns `null` when the payload is not an error.
 ///
-/// Ownership: `message` and `code` are **freshly duplicated** and become the
-/// caller's property (the parsed tree dies inside this function, so borrowing
-/// from it would dangle). `type` is a static literal — never free it.
+/// Ownership: `message` and `code` are freshly duplicated and become the
+/// caller's property. `type` is a static literal — never free it.
 pub fn tryParseError(
     json_part: []const u8,
     allocator: std.mem.Allocator,
@@ -516,7 +511,7 @@ pub fn tryParseError(
     return .{
         .@"error" = .{
             .message = message,
-            .type = mapped.@"error".type, // static literal, not owned
+            .type = mapped.@"error".type,
             .param = null,
             .code = code,
         },
@@ -532,19 +527,15 @@ pub fn freeError(error_response: common.ErrorResponse, allocator: std.mem.Alloca
 // ============================================================================
 // Chat streaming support (stateless)
 // ============================================================================
-// Byte formatting for one chat chunk / one error line. Stateless by design:
-// the stream state lives in `transformer.zig`, and the caller passes the few
-// fields a chunk needs, so `content.zig` never imports `transformer.zig`
-// (no cycle). Parsing and state mutation stay in the flow's main function.
 
 /// Everything a chat chunk carries besides its delta.
-/// Defined in anthropic/types.zig (the canonical home); re-exported here so
-/// callers that import content.zig don't need an extra import.
-pub const ChatChunkContext = Messages.ChatChunkContext;
+pub const ChatChunkContext = struct {
+    id: []const u8,
+    created: i64,
+    original_model: []const u8,
+};
 
 /// Serialize one `chat.completion.chunk` as a ready `data: {json}\n\n` line.
-/// The chunk borrows from `ctx` and `delta`, so the caller writes the result
-/// immediately.
 pub fn buildChatChunk(
     ctx: ChatChunkContext,
     delta: Chat.Delta,
@@ -573,9 +564,7 @@ pub fn buildChatChunk(
     return buf.toOwnedSlice(allocator) catch null;
 }
 
-/// Render a chat-schema error into `data: {json}\n\n` bytes, or null on
-/// allocation failure. The error's owned strings stay with the caller
-/// (free with `freeError` afterwards).
+/// Render a chat-schema error into `data: {json}\n\n` bytes.
 pub fn formatChatError(
     error_response: common.ErrorResponse,
     allocator: std.mem.Allocator,
@@ -586,8 +575,7 @@ pub fn formatChatError(
 }
 
 /// Parse a raw SSE payload as an Anthropic error and render it to chat-format
-/// `data: {json}\n\n` bytes (P4: errors are formatted inside the provider).
-/// Returns null when the payload is not an error or allocation fails.
+/// `data: {json}\n\n` bytes. Returns null when the payload is not an error.
 pub fn formatChatErrorLine(
     json_part: []const u8,
     allocator: std.mem.Allocator,
@@ -598,8 +586,7 @@ pub fn formatChatErrorLine(
     return formatChatError(error_response, allocator);
 }
 
-/// Free a `tool_calls` slice as built by `extractToolCalls`: each function
-/// variant owns its `arguments` string, and the slice itself is owned.
+/// Free a `tool_calls` slice as built by `extractToolCalls`.
 pub fn freeToolCalls(tool_calls: []const Chat.ToolCall, allocator: std.mem.Allocator) void {
     for (tool_calls) |tool_call| {
         allocator.free(tool_call.function.arguments);
@@ -608,35 +595,87 @@ pub fn freeToolCalls(tool_calls: []const Chat.ToolCall, allocator: std.mem.Alloc
 }
 
 // ============================================================================
-// Responses flow support (stateless)
+// Responses flow SSE helpers (stateless)
 // ============================================================================
 
-/// Map a Responses-API `tool_choice` (JSON value) to the Anthropic wire shape.
-/// Shapes: "none" | "auto" | "required" | {"type":"function","name":"..."} —
-/// note the Responses API carries the name at the top level (no nested
-/// `function` object like chat). Anything unmappable falls back to `auto`.
-pub fn responsesToolChoice(tool_choice: ?std.json.Value) ?Messages.ToolChoice {
-    const value = tool_choice orelse return null;
-    switch (value) {
-        .string => |mode| {
-            if (std.mem.eql(u8, mode, "none")) return .{ .none = .{ .type = "none" } };
-            if (std.mem.eql(u8, mode, "required")) return .{ .any = .{ .type = "any" } };
-            return .{ .auto = .{ .type = "auto" } }; // "auto" and unknown
-        },
-        .object => |obj| {
-            const type_val = obj.get("type") orelse return .{ .auto = .{ .type = "auto" } };
-            if (type_val != .string) return .{ .auto = .{ .type = "auto" } };
-            if (std.mem.eql(u8, type_val.string, "function")) {
-                if (obj.get("name")) |name_val| {
-                    if (name_val == .string) {
-                        return .{ .tool = .{ .type = "tool", .name = name_val.string } };
-                    }
-                }
-            }
-            return .{ .auto = .{ .type = "auto" } };
-        },
-        else => return .{ .auto = .{ .type = "auto" } },
+/// Write a single SSE event to `buf` using the Responses stream format:
+///   event: {type}\ndata: {json}\n\n
+/// The `StreamEvent.jsonStringify` writes only the JSON payload; the SSE
+/// framing (`event:` line) is added here.
+pub fn writeResponsesSSE(
+    event: Responses.StreamEvent,
+    buf: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+) !void {
+    // Derive the `event:` type string from the event tag name (which matches
+    // the `type` field value). Use std.json.fmt to serialize the payload.
+    const type_str: []const u8 = switch (event) {
+        .response_created => "response.created",
+        .response_in_progress => "response.in_progress",
+        .response_completed => "response.completed",
+        .response_failed => "response.failed",
+        .response_incomplete => "response.incomplete",
+        .output_item_added => "response.output_item.added",
+        .output_item_done => "response.output_item.done",
+        .content_part_added => "response.content_part.added",
+        .content_part_done => "response.content_part.done",
+        .output_text_delta => "response.output_text.delta",
+        .output_text_done => "response.output_text.done",
+        .function_call_arguments_delta => "response.function_call_arguments.delta",
+        .function_call_arguments_done => "response.function_call_arguments.done",
+        .stream_error => "error",
+        .response_queued => "response.queued",
+        .output_text_annotation_added => "response.output_text.annotation.added",
+        .refusal_delta => "response.refusal.delta",
+        .refusal_done => "response.refusal.done",
+        .reasoning_text_delta => "response.reasoning_text.delta",
+        .reasoning_text_done => "response.reasoning_text.done",
+        .reasoning_summary_part_added => "response.reasoning_summary_part.added",
+        .reasoning_summary_part_done => "response.reasoning_summary_part.done",
+        .reasoning_summary_text_delta => "response.reasoning_summary_text.delta",
+        .reasoning_summary_text_done => "response.reasoning_summary_text.done",
+        .web_search_call_in_progress => "response.web_search_call.in_progress",
+        .web_search_call_searching => "response.web_search_call.searching",
+        .web_search_call_completed => "response.web_search_call.completed",
+        .file_search_call_in_progress => "response.file_search_call.in_progress",
+        .file_search_call_searching => "response.file_search_call.searching",
+        .file_search_call_completed => "response.file_search_call.completed",
+        .code_interpreter_call_in_progress => "response.code_interpreter_call.in_progress",
+        .code_interpreter_call_code_delta => "response.code_interpreter_call_code.delta",
+        .code_interpreter_call_code_done => "response.code_interpreter_call_code.done",
+        .code_interpreter_call_interpreting => "response.code_interpreter_call.interpreting",
+        .code_interpreter_call_completed => "response.code_interpreter_call.completed",
+        .mcp_list_tools_in_progress => "response.mcp_list_tools.in_progress",
+        .mcp_list_tools_completed => "response.mcp_list_tools.completed",
+        .mcp_list_tools_failed => "response.mcp_list_tools.failed",
+        .mcp_call_arguments_delta => "response.mcp_call_arguments.delta",
+        .mcp_call_arguments_done => "response.mcp_call_arguments.done",
+        .mcp_call_in_progress => "response.mcp_call.in_progress",
+        .mcp_call_completed => "response.mcp_call.completed",
+        .mcp_call_failed => "response.mcp_call.failed",
+        .image_generation_call_in_progress => "response.image_generation_call.in_progress",
+        .image_generation_call_generating => "response.image_generation_call.generating",
+        .image_generation_call_partial_image => "response.image_generation_call.partial_image",
+        .image_generation_call_completed => "response.image_generation_call.completed",
+        .audio_delta => "response.audio.delta",
+        .audio_done => "response.audio.done",
+        .audio_transcript_delta => "response.audio.transcript.delta",
+        .audio_transcript_done => "response.audio.transcript.done",
+        .shell_call_command_added => "response.shell_call_command.added",
+        .shell_call_command_delta => "response.shell_call_command.delta",
+        .shell_call_command_done => "response.shell_call_command.done",
+        .shell_call_output_delta => "response.shell_call_output_content.delta",
+        .shell_call_output_done => "response.shell_call_output_content.done",
+        .custom_tool_call_input_delta => "response.custom_tool_call_input.delta",
+        .custom_tool_call_input_done => "response.custom_tool_call_input.done",
+        .response_compaction_compacting => "response.compaction.compacting",
+        .raw_bytes => "",
+    };
+
+    if (event == .raw_bytes) {
+        try buf.appendSlice(allocator, event.raw_bytes);
+        return;
     }
+
+    try buf.print(allocator, "event: {s}\ndata: {f}\n\n", .{ type_str, std.json.fmt(event, .{}) });
 }
-
-
