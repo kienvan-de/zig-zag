@@ -12,46 +12,35 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Mapping internals for the google_ai_studio provider.
-//!
-//! `pub` here means **internal to the google_ai_studio provider** — these are
-//! support functions for `transformer.zig`, not a public API. Nothing outside
-//! `src/core/providers/google_ai_studio/` should import this module.
-//!
-//! Per P6: every helper lives here; `transformer.zig` holds only the four flow
-//! sections' main functions and stream states. Helpers are stateless — stream
-//! state stays in `transformer.zig`, so this module never imports it (no
-//! cycle); main functions pass the needed fields explicitly.
+//! Mapping helpers for the google_ai_studio provider — internal to this provider.
+//! Stateless value-to-value transforms shared across the four flow functions in transformer.zig.
 
 const std = @import("std");
 
 const Messages = @import("../anthropic/types.zig"); // Anthropic Messages wire types
-const Chat = @import("../openai/chat_types.zig"); // inbound chat schema (shapes only)
-const common = @import("../openai/types.zig"); // shared primitives (ToolFunction)
+const Chat = @import("../openai/chat_types.zig"); // inbound chat schema
+const Responses = @import("../openai/responses_types.zig"); // Responses API schema
+const common = @import("../openai/types.zig"); // shared primitives
 const Google = @import("types.zig"); // Gemini wire types
 
 // ============================================================================
-// Request mapping: inbound schemas → Gemini wire
+// Tool mapping
 // ============================================================================
 
-/// Map OpenAI tool_choice (JSON value) to the Gemini ToolConfig mode.
-/// Shapes: "none" | "auto" | "required" | {"type":"function","function":{"name":…}}.
-/// Gemini has no named-function mode — a named choice maps to ANY.
+/// Map OpenAI tool_choice (JSON value) to the Gemini ToolConfig.
+/// "none" → NONE, "required" → ANY, named function → ANY (Gemini has no named mode),
+/// "auto" / unknown → AUTO.
 pub fn transformToolChoice(tool_choice: std.json.Value) ?Google.ToolConfig {
     switch (tool_choice) {
         .string => |s| {
-            if (std.mem.eql(u8, s, "none")) {
-                return .{ .function_calling_config = .{ .mode = "NONE" } };
-            } else if (std.mem.eql(u8, s, "required")) {
-                return .{ .function_calling_config = .{ .mode = "ANY" } };
-            }
+            if (std.mem.eql(u8, s, "none")) return .{ .function_calling_config = .{ .mode = "NONE" } };
+            if (std.mem.eql(u8, s, "required")) return .{ .function_calling_config = .{ .mode = "ANY" } };
             return .{ .function_calling_config = .{ .mode = "AUTO" } };
         },
         .object => |obj| {
             if (obj.get("type")) |tv| {
-                if (tv == .string and std.mem.eql(u8, tv.string, "function")) {
+                if (tv == .string and std.mem.eql(u8, tv.string, "function"))
                     return .{ .function_calling_config = .{ .mode = "ANY" } };
-                }
             }
             return .{ .function_calling_config = .{ .mode = "AUTO" } };
         },
@@ -59,45 +48,86 @@ pub fn transformToolChoice(tool_choice: std.json.Value) ?Google.ToolConfig {
     }
 }
 
+/// Map Responses tool_choice (JSON value) to Gemini ToolConfig.
+/// "none" → NONE, "required" → ANY, {"type":"function","name":"..."} → ANY,
+/// "auto" / unknown / null → null (omit toolConfig).
+pub fn transformResponsesToolChoice(tool_choice: ?std.json.Value) ?Google.ToolConfig {
+    const tc = tool_choice orelse return null;
+    return transformToolChoice(tc);
+}
+
+/// Map a slice of ToolFunction to a single GeminiTool wrapping all declarations.
+/// Parameters schema is converted via mapToGeminiSchema.
+pub fn transformTools(
+    tools: []const common.ToolFunction,
+    allocator: std.mem.Allocator,
+) ![]Google.GeminiTool {
+    var declarations: std.ArrayList(Google.FunctionDeclaration) = .empty;
+    errdefer declarations.deinit(allocator);
+
+    for (tools) |f| {
+        const params: ?Google.GeminiSchema = if (f.parameters) |p|
+            try mapToGeminiSchema(p, allocator)
+        else
+            null;
+        errdefer if (params) |p| freeGeminiSchema(p, allocator);
+        try declarations.append(allocator, .{
+            .name = f.name,
+            .description = f.description,
+            .parameters = params,
+        });
+    }
+
+    const gemini_tools = try allocator.alloc(Google.GeminiTool, 1);
+    errdefer allocator.free(gemini_tools);
+    gemini_tools[0] = .{ .function_declarations = try declarations.toOwnedSlice(allocator) };
+    return gemini_tools;
+}
+
+/// Free a tools slice produced by transformTools.
+pub fn cleanupTools(tools: []const Google.GeminiTool, allocator: std.mem.Allocator) void {
+    for (tools) |tool| {
+        if (tool.function_declarations) |fds| {
+            for (fds) |fd| {
+                if (fd.parameters) |p| freeGeminiSchema(p, allocator);
+            }
+            allocator.free(fds);
+        }
+    }
+    allocator.free(tools);
+}
+
+// ============================================================================
+// Schema mapping (OpenAI JSON Schema → GeminiSchema)
+// ============================================================================
+
 /// Map an arbitrary JSON Schema value to a typed GeminiSchema.
 /// Whitelist approach — only fields Gemini's Schema proto supports are emitted.
-/// Handles common OpenAI→Gemini translation:
 ///   - lowercase type names → Gemini uppercase enum
-///   - anyOf with {"type":"null"} entry → sets nullable:true, strips the null variant
-///   - bare {} entries inside anyOf → dropped
-///   - unsupported keys ($ref, $defs, title, default, additionalProperties, etc.) → dropped
+///   - anyOf with {"type":"null"} → sets nullable:true, strips the null variant
+///   - bare {} inside anyOf → dropped
+///   - unsupported keys ($ref, $defs, title, default, additionalProperties) → dropped
 pub fn mapToGeminiSchema(value: std.json.Value, allocator: std.mem.Allocator) error{OutOfMemory}!Google.GeminiSchema {
     if (value != .object) return .{};
     const obj = value.object;
 
     var schema = Google.GeminiSchema{};
 
-    // type — map lowercase OpenAI names to Gemini uppercase enum
     if (obj.get("type")) |tv| {
-        if (tv == .string) schema.type = mapSchemaType(tv.string);
+        if (tv == .string) {
+            schema.type = mapSchemaType(tv.string);
+            if (std.mem.eql(u8, tv.string, "null")) schema.nullable = true;
+        }
     }
-
-    // description
     if (obj.get("description")) |v| {
         if (v == .string) schema.description = v.string;
     }
-
-    // nullable — detect {"type":"null"} inside anyOf or explicit type:null
-    if (obj.get("type")) |tv| {
-        if (tv == .string and std.mem.eql(u8, tv.string, "null")) schema.nullable = true;
-    }
-
-    // format — only pass through values Gemini understands
     if (obj.get("format")) |v| {
         if (v == .string and isGeminiFormat(v.string)) schema.format = v.string;
     }
-
-    // pattern
     if (obj.get("pattern")) |v| {
         if (v == .string) schema.pattern = v.string;
     }
-
-    // enum
     if (obj.get("enum")) |v| {
         if (v == .array) {
             var enums: std.ArrayList([]const u8) = .empty;
@@ -111,8 +141,6 @@ pub fn mapToGeminiSchema(value: std.json.Value, allocator: std.mem.Allocator) er
                 enums.deinit(allocator);
         }
     }
-
-    // properties — recurse
     if (obj.get("properties")) |v| {
         if (v == .object) {
             var props: std.ArrayList(Google.GeminiSchemaProperty) = .empty;
@@ -128,8 +156,6 @@ pub fn mapToGeminiSchema(value: std.json.Value, allocator: std.mem.Allocator) er
             schema.properties = try props.toOwnedSlice(allocator);
         }
     }
-
-    // required
     if (obj.get("required")) |v| {
         if (v == .array) {
             var req: std.ArrayList([]const u8) = .empty;
@@ -143,16 +169,12 @@ pub fn mapToGeminiSchema(value: std.json.Value, allocator: std.mem.Allocator) er
                 req.deinit(allocator);
         }
     }
-
-    // items — recurse
     if (obj.get("items")) |v| {
         const child = try allocator.create(Google.GeminiSchema);
         errdefer allocator.destroy(child);
         child.* = try mapToGeminiSchema(v, allocator);
         schema.items = child;
     }
-
-    // anyOf — extract nullable signal, filter bare {} and null-type variants, recurse the rest
     if (obj.get("anyOf")) |v| {
         if (v == .array) {
             var variants: std.ArrayList(Google.GeminiSchema) = .empty;
@@ -162,9 +184,7 @@ pub fn mapToGeminiSchema(value: std.json.Value, allocator: std.mem.Allocator) er
             }
             for (v.array.items) |item| {
                 if (item != .object) continue;
-                // bare {} — drop
                 if (item.object.count() == 0) continue;
-                // {"type":"null"} — extract nullable:true, drop this variant
                 if (item.object.get("type")) |tv| {
                     if (tv == .string and std.mem.eql(u8, tv.string, "null")) {
                         schema.nullable = true;
@@ -179,12 +199,8 @@ pub fn mapToGeminiSchema(value: std.json.Value, allocator: std.mem.Allocator) er
                 variants.deinit(allocator);
         }
     }
-
-    // numeric bounds
     if (obj.get("minimum")) |v| schema.minimum = jsonToF64(v);
     if (obj.get("maximum")) |v| schema.maximum = jsonToF64(v);
-
-    // array bounds
     if (obj.get("minItems")) |v| schema.min_items = jsonToU64(v);
     if (obj.get("maxItems")) |v| schema.max_items = jsonToU64(v);
 
@@ -192,8 +208,6 @@ pub fn mapToGeminiSchema(value: std.json.Value, allocator: std.mem.Allocator) er
 }
 
 /// Free a GeminiSchema produced by mapToGeminiSchema.
-/// Only recursively-allocated containers are freed; string slices borrow from
-/// the inbound JSON parse and are not freed here.
 pub fn freeGeminiSchema(schema: Google.GeminiSchema, allocator: std.mem.Allocator) void {
     if (schema.@"enum") |vs| allocator.free(vs);
     if (schema.required) |vs| allocator.free(vs);
@@ -219,7 +233,7 @@ fn mapSchemaType(t: []const u8) []const u8 {
     if (std.mem.eql(u8, t, "array"))   return "ARRAY";
     if (std.mem.eql(u8, t, "object"))  return "OBJECT";
     if (std.mem.eql(u8, t, "null"))    return "NULL";
-    return t; // already uppercase or unknown — pass through
+    return t;
 }
 
 fn isGeminiFormat(f: []const u8) bool {
@@ -244,98 +258,67 @@ fn jsonToU64(v: std.json.Value) ?u64 {
     };
 }
 
-/// Map OpenAI function tools to a single GeminiTool wrapping the declarations.
-/// Custom tools are skipped (no Gemini equivalent). Always returns an allocated
-/// slice (possibly empty, possibly with an empty declarations list). The
-/// `parameters` schemas are mapped via mapToGeminiSchema.
-/// Free a tools array produced by `transformTools`: the declarations slice,
-/// each declaration's GeminiSchema, and the wrapping slice.
-pub fn cleanupTools(tools: []const Google.GeminiTool, allocator: std.mem.Allocator) void {
-    for (tools) |tool| {
-        if (tool.function_declarations) |fds| {
-            for (fds) |fd| {
-                if (fd.parameters) |p| freeGeminiSchema(p, allocator);
-            }
-            allocator.free(fds);
-        }
-    }
-    allocator.free(tools);
-}
+// ============================================================================
+// Chat request: Chat.Message[] → Google.Content[]
+// ============================================================================
 
-pub fn transformTools(
-    tools: []const common.ToolFunction,
-    allocator: std.mem.Allocator,
-) ![]Google.GeminiTool {
-    var declarations: std.ArrayList(Google.FunctionDeclaration) = .empty;
-    errdefer declarations.deinit(allocator);
+/// Result of buildContents: the contents slice and an owned system text string.
+pub const BuiltContents = struct {
+    contents: []Google.Content,
+    system_text: ?[]const u8,
+};
 
-    for (tools) |f| {
-        const params: ?Google.GeminiSchema = if (f.parameters) |p|
-            try mapToGeminiSchema(p, allocator)
-        else
-            null;
-        errdefer if (params) |p| freeGeminiSchema(p, allocator);
-        try declarations.append(allocator, .{
-            .name = f.name,
-            .description = f.description,
-            .parameters = params,
-        });
-    }
-
-    // Gemini wraps all declarations in exactly one GeminiTool object.
-    const gemini_tools = try allocator.alloc(Google.GeminiTool, 1);
-    errdefer allocator.free(gemini_tools);
-    gemini_tools[0] = .{ .function_declarations = try declarations.toOwnedSlice(allocator) };
-    return gemini_tools;
-}
-
-/// Convert OpenAI chat messages to Gemini contents. System/developer messages
-/// are joined into `system_text` (caller passes it as systemInstruction);
-/// assistant tool_calls become function_call parts (arguments re-parsed into
-/// an owned JSON tree); tool results become user turns with function_response
-/// parts wrapping {"output": text}.
+/// Convert Chat messages to Gemini contents.
+///   system/developer → joined into system_text (caller maps to systemInstruction)
+///   user             → "user" turn with text/image parts
+///   assistant        → "model" turn with text parts + function_call parts
+///   tool             → "user" turn with function_response parts
+///
+/// Consecutive same-role user/model turns are merged (Gemini requires alternating).
+/// Image content parts: data: URI → inline_data, https:// URL → file_data.
 pub fn buildContents(
     messages: []const Chat.Message,
     allocator: std.mem.Allocator,
-) !Google.BuiltContents {
+) !BuiltContents {
     var system_parts: std.ArrayList([]const u8) = .empty;
     defer system_parts.deinit(allocator);
 
     var contents: std.ArrayList(Google.Content) = .empty;
-    errdefer contents.deinit(allocator);
+    errdefer {
+        for (contents.items) |c| {
+            for (c.parts) |part| freeResponseOwnedArgs(part, allocator);
+            allocator.free(c.parts);
+        }
+        contents.deinit(allocator);
+    }
 
     for (messages) |msg| {
         switch (msg.role) {
             .system, .developer => {
-                if (msg.content) |c| {
-                    switch (c) {
-                        .text => |t| try system_parts.append(allocator, t),
-                        .parts => |ps| for (ps) |p| {
-                            if (p == .text) try system_parts.append(allocator, p.text.text);
-                        },
-                    }
-                }
+                if (msg.content) |c| switch (c) {
+                    .text => |t| try system_parts.append(allocator, t),
+                    .parts => |ps| for (ps) |p| {
+                        if (p == .text) try system_parts.append(allocator, p.text.text);
+                    },
+                };
             },
             .user => {
                 var parts: std.ArrayList(Google.Part) = .empty;
                 errdefer parts.deinit(allocator);
 
-                if (msg.content) |c| {
-                    switch (c) {
-                        .text => |t| try parts.append(allocator, .{ .text = .{ .text = t } }),
-                        .parts => |ps| for (ps) |p| {
-                            switch (p) {
-                                .text => |tp| try parts.append(allocator, .{ .text = .{ .text = tp.text } }),
-                                else => {}, // audio/file/refusal: no Gemini equivalent
-                            }
-                        },
-                    }
-                }
+                if (msg.content) |c| switch (c) {
+                    .text => |t| try parts.append(allocator, .{ .text = .{ .text = t } }),
+                    .parts => |ps| for (ps) |p| switch (p) {
+                        .text => |tp| try parts.append(allocator, .{ .text = .{ .text = tp.text } }),
+                        .image_url => |ip| try appendImagePart(&parts, ip.image_url.url, allocator),
+                        .input_audio, .file => {}, // no Gemini equivalent
+                    },
+                };
 
-                if (parts.items.len == 0) {
+                if (parts.items.len == 0)
                     try parts.append(allocator, .{ .text = .{ .text = "" } });
-                }
-                try contents.append(allocator, .{ .role = "user", .parts = try parts.toOwnedSlice(allocator) });
+
+                try mergeOrAppend(&contents, "user", try parts.toOwnedSlice(allocator), allocator);
             },
             .assistant => {
                 var parts: std.ArrayList(Google.Part) = .empty;
@@ -344,23 +327,16 @@ pub fn buildContents(
                     parts.deinit(allocator);
                 }
 
-                if (msg.content) |c| {
-                    switch (c) {
-                        .text => |t| try parts.append(allocator, .{ .text = .{ .text = t } }),
-                        .parts => |ps| for (ps) |p| {
-                            if (p == .text) try parts.append(allocator, .{ .text = .{ .text = p.text.text } });
-                        },
-                    }
-                }
+                if (msg.content) |c| switch (c) {
+                    .text => |t| try parts.append(allocator, .{ .text = .{ .text = t } }),
+                    .parts => |ps| for (ps) |p| {
+                        if (p == .text) try parts.append(allocator, .{ .text = .{ .text = p.text.text } });
+                    },
+                };
 
-                // Assistant tool_calls → function_call parts. The arguments JSON
-                // string is re-parsed into an owned tree (leaky: frees manually).
-                if (msg.tool_calls) |tool_calls| for (tool_calls) |tc| {
-                    const args_val: std.json.Value = std.json.parseFromSliceLeaky(
-                        std.json.Value,
-                        allocator,
-                        tc.function.arguments,
-                        .{},
+                if (msg.tool_calls) |tcs| for (tcs) |tc| {
+                    const args_val = std.json.parseFromSliceLeaky(
+                        std.json.Value, allocator, tc.function.arguments, .{},
                     ) catch .null;
                     try parts.append(allocator, .{ .function_call = .{
                         .name = tc.function.name,
@@ -368,13 +344,12 @@ pub fn buildContents(
                     } });
                 };
 
-                if (parts.items.len == 0) {
+                if (parts.items.len == 0)
                     try parts.append(allocator, .{ .text = .{ .text = "" } });
-                }
-                try contents.append(allocator, .{ .role = "model", .parts = try parts.toOwnedSlice(allocator) });
+
+                try mergeOrAppend(&contents, "model", try parts.toOwnedSlice(allocator), allocator);
             },
             .tool => {
-                // Tool results become user turns with function_response parts.
                 var parts: std.ArrayList(Google.Part) = .empty;
                 errdefer parts.deinit(allocator);
 
@@ -384,9 +359,6 @@ pub fn buildContents(
                     .parts => |ps| if (ps.len > 0 and ps[0] == .text) ps[0].text.text else "",
                 } else "";
 
-                // The map is owned by the part from here on — freed by
-                // freeFunctionResponseArgs in cleanup (NOT by a defer: the
-                // old code deinited before serialization = use-after-free).
                 var resp_obj: std.json.ObjectMap = .{};
                 errdefer resp_obj.deinit(allocator);
                 try resp_obj.put(allocator, "output", .{ .string = content_text });
@@ -396,7 +368,7 @@ pub fn buildContents(
                     .response = .{ .object = resp_obj },
                 } });
 
-                try contents.append(allocator, .{ .role = "user", .parts = try parts.toOwnedSlice(allocator) });
+                try mergeOrAppend(&contents, "user", try parts.toOwnedSlice(allocator), allocator);
             },
         }
     }
@@ -412,12 +384,17 @@ pub fn buildContents(
     };
 }
 
-/// Convert Anthropic messages to Gemini contents (messages flow mapping):
-/// user → "user", assistant → "model", tool_use → function_call (args tree is
-/// borrowed — the inbound parse owns it), tool_result → function_response
-/// wrapping a hand-built {"output": …} map owned by the request. Thinking and
-/// other non-content blocks are skipped. Never returns zero contents (a
-/// fallback empty user turn is appended) since Gemini requires contents.
+// ============================================================================
+// Messages request: Messages.Message[] → Google.Content[]
+// ============================================================================
+
+/// Convert Anthropic Messages turns to Gemini contents.
+///   user      → "user" turn
+///   assistant → "model" turn
+/// Consecutive same-role turns are merged.
+/// tool_use blocks → function_call parts (args borrowed from inbound parse).
+/// tool_result blocks → function_response parts (hand-built {"output":…} map owned).
+/// thinking/redacted_thinking → skipped.
 pub fn buildContentsFromMessages(
     messages: []const Messages.Message,
     allocator: std.mem.Allocator,
@@ -435,6 +412,7 @@ pub fn buildContentsFromMessages(
         const role: []const u8 = switch (msg.role) {
             .user => "user",
             .assistant => "model",
+            .system => continue, // system handled separately via system_instruction
         };
 
         var parts: std.ArrayList(Google.Part) = .empty;
@@ -449,49 +427,230 @@ pub fn buildContentsFromMessages(
                 switch (block) {
                     .text => |tb| try parts.append(allocator, .{ .text = .{ .text = tb.text } }),
                     .tool_use => |tu| {
-                        // args borrows the inbound parse's tree — do NOT free here.
+                        // args borrows the inbound parse's tree.
                         try parts.append(allocator, .{ .function_call = .{
                             .name = tu.name,
                             .args = tu.input,
                         } });
                     },
                     .tool_result => |tr| {
-                        // Hand-built map: literal key + borrowed value string;
-                        // the map storage itself is owned by this request.
+                        const output_text: []const u8 = if (tr.content) |c| switch (c) {
+                            .text => |t| t,
+                            .blocks => |blks| if (blks.len > 0) blks[0].text else "",
+                        } else "";
                         var resp_obj: std.json.ObjectMap = .{};
                         errdefer resp_obj.deinit(allocator);
-                        try resp_obj.put(allocator, "output", .{ .string = tr.content orelse "" });
+                        try resp_obj.put(allocator, "output", .{ .string = output_text });
                         try parts.append(allocator, .{ .function_response = .{
                             .name = tr.tool_use_id,
                             .response = .{ .object = resp_obj },
                         } });
                     },
-                    else => {}, // thinking / redacted_thinking: no Gemini equivalent
+                    else => {}, // thinking/redacted_thinking/server_tool_use/etc: no equivalent
                 }
             },
         }
 
-        if (parts.items.len == 0) {
+        if (parts.items.len == 0)
             try parts.append(allocator, .{ .text = .{ .text = "" } });
-        }
-        try contents.append(allocator, .{ .role = role, .parts = try parts.toOwnedSlice(allocator) });
+
+        try mergeOrAppend(&contents, role, try parts.toOwnedSlice(allocator), allocator);
     }
 
     if (contents.items.len == 0) {
-        const fallback_parts = try allocator.alloc(Google.Part, 1);
-        fallback_parts[0] = .{ .text = .{ .text = "" } };
-        try contents.append(allocator, .{ .role = "user", .parts = fallback_parts });
+        const fallback = try allocator.alloc(Google.Part, 1);
+        fallback[0] = .{ .text = .{ .text = "" } };
+        try contents.append(allocator, .{ .role = "user", .parts = fallback });
     }
 
     return contents.toOwnedSlice(allocator);
 }
 
 // ============================================================================
+// Responses request: Responses.Request.input → Google.Content[]
+// ============================================================================
+
+/// Convert Responses input to Gemini contents.
+///   input.text                 → single user turn
+///   input.items[].message      → user/model turn with text + image parts
+///   input.items[].function_call → model turn with function_call part
+///   input.items[].function_call_output → user turn with function_response part
+///   input.items[].reasoning    → dropped (no Gemini equivalent)
+///
+/// Consecutive same-role turns are merged.
+pub fn buildContentsFromResponsesInput(
+    input: Responses.InputParam,
+    allocator: std.mem.Allocator,
+) ![]Google.Content {
+    var contents: std.ArrayList(Google.Content) = .empty;
+    errdefer {
+        for (contents.items) |c| {
+            for (c.parts) |part| freeResponseOwnedArgs(part, allocator);
+            allocator.free(c.parts);
+        }
+        contents.deinit(allocator);
+    }
+
+    switch (input) {
+        .text => |t| {
+            const parts = try allocator.alloc(Google.Part, 1);
+            parts[0] = .{ .text = .{ .text = t } };
+            try contents.append(allocator, .{ .role = "user", .parts = parts });
+        },
+        .items => |items| for (items) |item| {
+            if (item != .object) continue;
+            const obj = item.object;
+
+            const item_type_val = obj.get("type") orelse continue;
+            if (item_type_val != .string) continue;
+            const item_type = item_type_val.string;
+
+            if (std.mem.eql(u8, item_type, "message")) {
+                const role_val = obj.get("role") orelse continue;
+                if (role_val != .string) continue;
+                const role_str = role_val.string;
+
+                // system/developer messages: no per-turn equivalent in Gemini.
+                if (std.mem.eql(u8, role_str, "system") or
+                    std.mem.eql(u8, role_str, "developer")) continue;
+
+                const role: []const u8 = if (std.mem.eql(u8, role_str, "assistant")) "model" else "user";
+
+                var parts: std.ArrayList(Google.Part) = .empty;
+                errdefer parts.deinit(allocator);
+
+                const content_val = obj.get("content") orelse continue;
+                switch (content_val) {
+                    .string => |s| {
+                        if (s.len > 0) try parts.append(allocator, .{ .text = .{ .text = s } });
+                    },
+                    .array => |arr| for (arr.items) |part| {
+                        if (part != .object) continue;
+                        const ptype = part.object.get("type") orelse continue;
+                        if (ptype != .string) continue;
+
+                        if (std.mem.eql(u8, ptype.string, "input_text") or
+                            std.mem.eql(u8, ptype.string, "text") or
+                            std.mem.eql(u8, ptype.string, "output_text"))
+                        {
+                            const tv = part.object.get("text") orelse continue;
+                            if (tv == .string and tv.string.len > 0)
+                                try parts.append(allocator, .{ .text = .{ .text = tv.string } });
+                        } else if (std.mem.eql(u8, ptype.string, "input_image") or
+                            std.mem.eql(u8, ptype.string, "image_url"))
+                        {
+                            const url_val = part.object.get("image_url") orelse continue;
+                            const url: []const u8 = switch (url_val) {
+                                .string => |s| s,
+                                .object => |o| blk: {
+                                    const uv = o.get("url") orelse break :blk "";
+                                    break :blk if (uv == .string) uv.string else "";
+                                },
+                                else => continue,
+                            };
+                            if (url.len > 0) try appendImagePart(&parts, url, allocator);
+                        }
+                        // input_file, refusal → no Gemini equivalent.
+                    },
+                    else => continue,
+                }
+
+                if (parts.items.len == 0) continue;
+                try mergeOrAppend(&contents, role, try parts.toOwnedSlice(allocator), allocator);
+
+            } else if (std.mem.eql(u8, item_type, "function_call")) {
+                const name_val = obj.get("name") orelse continue;
+                if (name_val != .string) continue;
+                const args_val = obj.get("arguments") orelse std.json.Value{ .string = "{}" };
+                const args_str: []const u8 = if (args_val == .string) args_val.string else "{}";
+
+                const args: std.json.Value = std.json.parseFromSliceLeaky(
+                    std.json.Value, allocator, args_str, .{},
+                ) catch .null;
+
+                var parts = try allocator.alloc(Google.Part, 1);
+                parts[0] = .{ .function_call = .{ .name = name_val.string, .args = args } };
+                try mergeOrAppend(&contents, "model", parts, allocator);
+
+            } else if (std.mem.eql(u8, item_type, "function_call_output")) {
+                const call_id_val = obj.get("call_id") orelse continue;
+                if (call_id_val != .string) continue;
+
+                const output_str: []const u8 = blk: {
+                    const ov = obj.get("output") orelse break :blk "";
+                    break :blk if (ov == .string) ov.string else "";
+                };
+
+                var resp_obj: std.json.ObjectMap = .{};
+                errdefer resp_obj.deinit(allocator);
+                try resp_obj.put(allocator, "output", .{ .string = output_str });
+
+                var parts = try allocator.alloc(Google.Part, 1);
+                parts[0] = .{ .function_response = .{
+                    .name = call_id_val.string,
+                    .response = .{ .object = resp_obj },
+                } };
+                try mergeOrAppend(&contents, "user", parts, allocator);
+            }
+            // reasoning: no Gemini input equivalent — dropped.
+        },
+    }
+
+    if (contents.items.len == 0) return error.EmptyMessages;
+
+    // Gemini requires user-first conversation.
+    if (!std.mem.eql(u8, contents.items[0].role, "user")) {
+        const synthetic = try allocator.alloc(Google.Part, 1);
+        synthetic[0] = .{ .text = .{ .text = "[Conversation start]" } };
+        try contents.insert(allocator, 0, .{ .role = "user", .parts = synthetic });
+    }
+
+    return contents.toOwnedSlice(allocator);
+}
+
+// ============================================================================
+// System instruction mapping
+// ============================================================================
+
+/// Build a Gemini SystemInstruction from an Anthropic SystemParam.
+///   .text  → one text Part
+///   .blocks → one text Part per block, joined; parts slice is owned
+pub fn buildSystemInstruction(
+    sys: Messages.SystemParam,
+    allocator: std.mem.Allocator,
+) !Google.SystemInstruction {
+    switch (sys) {
+        .text => |t| {
+            const parts = try allocator.alloc(Google.Part, 1);
+            parts[0] = .{ .text = .{ .text = t } };
+            return .{ .parts = parts };
+        },
+        .blocks => |blks| {
+            const parts = try allocator.alloc(Google.Part, blks.len);
+            for (blks, 0..) |blk, i| {
+                parts[i] = .{ .text = .{ .text = blk.text } };
+            }
+            return .{ .parts = parts };
+        },
+    }
+}
+
+/// Build a Gemini SystemInstruction from a plain string (Chat/Responses flow).
+/// The text is borrowed — only the parts slice is allocated.
+pub fn buildSystemInstructionFromString(
+    text: []const u8,
+    allocator: std.mem.Allocator,
+) !Google.SystemInstruction {
+    const parts = try allocator.alloc(Google.Part, 1);
+    parts[0] = .{ .text = .{ .text = text } };
+    return .{ .parts = parts };
+}
+
+// ============================================================================
 // Response mapping: Gemini wire → inbound schemas
 // ============================================================================
 
-/// Map Gemini finishReason to the chat-schema finish_reason.
-/// SAFETY and RECITATION both mean the model halted the content → content_filter.
+/// Map Gemini finishReason to the Chat-schema finish_reason.
 pub fn transformStopReason(reason: ?[]const u8) []const u8 {
     const r = reason orelse return "stop";
     if (std.mem.eql(u8, r, "STOP")) return "stop";
@@ -502,8 +661,7 @@ pub fn transformStopReason(reason: ?[]const u8) []const u8 {
     return "stop";
 }
 
-/// Map Gemini finishReason to the Messages-wire stop_reason vocabulary
-/// (messages flow output).
+/// Map Gemini finishReason to the Anthropic Messages stop_reason vocabulary.
 pub fn transformStopReasonToMessages(reason: ?[]const u8) []const u8 {
     const r = reason orelse return "end_turn";
     if (std.mem.eql(u8, r, "MAX_TOKENS")) return "max_tokens";
@@ -511,19 +669,90 @@ pub fn transformStopReasonToMessages(reason: ?[]const u8) []const u8 {
     return "end_turn";
 }
 
+/// Join text parts of the first candidate into one string. Freshly allocated.
+pub fn extractTextFromBlocks(
+    response: Google.Response,
+    allocator: std.mem.Allocator,
+) ![]const u8 {
+    if (response.candidates.len == 0) return allocator.dupe(u8, "");
+
+    var parts_text: std.ArrayList([]const u8) = .empty;
+    defer parts_text.deinit(allocator);
+
+    for (response.candidates[0].content.parts) |part| {
+        switch (part) {
+            .text => |tp| if (tp.text.len > 0) try parts_text.append(allocator, tp.text),
+            else => {},
+        }
+    }
+
+    if (parts_text.items.len == 0) return allocator.dupe(u8, "");
+    return std.mem.join(allocator, "", parts_text.items);
+}
+
+/// Extract function_call parts of the first candidate as Chat tool calls.
+/// Gemini provides no call ids — synthetic `call_{name}` is used.
+/// id and arguments are freshly allocated; free with freeToolCallList.
+pub fn extractToolCalls(
+    response: Google.Response,
+    allocator: std.mem.Allocator,
+) !?[]Chat.ToolCall {
+    if (response.candidates.len == 0) return null;
+
+    var tool_calls: std.ArrayList(Chat.ToolCall) = .empty;
+    errdefer {
+        for (tool_calls.items) |tc| {
+            allocator.free(tc.id);
+            allocator.free(tc.function.arguments);
+        }
+        tool_calls.deinit(allocator);
+    }
+
+    for (response.candidates[0].content.parts) |part| {
+        switch (part) {
+            .function_call => |fc| {
+                var args_buf: std.ArrayList(u8) = .empty;
+                defer args_buf.deinit(allocator);
+                try args_buf.print(allocator, "{f}", .{std.json.fmt(fc.args, .{})});
+
+                try tool_calls.append(allocator, .{
+                    .id = try std.fmt.allocPrint(allocator, "call_{s}", .{fc.name}),
+                    .type = "function",
+                    .function = .{
+                        .name = fc.name,
+                        .arguments = try args_buf.toOwnedSlice(allocator),
+                    },
+                });
+            },
+            else => {},
+        }
+    }
+
+    if (tool_calls.items.len == 0) return null;
+    return try tool_calls.toOwnedSlice(allocator);
+}
+
+/// Free a tool-call list produced by extractToolCalls.
+pub fn freeToolCallList(tool_calls: []const Chat.ToolCall, allocator: std.mem.Allocator) void {
+    for (tool_calls) |tc| {
+        allocator.free(tc.id);
+        allocator.free(tc.function.arguments);
+    }
+    allocator.free(tool_calls);
+}
+
 // ============================================================================
-// Chat streaming support (stateless)
+// Chat streaming support
 // ============================================================================
 
-/// Everything a chat chunk carries besides its delta.
-/// Defined in anthropic/types.zig; re-exported here for callers that import
-/// this module without needing to know about the anthropic types path.
-pub const ChatChunkContext = Messages.ChatChunkContext;
+/// Everything a chat chunk needs besides its delta.
+pub const ChatChunkContext = struct {
+    id: []const u8,
+    created: i64,
+    original_model: []const u8,
+};
 
 /// Serialize one `chat.completion.chunk` as a ready `data: {json}\n\n` line.
-/// The chunk borrows from `ctx` and `delta`, so the caller writes the result
-/// immediately. (Google-local twin of the anthropic helper — providers share
-/// no transformer code per P11.)
 pub fn buildChatChunk(
     ctx: ChatChunkContext,
     delta: Chat.Delta,
@@ -552,124 +781,98 @@ pub fn buildChatChunk(
     return buf.toOwnedSlice(allocator) catch null;
 }
 
-/// Free a tool-call list as built by `extractToolCalls`: id and arguments
-/// strings are owned; the slice itself is owned.
-pub fn freeToolCallList(tool_calls: []const Chat.ToolCall, allocator: std.mem.Allocator) void {
-    for (tool_calls) |tc| {
-        allocator.free(tc.id);
-        allocator.free(tc.function.arguments);
-    }
-    allocator.free(tool_calls);
-}
+// ============================================================================
+// Responses SSE helper
+// ============================================================================
 
-/// Join text parts of the first candidate. Freshly allocated (possibly empty)
-/// — caller owns it. function_call/function_response parts are skipped.
-pub fn extractTextFromBlocks(
-    response: Google.Response,
+/// Write a single Responses SSE event: `event: {type}\ndata: {json}\n\n`.
+pub fn writeResponsesSSE(
+    event: Responses.StreamEvent,
+    buf: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
-) ![]const u8 {
-    if (response.candidates.len == 0) return allocator.dupe(u8, "");
+) !void {
+    const type_str: []const u8 = switch (event) {
+        .response_created => "response.created",
+        .response_in_progress => "response.in_progress",
+        .response_completed => "response.completed",
+        .response_failed => "response.failed",
+        .response_incomplete => "response.incomplete",
+        .output_item_added => "response.output_item.added",
+        .output_item_done => "response.output_item.done",
+        .content_part_added => "response.content_part.added",
+        .content_part_done => "response.content_part.done",
+        .output_text_delta => "response.output_text.delta",
+        .output_text_done => "response.output_text.done",
+        .function_call_arguments_delta => "response.function_call_arguments.delta",
+        .function_call_arguments_done => "response.function_call_arguments.done",
+        .stream_error => "error",
+        .response_queued => "response.queued",
+        .output_text_annotation_added => "response.output_text.annotation.added",
+        .refusal_delta => "response.refusal.delta",
+        .refusal_done => "response.refusal.done",
+        .reasoning_text_delta => "response.reasoning_text.delta",
+        .reasoning_text_done => "response.reasoning_text.done",
+        .reasoning_summary_part_added => "response.reasoning_summary_part.added",
+        .reasoning_summary_part_done => "response.reasoning_summary_part.done",
+        .reasoning_summary_text_delta => "response.reasoning_summary_text.delta",
+        .reasoning_summary_text_done => "response.reasoning_summary_text.done",
+        .web_search_call_in_progress => "response.web_search_call.in_progress",
+        .web_search_call_searching => "response.web_search_call.searching",
+        .web_search_call_completed => "response.web_search_call.completed",
+        .file_search_call_in_progress => "response.file_search_call.in_progress",
+        .file_search_call_searching => "response.file_search_call.searching",
+        .file_search_call_completed => "response.file_search_call.completed",
+        .code_interpreter_call_in_progress => "response.code_interpreter_call.in_progress",
+        .code_interpreter_call_code_delta => "response.code_interpreter_call_code.delta",
+        .code_interpreter_call_code_done => "response.code_interpreter_call_code.done",
+        .code_interpreter_call_interpreting => "response.code_interpreter_call.interpreting",
+        .code_interpreter_call_completed => "response.code_interpreter_call.completed",
+        .mcp_list_tools_in_progress => "response.mcp_list_tools.in_progress",
+        .mcp_list_tools_completed => "response.mcp_list_tools.completed",
+        .mcp_list_tools_failed => "response.mcp_list_tools.failed",
+        .mcp_call_arguments_delta => "response.mcp_call_arguments.delta",
+        .mcp_call_arguments_done => "response.mcp_call_arguments.done",
+        .mcp_call_in_progress => "response.mcp_call.in_progress",
+        .mcp_call_completed => "response.mcp_call.completed",
+        .mcp_call_failed => "response.mcp_call.failed",
+        .image_generation_call_in_progress => "response.image_generation_call.in_progress",
+        .image_generation_call_generating => "response.image_generation_call.generating",
+        .image_generation_call_partial_image => "response.image_generation_call.partial_image",
+        .image_generation_call_completed => "response.image_generation_call.completed",
+        .audio_delta => "response.audio.delta",
+        .audio_done => "response.audio.done",
+        .audio_transcript_delta => "response.audio.transcript.delta",
+        .audio_transcript_done => "response.audio.transcript.done",
+        .shell_call_command_added => "response.shell_call_command.added",
+        .shell_call_command_delta => "response.shell_call_command.delta",
+        .shell_call_command_done => "response.shell_call_command.done",
+        .shell_call_output_delta => "response.shell_call_output_content.delta",
+        .shell_call_output_done => "response.shell_call_output_content.done",
+        .custom_tool_call_input_delta => "response.custom_tool_call_input.delta",
+        .custom_tool_call_input_done => "response.custom_tool_call_input.done",
+        .response_compaction_compacting => "response.compaction.compacting",
+        .raw_bytes => "",
+    };
 
-    var parts_text: std.ArrayList([]const u8) = .empty;
-    defer parts_text.deinit(allocator);
-
-    for (response.candidates[0].content.parts) |part| {
-        switch (part) {
-            .text => |tp| {
-                if (tp.text.len > 0) try parts_text.append(allocator, tp.text);
-            },
-            else => {},
-        }
+    if (event == .raw_bytes) {
+        try buf.appendSlice(allocator, event.raw_bytes);
+        return;
     }
 
-    if (parts_text.items.len == 0) return allocator.dupe(u8, "");
-    return std.mem.join(allocator, "", parts_text.items);
+    try buf.print(allocator, "event: {s}\ndata: {f}\n\n", .{ type_str, std.json.fmt(event, .{}) });
 }
 
-/// Extract function_call parts of the first candidate as chat tool calls.
-/// Gemini provides no call ids — a synthetic `call_{name}` id is generated.
-/// Arguments are re-serialized from the parsed `args` tree. Everything is
-/// freshly allocated; free with the .function branches of the caller's cleanup.
-pub fn extractToolCalls(
-    response: Google.Response,
-    allocator: std.mem.Allocator,
-) !?[]Chat.ToolCall {
-    if (response.candidates.len == 0) return null;
+// ============================================================================
+// Cleanup helpers
+// ============================================================================
 
-    var tool_calls: std.ArrayList(Chat.ToolCall) = .empty;
-    errdefer {
-        for (tool_calls.items) |tc| {
-            allocator.free(tc.id);
-            allocator.free(tc.function.arguments);
-        }
-        tool_calls.deinit(allocator);
-    }
-
-    for (response.candidates[0].content.parts) |part| {
-        switch (part) {
-            .function_call => |fc| {
-                // Re-serialize the parsed args tree into the arguments string.
-                var args_buf: std.ArrayList(u8) = .empty;
-                defer args_buf.deinit(allocator);
-                try args_buf.print(allocator, "{f}", .{std.json.fmt(fc.args, .{})});
-
-                try tool_calls.append(allocator, .{
-                    .id = try std.fmt.allocPrint(allocator, "call_{s}", .{fc.name}),
-                    .type = "function",
-                    .function = .{
-                        .name = fc.name,
-                        .arguments = try args_buf.toOwnedSlice(allocator),
-                    },
-                });
-            },
-            else => {},
-        }
-    }
-
-    if (tool_calls.items.len == 0) return null;
-    return try tool_calls.toOwnedSlice(allocator);
-}
-
-/// Free the request-owned JSON of a chat-flow part: function_call args are a
-/// leaky-parsed tree (keys AND string values Scanner-owned), function_response
-/// is a hand-built map (literal key, borrowed value — deinit storage only).
-pub fn freeResponseOwnedArgs(part: Google.Part, allocator: std.mem.Allocator) void {
-    switch (part) {
-        .function_call => |fc| freeParsedJsonValue(fc.args, allocator),
-        .function_response => |fr| {
-            if (fr.response == .object) {
-                var owned = fr.response.object;
-                owned.deinit(allocator);
-            }
-        },
-        else => {},
-    }
-}
-
-/// Free the request-owned memory of a messages-flow part: function_call args
-/// BORROW the inbound Anthropic parse's tree (not freed here — its arena does),
-/// while function_response maps are hand-built and owned.
-pub fn freeMessagesOwnedArgs(part: Google.Part, allocator: std.mem.Allocator) void {
-    switch (part) {
-        .function_response => |fr| {
-            if (fr.response == .object) {
-                var owned = fr.response.object;
-                owned.deinit(allocator);
-            }
-        },
-        else => {},
-    }
-}
-
-/// Free a `std.json.Value` tree produced by `parseFromSliceLeaky` with
-/// `allocator` (roots of any type). Keys AND string values are Scanner-owned
-/// allocations; `ObjectMap.deinit` only releases the entry storage.
+/// Free a `std.json.Value` tree produced by parseFromSliceLeaky.
 pub fn freeParsedJsonValue(value: std.json.Value, allocator: std.mem.Allocator) void {
     switch (value) {
         .object => |obj| {
             var it = obj.iterator();
             while (it.next()) |entry| {
-                allocator.free(entry.key_ptr.*); // keys are owned strings
+                allocator.free(entry.key_ptr.*);
                 freeParsedJsonValue(entry.value_ptr.*, allocator);
             }
             var owned = obj;
@@ -683,4 +886,90 @@ pub fn freeParsedJsonValue(value: std.json.Value, allocator: std.mem.Allocator) 
         .number_string => |str| allocator.free(str),
         else => {},
     }
+}
+
+/// Free request-owned memory from chat-flow parts:
+///   function_call → leaky-parsed args tree
+///   function_response → hand-built ObjectMap storage
+pub fn freeResponseOwnedArgs(part: Google.Part, allocator: std.mem.Allocator) void {
+    switch (part) {
+        .function_call => |fc| freeParsedJsonValue(fc.args, allocator),
+        .function_response => |fr| {
+            if (fr.response == .object) {
+                var owned = fr.response.object;
+                owned.deinit(allocator);
+            }
+        },
+        else => {},
+    }
+}
+
+/// Free request-owned memory from messages-flow parts:
+///   function_call → args BORROW the inbound parse, not freed here
+///   function_response → hand-built ObjectMap storage
+pub fn freeMessagesOwnedArgs(part: Google.Part, allocator: std.mem.Allocator) void {
+    switch (part) {
+        .function_response => |fr| {
+            if (fr.response == .object) {
+                var owned = fr.response.object;
+                owned.deinit(allocator);
+            }
+        },
+        else => {},
+    }
+}
+
+/// Free request-owned memory from responses-flow parts:
+///   function_call → leaky-parsed args tree (same as chat flow)
+///   function_response → hand-built ObjectMap storage
+pub fn freeResponsesOwnedArgs(part: Google.Part, allocator: std.mem.Allocator) void {
+    freeResponseOwnedArgs(part, allocator);
+}
+
+// ============================================================================
+// Internal helpers
+// ============================================================================
+
+/// Append an image URL as a Gemini Part.
+/// data: URI → inline_data (base64); https:// or other URL → file_data.
+fn appendImagePart(
+    parts: *std.ArrayList(Google.Part),
+    url: []const u8,
+    allocator: std.mem.Allocator,
+) !void {
+    if (std.mem.startsWith(u8, url, "data:")) {
+        // data:<media_type>;base64,<data>
+        const comma_idx = std.mem.indexOfScalar(u8, url, ',') orelse return;
+        const semicolon_idx = std.mem.indexOfScalar(u8, url[5..], ';') orelse return;
+        const media_type = url[5 .. 5 + semicolon_idx];
+        const data = url[comma_idx + 1 ..];
+        try parts.append(allocator, .{ .inline_data = .{ .mime_type = media_type, .data = data } });
+    } else {
+        // URL-based image: use file_data with an empty mime_type (Gemini infers it).
+        try parts.append(allocator, .{ .file_data = .{ .mime_type = "", .file_uri = url } });
+    }
+}
+
+/// Merge `new_parts` into the last content turn if same role, otherwise append.
+/// Takes ownership of `new_parts`.
+fn mergeOrAppend(
+    contents: *std.ArrayList(Google.Content),
+    role: []const u8,
+    new_parts: []Google.Part,
+    allocator: std.mem.Allocator,
+) !void {
+    if (contents.items.len > 0) {
+        const last = &contents.items[contents.items.len - 1];
+        if (std.mem.eql(u8, last.role, role)) {
+            // Extend the existing turn's parts slice.
+            const merged = try allocator.alloc(Google.Part, last.parts.len + new_parts.len);
+            @memcpy(merged[0..last.parts.len], last.parts);
+            @memcpy(merged[last.parts.len..], new_parts);
+            allocator.free(last.parts);
+            allocator.free(new_parts);
+            last.parts = merged;
+            return;
+        }
+    }
+    try contents.append(allocator, .{ .role = role, .parts = new_parts });
 }
