@@ -39,6 +39,7 @@ pub const ErrorResponse = struct {
 
 /// Role in Anthropic conversation (only user and assistant)
 pub const Role = enum {
+    system,
     user,
     assistant,
 
@@ -47,8 +48,8 @@ pub const Role = enum {
     }
 
     pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) std.json.ParseError(@TypeOf(source.*))!Role {
-        const str = try std.json.innerParse([]const u8, allocator, source, options);
-        return std.meta.stringToEnum(Role, str) orelse error.UnknownField;
+        const json_value = try std.json.innerParse(std.json.Value, allocator, source, options);
+        return jsonParseFromValue(allocator, json_value, options) catch return error.UnknownField;
     }
 
     pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, options: std.json.ParseOptions) !Role {
@@ -184,11 +185,32 @@ pub const DocumentSource = union(enum) {
     }
 };
 
+/// Tool result content — either a plain string or an array of text content blocks.
+pub const ToolResultContent = union(enum) {
+    text: []const u8,
+    blocks: []const SearchResultTextContent, // reuses {type, text} shape
+
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        switch (self) {
+            .text => |s| try jw.write(s),
+            .blocks => |b| try jw.write(b),
+        }
+    }
+
+    pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, options: std.json.ParseOptions) !ToolResultContent {
+        switch (source) {
+            .string => |s| return .{ .text = s },
+            .array => return .{ .blocks = try std.json.innerParseFromValue([]const SearchResultTextContent, allocator, source, options) },
+            else => return error.UnexpectedToken,
+        }
+    }
+};
+
 /// Tool result block for content
 pub const ToolResultBlock = struct {
     type: []const u8 = "tool_result",
     tool_use_id: []const u8,
-    content: ?[]const u8 = null,
+    content: ?ToolResultContent = null,
     is_error: ?bool = null,
     cache_control: ?CacheControl = null,
     toolset_name: ?[]const u8 = null,
@@ -210,25 +232,9 @@ pub const ToolResultBlock = struct {
             else => null,
         } else null;
 
-        // content can be a string or an array of content blocks — flatten to string
-        const content: ?[]const u8 = if (obj.get("content")) |cv| switch (cv) {
-            .string => |s| s,
+        const content: ?ToolResultContent = if (obj.get("content")) |cv| switch (cv) {
             .null => null,
-            .array => |arr| blk: {
-                var parts = std.ArrayList([]const u8).empty;
-                defer parts.deinit(allocator);
-                for (arr.items) |item| {
-                    if (item != .object) continue;
-                    const text_val = item.object.get("text") orelse continue;
-                    if (text_val == .string) {
-                        try parts.append(allocator, text_val.string);
-                    }
-                }
-                if (parts.items.len == 0) break :blk null;
-                if (parts.items.len == 1) break :blk parts.items[0];
-                break :blk try std.mem.join(allocator, "\n", parts.items);
-            },
-            else => null,
+            else => try ToolResultContent.jsonParseFromValue(allocator, cv, options),
         } else null;
 
         const cache_control: ?CacheControl = if (obj.get("cache_control")) |v|
@@ -283,7 +289,81 @@ pub const Caller = struct {
 };
 
 /// Citations on a text content block
-pub const CitationEntry = std.json.Value;
+
+pub const CharLocationCitation = struct {
+    type: []const u8 = "char_location",
+    cited_text: []const u8 = "",
+    document_index: u32 = 0,
+    document_title: ?[]const u8 = null,
+    start_char_index: u32 = 0,
+    end_char_index: u32 = 0,
+    file_id: ?[]const u8 = null,
+};
+
+pub const PageLocationCitation = struct {
+    type: []const u8 = "page_location",
+    cited_text: []const u8 = "",
+    document_index: u32 = 0,
+    document_title: ?[]const u8 = null,
+    start_page_number: u32 = 0,
+    end_page_number: u32 = 0,
+    file_id: ?[]const u8 = null,
+};
+
+pub const ContentBlockLocationCitation = struct {
+    type: []const u8 = "content_block_location",
+    cited_text: []const u8 = "",
+    document_index: u32 = 0,
+    document_title: ?[]const u8 = null,
+    start_block_index: u32 = 0,
+    end_block_index: u32 = 0,
+    file_id: ?[]const u8 = null,
+};
+
+pub const WebSearchResultLocationCitation = struct {
+    type: []const u8 = "web_search_result_location",
+    cited_text: []const u8 = "",
+    encrypted_index: []const u8 = "",
+    url: ?[]const u8 = null,
+    title: ?[]const u8 = null,
+};
+
+pub const SearchResultLocationCitation = struct {
+    type: []const u8 = "search_result_location",
+    cited_text: []const u8 = "",
+    search_result_index: u32 = 0,
+    start_block_index: u32 = 0,
+    end_block_index: u32 = 0,
+    source: ?[]const u8 = null,
+    title: ?[]const u8 = null,
+};
+
+pub const CitationEntry = union(enum) {
+    char_location: CharLocationCitation,
+    page_location: PageLocationCitation,
+    content_block_location: ContentBlockLocationCitation,
+    web_search_result_location: WebSearchResultLocationCitation,
+    search_result_location: SearchResultLocationCitation,
+
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        switch (self) {
+            inline else => |v| try jw.write(v),
+        }
+    }
+
+    pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, options: std.json.ParseOptions) !CitationEntry {
+        if (source != .object) return error.UnexpectedToken;
+        const type_v = source.object.get("type") orelse return error.MissingField;
+        if (type_v != .string) return error.UnexpectedToken;
+        const t = type_v.string;
+        if (std.mem.eql(u8, t, "char_location")) return .{ .char_location = try std.json.innerParseFromValue(CharLocationCitation, allocator, source, options) };
+        if (std.mem.eql(u8, t, "page_location")) return .{ .page_location = try std.json.innerParseFromValue(PageLocationCitation, allocator, source, options) };
+        if (std.mem.eql(u8, t, "content_block_location")) return .{ .content_block_location = try std.json.innerParseFromValue(ContentBlockLocationCitation, allocator, source, options) };
+        if (std.mem.eql(u8, t, "web_search_result_location")) return .{ .web_search_result_location = try std.json.innerParseFromValue(WebSearchResultLocationCitation, allocator, source, options) };
+        if (std.mem.eql(u8, t, "search_result_location")) return .{ .search_result_location = try std.json.innerParseFromValue(SearchResultLocationCitation, allocator, source, options) };
+        return error.UnknownField;
+    }
+};
 
 // ============================================================================
 // Tool result content types (Group B — fixed schemas)
@@ -295,6 +375,7 @@ pub const WebSearchResult = struct {
     url: []const u8 = "",
     encrypted_content: []const u8 = "",
     page_age: ?[]const u8 = null,
+    favicon_url: ?[]const u8 = null,
 };
 
 /// The nested document returned by a web_fetch tool call.
@@ -381,6 +462,18 @@ pub const TextEditorCodeExecutionResult = union(enum) {
         lines: []const []const u8 = &.{},
     },
 
+    pub fn jsonParseFromValue(allocator: std.mem.Allocator, v: std.json.Value, options: std.json.ParseOptions) !TextEditorCodeExecutionResult {
+        if (v == .object) {
+            if (v.object.get("type")) |t| if (t == .string) {
+                if (std.mem.eql(u8, t.string, "text_editor_code_execution_create_result"))
+                    return .{ .create = try std.json.innerParseFromValue(@TypeOf(@as(TextEditorCodeExecutionResult, undefined).create), allocator, v, options) };
+                if (std.mem.eql(u8, t.string, "text_editor_code_execution_str_replace_result"))
+                    return .{ .str_replace = try std.json.innerParseFromValue(@TypeOf(@as(TextEditorCodeExecutionResult, undefined).str_replace), allocator, v, options) };
+            };
+        }
+        return .{ .view = try std.json.innerParseFromValue(@TypeOf(@as(TextEditorCodeExecutionResult, undefined).view), allocator, v, options) };
+    }
+
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         switch (self) {
             .view => |v| try jw.write(v),
@@ -416,7 +509,7 @@ pub const ContentBlockParam = union(enum) {
         type: []const u8 = "text",
         text: []const u8,
         cache_control: ?CacheControl = null,
-        citations: ?std.json.Value = null,
+        citations: ?[]const CitationEntry = null,
     },
     image: struct {
         type: []const u8 = "image",
@@ -430,7 +523,7 @@ pub const ContentBlockParam = union(enum) {
         title: ?[]const u8 = null,
         context: ?[]const u8 = null,
         cache_control: ?CacheControl = null,
-        citations: ?std.json.Value = null,
+        citations: ?SearchResultCitations = null,
     },
     tool_use: struct {
         type: []const u8 = "tool_use",
@@ -531,11 +624,15 @@ pub const ContentBlockParam = union(enum) {
         if (std.mem.eql(u8, type_str, "text")) {
             const text_val = obj.get("text") orelse return error.MissingField;
             if (text_val != .string) return error.UnexpectedToken;
+            const text_citations: ?[]const CitationEntry = if (obj.get("citations")) |cv|
+                try std.json.innerParseFromValue([]const CitationEntry, allocator, cv, options)
+            else
+                null;
             return .{ .text = .{
                 .type = type_str,
                 .text = text_val.string,
                 .cache_control = cache_control,
-                .citations = obj.get("citations"),
+                .citations = text_citations,
             } };
         } else if (std.mem.eql(u8, type_str, "image")) {
             const source_val = obj.get("source") orelse return error.MissingField;
@@ -551,13 +648,17 @@ pub const ContentBlockParam = union(enum) {
             const doc_source = try DocumentSource.jsonParseFromValue(allocator, source_val, options);
             const title = if (obj.get("title")) |v| (if (v == .string) v.string else null) else null;
             const context = if (obj.get("context")) |v| (if (v == .string) v.string else null) else null;
+            const doc_citations: ?SearchResultCitations = if (obj.get("citations")) |cv|
+                try std.json.innerParseFromValue(SearchResultCitations, allocator, cv, options)
+            else
+                null;
             return .{ .document = .{
                 .type = type_str,
                 .source = doc_source,
                 .title = title,
                 .context = context,
                 .cache_control = cache_control,
-                .citations = obj.get("citations"),
+                .citations = doc_citations,
             } };
         } else if (std.mem.eql(u8, type_str, "tool_use")) {
             const id_val = obj.get("id") orelse return error.MissingField;
@@ -659,7 +760,7 @@ pub const ContentBlockParam = union(enum) {
             const content_val = obj.get("content") orelse return error.MissingField;
             return .{ .text_editor_code_execution_tool_result = .{
                 .tool_use_id = tuid.string,
-                .content = try parseTextEditorResult(allocator, content_val, options),
+                .content = try TextEditorCodeExecutionResult.jsonParseFromValue(allocator, content_val, options),
                 .cache_control = cache_control,
             } };
         } else if (std.mem.eql(u8, type_str, "tool_search_tool_result")) {
@@ -857,32 +958,7 @@ pub const Message = struct {
 
     pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
         const json_value = try std.json.innerParse(std.json.Value, allocator, source, options);
-
-        if (json_value != .object) return error.UnexpectedToken;
-        const obj = json_value.object;
-
-        const role_value = obj.get("role") orelse return error.MissingField;
-        const role = try std.json.innerParseFromValue(Role, allocator, role_value, options);
-
-        const content_value = obj.get("content") orelse return error.MissingField;
-
-        const ContentUnion = @TypeOf(@as(@This(), undefined).content);
-        const content: ContentUnion = switch (content_value) {
-            .string => |s| .{ .text = s },
-            .array => |arr| blk: {
-                var blocks = try allocator.alloc(ContentBlockParam, arr.items.len);
-                for (arr.items, 0..) |item, i| {
-                    blocks[i] = try std.json.innerParseFromValue(ContentBlockParam, allocator, item, options);
-                }
-                break :blk .{ .blocks = blocks };
-            },
-            else => return error.UnexpectedToken,
-        };
-
-        return .{
-            .role = role,
-            .content = content,
-        };
+        return jsonParseFromValue(allocator, json_value, options);
     }
 
     pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, options: std.json.ParseOptions) !@This() {
@@ -931,6 +1007,12 @@ pub const ThinkingConfig = struct {
 pub const OutputConfig = struct {
     effort: ?[]const u8 = null,
     format: ?std.json.Value = null,
+};
+
+/// Per-capability config entry used in browser_toolset / computer_toolset configs maps.
+pub const ToolConfigEntry = struct {
+    enabled: bool = false,
+    defer_loading: ?bool = null,
 };
 
 /// Tool definition for Anthropic API
@@ -1113,12 +1195,44 @@ pub const Metadata = struct {
     user_id: ?[]const u8 = null,
 };
 
+/// A single text block in a system prompt array (with optional cache_control).
+pub const SystemTextBlock = struct {
+    type: []const u8 = "text",
+    text: []const u8,
+    cache_control: ?CacheControl = null,
+};
+
+/// System parameter — either a plain string or an array of SystemTextBlock.
+pub const SystemParam = union(enum) {
+    text: []const u8,
+    blocks: []const SystemTextBlock,
+
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        switch (self) {
+            .text => |s| try jw.write(s),
+            .blocks => |blks| {
+                try jw.beginArray();
+                for (blks) |blk| {
+                    try jw.beginObject();
+                    try jw.objectField("type"); try jw.write(blk.type);
+                    try jw.objectField("text"); try jw.write(blk.text);
+                    if (blk.cache_control) |cc| {
+                        try jw.objectField("cache_control"); try jw.write(cc);
+                    }
+                    try jw.endObject();
+                }
+                try jw.endArray();
+            },
+        }
+    }
+};
+
 /// Request to Anthropic messages API
 pub const Request = struct {
     model: []const u8,
     messages: []const Message,
     max_tokens: u32, // REQUIRED in Anthropic API
-    system: ?[]const u8 = null,
+    system: ?SystemParam = null,
     temperature: ?f32 = null,
     top_p: ?f32 = null,
     top_k: ?u32 = null,
@@ -1141,33 +1255,8 @@ pub const Request = struct {
     inference_geo: ?[]const u8 = null,
     // top-level cache control
     cache_control: ?CacheControl = null,
-
-    /// Parse system field that can be either a string or array of content blocks.
-    /// Array format: [{"type": "text", "text": "..."}, ...]
-    /// Concatenates text values with newline separator.
-    fn parseSystemField(allocator: std.mem.Allocator, value: std.json.Value) !?[]const u8 {
-        switch (value) {
-            .string => |s| return s,
-            .array => |arr| {
-                if (arr.items.len == 0) return null;
-                // Collect text from each block
-                var parts = std.ArrayList([]const u8).empty;
-                defer parts.deinit(allocator);
-                for (arr.items) |item| {
-                    if (item != .object) continue;
-                    const text_val = item.object.get("text") orelse continue;
-                    if (text_val == .string) {
-                        try parts.append(allocator, text_val.string);
-                    }
-                }
-                if (parts.items.len == 0) return null;
-                if (parts.items.len == 1) return parts.items[0];
-                return try std.mem.join(allocator, "\n", parts.items);
-            },
-            .null => return null,
-            else => return error.UnexpectedToken,
-        }
-    }
+    // fallback model list
+    fallbacks: ?std.json.Value = null,
 
     pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
         const json_value = try std.json.innerParse(std.json.Value, allocator, source, options);
@@ -1195,11 +1284,20 @@ pub const Request = struct {
             else => return error.UnexpectedToken,
         };
 
-        // System: string or array of content blocks
-        const system: ?[]const u8 = if (obj.get("system")) |sys_val|
-            try parseSystemField(allocator, sys_val)
-        else
-            null;
+        // System: string or array of SystemTextBlock
+        const system: ?SystemParam = if (obj.get("system")) |sys_val| blk: {
+            switch (sys_val) {
+                .string => |s| break :blk SystemParam{ .text = s },
+                .array => |arr| {
+                    var blks = try allocator.alloc(SystemTextBlock, arr.items.len);
+                    for (arr.items, 0..) |item, i| {
+                        blks[i] = try std.json.innerParseFromValue(SystemTextBlock, allocator, item, options);
+                    }
+                    break :blk SystemParam{ .blocks = blks };
+                },
+                else => break :blk null,
+            }
+        } else null;
 
         // Optional simple fields
         const temperature: ?f32 = if (obj.get("temperature")) |v| switch (v) {
@@ -1304,6 +1402,9 @@ pub const Request = struct {
         else
             null;
 
+        // fallbacks
+        const fallbacks: ?std.json.Value = obj.get("fallbacks");
+
         return .{
             .model = model_val.string,
             .messages = messages,
@@ -1324,6 +1425,7 @@ pub const Request = struct {
             .container = container,
             .inference_geo = inference_geo,
             .cache_control = cache_control,
+            .fallbacks = fallbacks,
         };
     }
 
@@ -1426,6 +1528,16 @@ pub const Request = struct {
             try jw.write(cc);
         }
 
+        if (self.fallbacks) |fb| {
+            try jw.objectField("fallbacks");
+            try jw.write(fb);
+        }
+
+        if (self.betas) |b| {
+            try jw.objectField("betas");
+            try jw.write(b);
+        }
+
         try jw.endObject();
     }
 };
@@ -1449,7 +1561,7 @@ pub const ContentBlock = union(enum) {
     text: struct {
         type: []const u8,
         text: []const u8,
-        citations: ?std.json.Value = null,
+        citations: ?[]const CitationEntry = null,
     },
     tool_use: struct {
         type: []const u8,
@@ -1457,6 +1569,7 @@ pub const ContentBlock = union(enum) {
         name: []const u8,
         input: std.json.Value,
         caller: ?Caller = null,
+        toolset_name: ?[]const u8 = null,
     },
     server_tool_use: struct {
         type: []const u8,
@@ -1479,6 +1592,8 @@ pub const ContentBlock = union(enum) {
         tool_use_id: []const u8,
         is_error: ?bool = null,
         content: std.json.Value,
+        cache_control: ?CacheControl = null,
+        toolset_name: ?[]const u8 = null,
     },
     web_search_tool_result: struct {
         type: []const u8,
@@ -1512,6 +1627,9 @@ pub const ContentBlock = union(enum) {
         tool_use_id: []const u8,
         content: ToolSearchToolSearchResult,
     },
+    fallback: struct {
+        type: []const u8 = "fallback",
+    },
 
     pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
         const json_value = try std.json.innerParse(std.json.Value, allocator, source, options);
@@ -1529,10 +1647,14 @@ pub const ContentBlock = union(enum) {
         if (std.mem.eql(u8, type_str, "text")) {
             const text_value = obj.get("text") orelse return error.MissingField;
             if (text_value != .string) return error.UnexpectedToken;
+            const cb_text_citations: ?[]const CitationEntry = if (obj.get("citations")) |cv|
+                try std.json.innerParseFromValue([]const CitationEntry, allocator, cv, options)
+            else
+                null;
             return .{ .text = .{
                 .type = type_str,
                 .text = text_value.string,
-                .citations = obj.get("citations"),
+                .citations = cb_text_citations,
             } };
         } else if (std.mem.eql(u8, type_str, "tool_use")) {
             const id_value = obj.get("id") orelse return error.MissingField;
@@ -1544,12 +1666,17 @@ pub const ContentBlock = union(enum) {
                 try std.json.innerParseFromValue(Caller, allocator, v, options)
             else
                 null;
+            const toolset_name_cb: ?[]const u8 = if (obj.get("toolset_name")) |v| switch (v) {
+                .string => |s| s,
+                else => null,
+            } else null;
             return .{ .tool_use = .{
                 .type = type_str,
                 .id = id_value.string,
                 .name = name_value.string,
                 .input = input_value,
                 .caller = caller,
+                .toolset_name = toolset_name_cb,
             } };
         } else if (std.mem.eql(u8, type_str, "server_tool_use")) {
             const id_value = obj.get("id") orelse return error.MissingField;
@@ -1593,11 +1720,21 @@ pub const ContentBlock = union(enum) {
                 else => null,
             } else null;
             const content_val = obj.get("content") orelse std.json.Value{ .null = {} };
+            const tr_cache_control: ?CacheControl = if (obj.get("cache_control")) |v|
+                try std.json.innerParseFromValue(CacheControl, allocator, v, options)
+            else
+                null;
+            const tr_toolset_name: ?[]const u8 = if (obj.get("toolset_name")) |v| switch (v) {
+                .string => |s| s,
+                else => null,
+            } else null;
             return .{ .tool_result = .{
                 .type = type_str,
                 .tool_use_id = tuid.string,
                 .is_error = is_error,
                 .content = content_val,
+                .cache_control = tr_cache_control,
+                .toolset_name = tr_toolset_name,
             } };
         } else if (std.mem.eql(u8, type_str, "web_search_tool_result")) {
             const tuid = obj.get("tool_use_id") orelse return error.MissingField;
@@ -1658,7 +1795,7 @@ pub const ContentBlock = union(enum) {
             return .{ .text_editor_code_execution_tool_result = .{
                 .type = type_str,
                 .tool_use_id = tuid.string,
-                .content = try parseTextEditorResult(allocator, content_val, options),
+                .content = try TextEditorCodeExecutionResult.jsonParseFromValue(allocator, content_val, options),
             } };
         } else if (std.mem.eql(u8, type_str, "tool_search_tool_result")) {
             const tuid = obj.get("tool_use_id") orelse return error.MissingField;
@@ -1669,9 +1806,10 @@ pub const ContentBlock = union(enum) {
                 .tool_use_id = tuid.string,
                 .content = try std.json.innerParseFromValue(ToolSearchToolSearchResult, allocator, content_val, options),
             } };
+        } else if (std.mem.eql(u8, type_str, "fallback")) {
+            return .{ .fallback = .{ .type = type_str } };
         } else {
-            // Unknown block type — skip gracefully instead of failing
-            return .{ .text = .{ .type = type_str, .text = "" } };
+            return error.UnknownField;
         }
     }
 
@@ -1691,6 +1829,7 @@ pub const ContentBlock = union(enum) {
                 try out.objectField("name"); try out.write(v.name);
                 try out.objectField("input"); try out.write(v.input);
                 if (v.caller) |c| { try out.objectField("caller"); try out.write(c); }
+                if (v.toolset_name) |tn| { try out.objectField("toolset_name"); try out.write(tn); }
                 try out.endObject();
             },
             .server_tool_use => |v| {
@@ -1710,6 +1849,8 @@ pub const ContentBlock = union(enum) {
                 try out.objectField("tool_use_id"); try out.write(v.tool_use_id);
                 if (v.is_error) |e| { try out.objectField("is_error"); try out.write(e); }
                 try out.objectField("content"); try out.write(v.content);
+                if (v.cache_control) |cc| { try out.objectField("cache_control"); try out.write(cc); }
+                if (v.toolset_name) |tn| { try out.objectField("toolset_name"); try out.write(tn); }
                 try out.endObject();
             },
             .web_search_tool_result => |v| {
@@ -1756,27 +1897,28 @@ pub const ContentBlock = union(enum) {
                 try out.objectField("content"); try out.write(v.content);
                 try out.endObject();
             },
+            .fallback => |v| {
+                try out.beginObject();
+                try out.objectField("type"); try out.write(v.type);
+                try out.endObject();
+            },
         }
     }
 };
 
-/// Parse a TextEditorCodeExecutionResult union from a JSON value, dispatching
-/// on the `type` field to select the correct variant.
-fn parseTextEditorResult(
-    allocator: std.mem.Allocator,
-    v: std.json.Value,
-    options: std.json.ParseOptions,
-) !TextEditorCodeExecutionResult {
-    if (v == .object) {
-        if (v.object.get("type")) |t| if (t == .string) {
-            if (std.mem.eql(u8, t.string, "text_editor_code_execution_create_result"))
-                return .{ .create = try std.json.innerParseFromValue(@TypeOf(@as(TextEditorCodeExecutionResult, undefined).create), allocator, v, options) };
-            if (std.mem.eql(u8, t.string, "text_editor_code_execution_str_replace_result"))
-                return .{ .str_replace = try std.json.innerParseFromValue(@TypeOf(@as(TextEditorCodeExecutionResult, undefined).str_replace), allocator, v, options) };
-        };
-    }
-    return .{ .view = try std.json.innerParseFromValue(@TypeOf(@as(TextEditorCodeExecutionResult, undefined).view), allocator, v, options) };
-}
+pub const OutputTokensDetails = struct {
+    thinking_tokens: u32 = 0,
+};
+
+pub const CacheCreation = struct {
+    ephemeral_1h_input_tokens: u32 = 0,
+    ephemeral_5m_input_tokens: u32 = 0,
+};
+
+pub const ServerToolUsage = struct {
+    web_search_requests: u32 = 0,
+    web_fetch_requests: u32 = 0,
+};
 
 /// Usage statistics
 pub const Usage = struct {
@@ -1784,6 +1926,11 @@ pub const Usage = struct {
     output_tokens: u32 = 0,
     cache_creation_input_tokens: ?u32 = null, // GAP-12
     cache_read_input_tokens: ?u32 = null,      // GAP-12
+    inference_geo: ?[]const u8 = null,
+    output_tokens_details: ?OutputTokensDetails = null,
+    service_tier: ?[]const u8 = null,
+    server_tool_use: ?ServerToolUsage = null,
+    cache_creation: ?CacheCreation = null,
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         try jw.beginObject();
@@ -1799,8 +1946,35 @@ pub const Usage = struct {
             try jw.objectField("cache_read_input_tokens");
             try jw.write(v);
         }
+        if (self.inference_geo) |v| {
+            try jw.objectField("inference_geo");
+            try jw.write(v);
+        }
+        if (self.output_tokens_details) |v| {
+            try jw.objectField("output_tokens_details");
+            try jw.write(v);
+        }
+        if (self.service_tier) |v| {
+            try jw.objectField("service_tier");
+            try jw.write(v);
+        }
+        if (self.server_tool_use) |v| {
+            try jw.objectField("server_tool_use");
+            try jw.write(v);
+        }
+        if (self.cache_creation) |v| {
+            try jw.objectField("cache_creation");
+            try jw.write(v);
+        }
         try jw.endObject();
     }
+};
+
+/// Stop details for Response (extended stop reason info)
+pub const StopDetails = struct {
+    type: []const u8 = "refusal",
+    category: ?[]const u8 = null,
+    explanation: ?[]const u8 = null,
 };
 
 /// Non-streaming response
@@ -1814,6 +1988,7 @@ pub const Response = struct {
     stop_sequence: ?[]const u8,
     usage: Usage,
     container: ?Container = null,
+    stop_details: ?StopDetails = null,
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         try jw.beginObject();
@@ -1826,6 +2001,7 @@ pub const Response = struct {
         try jw.objectField("stop_sequence"); try jw.write(self.stop_sequence);
         try jw.objectField("usage"); try jw.write(self.usage);
         if (self.container) |v| { try jw.objectField("container"); try jw.write(v); }
+        if (self.stop_details) |v| { try jw.objectField("stop_details"); try jw.write(v); }
         try jw.endObject();
     }
 };
@@ -1921,7 +2097,8 @@ pub const MessageDeltaUsage = struct {
     output_tokens: u32 = 0,
     cache_creation_input_tokens: ?u32 = null,
     cache_read_input_tokens: ?u32 = null,
-    server_tool_use: ?struct { web_search_requests: ?u32 = null } = null,
+    server_tool_use: ?ServerToolUsage = null,
+    output_tokens_details: ?OutputTokensDetails = null,
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         try jw.beginObject();
@@ -1941,6 +2118,10 @@ pub const MessageDeltaUsage = struct {
         }
         if (self.server_tool_use) |v| {
             try jw.objectField("server_tool_use");
+            try jw.write(v);
+        }
+        if (self.output_tokens_details) |v| {
+            try jw.objectField("output_tokens_details");
             try jw.write(v);
         }
         try jw.endObject();
@@ -1968,39 +2149,9 @@ pub const SseErrorEvent = struct {
     @"error": ErrorDetails = .{ .type = "", .message = "" },
 };
 
-// ============================================================================
-// Streaming Transform Types (shared across transformers)
-// ============================================================================
-
-/// Usage data returned by AnthropicStreamState.getUsage() across all transformers.
-/// Named struct avoids anonymous struct type mismatch across compilation units.
-pub const StreamUsage = struct {
-    input_tokens: u32,
-    output_tokens: u32,
-};
-
-/// Result of transforming a single SSE line — output bytes or skip.
-/// Used by all providers' Messages-flow stream transformers.
-pub const StreamLineResult = union(enum) {
-    output: []const u8,
-    skip: void,
-};
-
-/// Ping event — emitted periodically by Anthropic and synthesized by
-/// providers that bridge to the Messages wire protocol.
+/// Ping event — emitted periodically by Anthropic on the SSE stream.
 pub const Ping = struct {
     type: []const u8 = "ping",
-};
-
-/// Context carried alongside each streaming chat chunk (id, timestamp, model).
-/// The full superset — providers that don't use system_fingerprint/service_tier
-/// leave those fields at their null defaults.
-pub const ChatChunkContext = struct {
-    id: []const u8,
-    created: i64,
-    original_model: []const u8,
-    system_fingerprint: ?[]const u8 = null,
-    service_tier: ?[]const u8 = null,
 };
 
 // ============================================================================

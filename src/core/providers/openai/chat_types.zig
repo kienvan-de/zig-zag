@@ -9,6 +9,32 @@ const common = @import("types.zig");
 // Chat-completions-only types (not shared with Responses API)
 // ============================================================================
 
+/// Role in a Chat Completions conversation.
+/// The Responses API uses plain strings for roles in input items.
+pub const Role = enum {
+    system,
+    user,
+    assistant,
+    developer,
+    tool,
+
+    pub fn jsonStringify(self: Role, out: anytype) !void {
+        try out.write(@tagName(self));
+    }
+
+    pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) std.json.ParseError(@TypeOf(source.*))!Role {
+        const json_value = try std.json.innerParse(std.json.Value, allocator, source, options);
+        return jsonParseFromValue(allocator, json_value, options) catch return error.UnknownField;
+    }
+
+    pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, options: std.json.ParseOptions) !Role {
+        _ = allocator;
+        _ = options;
+        if (source != .string) return error.UnexpectedToken;
+        return std.meta.stringToEnum(Role, source.string) orelse error.UnknownField;
+    }
+};
+
 /// Content part for chat message content arrays (text or image)
 pub const ContentPart = union(enum) {
     text: struct {
@@ -20,6 +46,21 @@ pub const ContentPart = union(enum) {
         image_url: struct {
             url: []const u8,
             detail: ?[]const u8 = null,
+        },
+    },
+    input_audio: struct {
+        type: []const u8 = "input_audio",
+        input_audio: struct {
+            data: []const u8 = "",
+            format: []const u8 = "",  // "wav" | "mp3"
+        },
+    },
+    file: struct {
+        type: []const u8 = "file",
+        file: struct {
+            file_id: ?[]const u8 = null,
+            file_data: ?[]const u8 = null,
+            filename: ?[]const u8 = null,
         },
     },
 
@@ -48,6 +89,23 @@ pub const ContentPart = union(enum) {
                 .type = "image_url",
                 .image_url = .{ .url = url_value.string, .detail = detail },
             } };
+        } else if (std.mem.eql(u8, type_str, "input_audio")) {
+            const ia_obj = obj.get("input_audio") orelse return .{ .input_audio = .{ .input_audio = .{} } };
+            const ia_data = if (ia_obj == .object) (if (ia_obj.object.get("data")) |d| (if (d == .string) d.string else "") else "") else "";
+            const ia_fmt = if (ia_obj == .object) (if (ia_obj.object.get("format")) |fmt| (if (fmt == .string) fmt.string else "") else "") else "";
+            return .{ .input_audio = .{
+                .type = "input_audio",
+                .input_audio = .{ .data = ia_data, .format = ia_fmt },
+            } };
+        } else if (std.mem.eql(u8, type_str, "file")) {
+            const f_obj = obj.get("file") orelse return .{ .file = .{ .file = .{} } };
+            const f_id = if (f_obj == .object) (if (f_obj.object.get("file_id")) |v| (if (v == .string) v.string else null) else null) else null;
+            const f_data = if (f_obj == .object) (if (f_obj.object.get("file_data")) |v| (if (v == .string) v.string else null) else null) else null;
+            const f_name = if (f_obj == .object) (if (f_obj.object.get("filename")) |v| (if (v == .string) v.string else null) else null) else null;
+            return .{ .file = .{
+                .type = "file",
+                .file = .{ .file_id = f_id, .file_data = f_data, .filename = f_name },
+            } };
         } else {
             return .{ .text = .{ .type = type_str, .text = "" } };
         }
@@ -68,6 +126,23 @@ pub const ContentPart = union(enum) {
                 if (img.image_url.detail) |d| { try jw.objectField("detail"); try jw.write(d); }
                 try jw.endObject();
             },
+            .input_audio => |ia| {
+                try jw.objectField("type"); try jw.write("input_audio");
+                try jw.objectField("input_audio");
+                try jw.beginObject();
+                try jw.objectField("data"); try jw.write(ia.input_audio.data);
+                try jw.objectField("format"); try jw.write(ia.input_audio.format);
+                try jw.endObject();
+            },
+            .file => |fi| {
+                try jw.objectField("type"); try jw.write("file");
+                try jw.objectField("file");
+                try jw.beginObject();
+                if (fi.file.file_id) |v| { try jw.objectField("file_id"); try jw.write(v); }
+                if (fi.file.file_data) |v| { try jw.objectField("file_data"); try jw.write(v); }
+                if (fi.file.filename) |v| { try jw.objectField("filename"); try jw.write(v); }
+                try jw.endObject();
+            },
         }
         try jw.endObject();
     }
@@ -77,6 +152,24 @@ pub const ContentPart = union(enum) {
 pub const MessageContent = union(enum) {
     text: []const u8,
     parts: []const ContentPart,
+
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        switch (self) {
+            .text => |t| try jw.write(t),
+            .parts => |p| try jw.write(p),
+        }
+    }
+
+    pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, options: std.json.ParseOptions) !MessageContent {
+        switch (source) {
+            .string => |s| return .{ .text = s },
+            .array => {
+                const parts = try std.json.innerParseFromValue([]const ContentPart, allocator, source, options);
+                return .{ .parts = parts };
+            },
+            else => return error.UnexpectedToken,
+        }
+    }
 };
 
 /// Usage statistics for chat completions
@@ -251,7 +344,7 @@ pub const DeltaToolCall = struct {
 
 /// Represents a message in the conversation
 pub const Message = struct {
-    role: common.Role,
+    role: Role,
     content: ?MessageContent = .{ .text = "" },
     name: ?[]const u8 = null,
     refusal: ?[]const u8 = null,
@@ -278,7 +371,7 @@ pub const Message = struct {
                 },
             }
         } else {
-            try jw.write("");
+            try jw.write(null);
         }
 
         if (self.name) |n| { try jw.objectField("name"); try jw.write(n); }
@@ -300,7 +393,7 @@ pub const Message = struct {
         const obj = source.object;
 
         const role_value = obj.get("role") orelse return error.MissingField;
-        const role = try std.json.innerParseFromValue(common.Role, allocator, role_value, options);
+        const role = try std.json.innerParseFromValue(Role, allocator, role_value, options);
 
         const content: ?MessageContent = if (obj.get("content")) |content_value| switch (content_value) {
             .string => |s| .{ .text = s },
@@ -378,6 +471,9 @@ pub const Request = struct {
     metadata: ?std.json.Value = null,
     prediction: ?std.json.Value = null,
     service_tier: ?[]const u8 = null,
+    web_search_options: ?std.json.Value = null,
+    moderation: ?std.json.Value = null,
+    verbosity: ?[]const u8 = null,
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         try jw.beginObject();
@@ -412,6 +508,9 @@ pub const Request = struct {
         if (self.metadata) |v| { try jw.objectField("metadata"); try jw.write(v); }
         if (self.prediction) |v| { try jw.objectField("prediction"); try jw.write(v); }
         if (self.service_tier) |v| { try jw.objectField("service_tier"); try jw.write(v); }
+        if (self.web_search_options) |v| { try jw.objectField("web_search_options"); try jw.write(v); }
+        if (self.moderation) |v| { try jw.objectField("moderation"); try jw.write(v); }
+        if (self.verbosity) |v| { try jw.objectField("verbosity"); try jw.write(v); }
         try jw.endObject();
     }
 
@@ -421,7 +520,6 @@ pub const Request = struct {
     }
 
     pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, options: std.json.ParseOptions) !@This() {
-        _ = options;
         if (source != .object) return error.UnexpectedToken;
         const obj = source.object;
 
@@ -461,10 +559,7 @@ pub const Request = struct {
         if (obj.get("tool_choice")) |v| { result.tool_choice = v; }
         if (obj.get("parallel_tool_calls")) |v| { result.parallel_tool_calls = if (v == .bool) v.bool else null; }
         if (obj.get("response_format")) |v| {
-            if (v == .object) {
-                const rf_type = if (v.object.get("type")) |t| (if (t == .string) t.string else "text") else "text";
-                result.response_format = .{ .type = rf_type, .json_schema = v.object.get("json_schema") };
-            }
+            result.response_format = try std.json.innerParseFromValue(common.ResponseFormat, allocator, v, options);
         }
         if (obj.get("stop")) |v| {
             switch (v) {
@@ -495,6 +590,9 @@ pub const Request = struct {
         if (obj.get("metadata")) |v| { result.metadata = v; }
         if (obj.get("prediction")) |v| { result.prediction = v; }
         if (obj.get("service_tier")) |v| { result.service_tier = if (v == .string) v.string else null; }
+        if (obj.get("web_search_options")) |v| { result.web_search_options = v; }
+        if (obj.get("moderation")) |v| { result.moderation = v; }
+        if (obj.get("verbosity")) |v| { result.verbosity = if (v == .string) v.string else null; }
 
         return result;
     }
@@ -506,7 +604,7 @@ pub const Request = struct {
 
 /// Delta content in streaming response
 pub const Delta = struct {
-    role: ?common.Role = null,
+    role: ?Role = null,
     content: ?[]const u8 = null,
     refusal: ?[]const u8 = null,
     tool_calls: ?[]const DeltaToolCall = null,
@@ -556,6 +654,7 @@ pub const StreamChunk = struct {
     system_fingerprint: ?[]const u8 = null,
     service_tier: ?[]const u8 = null,
     obfuscation: ?[]const u8 = null,
+    moderation: ?std.json.Value = null,
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         try jw.beginObject();
@@ -571,6 +670,7 @@ pub const StreamChunk = struct {
         if (self.system_fingerprint) |sf| { try jw.objectField("system_fingerprint"); try jw.write(sf); }
         if (self.service_tier) |st| { try jw.objectField("service_tier"); try jw.write(st); }
         if (self.obfuscation) |v| { try jw.objectField("obfuscation"); try jw.write(v); }
+        if (self.moderation) |v| { try jw.objectField("moderation"); try jw.write(v); }
         try jw.endObject();
     }
 };
@@ -581,7 +681,7 @@ pub const StreamChunk = struct {
 
 /// Message in non-streaming response
 pub const ResponseMessage = struct {
-    role: common.Role,
+    role: Role,
     content: ?[]const u8,
     refusal: ?[]const u8 = null,
     tool_calls: ?[]const ToolCall = null,
@@ -627,6 +727,8 @@ pub const Response = struct {
     usage: ?Usage = null,
     system_fingerprint: ?[]const u8 = null,
     service_tier: ?[]const u8 = null,
+    metadata: ?std.json.Value = null,
+    moderation: ?std.json.Value = null,
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         try jw.beginObject();
@@ -641,17 +743,9 @@ pub const Response = struct {
         if (self.usage) |u| { try jw.objectField("usage"); try Usage.jsonStringify(u, jw); }
         if (self.system_fingerprint) |sf| { try jw.objectField("system_fingerprint"); try jw.write(sf); }
         if (self.service_tier) |st| { try jw.objectField("service_tier"); try jw.write(st); }
+        if (self.metadata) |v| { try jw.objectField("metadata"); try jw.write(v); }
+        if (self.moderation) |v| { try jw.objectField("moderation"); try jw.write(v); }
         try jw.endObject();
     }
 };
 
-// ============================================================================
-// Stream line dispatch result
-// ============================================================================
-
-/// Result type for stream line transformation (shared across all completions transformers)
-pub const StreamLineResult = union(enum) {
-    chunk: std.json.Parsed(StreamChunk),
-    @"error": common.ErrorResponse,
-    skip: void,
-};

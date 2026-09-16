@@ -14,12 +14,55 @@ const common = @import("types.zig");
 // Tool definitions
 // ============================================================================
 
+pub const MCPToolFilter = struct {
+    tool_names: []const []const u8 = &.{},
+    read_only: ?bool = null,
+};
+
 /// Tool definition for the Responses API — flat format for "function" type,
 /// plus pass-through for built-in tools (web_search_preview, file_search, etc.)
 pub const Tool = union(enum) {
     function: struct {
         type: []const u8 = "function",
         function: common.ToolFunction,
+    },
+    web_search_preview: struct {
+        type: []const u8 = "web_search_preview",
+        search_context_size: ?[]const u8 = null,
+        user_location: ?struct {
+            type: []const u8 = "approximate",
+            country: ?[]const u8 = null,
+            city: ?[]const u8 = null,
+            region: ?[]const u8 = null,
+            timezone: ?[]const u8 = null,
+        } = null,
+    },
+    file_search: struct {
+        type: []const u8 = "file_search",
+        vector_store_ids: []const []const u8 = &.{},
+        max_num_results: ?u32 = null,
+        filters: ?std.json.Value = null,
+        ranking_options: ?struct {
+            ranker: ?[]const u8 = null,
+            score_threshold: ?f32 = null,
+        } = null,
+    },
+    code_interpreter_tool: struct {
+        type: []const u8 = "code_interpreter",
+        container: ?struct {
+            type: []const u8 = "",
+        } = null,
+    },
+    mcp_tool: struct {
+        type: []const u8 = "mcp",
+        server_label: []const u8 = "",
+        server_url: []const u8 = "",
+        allowed_tools: ?MCPToolFilter = null,
+        headers: ?std.json.Value = null,
+        require_approval: ?[]const u8 = null,
+        connector_id: ?[]const u8 = null,
+        tunnel_id: ?[]const u8 = null,
+        authorization: ?[]const u8 = null,
     },
     /// Pass-through for built-in and unknown tool types
     other: std.json.Value,
@@ -36,25 +79,62 @@ pub const Tool = union(enum) {
         if (type_val != .string) return .{ .other = source };
 
         if (std.mem.eql(u8, type_val.string, "function")) {
-            // Flat format: {"type":"function","name":...,"description":...,"parameters":...}
-            if (obj.get("name")) |name_val| {
-                if (name_val != .string) return error.UnexpectedToken;
-                const desc = if (obj.get("description")) |d| (if (d == .string) d.string else null) else null;
-                const params = obj.get("parameters");
-                const strict = if (obj.get("strict")) |s| (if (s == .bool) s.bool else null) else null;
-                return .{ .function = .{ .function = .{
-                    .name = name_val.string,
-                    .description = desc,
-                    .parameters = params,
-                    .strict = strict,
-                } } };
-            }
-            // Nested Chat Completions format fallback: {"type":"function","function":{...}}
-            if (obj.get("function")) |func_val| {
-                const func = try std.json.parseFromValueLeaky(common.ToolFunction, allocator, func_val, options);
-                return .{ .function = .{ .function = func } };
-            }
-            return error.MissingField;
+            // Flat Responses API format: {"type":"function","name":...,"description":...,"parameters":...}
+            const name_val = obj.get("name") orelse return error.MissingField;
+            if (name_val != .string) return error.UnexpectedToken;
+            const desc = if (obj.get("description")) |d| (if (d == .string) d.string else null) else null;
+            const params = obj.get("parameters");
+            const strict = if (obj.get("strict")) |s| (if (s == .bool) s.bool else null) else null;
+            return .{ .function = .{ .function = .{
+                .name = name_val.string,
+                .description = desc,
+                .parameters = params,
+                .strict = strict,
+            } } };
+        } else if (std.mem.eql(u8, type_val.string, "web_search_preview")) {
+            return .{ .web_search_preview = try std.json.innerParseFromValue(
+                @TypeOf(@as(Tool, .{ .web_search_preview = .{} }).web_search_preview),
+                allocator, source, options,
+            ) };
+        } else if (std.mem.eql(u8, type_val.string, "file_search")) {
+            return .{ .file_search = try std.json.innerParseFromValue(
+                @TypeOf(@as(Tool, .{ .file_search = .{} }).file_search),
+                allocator, source, options,
+            ) };
+        } else if (std.mem.eql(u8, type_val.string, "code_interpreter")) {
+            return .{ .code_interpreter_tool = try std.json.innerParseFromValue(
+                @TypeOf(@as(Tool, .{ .code_interpreter_tool = .{} }).code_interpreter_tool),
+                allocator, source, options,
+            ) };
+        } else if (std.mem.eql(u8, type_val.string, "mcp")) {
+            const server_label = if (obj.get("server_label")) |v| (if (v == .string) v.string else "") else "";
+            const server_url = if (obj.get("server_url")) |v| (if (v == .string) v.string else "") else "";
+            const allowed_tools: ?MCPToolFilter = if (obj.get("allowed_tools")) |at| blk: {
+                if (at != .object) break :blk null;
+                const tool_names: []const []const u8 = if (at.object.get("tool_names")) |tn| blk2: {
+                    if (tn != .array) break :blk2 &.{};
+                    const names = try allocator.alloc([]const u8, tn.array.items.len);
+                    for (tn.array.items, 0..) |item, i| names[i] = if (item == .string) item.string else "";
+                    break :blk2 names;
+                } else &.{};
+                const read_only: ?bool = if (at.object.get("read_only")) |ro| (if (ro == .bool) ro.bool else null) else null;
+                break :blk MCPToolFilter{ .tool_names = tool_names, .read_only = read_only };
+            } else null;
+            const headers = obj.get("headers");
+            const require_approval = if (obj.get("require_approval")) |v| (if (v == .string) v.string else null) else null;
+            const connector_id = if (obj.get("connector_id")) |v| (if (v == .string) v.string else null) else null;
+            const tunnel_id = if (obj.get("tunnel_id")) |v| (if (v == .string) v.string else null) else null;
+            const authorization = if (obj.get("authorization")) |v| (if (v == .string) v.string else null) else null;
+            return .{ .mcp_tool = .{
+                .server_label = server_label,
+                .server_url = server_url,
+                .allowed_tools = allowed_tools,
+                .headers = headers,
+                .require_approval = require_approval,
+                .connector_id = connector_id,
+                .tunnel_id = tunnel_id,
+                .authorization = authorization,
+            } };
         } else {
             return .{ .other = source };
         }
@@ -72,6 +152,7 @@ pub const Tool = union(enum) {
                 if (f.function.strict) |s| { try jw.objectField("strict"); try jw.write(s); }
                 try jw.endObject();
             },
+            inline .web_search_preview, .file_search, .code_interpreter_tool, .mcp_tool => |v| try jw.write(v),
             .other => |v| try jw.write(v),
         }
     }
@@ -159,7 +240,8 @@ pub const Request = struct {
     prompt_cache_options: ?std.json.Value = null,
     user: ?[]const u8 = null,
     prompt: ?PromptParam = null,
-    stop: ?[]const []const u8 = null,
+    verbosity: ?[]const u8 = null,
+    reasoning_effort: ?[]const u8 = null,
 
     pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
         const val = try std.json.Value.jsonParse(allocator, source, options);
@@ -251,21 +333,8 @@ pub const Request = struct {
                 result.prompt = .{ .id = id, .version = ver, .variables = v.object.get("variables") };
             }
         }
-        if (obj.get("stop")) |v| {
-            switch (v) {
-                .string => |s| {
-                    const arr = try allocator.alloc([]const u8, 1);
-                    arr[0] = s;
-                    result.stop = arr;
-                },
-                .array => |arr| {
-                    const seqs = try allocator.alloc([]const u8, arr.items.len);
-                    for (arr.items, 0..) |item, i| seqs[i] = if (item == .string) item.string else "";
-                    result.stop = seqs;
-                },
-                else => {},
-            }
-        }
+        if (obj.get("verbosity")) |v| { result.verbosity = if (v == .string) v.string else null; }
+        if (obj.get("reasoning_effort")) |v| { result.reasoning_effort = if (v == .string) v.string else null; }
 
         return result;
     }
@@ -302,7 +371,8 @@ pub const Request = struct {
         if (self.prompt_cache_options) |v| { try jw.objectField("prompt_cache_options"); try jw.write(v); }
         if (self.user) |v| { try jw.objectField("user"); try jw.write(v); }
         if (self.prompt) |v| { try jw.objectField("prompt"); try jw.write(v); }
-        if (self.stop) |v| { try jw.objectField("stop"); try jw.write(v); }
+        if (self.verbosity) |v| { try jw.objectField("verbosity"); try jw.write(v); }
+        if (self.reasoning_effort) |v| { try jw.objectField("reasoning_effort"); try jw.write(v); }
         try jw.endObject();
     }
 };
@@ -315,7 +385,7 @@ pub const Request = struct {
 pub const OutputTextContent = struct {
     type: []const u8 = "output_text",
     text: []const u8,
-    annotations: ?std.json.Value = null,
+    annotations: ?[]const OutputAnnotation = null,
     logprobs: ?std.json.Value = null,
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
@@ -342,7 +412,7 @@ pub const OutputContent = union(enum) {
         return jsonParseFromValue(allocator, v, options);
     }
 
-    pub fn jsonParseFromValue(_: std.mem.Allocator, source: std.json.Value, _: std.json.ParseOptions) !@This() {
+    pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, _: std.json.ParseOptions) !@This() {
         if (source != .object) return .{ .other = source };
         const obj = source.object;
         const type_val = obj.get("type") orelse return .{ .other = source };
@@ -350,10 +420,19 @@ pub const OutputContent = union(enum) {
 
         if (std.mem.eql(u8, type_val.string, "output_text")) {
             const text = if (obj.get("text")) |t| (if (t == .string) t.string else "") else "";
+            const ann_val = obj.get("annotations");
+            const annotations: ?[]const OutputAnnotation = if (ann_val) |av| blk: {
+                if (av != .array) break :blk null;
+                const anns = try allocator.alloc(OutputAnnotation, av.array.items.len);
+                for (av.array.items, 0..) |item, i| {
+                    anns[i] = try OutputAnnotation.jsonParseFromValue(allocator, item, .{});
+                }
+                break :blk anns;
+            } else null;
             return .{ .output_text = .{
                 .type = type_val.string,
                 .text = text,
-                .annotations = obj.get("annotations"),
+                .annotations = annotations,
                 .logprobs = obj.get("logprobs"),
             } };
         } else if (std.mem.eql(u8, type_val.string, "refusal")) {
@@ -417,6 +496,75 @@ pub const OutputItem = union(enum) {
         summary: ?std.json.Value = null,
         encrypted_content: ?std.json.Value = null,
         status: ?[]const u8 = null,
+        content: []const std.json.Value = &.{},
+    },
+    web_search_call: struct {
+        type: []const u8 = "web_search_call",
+        id: []const u8 = "",
+        status: []const u8 = "",
+        action: ?struct {
+            type: []const u8 = "",
+            query: []const u8 = "",
+        } = null,
+    },
+    file_search_call: struct {
+        type: []const u8 = "file_search_call",
+        id: []const u8 = "",
+        status: []const u8 = "",
+        queries: []const []const u8 = &.{},
+        results: []const std.json.Value = &.{},
+    },
+    code_interpreter_call: struct {
+        type: []const u8 = "code_interpreter_call",
+        id: []const u8 = "",
+        status: []const u8 = "",
+        code: []const u8 = "",
+        results: []const std.json.Value = &.{},
+    },
+    mcp_list_tools_item: struct {
+        type: []const u8 = "mcp_list_tools",
+        id: []const u8 = "",
+        server_label: []const u8 = "",
+        status: []const u8 = "",
+        tools: []const std.json.Value = &.{},
+        @"error": ?[]const u8 = null,
+    },
+    mcp_call_item: struct {
+        type: []const u8 = "mcp_call",
+        id: []const u8 = "",
+        server_label: []const u8 = "",
+        name: []const u8 = "",
+        arguments: []const u8 = "",
+        status: []const u8 = "",
+        output: ?[]const u8 = null,
+        @"error": ?std.json.Value = null,
+        approval_request_id: ?[]const u8 = null,
+    },
+    image_generation_call: struct {
+        type: []const u8 = "image_generation_call",
+        id: []const u8 = "",
+        status: []const u8 = "",
+        result: ?[]const u8 = null,
+        size: ?[]const u8 = null,
+        quality: ?[]const u8 = null,
+        action: ?std.json.Value = null,
+        background: ?[]const u8 = null,
+        output_format: ?[]const u8 = null,
+        revised_prompt: ?[]const u8 = null,
+    },
+    local_shell_call: struct {
+        type: []const u8 = "local_shell_call",
+        id: []const u8 = "",
+        call_id: []const u8 = "",
+        status: []const u8 = "",
+        action: ?struct {
+            type: []const u8 = "",
+            command: []const []const u8 = &.{},
+            env: ?std.json.Value = null,
+            timeout_ms: ?u32 = null,
+            working_directory: ?[]const u8 = null,
+            user: ?[]const u8 = null,
+        } = null,
     },
     other: std.json.Value,
 
@@ -458,13 +606,54 @@ pub const OutputItem = union(enum) {
                 .caller = obj.get("caller"),
             } };
         } else if (std.mem.eql(u8, type_val.string, "reasoning")) {
+            const reasoning_content: []const std.json.Value = if (obj.get("content")) |cv| blk: {
+                if (cv != .array) break :blk &.{};
+                const items = try allocator.dupe(std.json.Value, cv.array.items);
+                break :blk items;
+            } else &.{};
             return .{ .reasoning = .{
                 .id = if (obj.get("id")) |v| (if (v == .string) v.string else "") else "",
                 .type = type_val.string,
                 .summary = obj.get("summary"),
                 .encrypted_content = obj.get("encrypted_content"),
                 .status = if (obj.get("status")) |v| (if (v == .string) v.string else null) else null,
+                .content = reasoning_content,
             } };
+        } else if (std.mem.eql(u8, type_val.string, "web_search_call")) {
+            return .{ .web_search_call = try std.json.innerParseFromValue(
+                @TypeOf(@as(OutputItem, .{ .web_search_call = .{} }).web_search_call),
+                allocator, source, options,
+            ) };
+        } else if (std.mem.eql(u8, type_val.string, "file_search_call")) {
+            return .{ .file_search_call = try std.json.innerParseFromValue(
+                @TypeOf(@as(OutputItem, .{ .file_search_call = .{} }).file_search_call),
+                allocator, source, options,
+            ) };
+        } else if (std.mem.eql(u8, type_val.string, "code_interpreter_call")) {
+            return .{ .code_interpreter_call = try std.json.innerParseFromValue(
+                @TypeOf(@as(OutputItem, .{ .code_interpreter_call = .{} }).code_interpreter_call),
+                allocator, source, options,
+            ) };
+        } else if (std.mem.eql(u8, type_val.string, "mcp_list_tools")) {
+            return .{ .mcp_list_tools_item = try std.json.innerParseFromValue(
+                @TypeOf(@as(OutputItem, .{ .mcp_list_tools_item = .{} }).mcp_list_tools_item),
+                allocator, source, options,
+            ) };
+        } else if (std.mem.eql(u8, type_val.string, "mcp_call")) {
+            return .{ .mcp_call_item = try std.json.innerParseFromValue(
+                @TypeOf(@as(OutputItem, .{ .mcp_call_item = .{} }).mcp_call_item),
+                allocator, source, options,
+            ) };
+        } else if (std.mem.eql(u8, type_val.string, "image_generation_call")) {
+            return .{ .image_generation_call = try std.json.innerParseFromValue(
+                @TypeOf(@as(OutputItem, .{ .image_generation_call = .{} }).image_generation_call),
+                allocator, source, options,
+            ) };
+        } else if (std.mem.eql(u8, type_val.string, "local_shell_call")) {
+            return .{ .local_shell_call = try std.json.innerParseFromValue(
+                @TypeOf(@as(OutputItem, .{ .local_shell_call = .{} }).local_shell_call),
+                allocator, source, options,
+            ) };
         } else {
             return .{ .other = source };
         }
@@ -474,7 +663,19 @@ pub const OutputItem = union(enum) {
         switch (self) {
             .message => |v| try v.jsonStringify(jw),
             .function_call => |v| try jw.write(v),
-            .reasoning => |v| try jw.write(v),
+            .reasoning => |v| {
+                try jw.beginObject();
+                try jw.objectField("id"); try jw.write(v.id);
+                try jw.objectField("type"); try jw.write(v.type);
+                if (v.summary) |s| { try jw.objectField("summary"); try jw.write(s); }
+                if (v.encrypted_content) |e| { try jw.objectField("encrypted_content"); try jw.write(e); }
+                if (v.status) |s| { try jw.objectField("status"); try jw.write(s); }
+                try jw.objectField("content"); try jw.write(v.content);
+                try jw.endObject();
+            },
+            inline .web_search_call, .file_search_call, .code_interpreter_call,
+            .mcp_list_tools_item, .mcp_call_item, .image_generation_call,
+            .local_shell_call => |v| try jw.write(v),
             .other => |v| try jw.write(v),
         }
     }
@@ -536,13 +737,14 @@ pub const Response = struct {
     previous_response_id: ?[]const u8 = null,
     service_tier: ?[]const u8 = null,
     conversation: ?std.json.Value = null,
-    moderation: ?std.json.Value = null,
+    moderation: ?ModerationOutput = null,
     safety_identifier: ?[]const u8 = null,
     prompt_cache_key: ?[]const u8 = null,
     prompt_cache_options: ?std.json.Value = null,
-    prompt_cache_diagnostics: ?std.json.Value = null,
+    prompt_cache_diagnostics: ?PromptCacheDiagnostics = null,
     prompt: ?std.json.Value = null,
     text: ?std.json.Value = null,
+    user: ?[]const u8 = null,
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         try jw.beginObject();
@@ -584,61 +786,138 @@ pub const Response = struct {
         if (self.prompt_cache_diagnostics) |v| { try jw.objectField("prompt_cache_diagnostics"); try jw.write(v); }
         if (self.prompt) |v| { try jw.objectField("prompt"); try jw.write(v); }
         if (self.text) |v| { try jw.objectField("text"); try jw.write(v); }
+        if (self.user) |v| { try jw.objectField("user"); try jw.write(v); }
         try jw.endObject();
     }
+};
 
-    /// Parse a Response from a std.json.Value object map.
-    /// `allocator` is used to dupe the `model` string (which may be mutated).
-    /// All other fields are stored by reference from `src` — caller must keep
-    /// `src` alive for the lifetime of the returned Response.
-    pub fn jsonParseFromValue(src: std.json.Value, allocator: std.mem.Allocator) !Response {
-        if (src != .object) return error.UnexpectedToken;
-        const obj = src.object;
-        const id_v = obj.get("id") orelse return error.MissingField;
-        const model_v = obj.get("model") orelse return error.MissingField;
-        if (id_v != .string or model_v != .string) return error.UnexpectedToken;
-        var resp = Response{
-            .id = id_v.string,
-            .model = try allocator.dupe(u8, model_v.string),
-            .output = &.{},
-        };
-        if (obj.get("object")) |v| if (v == .string) { resp.object = v.string; };
-        if (obj.get("created_at")) |v| if (v == .float) { resp.created_at = v.float; }
-            else if (v == .integer) { resp.created_at = @floatFromInt(v.integer); };
-        if (obj.get("completed_at")) |v| if (v == .float) { resp.completed_at = v.float; }
-            else if (v == .integer) { resp.completed_at = @floatFromInt(v.integer); };
-        if (obj.get("status")) |v| if (v == .string) { resp.status = v.string; };
-        if (obj.get("incomplete_details")) |v| resp.incomplete_details = v;
-        if (obj.get("error")) |v| resp.@"error" = v;
-        if (obj.get("metadata")) |v| resp.metadata = v;
-        if (obj.get("usage")) |v| if (v == .object) {
-            var u = Usage{};
-            if (v.object.get("input_tokens")) |t| if (t == .integer) { u.input_tokens = @intCast(t.integer); };
-            if (v.object.get("output_tokens")) |t| if (t == .integer) { u.output_tokens = @intCast(t.integer); };
-            if (v.object.get("total_tokens")) |t| if (t == .integer) { u.total_tokens = @intCast(t.integer); };
-            if (v.object.get("input_tokens_details")) |t| if (t == .object) {
-                var d = common.PromptTokensDetails{};
-                if (t.object.get("cached_tokens")) |x| if (x == .integer) { d.cached_tokens = @intCast(x.integer); };
-                if (t.object.get("audio_tokens")) |x| if (x == .integer) { d.audio_tokens = @intCast(x.integer); };
-                u.input_tokens_details = d;
-            };
-            if (v.object.get("output_tokens_details")) |t| if (t == .object) {
-                var d = common.CompletionTokensDetails{};
-                if (t.object.get("reasoning_tokens")) |x| if (x == .integer) { d.reasoning_tokens = @intCast(x.integer); };
-                if (t.object.get("audio_tokens")) |x| if (x == .integer) { d.audio_tokens = @intCast(x.integer); };
-                if (t.object.get("accepted_prediction_tokens")) |x| if (x == .integer) { d.accepted_prediction_tokens = @intCast(x.integer); };
-                if (t.object.get("rejected_prediction_tokens")) |x| if (x == .integer) { d.rejected_prediction_tokens = @intCast(x.integer); };
-                u.output_tokens_details = d;
-            };
-            resp.usage = u;
-        };
-        if (obj.get("service_tier")) |v| if (v == .string) { resp.service_tier = v.string; };
-        return resp;
+// ============================================================================
+// Annotation types
+// ============================================================================
+
+pub const ModerationCategories = struct {
+    harassment: bool = false,
+    @"harassment/threatening": bool = false,
+    hate: bool = false,
+    @"hate/threatening": bool = false,
+    illicit: bool = false,
+    @"illicit/violent": bool = false,
+    @"self-harm": bool = false,
+    @"self-harm/instructions": bool = false,
+    @"self-harm/intent": bool = false,
+    sexual: bool = false,
+    @"sexual/minors": bool = false,
+    violence: bool = false,
+    @"violence/graphic": bool = false,
+};
+
+pub const ModerationResult = struct {
+    type: []const u8 = "moderation_result",
+    model: []const u8 = "",
+    flagged: bool = false,
+    categories: ?ModerationCategories = null,
+    category_scores: ?std.json.Value = null,
+    category_applied_input_types: ?std.json.Value = null,
+};
+
+pub const ModerationOutput = struct {
+    input: ?ModerationResult = null,
+    output: ?ModerationResult = null,
+};
+
+pub const PromptCacheDiagnostics = union(enum) {
+    cache_miss: struct {
+        type: []const u8 = "cache_miss",
+        reason: []const u8 = "",
+        cache_missed_tokens: u32 = 0,
+        comparison_reusable_tokens: u32 = 0,
+    },
+    cache_hit: struct {
+        type: []const u8 = "cache_hit",
+    },
+    comparison_response_not_found: struct {
+        type: []const u8 = "comparison_response_not_found",
+    },
+    unavailable: struct {
+        type: []const u8 = "unavailable",
+    },
+
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        switch (self) {
+            inline else => |v| try jw.write(v),
+        }
     }
 
-    /// Free only the fields allocated by jsonParseFromValue (currently just `model`).
-    pub fn deinitParsed(self: Response, allocator: std.mem.Allocator) void {
-        allocator.free(self.model);
+    pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, options: std.json.ParseOptions) !PromptCacheDiagnostics {
+        if (source != .object) return error.UnexpectedToken;
+        const type_v = source.object.get("type") orelse return error.MissingField;
+        if (type_v != .string) return error.UnexpectedToken;
+        const t = type_v.string;
+        if (std.mem.eql(u8, t, "cache_miss")) return .{ .cache_miss = try std.json.innerParseFromValue(@TypeOf(@as(PromptCacheDiagnostics, undefined).cache_miss), allocator, source, options) };
+        if (std.mem.eql(u8, t, "cache_hit")) return .{ .cache_hit = .{} };
+        if (std.mem.eql(u8, t, "comparison_response_not_found")) return .{ .comparison_response_not_found = .{} };
+        if (std.mem.eql(u8, t, "unavailable")) return .{ .unavailable = .{} };
+        return error.UnknownField;
+    }
+};
+
+pub const UrlCitationAnnotation = struct {
+    type: []const u8 = "url_citation",
+    url: []const u8 = "",
+    title: []const u8 = "",
+    start_index: u32 = 0,
+    end_index: u32 = 0,
+};
+
+pub const FileCitationAnnotation = struct {
+    type: []const u8 = "file_citation",
+    file_id: []const u8 = "",
+    filename: []const u8 = "",
+    index: u32 = 0,
+};
+
+pub const FilePathAnnotation = struct {
+    type: []const u8 = "file_path",
+    file_id: []const u8 = "",
+    index: u32 = 0,
+};
+
+pub const ContainerFileCitationAnnotation = struct {
+    type: []const u8 = "container_file_citation",
+    container_id: []const u8 = "",
+    file_id: []const u8 = "",
+    start_index: u32 = 0,
+    end_index: u32 = 0,
+    filename: []const u8 = "",
+};
+
+pub const OutputAnnotation = union(enum) {
+    url_citation: UrlCitationAnnotation,
+    file_citation: FileCitationAnnotation,
+    file_path: FilePathAnnotation,
+    container_file_citation: ContainerFileCitationAnnotation,
+
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        switch (self) {
+            inline else => |v| try jw.write(v),
+        }
+    }
+
+    pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
+        const json_value = try std.json.innerParse(std.json.Value, allocator, source, options);
+        return jsonParseFromValue(allocator, json_value, options);
+    }
+
+    pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, options: std.json.ParseOptions) !OutputAnnotation {
+        if (source != .object) return error.UnexpectedToken;
+        const type_v = source.object.get("type") orelse return error.MissingField;
+        if (type_v != .string) return error.UnexpectedToken;
+        const t = type_v.string;
+        if (std.mem.eql(u8, t, "url_citation")) return .{ .url_citation = try std.json.innerParseFromValue(UrlCitationAnnotation, allocator, source, options) };
+        if (std.mem.eql(u8, t, "file_citation")) return .{ .file_citation = try std.json.innerParseFromValue(FileCitationAnnotation, allocator, source, options) };
+        if (std.mem.eql(u8, t, "file_path")) return .{ .file_path = try std.json.innerParseFromValue(FilePathAnnotation, allocator, source, options) };
+        if (std.mem.eql(u8, t, "container_file_citation")) return .{ .container_file_citation = try std.json.innerParseFromValue(ContainerFileCitationAnnotation, allocator, source, options) };
+        return error.UnknownField;
     }
 };
 
@@ -649,7 +928,6 @@ pub const Response = struct {
 /// Typed SSE event for the Responses streaming API.
 /// Every variant includes `sequence_number` (required by the official schema).
 /// Each payload struct also carries `type` so std.json.stringify emits it.
-/// Use writeSSE() to serialise to a complete SSE chunk.
 pub const StreamEvent = union(enum) {
     // --- response lifecycle ---
     response_created: struct {
@@ -789,7 +1067,7 @@ pub const StreamEvent = union(enum) {
         item_id: []const u8 = "",
         content_index: u32 = 0,
         delta: []const u8 = "",
-        logprobs: ?common.ChoiceLogprobs = null,
+        logprobs: ?[]const common.LogprobEntry = null,
     },
     output_text_done: struct {
         type: []const u8 = "response.output_text.done",
@@ -798,7 +1076,7 @@ pub const StreamEvent = union(enum) {
         item_id: []const u8 = "",
         content_index: u32 = 0,
         text: []const u8 = "",
-        logprobs: ?common.ChoiceLogprobs = null,
+        logprobs: ?[]const common.LogprobEntry = null,
     },
 
     // --- function call streaming ---
@@ -825,220 +1103,764 @@ pub const StreamEvent = union(enum) {
         sequence_number: u32,
         code: ?[]const u8 = null,
         message: []const u8 = "",
+        param: ?[]const u8 = null,
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            if (self.code) |v| { try jw.objectField("code"); try jw.write(v); }
+            try jw.objectField("message"); try jw.write(self.message);
+            if (self.param) |v| { try jw.objectField("param"); try jw.write(v); }
+            try jw.endObject();
+        }
+    },
+
+    // --- response queued ---
+    response_queued: struct {
+        type: []const u8 = "response.queued",
+        sequence_number: u32,
+        response: Response,
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            try jw.objectField("response"); try self.response.jsonStringify(jw);
+            try jw.endObject();
+        }
+    },
+
+    // --- annotation ---
+    output_text_annotation_added: struct {
+        type: []const u8 = "response.output_text.annotation.added",
+        sequence_number: u32,
+        output_index: u32 = 0,
+        item_id: []const u8 = "",
+        content_index: u32 = 0,
+        annotation_index: u32 = 0,
+        annotation: std.json.Value,
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            try jw.objectField("output_index"); try jw.write(self.output_index);
+            try jw.objectField("item_id"); try jw.write(self.item_id);
+            try jw.objectField("content_index"); try jw.write(self.content_index);
+            try jw.objectField("annotation_index"); try jw.write(self.annotation_index);
+            try jw.objectField("annotation"); try jw.write(self.annotation);
+            try jw.endObject();
+        }
+    },
+
+    // --- refusal streaming ---
+    refusal_delta: struct {
+        type: []const u8 = "response.refusal.delta",
+        sequence_number: u32,
+        output_index: u32 = 0,
+        item_id: []const u8 = "",
+        content_index: u32 = 0,
+        delta: []const u8 = "",
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            try jw.objectField("output_index"); try jw.write(self.output_index);
+            try jw.objectField("item_id"); try jw.write(self.item_id);
+            try jw.objectField("content_index"); try jw.write(self.content_index);
+            try jw.objectField("delta"); try jw.write(self.delta);
+            try jw.endObject();
+        }
+    },
+    refusal_done: struct {
+        type: []const u8 = "response.refusal.done",
+        sequence_number: u32,
+        output_index: u32 = 0,
+        item_id: []const u8 = "",
+        content_index: u32 = 0,
+        refusal: []const u8 = "",
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            try jw.objectField("output_index"); try jw.write(self.output_index);
+            try jw.objectField("item_id"); try jw.write(self.item_id);
+            try jw.objectField("content_index"); try jw.write(self.content_index);
+            try jw.objectField("refusal"); try jw.write(self.refusal);
+            try jw.endObject();
+        }
+    },
+
+    // --- reasoning text streaming ---
+    reasoning_text_delta: struct {
+        type: []const u8 = "response.reasoning_text.delta",
+        sequence_number: u32,
+        output_index: u32 = 0,
+        item_id: []const u8 = "",
+        content_index: u32 = 0,
+        delta: []const u8 = "",
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            try jw.objectField("output_index"); try jw.write(self.output_index);
+            try jw.objectField("item_id"); try jw.write(self.item_id);
+            try jw.objectField("content_index"); try jw.write(self.content_index);
+            try jw.objectField("delta"); try jw.write(self.delta);
+            try jw.endObject();
+        }
+    },
+    reasoning_text_done: struct {
+        type: []const u8 = "response.reasoning_text.done",
+        sequence_number: u32,
+        output_index: u32 = 0,
+        item_id: []const u8 = "",
+        content_index: u32 = 0,
+        text: []const u8 = "",
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            try jw.objectField("output_index"); try jw.write(self.output_index);
+            try jw.objectField("item_id"); try jw.write(self.item_id);
+            try jw.objectField("content_index"); try jw.write(self.content_index);
+            try jw.objectField("text"); try jw.write(self.text);
+            try jw.endObject();
+        }
+    },
+
+    // --- reasoning summary streaming ---
+    reasoning_summary_part_added: struct {
+        type: []const u8 = "response.reasoning_summary_part.added",
+        sequence_number: u32,
+        output_index: u32 = 0,
+        item_id: []const u8 = "",
+        summary_index: u32 = 0,
+        part: std.json.Value,
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            try jw.objectField("output_index"); try jw.write(self.output_index);
+            try jw.objectField("item_id"); try jw.write(self.item_id);
+            try jw.objectField("summary_index"); try jw.write(self.summary_index);
+            try jw.objectField("part"); try jw.write(self.part);
+            try jw.endObject();
+        }
+    },
+    reasoning_summary_part_done: struct {
+        type: []const u8 = "response.reasoning_summary_part.done",
+        sequence_number: u32,
+        output_index: u32 = 0,
+        item_id: []const u8 = "",
+        summary_index: u32 = 0,
+        part: std.json.Value,
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            try jw.objectField("output_index"); try jw.write(self.output_index);
+            try jw.objectField("item_id"); try jw.write(self.item_id);
+            try jw.objectField("summary_index"); try jw.write(self.summary_index);
+            try jw.objectField("part"); try jw.write(self.part);
+            try jw.endObject();
+        }
+    },
+    reasoning_summary_text_delta: struct {
+        type: []const u8 = "response.reasoning_summary_text.delta",
+        sequence_number: u32,
+        output_index: u32 = 0,
+        item_id: []const u8 = "",
+        summary_index: u32 = 0,
+        delta: []const u8 = "",
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            try jw.objectField("output_index"); try jw.write(self.output_index);
+            try jw.objectField("item_id"); try jw.write(self.item_id);
+            try jw.objectField("summary_index"); try jw.write(self.summary_index);
+            try jw.objectField("delta"); try jw.write(self.delta);
+            try jw.endObject();
+        }
+    },
+    reasoning_summary_text_done: struct {
+        type: []const u8 = "response.reasoning_summary_text.done",
+        sequence_number: u32,
+        output_index: u32 = 0,
+        item_id: []const u8 = "",
+        summary_index: u32 = 0,
+        text: []const u8 = "",
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            try jw.objectField("output_index"); try jw.write(self.output_index);
+            try jw.objectField("item_id"); try jw.write(self.item_id);
+            try jw.objectField("summary_index"); try jw.write(self.summary_index);
+            try jw.objectField("text"); try jw.write(self.text);
+            try jw.endObject();
+        }
+    },
+
+    // --- web search call ---
+    web_search_call_in_progress: struct {
+        type: []const u8 = "response.web_search_call.in_progress",
+        sequence_number: u32,
+        output_index: u32 = 0,
+        item_id: []const u8 = "",
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            try jw.objectField("output_index"); try jw.write(self.output_index);
+            try jw.objectField("item_id"); try jw.write(self.item_id);
+            try jw.endObject();
+        }
+    },
+    web_search_call_searching: struct {
+        type: []const u8 = "response.web_search_call.searching",
+        sequence_number: u32,
+        output_index: u32 = 0,
+        item_id: []const u8 = "",
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            try jw.objectField("output_index"); try jw.write(self.output_index);
+            try jw.objectField("item_id"); try jw.write(self.item_id);
+            try jw.endObject();
+        }
+    },
+    web_search_call_completed: struct {
+        type: []const u8 = "response.web_search_call.completed",
+        sequence_number: u32,
+        output_index: u32 = 0,
+        item_id: []const u8 = "",
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            try jw.objectField("output_index"); try jw.write(self.output_index);
+            try jw.objectField("item_id"); try jw.write(self.item_id);
+            try jw.endObject();
+        }
+    },
+
+    // --- file search call ---
+    file_search_call_in_progress: struct {
+        type: []const u8 = "response.file_search_call.in_progress",
+        sequence_number: u32,
+        output_index: u32 = 0,
+        item_id: []const u8 = "",
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            try jw.objectField("output_index"); try jw.write(self.output_index);
+            try jw.objectField("item_id"); try jw.write(self.item_id);
+            try jw.endObject();
+        }
+    },
+    file_search_call_searching: struct {
+        type: []const u8 = "response.file_search_call.searching",
+        sequence_number: u32,
+        output_index: u32 = 0,
+        item_id: []const u8 = "",
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            try jw.objectField("output_index"); try jw.write(self.output_index);
+            try jw.objectField("item_id"); try jw.write(self.item_id);
+            try jw.endObject();
+        }
+    },
+    file_search_call_completed: struct {
+        type: []const u8 = "response.file_search_call.completed",
+        sequence_number: u32,
+        output_index: u32 = 0,
+        item_id: []const u8 = "",
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            try jw.objectField("output_index"); try jw.write(self.output_index);
+            try jw.objectField("item_id"); try jw.write(self.item_id);
+            try jw.endObject();
+        }
+    },
+
+    // --- code interpreter call ---
+    code_interpreter_call_in_progress: struct {
+        type: []const u8 = "response.code_interpreter_call.in_progress",
+        sequence_number: u32,
+        output_index: u32 = 0,
+        item_id: []const u8 = "",
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            try jw.objectField("output_index"); try jw.write(self.output_index);
+            try jw.objectField("item_id"); try jw.write(self.item_id);
+            try jw.endObject();
+        }
+    },
+    code_interpreter_call_code_delta: struct {
+        type: []const u8 = "response.code_interpreter_call_code.delta",
+        sequence_number: u32,
+        output_index: u32 = 0,
+        item_id: []const u8 = "",
+        delta: []const u8 = "",
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            try jw.objectField("output_index"); try jw.write(self.output_index);
+            try jw.objectField("item_id"); try jw.write(self.item_id);
+            try jw.objectField("delta"); try jw.write(self.delta);
+            try jw.endObject();
+        }
+    },
+    code_interpreter_call_code_done: struct {
+        type: []const u8 = "response.code_interpreter_call_code.done",
+        sequence_number: u32,
+        output_index: u32 = 0,
+        item_id: []const u8 = "",
+        code: []const u8 = "",
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            try jw.objectField("output_index"); try jw.write(self.output_index);
+            try jw.objectField("item_id"); try jw.write(self.item_id);
+            try jw.objectField("code"); try jw.write(self.code);
+            try jw.endObject();
+        }
+    },
+    code_interpreter_call_interpreting: struct {
+        type: []const u8 = "response.code_interpreter_call.interpreting",
+        sequence_number: u32,
+        output_index: u32 = 0,
+        item_id: []const u8 = "",
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            try jw.objectField("output_index"); try jw.write(self.output_index);
+            try jw.objectField("item_id"); try jw.write(self.item_id);
+            try jw.endObject();
+        }
+    },
+    code_interpreter_call_completed: struct {
+        type: []const u8 = "response.code_interpreter_call.completed",
+        sequence_number: u32,
+        output_index: u32 = 0,
+        item_id: []const u8 = "",
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            try jw.objectField("output_index"); try jw.write(self.output_index);
+            try jw.objectField("item_id"); try jw.write(self.item_id);
+            try jw.endObject();
+        }
+    },
+
+    // --- MCP list tools ---
+    mcp_list_tools_in_progress: struct {
+        type: []const u8 = "response.mcp_list_tools.in_progress",
+        sequence_number: u32,
+        output_index: u32 = 0,
+        item_id: []const u8 = "",
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            try jw.objectField("output_index"); try jw.write(self.output_index);
+            try jw.objectField("item_id"); try jw.write(self.item_id);
+            try jw.endObject();
+        }
+    },
+    mcp_list_tools_completed: struct {
+        type: []const u8 = "response.mcp_list_tools.completed",
+        sequence_number: u32,
+        output_index: u32 = 0,
+        item_id: []const u8 = "",
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            try jw.objectField("output_index"); try jw.write(self.output_index);
+            try jw.objectField("item_id"); try jw.write(self.item_id);
+            try jw.endObject();
+        }
+    },
+    mcp_list_tools_failed: struct {
+        type: []const u8 = "response.mcp_list_tools.failed",
+        sequence_number: u32,
+        output_index: u32 = 0,
+        item_id: []const u8 = "",
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            try jw.objectField("output_index"); try jw.write(self.output_index);
+            try jw.objectField("item_id"); try jw.write(self.item_id);
+            try jw.endObject();
+        }
+    },
+
+    // --- MCP call arguments ---
+    mcp_call_arguments_delta: struct {
+        type: []const u8 = "response.mcp_call_arguments.delta",
+        sequence_number: u32,
+        output_index: u32 = 0,
+        item_id: []const u8 = "",
+        delta: []const u8 = "",
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            try jw.objectField("output_index"); try jw.write(self.output_index);
+            try jw.objectField("item_id"); try jw.write(self.item_id);
+            try jw.objectField("delta"); try jw.write(self.delta);
+            try jw.endObject();
+        }
+    },
+    mcp_call_arguments_done: struct {
+        type: []const u8 = "response.mcp_call_arguments.done",
+        sequence_number: u32,
+        output_index: u32 = 0,
+        item_id: []const u8 = "",
+        arguments: []const u8 = "",
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            try jw.objectField("output_index"); try jw.write(self.output_index);
+            try jw.objectField("item_id"); try jw.write(self.item_id);
+            try jw.objectField("arguments"); try jw.write(self.arguments);
+            try jw.endObject();
+        }
+    },
+
+    // --- MCP call lifecycle ---
+    mcp_call_in_progress: struct {
+        type: []const u8 = "response.mcp_call.in_progress",
+        sequence_number: u32,
+        output_index: u32 = 0,
+        item_id: []const u8 = "",
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            try jw.objectField("output_index"); try jw.write(self.output_index);
+            try jw.objectField("item_id"); try jw.write(self.item_id);
+            try jw.endObject();
+        }
+    },
+    mcp_call_completed: struct {
+        type: []const u8 = "response.mcp_call.completed",
+        sequence_number: u32,
+        output_index: u32 = 0,
+        item_id: []const u8 = "",
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            try jw.objectField("output_index"); try jw.write(self.output_index);
+            try jw.objectField("item_id"); try jw.write(self.item_id);
+            try jw.endObject();
+        }
+    },
+    mcp_call_failed: struct {
+        type: []const u8 = "response.mcp_call.failed",
+        sequence_number: u32,
+        output_index: u32 = 0,
+        item_id: []const u8 = "",
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            try jw.objectField("output_index"); try jw.write(self.output_index);
+            try jw.objectField("item_id"); try jw.write(self.item_id);
+            try jw.endObject();
+        }
+    },
+
+    // --- image generation call ---
+    image_generation_call_in_progress: struct {
+        type: []const u8 = "response.image_generation_call.in_progress",
+        sequence_number: u32,
+        output_index: u32 = 0,
+        item_id: []const u8 = "",
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            try jw.objectField("output_index"); try jw.write(self.output_index);
+            try jw.objectField("item_id"); try jw.write(self.item_id);
+            try jw.endObject();
+        }
+    },
+    image_generation_call_generating: struct {
+        type: []const u8 = "response.image_generation_call.generating",
+        sequence_number: u32,
+        output_index: u32 = 0,
+        item_id: []const u8 = "",
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            try jw.objectField("output_index"); try jw.write(self.output_index);
+            try jw.objectField("item_id"); try jw.write(self.item_id);
+            try jw.endObject();
+        }
+    },
+    image_generation_call_partial_image: struct {
+        type: []const u8 = "response.image_generation_call.partial_image",
+        sequence_number: u32,
+        output_index: u32 = 0,
+        item_id: []const u8 = "",
+        partial_image_index: u32 = 0,
+        partial_image_b64: []const u8 = "",
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            try jw.objectField("output_index"); try jw.write(self.output_index);
+            try jw.objectField("item_id"); try jw.write(self.item_id);
+            try jw.objectField("partial_image_index"); try jw.write(self.partial_image_index);
+            try jw.objectField("partial_image_b64"); try jw.write(self.partial_image_b64);
+            try jw.endObject();
+        }
+    },
+    image_generation_call_completed: struct {
+        type: []const u8 = "response.image_generation_call.completed",
+        sequence_number: u32,
+        output_index: u32 = 0,
+        item_id: []const u8 = "",
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            try jw.objectField("output_index"); try jw.write(self.output_index);
+            try jw.objectField("item_id"); try jw.write(self.item_id);
+            try jw.endObject();
+        }
+    },
+
+    // --- audio streaming ---
+    audio_delta: struct {
+        type: []const u8 = "response.audio.delta",
+        sequence_number: u32,
+        output_index: u32 = 0,
+        item_id: []const u8 = "",
+        response_id: []const u8 = "",
+        delta: []const u8 = "",
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            try jw.objectField("output_index"); try jw.write(self.output_index);
+            try jw.objectField("item_id"); try jw.write(self.item_id);
+            try jw.objectField("response_id"); try jw.write(self.response_id);
+            try jw.objectField("delta"); try jw.write(self.delta);
+            try jw.endObject();
+        }
+    },
+    audio_done: struct {
+        type: []const u8 = "response.audio.done",
+        sequence_number: u32,
+        output_index: u32 = 0,
+        item_id: []const u8 = "",
+        response_id: []const u8 = "",
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            try jw.objectField("output_index"); try jw.write(self.output_index);
+            try jw.objectField("item_id"); try jw.write(self.item_id);
+            try jw.objectField("response_id"); try jw.write(self.response_id);
+            try jw.endObject();
+        }
+    },
+    audio_transcript_delta: struct {
+        type: []const u8 = "response.audio.transcript.delta",
+        sequence_number: u32,
+        output_index: u32 = 0,
+        item_id: []const u8 = "",
+        delta: []const u8 = "",
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            try jw.objectField("output_index"); try jw.write(self.output_index);
+            try jw.objectField("item_id"); try jw.write(self.item_id);
+            try jw.objectField("delta"); try jw.write(self.delta);
+            try jw.endObject();
+        }
+    },
+    audio_transcript_done: struct {
+        type: []const u8 = "response.audio.transcript.done",
+        sequence_number: u32,
+        output_index: u32 = 0,
+        item_id: []const u8 = "",
+        transcript: []const u8 = "",
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            try jw.objectField("output_index"); try jw.write(self.output_index);
+            try jw.objectField("item_id"); try jw.write(self.item_id);
+            try jw.objectField("transcript"); try jw.write(self.transcript);
+            try jw.endObject();
+        }
+    },
+
+
+    // --- shell call ---
+    shell_call_command_added: struct {
+        type: []const u8 = "response.shell_call_command.added",
+        sequence_number: u32,
+        output_index: u32 = 0,
+        item_id: []const u8 = "",
+        command_index: u32 = 0,
+        command: []const u8 = "",
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            try jw.objectField("output_index"); try jw.write(self.output_index);
+            try jw.objectField("item_id"); try jw.write(self.item_id);
+            try jw.objectField("command_index"); try jw.write(self.command_index);
+            try jw.objectField("command"); try jw.write(self.command);
+            try jw.endObject();
+        }
+    },
+    shell_call_command_delta: struct {
+        type: []const u8 = "response.shell_call_command.delta",
+        sequence_number: u32,
+        output_index: u32 = 0,
+        item_id: []const u8 = "",
+        command_index: u32 = 0,
+        delta: []const u8 = "",
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            try jw.objectField("output_index"); try jw.write(self.output_index);
+            try jw.objectField("item_id"); try jw.write(self.item_id);
+            try jw.objectField("command_index"); try jw.write(self.command_index);
+            try jw.objectField("delta"); try jw.write(self.delta);
+            try jw.endObject();
+        }
+    },
+    shell_call_command_done: struct {
+        type: []const u8 = "response.shell_call_command.done",
+        sequence_number: u32,
+        output_index: u32 = 0,
+        item_id: []const u8 = "",
+        command_index: u32 = 0,
+        command: []const u8 = "",
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            try jw.objectField("output_index"); try jw.write(self.output_index);
+            try jw.objectField("item_id"); try jw.write(self.item_id);
+            try jw.objectField("command_index"); try jw.write(self.command_index);
+            try jw.objectField("command"); try jw.write(self.command);
+            try jw.endObject();
+        }
+    },
+    shell_call_output_delta: struct {
+        type: []const u8 = "response.shell_call_output_content.delta",
+        sequence_number: u32,
+        output_index: u32 = 0,
+        item_id: []const u8 = "",
+        delta: std.json.Value,
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            try jw.objectField("output_index"); try jw.write(self.output_index);
+            try jw.objectField("item_id"); try jw.write(self.item_id);
+            try jw.objectField("delta"); try jw.write(self.delta);
+            try jw.endObject();
+        }
+    },
+    shell_call_output_done: struct {
+        type: []const u8 = "response.shell_call_output_content.done",
+        sequence_number: u32,
+        output_index: u32 = 0,
+        item_id: []const u8 = "",
+        output: []const std.json.Value = &.{},
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            try jw.objectField("output_index"); try jw.write(self.output_index);
+            try jw.objectField("item_id"); try jw.write(self.item_id);
+            try jw.objectField("output"); try jw.write(self.output);
+            try jw.endObject();
+        }
+    },
+
+    // --- custom tool call ---
+    custom_tool_call_input_delta: struct {
+        type: []const u8 = "response.custom_tool_call_input.delta",
+        sequence_number: u32,
+        output_index: u32 = 0,
+        item_id: []const u8 = "",
+        delta: []const u8 = "",
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            try jw.objectField("output_index"); try jw.write(self.output_index);
+            try jw.objectField("item_id"); try jw.write(self.item_id);
+            try jw.objectField("delta"); try jw.write(self.delta);
+            try jw.endObject();
+        }
+    },
+    custom_tool_call_input_done: struct {
+        type: []const u8 = "response.custom_tool_call_input.done",
+        sequence_number: u32,
+        output_index: u32 = 0,
+        item_id: []const u8 = "",
+        input: []const u8 = "",
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            try jw.objectField("output_index"); try jw.write(self.output_index);
+            try jw.objectField("item_id"); try jw.write(self.item_id);
+            try jw.objectField("input"); try jw.write(self.input);
+            try jw.endObject();
+        }
+    },
+
+    // --- response compaction ---
+    response_compaction_compacting: struct {
+        type: []const u8 = "response.compaction.compacting",
+        sequence_number: u32,
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.beginObject();
+            try jw.objectField("type"); try jw.write(self.type);
+            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+            try jw.endObject();
+        }
     },
 
     // --- pass-through (native Responses upstream bytes, e.g. copilot) ---
     raw_bytes: []const u8,
 
-    /// Returns the SSE event-line type string for this event.
-    pub fn eventTypeName(self: @This()) []const u8 {
-        return switch (self) {
-            .response_created => "response.created",
-            .response_in_progress => "response.in_progress",
-            .response_completed => "response.completed",
-            .response_failed => "response.failed",
-            .response_incomplete => "response.incomplete",
-            .output_item_added => "response.output_item.added",
-            .output_item_done => "response.output_item.done",
-            .content_part_added => "response.content_part.added",
-            .content_part_done => "response.content_part.done",
-            .output_text_delta => "response.output_text.delta",
-            .output_text_done => "response.output_text.done",
-            .function_call_arguments_delta => "response.function_call_arguments.delta",
-            .function_call_arguments_done => "response.function_call_arguments.done",
-            .stream_error => "error",
-            .raw_bytes => "",
-        };
-    }
-
-    /// Serialise to a complete SSE chunk and append to `buf`.
-    /// Format: "event: <type>\ndata: <json>\n\n"
-    /// For raw_bytes: appends verbatim with no wrapping.
-    pub fn writeSSE(self: @This(), buf: *std.ArrayList(u8), allocator: std.mem.Allocator) error{OutOfMemory}!void {        switch (self) {
-            .raw_bytes => |bytes| try buf.appendSlice(allocator, bytes),
-            else => {
-                const type_name = self.eventTypeName();
-                try buf.appendSlice(allocator, "event: ");
-                try buf.appendSlice(allocator, type_name);
-                try buf.appendSlice(allocator, "\ndata: ");
-                switch (self) {
-                    .response_created => |v| try buf.print(allocator, "{f}", .{std.json.fmt(v, .{})}),
-                    .response_in_progress => |v| try buf.print(allocator, "{f}", .{std.json.fmt(v, .{})}),
-                    .response_completed => |v| try buf.print(allocator, "{f}", .{std.json.fmt(v, .{})}),
-                    .response_failed => |v| try buf.print(allocator, "{f}", .{std.json.fmt(v, .{})}),
-                    .response_incomplete => |v| try buf.print(allocator, "{f}", .{std.json.fmt(v, .{})}),
-                    .output_item_added => |v| try buf.print(allocator, "{f}", .{std.json.fmt(v, .{})}),
-                    .output_item_done => |v| try buf.print(allocator, "{f}", .{std.json.fmt(v, .{})}),
-                    .content_part_added => |v| try buf.print(allocator, "{f}", .{std.json.fmt(v, .{})}),
-                    .content_part_done => |v| try buf.print(allocator, "{f}", .{std.json.fmt(v, .{})}),
-                    .output_text_delta => |v| try buf.print(allocator, "{f}", .{std.json.fmt(v, .{})}),
-                    .output_text_done => |v| try buf.print(allocator, "{f}", .{std.json.fmt(v, .{})}),
-                    .function_call_arguments_delta => |v| try buf.print(allocator, "{f}", .{std.json.fmt(v, .{})}),
-                    .function_call_arguments_done => |v| try buf.print(allocator, "{f}", .{std.json.fmt(v, .{})}),
-                    .stream_error => |v| try buf.print(allocator, "{f}", .{std.json.fmt(v, .{})}),
-                    .raw_bytes => unreachable,
-                }
-                try buf.appendSlice(allocator, "\n\n");
-            },
+    /// Serialize this event. For named variants, emits standard SSE JSON.
+    /// For raw_bytes, writes the bytes verbatim as a JSON string value.
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        switch (self) {
+            .raw_bytes => |b| try jw.write(b),
+            inline else => |v| try jw.write(v),
         }
     }
-};
-
-// ============================================================================
-// Streaming helpers — typed SSE constructors for synthesized events
-// ============================================================================
-
-/// Produces "response.output_item.added" + "response.content_part.added" SSE bytes.
-/// `seq` is used for output_item.added; `seq+1` for content_part.added.
-/// `is_text` selects item type ("message"/"function_call") and part type ("output_text"/"").
-pub fn outputItemAddedSSE(
-    response_id: []const u8,
-    is_text: bool,
-    seq: u32,
-    allocator: std.mem.Allocator,
-) ?[]const u8 {
-    const item_type: []const u8 = if (is_text) "message" else "function_call";
-    const part_type: []const u8 = if (is_text) "output_text" else "input_json";
-    var buf: std.ArrayList(u8) = .empty;
-
-    const added = StreamEvent{ .output_item_added = .{
-        .sequence_number = seq,
-        .item = .{ .message = .{
-            .id = response_id,
-            .type = item_type,
-            .role = "assistant",
-            .content = &.{},
-            .status = "in_progress",
-        }},
-    }};
-    added.writeSSE(&buf, allocator) catch return null;
-
-    const part = StreamEvent{ .content_part_added = .{
-        .sequence_number = seq + 1,
-        .item_id = response_id,
-        .part = .{ .output_text = .{ .type = part_type, .text = "" } },
-    }};
-    part.writeSSE(&buf, allocator) catch { buf.deinit(allocator); return null; };
-
-    return buf.toOwnedSlice(allocator) catch null;
-}
-
-/// Produces "response.output_item.done" SSE bytes.
-pub fn outputItemDoneSSE(
-    response_id: []const u8,
-    status: []const u8,
-    seq: u32,
-    allocator: std.mem.Allocator,
-) ?[]const u8 {
-    var buf: std.ArrayList(u8) = .empty;
-    const ev = StreamEvent{ .output_item_done = .{
-        .sequence_number = seq,
-        .item = .{ .message = .{
-            .id = response_id,
-            .type = "message",
-            .role = "assistant",
-            .content = &.{},
-            .status = status,
-        }},
-    }};
-    ev.writeSSE(&buf, allocator) catch return null;
-    return buf.toOwnedSlice(allocator) catch null;
-}
-
-/// Produces "response.completed" SSE bytes with usage.
-pub fn responseCompletedSSE(
-    response_id: []const u8,
-    model: []const u8,
-    status: []const u8,
-    input_tokens: u32,
-    output_tokens: u32,
-    seq: u32,
-    allocator: std.mem.Allocator,
-) ?[]const u8 {
-    var buf: std.ArrayList(u8) = .empty;
-    const ev = StreamEvent{ .response_completed = .{
-        .sequence_number = seq,
-        .response = .{
-            .id = response_id,
-            .model = model,
-            .status = status,
-            .output = &.{},
-            .usage = .{
-                .input_tokens = input_tokens,
-                .output_tokens = output_tokens,
-                .total_tokens = input_tokens + output_tokens,
-            },
-        },
-    }};
-    ev.writeSSE(&buf, allocator) catch return null;
-    return buf.toOwnedSlice(allocator) catch null;
-}
-
-/// Produces "response.failed" SSE bytes with an error payload.
-pub fn responseFailedSSE(
-    response_id: []const u8,
-    model: []const u8,
-    err_code: ?[]const u8,
-    err_message: []const u8,
-    seq: u32,
-    allocator: std.mem.Allocator,
-) ?[]const u8 {
-    _ = err_code;
-    _ = err_message;
-    var buf: std.ArrayList(u8) = .empty;
-    const ev = StreamEvent{ .response_failed = .{
-        .sequence_number = seq,
-        .response = .{
-            .id = response_id,
-            .model = model,
-            .status = "failed",
-            .output = &.{},
-        },
-    }};
-    ev.writeSSE(&buf, allocator) catch return null;
-    return buf.toOwnedSlice(allocator) catch null;
-}
-
-/// Result type for responses stream line transformation.
-/// Transformers return `.output` (caller-owned []const u8 SSE bytes) or `.skip`.
-pub const StreamLineResult = union(enum) {
-    output: []const u8,
-    skip: void,
-};
-
-// ============================================================================
-// Upstream SSE parse targets (used by transformers; defined here per Rule 1)
-// ============================================================================
-
-/// Minimal parse target for upstream chat-wire SSE events when the proxy
-/// converts them to Responses-protocol output (chat and messages faces of
-/// responses_transformer.zig).
-pub const NativeChatStreamEvent = struct {
-    type: []const u8 = "",
-    /// response.output_text.delta
-    delta: ?[]const u8 = null,
-    /// response.function_call_arguments.delta
-    arguments: ?[]const u8 = null,
-    item_id: []const u8 = "",
-    /// response.failed / error payloads
-    @"error": ?std.json.Value = null,
-    /// response.completed / response.incomplete: nested response object
-    response: ?struct {
-        usage: Usage = .{},
-        incomplete_details: ?struct {
-            reason: []const u8 = "",
-        } = null,
-    } = null,
-};
-
-/// Minimal parse target for upstream Responses-wire SSE events when the proxy
-/// forwards them verbatim but needs to capture usage and rewrite the model field
-/// (pass-through face of responses_transformer.zig).
-pub const NativeResponsesStreamEvent = struct {
-    type: []const u8 = "",
-    sequence_number: u32 = 0,
-    response: ?struct {
-        model: []const u8 = "",
-        usage: Usage = .{},
-    } = null,
 };

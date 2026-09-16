@@ -55,6 +55,15 @@ pub const Part = union(enum) {
         name: []const u8,
         response: std.json.Value,
     },
+    thought: struct {
+        thought: bool = false,
+    },
+    video_metadata: struct {
+        video_metadata: struct {
+            start_offset: ?struct { seconds: ?i64 = null, nanos: ?i32 = null } = null,
+            end_offset: ?struct { seconds: ?i64 = null, nanos: ?i32 = null } = null,
+        } = .{},
+    },
 
     pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
         const v = try std.json.innerParse(std.json.Value, allocator, source, options);
@@ -110,6 +119,28 @@ pub const Part = union(enum) {
                 const name = if (fr.object.get("name")) |n| (if (n == .string) n.string else "") else "";
                 const resp = fr.object.get("response") orelse .null;
                 return .{ .function_response = .{ .name = name, .response = resp } };
+            }
+        }
+        if (obj.get("thought")) |tv| return .{ .thought = .{ .thought = tv == .bool and tv.bool } };
+        if (obj.get("videoMetadata")) |v| {
+            if (v == .object) {
+                const so = v.object.get("startOffset");
+                const eo = v.object.get("endOffset");
+                const start: ?struct { seconds: ?i64 = null, nanos: ?i32 = null } = if (so) |s| blk: {
+                    if (s == .object) break :blk .{
+                        .seconds = if (s.object.get("seconds")) |sv| (if (sv == .integer) sv.integer else null) else null,
+                        .nanos = if (s.object.get("nanos")) |nv| (if (nv == .integer) @as(i32, @intCast(nv.integer)) else null) else null,
+                    };
+                    break :blk null;
+                } else null;
+                const end_: ?struct { seconds: ?i64 = null, nanos: ?i32 = null } = if (eo) |e| blk: {
+                    if (e == .object) break :blk .{
+                        .seconds = if (e.object.get("seconds")) |sv| (if (sv == .integer) sv.integer else null) else null,
+                        .nanos = if (e.object.get("nanos")) |nv| (if (nv == .integer) @as(i32, @intCast(nv.integer)) else null) else null,
+                    };
+                    break :blk null;
+                } else null;
+                return .{ .video_metadata = .{ .video_metadata = .{ .start_offset = start, .end_offset = end_ } } };
             }
         }
         return .{ .text = .{ .text = "" } };
@@ -181,6 +212,33 @@ pub const Part = union(enum) {
                 try jw.endObject();
                 try jw.endObject();
             },
+            .thought => |v| {
+                try jw.beginObject();
+                try jw.objectField("thought");
+                try jw.write(v.thought);
+                try jw.endObject();
+            },
+            .video_metadata => |v| {
+                try jw.beginObject();
+                try jw.objectField("videoMetadata");
+                try jw.beginObject();
+                if (v.video_metadata.start_offset) |so| {
+                    try jw.objectField("startOffset");
+                    try jw.beginObject();
+                    if (so.seconds) |s| { try jw.objectField("seconds"); try jw.write(s); }
+                    if (so.nanos) |n| { try jw.objectField("nanos"); try jw.write(n); }
+                    try jw.endObject();
+                }
+                if (v.video_metadata.end_offset) |eo| {
+                    try jw.objectField("endOffset");
+                    try jw.beginObject();
+                    if (eo.seconds) |s| { try jw.objectField("seconds"); try jw.write(s); }
+                    if (eo.nanos) |n| { try jw.objectField("nanos"); try jw.write(n); }
+                    try jw.endObject();
+                }
+                try jw.endObject();
+                try jw.endObject();
+            },
         }
     }
 };
@@ -189,6 +247,22 @@ pub const Part = union(enum) {
 pub const Content = struct {
     role: []const u8, // "user" | "model"
     parts: []const Part,
+
+    pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, options: std.json.ParseOptions) !Content {
+        if (source != .object) return error.UnexpectedToken;
+        const obj = source.object;
+        const role: []const u8 = if (obj.get("role")) |v|
+            if (v == .string) v.string else "model"
+        else
+            "model";
+        const parts_val = obj.get("parts") orelse return Content{ .role = role, .parts = &.{} };
+        if (parts_val != .array) return Content{ .role = role, .parts = &.{} };
+        var parts = try allocator.alloc(Part, parts_val.array.items.len);
+        for (parts_val.array.items, 0..) |item, i| {
+            parts[i] = try Part.jsonParseFromValue(allocator, item, options);
+        }
+        return Content{ .role = role, .parts = parts };
+    }
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         try jw.beginObject();
@@ -311,6 +385,8 @@ pub const GeminiTool = struct {
     function_declarations: ?[]const FunctionDeclaration = null,
     google_search: ?std.json.Value = null,
     code_execution: ?std.json.Value = null,
+    google_search_retrieval: ?std.json.Value = null,
+    enterprise_web_search: ?std.json.Value = null,
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         try jw.beginObject();
@@ -322,6 +398,8 @@ pub const GeminiTool = struct {
         }
         if (self.google_search) |v| { try jw.objectField("googleSearch"); try jw.write(v); }
         if (self.code_execution) |v| { try jw.objectField("codeExecution"); try jw.write(v); }
+        if (self.google_search_retrieval) |v| { try jw.objectField("googleSearchRetrieval"); try jw.write(v); }
+        if (self.enterprise_web_search) |v| { try jw.objectField("enterpriseWebSearch"); try jw.write(v); }
         try jw.endObject();
     }
 };
@@ -404,6 +482,9 @@ pub const GenerationConfig = struct {
     audio_timestamp: ?bool = null,
     media_resolution: ?[]const u8 = null,
     thinking_config: ?ThinkingConfig = null,
+    response_schema: ?GeminiSchema = null,
+    speech_config: ?std.json.Value = null,
+    routing_config: ?std.json.Value = null,
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         try jw.beginObject();
@@ -427,6 +508,9 @@ pub const GenerationConfig = struct {
         if (self.audio_timestamp) |v| { try jw.objectField("audioTimestamp"); try jw.write(v); }
         if (self.media_resolution) |v| { try jw.objectField("mediaResolution"); try jw.write(v); }
         if (self.thinking_config) |v| { try jw.objectField("thinkingConfig"); try jw.write(v); }
+        if (self.response_schema) |v| { try jw.objectField("responseSchema"); try jw.write(v); }
+        if (self.speech_config) |v| { try jw.objectField("speechConfig"); try jw.write(v); }
+        if (self.routing_config) |v| { try jw.objectField("routingConfig"); try jw.write(v); }
         try jw.endObject();
     }
 };
@@ -467,6 +551,8 @@ pub const RequestPayload = struct {
     safety_settings: ?[]const SafetySetting = null,
     cached_content: ?[]const u8 = null,
     generation_config: ?GenerationConfig = null,
+    service_tier: ?[]const u8 = null,
+    store: ?bool = null,
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         try jw.beginObject();
@@ -499,6 +585,8 @@ pub const RequestPayload = struct {
             try jw.objectField("generationConfig");
             try jw.write(gc);
         }
+        if (self.service_tier) |v| { try jw.objectField("serviceTier"); try jw.write(v); }
+        if (self.store) |v| { try jw.objectField("store"); try jw.write(v); }
         try jw.endObject();
     }
 };
@@ -525,6 +613,25 @@ pub const SafetyRating = struct {
     category: []const u8 = "",
     probability: []const u8 = "",
     blocked: ?bool = null,
+    severity: ?[]const u8 = null,
+    severity_score: ?f64 = null,
+    probability_score: ?f64 = null,
+
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("category"); try jw.write(self.category);
+        try jw.objectField("probability"); try jw.write(self.probability);
+        if (self.blocked) |v| { try jw.objectField("blocked"); try jw.write(v); }
+        if (self.severity) |v| { try jw.objectField("severity"); try jw.write(v); }
+        if (self.severity_score) |v| { try jw.objectField("severityScore"); try jw.write(v); }
+        if (self.probability_score) |v| { try jw.objectField("probabilityScore"); try jw.write(v); }
+        try jw.endObject();
+    }
+};
+
+pub const ModalityTokenCount = struct {
+    modality: []const u8 = "",
+    token_count: u32 = 0,
 };
 
 pub const UsageMetadata = struct {
@@ -534,6 +641,104 @@ pub const UsageMetadata = struct {
     cached_content_token_count: u32 = 0,
     thoughts_token_count: u32 = 0,
     tool_use_prompt_token_count: u32 = 0,
+    service_tier: ?[]const u8 = null,
+    prompt_tokens_details: []const ModalityTokenCount = &.{},
+    cache_tokens_details: []const ModalityTokenCount = &.{},
+    candidates_tokens_details: []const ModalityTokenCount = &.{},
+    tool_use_prompt_tokens_details: []const ModalityTokenCount = &.{},
+
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("promptTokenCount"); try jw.write(self.prompt_token_count);
+        try jw.objectField("candidatesTokenCount"); try jw.write(self.candidates_token_count);
+        try jw.objectField("totalTokenCount"); try jw.write(self.total_token_count);
+        try jw.objectField("cachedContentTokenCount"); try jw.write(self.cached_content_token_count);
+        try jw.objectField("thoughtsTokenCount"); try jw.write(self.thoughts_token_count);
+        try jw.objectField("toolUsePromptTokenCount"); try jw.write(self.tool_use_prompt_token_count);
+        if (self.service_tier) |v| { try jw.objectField("serviceTier"); try jw.write(v); }
+        if (self.prompt_tokens_details.len > 0) {
+            try jw.objectField("promptTokensDetails");
+            try jw.beginArray();
+            for (self.prompt_tokens_details) |d| {
+                try jw.beginObject();
+                try jw.objectField("modality"); try jw.write(d.modality);
+                try jw.objectField("tokenCount"); try jw.write(d.token_count);
+                try jw.endObject();
+            }
+            try jw.endArray();
+        }
+        if (self.cache_tokens_details.len > 0) {
+            try jw.objectField("cacheTokensDetails");
+            try jw.beginArray();
+            for (self.cache_tokens_details) |d| {
+                try jw.beginObject();
+                try jw.objectField("modality"); try jw.write(d.modality);
+                try jw.objectField("tokenCount"); try jw.write(d.token_count);
+                try jw.endObject();
+            }
+            try jw.endArray();
+        }
+        if (self.candidates_tokens_details.len > 0) {
+            try jw.objectField("candidatesTokensDetails");
+            try jw.beginArray();
+            for (self.candidates_tokens_details) |d| {
+                try jw.beginObject();
+                try jw.objectField("modality"); try jw.write(d.modality);
+                try jw.objectField("tokenCount"); try jw.write(d.token_count);
+                try jw.endObject();
+            }
+            try jw.endArray();
+        }
+        if (self.tool_use_prompt_tokens_details.len > 0) {
+            try jw.objectField("toolUsePromptTokensDetails");
+            try jw.beginArray();
+            for (self.tool_use_prompt_tokens_details) |d| {
+                try jw.beginObject();
+                try jw.objectField("modality"); try jw.write(d.modality);
+                try jw.objectField("tokenCount"); try jw.write(d.token_count);
+                try jw.endObject();
+            }
+            try jw.endArray();
+        }
+        try jw.endObject();
+    }
+
+    pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, options: std.json.ParseOptions) !UsageMetadata {
+        if (source != .object) return error.UnexpectedToken;
+        const obj = source.object;
+
+        const parseModalitySlice = struct {
+            fn parse(alloc: std.mem.Allocator, val: std.json.Value, opts: std.json.ParseOptions) ![]const ModalityTokenCount {
+                _ = opts;
+                if (val != .array) return &.{};
+                const items = val.array.items;
+                const out = try alloc.alloc(ModalityTokenCount, items.len);
+                for (items, 0..) |item, i| {
+                    if (item != .object) { out[i] = .{}; continue; }
+                    const o = item.object;
+                    out[i] = .{
+                        .modality = if (o.get("modality")) |v| (if (v == .string) v.string else "") else "",
+                        .token_count = if (o.get("tokenCount")) |v| (if (v == .integer) @as(u32, @intCast(v.integer)) else 0) else 0,
+                    };
+                }
+                return out;
+            }
+        }.parse;
+
+        return .{
+            .prompt_token_count = if (obj.get("promptTokenCount")) |v| (if (v == .integer) @as(u32, @intCast(v.integer)) else 0) else 0,
+            .candidates_token_count = if (obj.get("candidatesTokenCount")) |v| (if (v == .integer) @as(u32, @intCast(v.integer)) else 0) else 0,
+            .total_token_count = if (obj.get("totalTokenCount")) |v| (if (v == .integer) @as(u32, @intCast(v.integer)) else 0) else 0,
+            .cached_content_token_count = if (obj.get("cachedContentTokenCount")) |v| (if (v == .integer) @as(u32, @intCast(v.integer)) else 0) else 0,
+            .thoughts_token_count = if (obj.get("thoughtsTokenCount")) |v| (if (v == .integer) @as(u32, @intCast(v.integer)) else 0) else 0,
+            .tool_use_prompt_token_count = if (obj.get("toolUsePromptTokenCount")) |v| (if (v == .integer) @as(u32, @intCast(v.integer)) else 0) else 0,
+            .service_tier = if (obj.get("serviceTier")) |v| (if (v == .string) v.string else null) else null,
+            .prompt_tokens_details = if (obj.get("promptTokensDetails")) |v| try parseModalitySlice(allocator, v, options) else &.{},
+            .cache_tokens_details = if (obj.get("cacheTokensDetails")) |v| try parseModalitySlice(allocator, v, options) else &.{},
+            .candidates_tokens_details = if (obj.get("candidatesTokensDetails")) |v| try parseModalitySlice(allocator, v, options) else &.{},
+            .tool_use_prompt_tokens_details = if (obj.get("toolUsePromptTokensDetails")) |v| try parseModalitySlice(allocator, v, options) else &.{},
+        };
+    }
 };
 
 /// A single candidate in the response.
@@ -547,6 +752,7 @@ pub const Candidate = struct {
     citation_metadata: ?CitationMetadata = null,
     grounding_metadata: ?GroundingMetadata = null,
     logprobs_result: ?LogprobsResult = null,
+    finish_message: ?[]const u8 = null,
 
     pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
         const v = try std.json.innerParse(std.json.Value, allocator, source, options);
@@ -564,7 +770,7 @@ pub const Candidate = struct {
                 .index = null,
             };
         };
-        const content = try parseContent(allocator, content_val, options);
+        const content = try Content.jsonParseFromValue(allocator, content_val, options);
 
         const finish_reason: ?[]const u8 = if (obj.get("finishReason")) |v|
             if (v == .string) v.string else null
@@ -605,50 +811,10 @@ pub const Candidate = struct {
             .logprobs_result = if (obj.get("logprobsResult")) |v|
                 try std.json.innerParseFromValue(LogprobsResult, allocator, v, options)
             else null,
+            .finish_message = if (obj.get("finishMessage")) |v| (if (v == .string) v.string else null) else null,
         };
     }
 };
-
-pub fn parseContent(allocator: std.mem.Allocator, source: std.json.Value, options: std.json.ParseOptions) !Content {
-    if (source != .object) return Content{ .role = "model", .parts = &.{} };
-    const obj = source.object;
-
-    const role: []const u8 = if (obj.get("role")) |v|
-        if (v == .string) v.string else "model"
-    else
-        "model";
-
-    const parts_val = obj.get("parts") orelse return Content{ .role = role, .parts = &.{} };
-    if (parts_val != .array) return Content{ .role = role, .parts = &.{} };
-
-    var parts = try allocator.alloc(Part, parts_val.array.items.len);
-    for (parts_val.array.items, 0..) |item, i| {
-        parts[i] = try Part.jsonParseFromValue(allocator, item, options);
-    }
-
-    return Content{ .role = role, .parts = parts };
-}
-
-pub fn parseUsageMetadata(source: std.json.Value) UsageMetadata {
-    if (source != .object) return .{};
-    const obj = source.object;
-
-    const prompt = if (obj.get("promptTokenCount")) |v| (if (v == .integer) @as(u32, @intCast(v.integer)) else 0) else 0;
-    const candidates = if (obj.get("candidatesTokenCount")) |v| (if (v == .integer) @as(u32, @intCast(v.integer)) else 0) else 0;
-    const total = if (obj.get("totalTokenCount")) |v| (if (v == .integer) @as(u32, @intCast(v.integer)) else 0) else 0;
-    const cached = if (obj.get("cachedContentTokenCount")) |v| (if (v == .integer) @as(u32, @intCast(v.integer)) else 0) else 0;
-    const thoughts = if (obj.get("thoughtsTokenCount")) |v| (if (v == .integer) @as(u32, @intCast(v.integer)) else 0) else 0;
-    const tool_use_prompt = if (obj.get("toolUsePromptTokenCount")) |v| (if (v == .integer) @as(u32, @intCast(v.integer)) else 0) else 0;
-
-    return .{
-        .prompt_token_count = prompt,
-        .candidates_token_count = candidates,
-        .total_token_count = total,
-        .cached_content_token_count = cached,
-        .thoughts_token_count = thoughts,
-        .tool_use_prompt_token_count = tool_use_prompt,
-    };
-}
 
 /// Full generateContent response.
 pub const Response = struct {
@@ -656,6 +822,8 @@ pub const Response = struct {
     usage_metadata: UsageMetadata = .{},
     prompt_feedback: ?PromptFeedback = null,
     model_version: ?[]const u8 = null,
+    response_id: ?[]const u8 = null,
+    model_status: ?std.json.Value = null,
 
     pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
         const v = try std.json.innerParse(std.json.Value, allocator, source, options);
@@ -677,11 +845,16 @@ pub const Response = struct {
         }
 
         const usage: UsageMetadata = if (obj.get("usageMetadata")) |um|
-            parseUsageMetadata(um)
+            try UsageMetadata.jsonParseFromValue(allocator, um, options)
         else
             .{};
 
         const model_version: ?[]const u8 = if (obj.get("modelVersion")) |v|
+            if (v == .string) v.string else null
+        else
+            null;
+
+        const response_id: ?[]const u8 = if (obj.get("responseId")) |v|
             if (v == .string) v.string else null
         else
             null;
@@ -693,7 +866,22 @@ pub const Response = struct {
                 try std.json.innerParseFromValue(PromptFeedback, allocator, v, options)
             else null,
             .model_version = model_version,
+            .response_id = response_id,
+            .model_status = obj.get("modelStatus"),
         };
+    }
+
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("candidates");
+        try jw.write(self.candidates);
+        try jw.objectField("usageMetadata");
+        try jw.write(self.usage_metadata);
+        if (self.prompt_feedback) |v| { try jw.objectField("promptFeedback"); try jw.write(v); }
+        if (self.model_version) |v| { try jw.objectField("modelVersion"); try jw.write(v); }
+        if (self.response_id) |v| { try jw.objectField("responseId"); try jw.write(v); }
+        if (self.model_status) |v| { try jw.objectField("modelStatus"); try jw.write(v); }
+        try jw.endObject();
     }
 };
 
@@ -772,28 +960,50 @@ pub const ModelsResponse = struct {
     }
 };
 
-// ============================================================================
-// Streaming chunk
-//
-// Gemini streams JSON objects where each data line is a full Response.
-// ============================================================================
-
-/// Each SSE data chunk from streamGenerateContent is a full Response JSON object.
-pub const StreamChunk = Response;
 
 // ============================================================================
 // Gemini metadata types (Group B — fixed schemas)
 // ============================================================================
+
+/// Date object as returned by the Gemini API (e.g. in citation publicationDate).
+pub const GeminiDate = struct {
+    year: ?u32 = null,
+    month: ?u32 = null,
+    day: ?u32 = null,
+};
 
 pub const CitationSource = struct {
     startIndex: ?u32 = null,
     endIndex: ?u32 = null,
     uri: ?[]const u8 = null,
     license: ?[]const u8 = null,
+
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        if (self.startIndex) |v| { try jw.objectField("startIndex"); try jw.write(v); }
+        if (self.endIndex) |v| { try jw.objectField("endIndex"); try jw.write(v); }
+        if (self.uri) |v| { try jw.objectField("uri"); try jw.write(v); }
+        if (self.license) |v| { try jw.objectField("license"); try jw.write(v); }
+        try jw.endObject();
+    }
 };
 
 pub const CitationMetadata = struct {
     citations: []const CitationSource = &.{},
+
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("citationSources");
+        try jw.write(self.citations);
+        try jw.endObject();
+    }
+
+    pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, options: std.json.ParseOptions) !CitationMetadata {
+        if (source != .object) return error.UnexpectedToken;
+        const obj = source.object;
+        const cs_val = obj.get("citationSources") orelse return .{};
+        return .{ .citations = try std.json.innerParseFromValue([]const CitationSource, allocator, cs_val, options) };
+    }
 };
 
 pub const GroundingChunk = struct {
@@ -801,6 +1011,41 @@ pub const GroundingChunk = struct {
         uri: []const u8 = "",
         title: []const u8 = "",
     } = null,
+    retrieved_context: ?struct {
+        uri: []const u8 = "",
+        title: []const u8 = "",
+    } = null,
+
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        if (self.web) |w| {
+            try jw.objectField("web");
+            try jw.beginObject();
+            try jw.objectField("uri"); try jw.write(w.uri);
+            try jw.objectField("title"); try jw.write(w.title);
+            try jw.endObject();
+        }
+        if (self.retrieved_context) |rc| {
+            try jw.objectField("retrievedContext");
+            try jw.beginObject();
+            try jw.objectField("uri"); try jw.write(rc.uri);
+            try jw.objectField("title"); try jw.write(rc.title);
+            try jw.endObject();
+        }
+        try jw.endObject();
+    }
+};
+
+pub const GroundingSegment = struct {
+    startIndex: u32 = 0,
+    endIndex: u32 = 0,
+    text: []const u8 = "",
+};
+
+pub const GroundingSupport = struct {
+    segment: ?GroundingSegment = null,
+    groundingChunkIndices: []const u32 = &.{},
+    confidenceScores: []const f64 = &.{},
 };
 
 pub const GroundingMetadata = struct {
@@ -808,7 +1053,85 @@ pub const GroundingMetadata = struct {
     groundingChunks: []const GroundingChunk = &.{},
     searchEntryPoint: ?struct {
         renderedContent: []const u8 = "",
+        sdk_blob: ?[]const u8 = null,
     } = null,
+    groundingSupports: []const GroundingSupport = &.{},
+
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("webSearchQueries");
+        try jw.write(self.webSearchQueries);
+        try jw.objectField("groundingChunks");
+        try jw.write(self.groundingChunks);
+        if (self.searchEntryPoint) |sep| {
+            try jw.objectField("searchEntryPoint");
+            try jw.beginObject();
+            try jw.objectField("renderedContent");
+            try jw.write(sep.renderedContent);
+            if (sep.sdk_blob) |sb| { try jw.objectField("sdkBlob"); try jw.write(sb); }
+            try jw.endObject();
+        }
+        try jw.objectField("groundingSupports");
+        try jw.write(self.groundingSupports);
+        try jw.endObject();
+    }
+
+    pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, options: std.json.ParseOptions) !@This() {
+        if (source != .object) return error.UnexpectedToken;
+        const obj = source.object;
+
+        var web_search_queries: [][]const u8 = &.{};
+        if (obj.get("webSearchQueries")) |v| {
+            if (v == .array) {
+                web_search_queries = try allocator.alloc([]const u8, v.array.items.len);
+                for (v.array.items, 0..) |item, i| {
+                    web_search_queries[i] = if (item == .string) item.string else "";
+                }
+            }
+        }
+
+        var grounding_chunks: []GroundingChunk = &.{};
+        if (obj.get("groundingChunks")) |v| {
+            if (v == .array) {
+                grounding_chunks = try allocator.alloc(GroundingChunk, v.array.items.len);
+                for (v.array.items, 0..) |item, i| {
+                    grounding_chunks[i] = try std.json.innerParseFromValue(GroundingChunk, allocator, item, options);
+                }
+            }
+        }
+
+        var search_entry_point: ?struct { renderedContent: []const u8 = "", sdk_blob: ?[]const u8 = null } = null;
+        if (obj.get("searchEntryPoint")) |v| {
+            if (v == .object) {
+                const rc: []const u8 = if (v.object.get("renderedContent")) |rc_v|
+                    if (rc_v == .string) rc_v.string else ""
+                else
+                    "";
+                const sb: ?[]const u8 = if (v.object.get("sdkBlob")) |sb_v|
+                    if (sb_v == .string) sb_v.string else null
+                else
+                    null;
+                search_entry_point = .{ .renderedContent = rc, .sdk_blob = sb };
+            }
+        }
+
+        var grounding_supports: []GroundingSupport = &.{};
+        if (obj.get("groundingSupports")) |v| {
+            if (v == .array) {
+                grounding_supports = try allocator.alloc(GroundingSupport, v.array.items.len);
+                for (v.array.items, 0..) |item, i| {
+                    grounding_supports[i] = try std.json.innerParseFromValue(GroundingSupport, allocator, item, options);
+                }
+            }
+        }
+
+        return .{
+            .webSearchQueries = web_search_queries,
+            .groundingChunks = grounding_chunks,
+            .searchEntryPoint = search_entry_point,
+            .groundingSupports = grounding_supports,
+        };
+    }
 };
 
 pub const LogprobCandidate = struct {
@@ -829,16 +1152,4 @@ pub const LogprobsResult = struct {
 pub const PromptFeedback = struct {
     blockReason: ?[]const u8 = null,
     safetyRatings: []const SafetyRating = &.{},
-};
-
-// ============================================================================
-// Conversion Helpers
-// ============================================================================
-
-/// Result of converting OpenAI messages to Gemini contents.
-/// `contents` is the converted message array; `system_text` is the joined
-/// system/developer message text (null when none).
-pub const BuiltContents = struct {
-    contents: []Content,
-    system_text: ?[]const u8,
 };

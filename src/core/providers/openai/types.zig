@@ -34,31 +34,6 @@ pub const ModelsResponse = struct {
     data: []const Model,
 };
 
-/// Role in a conversation
-pub const Role = enum {
-    system,
-    user,
-    assistant,
-    developer,
-    tool,
-
-    pub fn jsonStringify(self: Role, out: anytype) !void {
-        try out.write(@tagName(self));
-    }
-
-    pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) std.json.ParseError(@TypeOf(source.*))!Role {
-        const str = try std.json.innerParse([]const u8, allocator, source, options);
-        return std.meta.stringToEnum(Role, str) orelse error.UnknownField;
-    }
-
-    pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, options: std.json.ParseOptions) !Role {
-        _ = allocator;
-        _ = options;
-        if (source != .string) return error.UnexpectedToken;
-        return std.meta.stringToEnum(Role, source.string) orelse error.UnknownField;
-    }
-};
-
 /// Tool function definition
 pub const ToolFunction = struct {
     name: []const u8,
@@ -70,8 +45,8 @@ pub const ToolFunction = struct {
         try jw.beginObject();
         try jw.objectField("name"); try jw.write(self.name);
         if (self.description) |d| { try jw.objectField("description"); try jw.write(d); }
-        if (self.strict) |s| { try jw.objectField("strict"); try jw.write(s); }
         if (self.parameters) |p| { try jw.objectField("parameters"); try jw.write(p); }
+        if (self.strict) |s| { try jw.objectField("strict"); try jw.write(s); }
         try jw.endObject();
     }
 };
@@ -123,8 +98,8 @@ pub const ErrorDetails = struct {
         try jw.beginObject();
         try jw.objectField("message"); try jw.write(self.message);
         try jw.objectField("type"); try jw.write(self.type);
-        try jw.objectField("param"); try jw.write(self.param);
-        try jw.objectField("code"); try jw.write(self.code);
+        if (self.param) |v| { try jw.objectField("param"); try jw.write(v); }
+        if (self.code) |v| { try jw.objectField("code"); try jw.write(v); }
         try jw.endObject();
     }
 };
@@ -148,7 +123,10 @@ pub const ErrorResponse = struct {
 /// Breakdown of prompt / input token categories.
 pub const PromptTokensDetails = struct {
     cached_tokens: u32 = 0,
+    cache_write_tokens: u32 = 0,
     audio_tokens: u32 = 0,
+    text_tokens: u32 = 0,
+    image_tokens: u32 = 0,
 };
 
 /// Breakdown of completion / output token categories.
@@ -157,6 +135,7 @@ pub const CompletionTokensDetails = struct {
     audio_tokens: u32 = 0,
     accepted_prediction_tokens: u32 = 0,
     rejected_prediction_tokens: u32 = 0,
+    text_tokens: u32 = 0,
 };
 
 /// One candidate token with its log-probability.

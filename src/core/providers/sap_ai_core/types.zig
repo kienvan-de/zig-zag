@@ -14,8 +14,7 @@
 
 const std = @import("std");
 
-// Reuse OpenAI types for the inner content
-pub const OpenAIChat = @import("../openai/chat_types.zig");
+const OpenAIChat = @import("../openai/chat_types.zig");
 const openai_common = @import("../openai/types.zig");
 
 // ============================================================================
@@ -237,7 +236,7 @@ pub const TranslationModuleConfig = struct {
 
 /// Single module configuration object
 pub const ModulesConfig = struct {
-    prompt_templating: PromptTemplatingModule,
+    prompt_templating: ?PromptTemplatingModule = null,
     filtering: ?FilteringModuleConfig = null,
     masking: ?MaskingModuleConfig = null,
     grounding: ?GroundingModuleConfig = null,
@@ -245,7 +244,7 @@ pub const ModulesConfig = struct {
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         try jw.beginObject();
-        try jw.objectField("prompt_templating"); try self.prompt_templating.jsonStringify(jw);
+        if (self.prompt_templating) |pt| { try jw.objectField("prompt_templating"); try pt.jsonStringify(jw); }
         if (self.filtering) |v| { try jw.objectField("filtering"); try jw.write(v); }
         if (self.masking) |v| { try jw.objectField("masking"); try jw.write(v); }
         if (self.grounding) |v| { try jw.objectField("grounding"); try jw.write(v); }
@@ -279,18 +278,15 @@ pub const StreamConfig = struct {
 pub const OrchestrationConfig = struct {
     /// Single module config or a list of fallback configs
     modules: ModulesConfig,
-    stream: StreamConfig,
+    stream: ?StreamConfig = null,
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         try jw.beginObject();
         try jw.objectField("modules"); try self.modules.jsonStringify(jw);
-        try jw.objectField("stream"); try self.stream.jsonStringify(jw);
+        if (self.stream) |s| { try jw.objectField("stream"); try s.jsonStringify(jw); }
         try jw.endObject();
     }
 };
-
-// Keep Config as an alias for backwards compat with transformer
-pub const Config = OrchestrationConfig;
 
 // ----------------------------------------------------------------------------
 // Top-level Request
@@ -298,7 +294,7 @@ pub const Config = OrchestrationConfig;
 
 /// SAP AI Core Orchestration completion request
 pub const Request = struct {
-    config: Config,
+    config: OrchestrationConfig,
     /// Template variable substitution values  e.g. {"user_query": "Hello"}
     placeholder_values: ?std.json.Value = null,
     /// Prior conversation context merged with template messages
@@ -425,10 +421,3 @@ pub const SapModelsResponse = struct {
 // Request Helpers
 // ============================================================================
 
-/// Sampling parameters extracted from any inbound request, mapped onto the
-/// SAP `model.params` wire object.
-pub const SapParams = struct {
-    temperature: ?f32 = null,
-    max_tokens: ?u32 = null,
-    top_p: ?f32 = null,
-};
