@@ -2168,9 +2168,9 @@ pub const SseEvent = union(enum) {
 };
 
 /// Result type for Messages-flow stream line transforms.
-/// The transformer returns a typed SseEvent; the caller serializes to wire bytes.
+/// The transformer returns a slice of typed SseEvents; the caller serializes to wire bytes.
 pub const MessagesStreamLineResult = union(enum) {
-    event: SseEvent,
+    events: []const SseEvent,
     skip: void,
 };
 

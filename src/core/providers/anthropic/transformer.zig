@@ -307,13 +307,15 @@ pub fn transformChatStreamLine(
 
         const choices = allocator.alloc(Chat.StreamChoice, 1) catch return .{ .skip = {} };
         choices[0] = .{ .index = 0, .delta = .{ .role = .assistant }, .finish_reason = null };
-        return .{ .event = .{
+        const chunks = allocator.alloc(Chat.StreamChunk, 1) catch return .{ .skip = {} };
+        chunks[0] = .{
             .id = if (state.response_id.len > 0) state.response_id else "chatcmpl-unknown",
             .object = "chat.completion.chunk",
             .created = state.created,
             .model = state.original_model,
             .choices = choices,
-        }};
+        };
+        return .{ .events = chunks };
     }
 
     if (std.mem.eql(u8, event_type, "content_block_start")) {
@@ -337,13 +339,15 @@ pub fn transformChatStreamLine(
         };
         const choices = allocator.alloc(Chat.StreamChoice, 1) catch return .{ .skip = {} };
         choices[0] = .{ .index = 0, .delta = .{ .tool_calls = tool_calls }, .finish_reason = null };
-        return .{ .event = .{
+        const chunks = allocator.alloc(Chat.StreamChunk, 1) catch return .{ .skip = {} };
+        chunks[0] = .{
             .id = if (state.response_id.len > 0) state.response_id else "chatcmpl-unknown",
             .object = "chat.completion.chunk",
             .created = state.created,
             .model = state.original_model,
             .choices = choices,
-        }};
+        };
+        return .{ .events = chunks };
     }
 
     if (std.mem.eql(u8, event_type, "content_block_delta")) {
@@ -361,13 +365,15 @@ pub fn transformChatStreamLine(
             const text = delta.text orelse return .{ .skip = {} };
             const choices = allocator.alloc(Chat.StreamChoice, 1) catch return .{ .skip = {} };
             choices[0] = .{ .index = 0, .delta = .{ .content = text }, .finish_reason = null };
-            return .{ .event = .{
+            const chunks = allocator.alloc(Chat.StreamChunk, 1) catch return .{ .skip = {} };
+            chunks[0] = .{
                 .id = if (state.response_id.len > 0) state.response_id else "chatcmpl-unknown",
                 .object = "chat.completion.chunk",
                 .created = state.created,
                 .model = state.original_model,
                 .choices = choices,
-            }};
+            };
+            return .{ .events = chunks };
         }
 
         if (std.mem.eql(u8, delta.type, "input_json_delta")) {
@@ -379,13 +385,15 @@ pub fn transformChatStreamLine(
             };
             const choices = allocator.alloc(Chat.StreamChoice, 1) catch return .{ .skip = {} };
             choices[0] = .{ .index = 0, .delta = .{ .tool_calls = tool_calls }, .finish_reason = null };
-            return .{ .event = .{
+            const chunks = allocator.alloc(Chat.StreamChunk, 1) catch return .{ .skip = {} };
+            chunks[0] = .{
                 .id = if (state.response_id.len > 0) state.response_id else "chatcmpl-unknown",
                 .object = "chat.completion.chunk",
                 .created = state.created,
                 .model = state.original_model,
                 .choices = choices,
-            }};
+            };
+            return .{ .events = chunks };
         }
 
         return .{ .skip = {} }; // thinking/signature deltas
@@ -406,7 +414,8 @@ pub fn transformChatStreamLine(
 
         const choices = allocator.alloc(Chat.StreamChoice, 1) catch return .{ .skip = {} };
         choices[0] = .{ .index = 0, .delta = .{}, .finish_reason = finish_reason };
-        return .{ .event = .{
+        const chunks = allocator.alloc(Chat.StreamChunk, 1) catch return .{ .skip = {} };
+        chunks[0] = .{
             .id = if (state.response_id.len > 0) state.response_id else "chatcmpl-unknown",
             .object = "chat.completion.chunk",
             .created = state.created,
@@ -417,7 +426,8 @@ pub fn transformChatStreamLine(
                 .completion_tokens = state.output_tokens,
                 .total_tokens = state.input_tokens + state.output_tokens,
             },
-        }};
+        };
+        return .{ .events = chunks };
     }
 
     return .{ .skip = {} }; // content_block_stop, message_stop, ping, …
@@ -509,62 +519,60 @@ pub fn transformMessagesStreamLine(
     defer type_probe.deinit();
     const event_type = type_probe.value.type;
 
-    if (std.mem.eql(u8, event_type, "message_start")) {
-        const parsed = std.json.parseFromSlice(Messages.MessageStart, allocator, json_part,
-            .{ .allocate = .alloc_always, .ignore_unknown_fields = true }) catch return .{ .skip = {} };
-        defer parsed.deinit();
-        state.input_tokens = parsed.value.message.usage.input_tokens;
-        return .{ .event = .{ .message_start = parsed.value } };
-    }
+    const ev: Messages.SseEvent = blk: {
+        if (std.mem.eql(u8, event_type, "message_start")) {
+            const parsed = std.json.parseFromSlice(Messages.MessageStart, allocator, json_part,
+                .{ .allocate = .alloc_always, .ignore_unknown_fields = true }) catch return .{ .skip = {} };
+            defer parsed.deinit();
+            state.input_tokens = parsed.value.message.usage.input_tokens;
+            break :blk .{ .message_start = parsed.value };
+        }
+        if (std.mem.eql(u8, event_type, "content_block_start")) {
+            const parsed = std.json.parseFromSlice(Messages.ContentBlockStart, allocator, json_part,
+                .{ .allocate = .alloc_always, .ignore_unknown_fields = true }) catch return .{ .skip = {} };
+            defer parsed.deinit();
+            break :blk .{ .content_block_start = parsed.value };
+        }
+        if (std.mem.eql(u8, event_type, "content_block_delta")) {
+            const parsed = std.json.parseFromSlice(Messages.ContentBlockDelta, allocator, json_part,
+                .{ .allocate = .alloc_always, .ignore_unknown_fields = true }) catch return .{ .skip = {} };
+            defer parsed.deinit();
+            break :blk .{ .content_block_delta = parsed.value };
+        }
+        if (std.mem.eql(u8, event_type, "content_block_stop")) {
+            const parsed = std.json.parseFromSlice(Messages.ContentBlockStop, allocator, json_part,
+                .{ .allocate = .alloc_always, .ignore_unknown_fields = true }) catch return .{ .skip = {} };
+            defer parsed.deinit();
+            break :blk .{ .content_block_stop = parsed.value };
+        }
+        if (std.mem.eql(u8, event_type, "message_delta")) {
+            const parsed = std.json.parseFromSlice(Messages.MessageDelta, allocator, json_part,
+                .{ .allocate = .alloc_always, .ignore_unknown_fields = true }) catch return .{ .skip = {} };
+            defer parsed.deinit();
+            state.output_tokens = parsed.value.usage.output_tokens;
+            break :blk .{ .message_delta = parsed.value };
+        }
+        if (std.mem.eql(u8, event_type, "message_stop")) {
+            const parsed = std.json.parseFromSlice(Messages.MessageStop, allocator, json_part,
+                .{ .allocate = .alloc_always, .ignore_unknown_fields = true }) catch return .{ .skip = {} };
+            defer parsed.deinit();
+            break :blk .{ .message_stop = parsed.value };
+        }
+        if (std.mem.eql(u8, event_type, "ping")) {
+            break :blk .{ .ping = .{} };
+        }
+        if (std.mem.eql(u8, event_type, "error")) {
+            const parsed = std.json.parseFromSlice(Messages.SseErrorEvent, allocator, json_part,
+                .{ .allocate = .alloc_always, .ignore_unknown_fields = true }) catch return .{ .skip = {} };
+            defer parsed.deinit();
+            break :blk .{ .error_event = parsed.value };
+        }
+        return .{ .skip = {} };
+    };
 
-    if (std.mem.eql(u8, event_type, "content_block_start")) {
-        const parsed = std.json.parseFromSlice(Messages.ContentBlockStart, allocator, json_part,
-            .{ .allocate = .alloc_always, .ignore_unknown_fields = true }) catch return .{ .skip = {} };
-        defer parsed.deinit();
-        return .{ .event = .{ .content_block_start = parsed.value } };
-    }
-
-    if (std.mem.eql(u8, event_type, "content_block_delta")) {
-        const parsed = std.json.parseFromSlice(Messages.ContentBlockDelta, allocator, json_part,
-            .{ .allocate = .alloc_always, .ignore_unknown_fields = true }) catch return .{ .skip = {} };
-        defer parsed.deinit();
-        return .{ .event = .{ .content_block_delta = parsed.value } };
-    }
-
-    if (std.mem.eql(u8, event_type, "content_block_stop")) {
-        const parsed = std.json.parseFromSlice(Messages.ContentBlockStop, allocator, json_part,
-            .{ .allocate = .alloc_always, .ignore_unknown_fields = true }) catch return .{ .skip = {} };
-        defer parsed.deinit();
-        return .{ .event = .{ .content_block_stop = parsed.value } };
-    }
-
-    if (std.mem.eql(u8, event_type, "message_delta")) {
-        const parsed = std.json.parseFromSlice(Messages.MessageDelta, allocator, json_part,
-            .{ .allocate = .alloc_always, .ignore_unknown_fields = true }) catch return .{ .skip = {} };
-        defer parsed.deinit();
-        state.output_tokens = parsed.value.usage.output_tokens;
-        return .{ .event = .{ .message_delta = parsed.value } };
-    }
-
-    if (std.mem.eql(u8, event_type, "message_stop")) {
-        const parsed = std.json.parseFromSlice(Messages.MessageStop, allocator, json_part,
-            .{ .allocate = .alloc_always, .ignore_unknown_fields = true }) catch return .{ .skip = {} };
-        defer parsed.deinit();
-        return .{ .event = .{ .message_stop = parsed.value } };
-    }
-
-    if (std.mem.eql(u8, event_type, "ping")) {
-        return .{ .event = .{ .ping = .{} } };
-    }
-
-    if (std.mem.eql(u8, event_type, "error")) {
-        const parsed = std.json.parseFromSlice(Messages.SseErrorEvent, allocator, json_part,
-            .{ .allocate = .alloc_always, .ignore_unknown_fields = true }) catch return .{ .skip = {} };
-        defer parsed.deinit();
-        return .{ .event = .{ .error_event = parsed.value } };
-    }
-
-    return .{ .skip = {} };
+    const events = allocator.alloc(Messages.SseEvent, 1) catch return .{ .skip = {} };
+    events[0] = ev;
+    return .{ .events = events };
 }
 
 // ============================================================================
@@ -1131,11 +1139,13 @@ pub fn transformResponsesStreamLine(
             err_message = parsed.value.@"error".message;
             err_code = parsed.value.@"error".type;
         } else |_| {}
-        return .{ .event = .{ .stream_error = .{
+        const events = allocator.alloc(Responses.StreamEvent, 1) catch return .{ .skip = {} };
+        events[0] = .{ .stream_error = .{
             .sequence_number = state.sequence_number,
             .code = err_code,
             .message = err_message,
-        }}};
+        }};
+        return .{ .events = events };
     }
 
     if (std.mem.eql(u8, event_type, "message_start")) {
@@ -1165,18 +1175,10 @@ pub fn transformResponsesStreamLine(
         state.tool_use_id = block.id orelse "";
         state.tool_use_name = block.name orelse "";
 
-        // For multi-event responses (text block emits two events), we can only
-        // return one event per call. We return output_item_added here; the caller
-        // must handle the content_part_added that follows for text blocks.
-        // To keep the single-return contract, we pack both events into a
-        // raw_bytes sentinel via the existing infrastructure — but since we are
-        // now returning typed events we handle the two-event case by returning
-        // only output_item_added. The caller is responsible for emitting
-        // content_part_added separately when it sees the block type is "text".
-        // This is a known limitation of the single-event-per-line contract for
-        // the text block open. For now we return output_item_added only.
         if (is_text) {
-            return .{ .event = .{ .output_item_added = .{
+            // Two events: output_item_added + content_part_added.
+            const events = allocator.alloc(Responses.StreamEvent, 2) catch return .{ .skip = {} };
+            events[0] = .{ .output_item_added = .{
                 .sequence_number = state.sequence_number,
                 .output_index = state.output_index,
                 .item = .{ .message = .{
@@ -1186,9 +1188,18 @@ pub fn transformResponsesStreamLine(
                     .content = &.{},
                     .status = "in_progress",
                 }},
-            }}};
+            }};
+            events[1] = .{ .content_part_added = .{
+                .sequence_number = state.sequence_number + 1,
+                .output_index = state.output_index,
+                .item_id = state.response_id,
+                .content_index = 0,
+                .part = .{ .output_text = .{ .type = "output_text", .text = "" } },
+            }};
+            return .{ .events = events };
         } else {
-            return .{ .event = .{ .output_item_added = .{
+            const events = allocator.alloc(Responses.StreamEvent, 1) catch return .{ .skip = {} };
+            events[0] = .{ .output_item_added = .{
                 .sequence_number = state.sequence_number,
                 .output_index = state.output_index,
                 .item = .{ .function_call = .{
@@ -1198,7 +1209,8 @@ pub fn transformResponsesStreamLine(
                     .arguments = "",
                     .status = "in_progress",
                 }},
-            }}};
+            }};
+            return .{ .events = events };
         }
     }
 
@@ -1212,26 +1224,30 @@ pub fn transformResponsesStreamLine(
             const text = delta.text orelse return .{ .skip = {} };
             if (text.len == 0) return .{ .skip = {} };
             state.text_buf.appendSlice(allocator, text) catch return .{ .skip = {} };
-            return .{ .event = .{ .output_text_delta = .{
+            const events = allocator.alloc(Responses.StreamEvent, 1) catch return .{ .skip = {} };
+            events[0] = .{ .output_text_delta = .{
                 .sequence_number = state.sequence_number,
                 .output_index = state.output_index,
                 .item_id = state.response_id,
                 .content_index = 0,
                 .delta = text,
-            }}};
+            }};
+            return .{ .events = events };
         }
 
         if (std.mem.eql(u8, delta.type, "input_json_delta")) {
             const partial = delta.partial_json orelse return .{ .skip = {} };
             if (partial.len == 0) return .{ .skip = {} };
             state.arguments_buf.appendSlice(allocator, partial) catch return .{ .skip = {} };
-            return .{ .event = .{ .function_call_arguments_delta = .{
+            const events = allocator.alloc(Responses.StreamEvent, 1) catch return .{ .skip = {} };
+            events[0] = .{ .function_call_arguments_delta = .{
                 .sequence_number = state.sequence_number,
                 .output_index = state.output_index,
                 .item_id = state.response_id,
                 .call_id = if (state.tool_use_id.len > 0) state.tool_use_id else null,
                 .delta = partial,
-            }}};
+            }};
+            return .{ .events = events };
         }
 
         return .{ .skip = {} }; // thinking/signature deltas
@@ -1239,21 +1255,46 @@ pub fn transformResponsesStreamLine(
 
     if (std.mem.eql(u8, event_type, "content_block_stop")) {
         if (std.mem.eql(u8, state.open_block_type, "tool_use")) {
-            return .{ .event = .{ .function_call_arguments_done = .{
+            // Two events: function_call_arguments_done + output_item_done.
+            const events = allocator.alloc(Responses.StreamEvent, 2) catch return .{ .skip = {} };
+            events[0] = .{ .function_call_arguments_done = .{
                 .sequence_number = state.sequence_number,
                 .output_index = state.output_index,
                 .item_id = state.response_id,
                 .call_id = if (state.tool_use_id.len > 0) state.tool_use_id else null,
                 .arguments = state.arguments_buf.items,
-            }}};
+            }};
+            events[1] = .{ .output_item_done = .{
+                .sequence_number = state.sequence_number + 1,
+                .output_index = state.output_index,
+                .item = .{ .function_call = .{
+                    .id = state.tool_use_id,
+                    .type = "function_call",
+                    .name = state.tool_use_name,
+                    .arguments = state.arguments_buf.items,
+                    .call_id = null,
+                    .status = "completed",
+                }},
+            }};
+            return .{ .events = events };
         } else {
-            return .{ .event = .{ .output_text_done = .{
+            // Two events: output_text_done + content_part_done.
+            const events = allocator.alloc(Responses.StreamEvent, 2) catch return .{ .skip = {} };
+            events[0] = .{ .output_text_done = .{
                 .sequence_number = state.sequence_number,
                 .output_index = state.output_index,
                 .item_id = state.response_id,
                 .content_index = 0,
                 .text = state.text_buf.items,
-            }}};
+            }};
+            events[1] = .{ .content_part_done = .{
+                .sequence_number = state.sequence_number + 1,
+                .output_index = state.output_index,
+                .item_id = state.response_id,
+                .content_index = 0,
+                .part = .{ .output_text = .{ .type = "output_text", .text = state.text_buf.items } },
+            }};
+            return .{ .events = events };
         }
     }
 

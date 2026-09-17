@@ -30,12 +30,6 @@ const content = @import("content.zig");
 const log = @import("../../log.zig");
 const time = @import("../../time.zig");
 
-/// One streaming line result. `output` carries formatted SSE bytes (caller frees). `skip` means nothing to emit.
-pub const StreamLineResult = union(enum) {
-    output: []const u8,
-    skip: void,
-};
-
 /// The Responses flow synthesizes its own terminal events; the pipeline appends the `[DONE]` sentinel afterwards.
 pub const appendsDoneMarker = true;
 
@@ -313,16 +307,15 @@ pub fn cleanupChatResponse(
     allocator.free(inbound_response.model);
 }
 
-/// One Gemini SSE line (a full Google.Response) → zero or one chat-format SSE chunk.
+/// One Gemini SSE line → Chat.StreamChunk slice (caller serializes).
 ///
-/// Gemini SSE sends complete Response objects per chunk (not incremental events).
-/// Usage is emitted only on the terminal chunk (the one carrying finish_reason).
-/// Tool call chunks: function_call parts emit tool_calls delta.
+/// Gemini sends complete Response objects per chunk. One chunk → one StreamChunk
+/// carrying text delta and/or tool_call deltas.
 pub fn transformChatStreamLine(
     line: []const u8,
     state: *ChatStreamState,
     allocator: std.mem.Allocator,
-) StreamLineResult {
+) Chat.ChatStreamLineResult {
     if (!std.mem.startsWith(u8, line, "data: ")) return .{ .skip = {} };
     const json_part = line["data: ".len..];
 
@@ -331,16 +324,12 @@ pub fn transformChatStreamLine(
         allocator,
         json_part,
         .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
-    ) catch |err| {
-        log.debug("[google] stream chunk parse failed: {}", .{err});
-        return .{ .skip = {} };
-    };
+    ) catch return .{ .skip = {} };
     defer parsed.deinit();
 
     if (parsed.value.candidates.len == 0) return .{ .skip = {} };
     const candidate = parsed.value.candidates[0];
 
-    // Accumulate usage from every chunk; authoritative totals arrive with terminal chunk.
     if (parsed.value.usage_metadata.total_token_count > 0) {
         state.input_tokens = parsed.value.usage_metadata.prompt_token_count;
         state.output_tokens = parsed.value.usage_metadata.candidates_token_count;
@@ -349,7 +338,6 @@ pub fn transformChatStreamLine(
     const is_final = candidate.finish_reason != null and candidate.finish_reason.?.len > 0;
     if (is_final) state.finish_reason = content.transformStopReason(candidate.finish_reason);
 
-    // Collect text content.
     var text_buf: std.ArrayList(u8) = .empty;
     defer text_buf.deinit(allocator);
     for (candidate.content.parts) |part| {
@@ -359,7 +347,6 @@ pub fn transformChatStreamLine(
         }
     }
 
-    // Collect function_call parts as tool_call deltas.
     var tool_call_buf: std.ArrayList(Chat.DeltaToolCall) = .empty;
     defer tool_call_buf.deinit(allocator);
     var arg_bufs = std.ArrayList(std.ArrayList(u8)).empty;
@@ -373,12 +360,11 @@ pub fn transformChatStreamLine(
             .function_call => |fc| {
                 var arg_buf: std.ArrayList(u8) = .empty;
                 arg_buf.print(allocator, "{f}", .{std.json.fmt(fc.args, .{})}) catch return .{ .skip = {} };
-                const args_str = arg_buf.items;
-                try tool_call_buf.append(allocator, .{
+                tool_call_buf.append(allocator, .{
                     .index = fc_index,
-                    .id = fc.name, // Gemini has no call ids; use name
+                    .id = fc.name,
                     .type = "function",
-                    .function = .{ .name = fc.name, .arguments = args_str },
+                    .function = .{ .name = fc.name, .arguments = arg_buf.items },
                 }) catch return .{ .skip = {} };
                 arg_bufs.append(allocator, arg_buf) catch return .{ .skip = {} };
                 fc_index += 1;
@@ -393,18 +379,26 @@ pub fn transformChatStreamLine(
         .total_tokens = parsed.value.usage_metadata.total_token_count,
     } else null;
 
-    const delta = Chat.Delta{
-        .content = if (text_buf.items.len > 0) text_buf.items else null,
-        .tool_calls = if (tool_call_buf.items.len > 0) tool_call_buf.items else null,
+    const choices = allocator.alloc(Chat.StreamChoice, 1) catch return .{ .skip = {} };
+    choices[0] = .{
+        .index = 0,
+        .delta = .{
+            .content = if (text_buf.items.len > 0) text_buf.items else null,
+            .tool_calls = if (tool_call_buf.items.len > 0) tool_call_buf.items else null,
+        },
+        .finish_reason = if (is_final) state.finish_reason else null,
     };
 
-    const bytes = content.buildChatChunk(.{
+    const chunks = allocator.alloc(Chat.StreamChunk, 1) catch return .{ .skip = {} };
+    chunks[0] = .{
         .id = state.response_id,
+        .object = "chat.completion.chunk",
         .created = state.created,
-        .original_model = state.original_model,
-    }, delta, if (is_final) state.finish_reason else null, usage, allocator) orelse
-        return .{ .skip = {} };
-    return .{ .output = bytes };
+        .model = state.original_model,
+        .choices = choices,
+        .usage = usage,
+    };
+    return .{ .events = chunks };
 }
 
 // ============================================================================
@@ -623,17 +617,18 @@ pub fn cleanupMessagesResponse(
     allocator.free(inbound_response.model);
 }
 
-/// One Gemini SSE line → Anthropic-format SSE events, synthesizing the full
-/// Anthropic streaming protocol:
-///   first chunk  → message_start + content_block_start + ping
+/// One Gemini SSE line → slice of Messages.SseEvent (caller serializes).
+///
+/// Synthesizes the Anthropic SSE protocol from Gemini chunks:
+///   first chunk  → message_start + content_block_start(text) + ping
 ///   text parts   → content_block_delta (text_delta)
-///   fn_call parts → content_block_delta (input_json_delta, for each function_call)
-///   terminal     → content_block_stop + message_delta + message_stop
+///   fn_call parts → content_block_start(tool_use) + content_block_delta(input_json_delta) + content_block_stop
+///   terminal     → content_block_stop(text) + message_delta + message_stop
 pub fn transformMessagesStreamLine(
     line: []const u8,
     state: *MessagesStreamState,
     allocator: std.mem.Allocator,
-) StreamLineResult {
+) Messages.MessagesStreamLineResult {
     if (!std.mem.startsWith(u8, line, "data: ")) return .{ .skip = {} };
     const json_part = line["data: ".len..];
 
@@ -645,13 +640,12 @@ pub fn transformMessagesStreamLine(
     ) catch return .{ .skip = {} };
     defer parsed.deinit();
 
-    var out: std.ArrayList(u8) = .empty;
-    errdefer out.deinit(allocator);
+    var events: std.ArrayList(Messages.SseEvent) = .empty;
+    defer events.deinit(allocator);
 
-    // Synthetic opening, once per stream.
     if (!state.sent_start) {
         state.sent_start = true;
-        const msg_start = Messages.MessageStart{
+        events.append(allocator, .{ .message_start = .{
             .type = "message_start",
             .message = .{
                 .id = state.response_id,
@@ -663,18 +657,14 @@ pub fn transformMessagesStreamLine(
                 .stop_sequence = null,
                 .usage = .{ .input_tokens = 0, .output_tokens = 0 },
             },
-        };
-        out.print(allocator, "event: message_start\ndata: {f}\n\n", .{std.json.fmt(msg_start, .{})}) catch return .{ .skip = {} };
-        // Open block 0 as text.
-        const cb_start = Messages.ContentBlockStart{
+        }}) catch return .{ .skip = {} };
+        events.append(allocator, .{ .content_block_start = .{
             .type = "content_block_start",
             .index = 0,
             .content_block = .{ .type = "text", .text = "" },
-        };
-        out.print(allocator, "event: content_block_start\ndata: {f}\n\n", .{std.json.fmt(cb_start, .{ .emit_null_optional_fields = false })}) catch return .{ .skip = {} };
+        }}) catch return .{ .skip = {} };
         state.next_block_index = 1;
-        const ping = Messages.Ping{};
-        out.print(allocator, "event: ping\ndata: {f}\n\n", .{std.json.fmt(ping, .{})}) catch return .{ .skip = {} };
+        events.append(allocator, .{ .ping = .{} }) catch return .{ .skip = {} };
     }
 
     if (parsed.value.candidates.len > 0) {
@@ -684,13 +674,11 @@ pub fn transformMessagesStreamLine(
             switch (part) {
                 .text => |tp| {
                     if (tp.text.len == 0) continue;
-                    // Block 0 is always the text block opened in sent_start.
-                    const delta_ev = Messages.ContentBlockDelta{
+                    events.append(allocator, .{ .content_block_delta = .{
                         .type = "content_block_delta",
                         .index = 0,
                         .delta = .{ .type = "text_delta", .text = tp.text },
-                    };
-                    out.print(allocator, "event: content_block_delta\ndata: {f}\n\n", .{std.json.fmt(delta_ev, .{})}) catch continue;
+                    }}) catch continue;
                 },
                 .function_call => |fc| {
                     var args_buf: std.ArrayList(u8) = .empty;
@@ -700,25 +688,20 @@ pub fn transformMessagesStreamLine(
                     const block_idx = state.next_block_index;
                     state.next_block_index += 1;
 
-                    // content_block_start (tool_use).
-                    const cb_open = Messages.ContentBlockStart{
+                    events.append(allocator, .{ .content_block_start = .{
                         .type = "content_block_start",
                         .index = block_idx,
                         .content_block = .{ .type = "tool_use", .id = fc.name, .name = fc.name },
-                    };
-                    out.print(allocator, "event: content_block_start\ndata: {f}\n\n", .{std.json.fmt(cb_open, .{ .emit_null_optional_fields = false })}) catch continue;
-
-                    // content_block_delta (input_json_delta with full args — Gemini delivers all at once).
-                    const delta_ev = Messages.ContentBlockDelta{
+                    }}) catch continue;
+                    events.append(allocator, .{ .content_block_delta = .{
                         .type = "content_block_delta",
                         .index = block_idx,
                         .delta = .{ .type = "input_json_delta", .partial_json = args_buf.items },
-                    };
-                    out.print(allocator, "event: content_block_delta\ndata: {f}\n\n", .{std.json.fmt(delta_ev, .{})}) catch continue;
-
-                    // content_block_stop.
-                    const cb_close = Messages.ContentBlockStop{ .type = "content_block_stop", .index = block_idx };
-                    out.print(allocator, "event: content_block_stop\ndata: {f}\n\n", .{std.json.fmt(cb_close, .{})}) catch continue;
+                    }}) catch continue;
+                    events.append(allocator, .{ .content_block_stop = .{
+                        .type = "content_block_stop",
+                        .index = block_idx,
+                    }}) catch continue;
                 },
                 else => {},
             }
@@ -731,23 +714,24 @@ pub fn transformMessagesStreamLine(
                 const stop_reason = content.transformStopReasonToMessages(candidate.finish_reason);
                 state.finish_reason = stop_reason;
 
-                // Close the text block (block 0).
-                const cb_stop = Messages.ContentBlockStop{ .type = "content_block_stop", .index = 0 };
-                out.print(allocator, "event: content_block_stop\ndata: {f}\n\n", .{std.json.fmt(cb_stop, .{})}) catch return .{ .skip = {} };
-                const msg_delta = Messages.MessageDelta{
+                events.append(allocator, .{ .content_block_stop = .{
+                    .type = "content_block_stop",
+                    .index = 0,
+                }}) catch return .{ .skip = {} };
+                events.append(allocator, .{ .message_delta = .{
                     .type = "message_delta",
                     .delta = .{ .stop_reason = stop_reason, .stop_sequence = null },
                     .usage = .{ .output_tokens = state.output_tokens },
-                };
-                out.print(allocator, "event: message_delta\ndata: {f}\n\n", .{std.json.fmt(msg_delta, .{})}) catch return .{ .skip = {} };
-                const msg_stop = Messages.MessageStop{ .type = "message_stop" };
-                out.print(allocator, "event: message_stop\ndata: {f}\n\n", .{std.json.fmt(msg_stop, .{})}) catch return .{ .skip = {} };
+                }}) catch return .{ .skip = {} };
+                events.append(allocator, .{ .message_stop = .{
+                    .type = "message_stop",
+                }}) catch return .{ .skip = {} };
             }
         }
     }
 
-    if (out.items.len == 0) return .{ .skip = {} };
-    return .{ .output = out.toOwnedSlice(allocator) catch return .{ .skip = {} } };
+    if (events.items.len == 0) return .{ .skip = {} };
+    return .{ .events = events.toOwnedSlice(allocator) catch return .{ .skip = {} } };
 }
 
 // ============================================================================
@@ -1081,20 +1065,19 @@ pub fn cleanupResponsesResponse(
     allocator.free(inbound_response.output);
 }
 
-/// One Gemini SSE line → Responses SSE events as ready bytes.
+/// One Gemini SSE line → slice of Responses.StreamEvent (caller serializes).
 ///
 /// Event mapping:
-///   first chunk → response.output_item.added (message) + response.content_part.added (output_text)
-///   text parts  → response.output_text.delta
-///   fn parts    → response.function_call_arguments.delta + response.output_item.added (function_call)
-///   terminal    → response.output_text.done + response.content_part.done
-///
-/// Usage and finish_reason accumulate into `state` for flushResponsesStream.
+///   first chunk → output_item_added (message) + content_part_added (output_text)
+///   text parts  → output_text_delta
+///   fn parts    → output_item_added (function_call) + function_call_arguments_delta
+///                 + function_call_arguments_done + output_item_done (function_call)
+///   terminal    → output_text_done + content_part_done
 pub fn transformResponsesStreamLine(
     line: []const u8,
     state: *ResponsesStreamState,
     allocator: std.mem.Allocator,
-) StreamLineResult {
+) Responses.ResponsesStreamLineResult {
     if (!std.mem.startsWith(u8, line, "data: ")) return .{ .skip = {} };
     const json_part = line["data: ".len..];
 
@@ -1106,15 +1089,12 @@ pub fn transformResponsesStreamLine(
     ) catch return .{ .skip = {} };
     defer parsed.deinit();
 
-    var out: std.ArrayList(u8) = .empty;
-    errdefer out.deinit(allocator);
+    var events: std.ArrayList(Responses.StreamEvent) = .empty;
+    defer events.deinit(allocator);
 
-    // Opening events, once per stream.
     if (!state.sent_start) {
         state.sent_start = true;
-
-        // response.output_item.added (message item)
-        const item_ev = Responses.StreamEvent{ .output_item_added = .{
+        events.append(allocator, .{ .output_item_added = .{
             .sequence_number = state.sequence_number,
             .output_index = 0,
             .item = .{ .message = .{
@@ -1123,20 +1103,16 @@ pub fn transformResponsesStreamLine(
                 .role = "assistant",
                 .content = &.{},
                 .status = "in_progress",
-            } },
-        }};
-        content.writeResponsesSSE(item_ev, &out, allocator) catch return .{ .skip = {} };
+            }},
+        }}) catch return .{ .skip = {} };
         state.sequence_number += 1;
-
-        // response.content_part.added (output_text part)
-        const part_ev = Responses.StreamEvent{ .content_part_added = .{
+        events.append(allocator, .{ .content_part_added = .{
             .sequence_number = state.sequence_number,
             .output_index = 0,
             .item_id = state.response_id,
             .content_index = 0,
             .part = .{ .output_text = .{ .type = "output_text", .text = "" } },
-        }};
-        content.writeResponsesSSE(part_ev, &out, allocator) catch return .{ .skip = {} };
+        }}) catch return .{ .skip = {} };
         state.sequence_number += 1;
     }
 
@@ -1148,14 +1124,13 @@ pub fn transformResponsesStreamLine(
                 .text => |tp| {
                     if (tp.text.len == 0) continue;
                     state.text_buf.appendSlice(allocator, tp.text) catch continue;
-                    const ev = Responses.StreamEvent{ .output_text_delta = .{
+                    events.append(allocator, .{ .output_text_delta = .{
                         .sequence_number = state.sequence_number,
                         .output_index = 0,
                         .item_id = state.response_id,
                         .content_index = 0,
                         .delta = tp.text,
-                    }};
-                    content.writeResponsesSSE(ev, &out, allocator) catch continue;
+                    }}) catch continue;
                     state.sequence_number += 1;
                 },
                 .function_call => |fc| {
@@ -1163,8 +1138,7 @@ pub fn transformResponsesStreamLine(
                     defer args_buf.deinit(allocator);
                     args_buf.print(allocator, "{f}", .{std.json.fmt(fc.args, .{})}) catch continue;
 
-                    // Emit function_call item added.
-                    const fc_item_ev = Responses.StreamEvent{ .output_item_added = .{
+                    events.append(allocator, .{ .output_item_added = .{
                         .sequence_number = state.sequence_number,
                         .output_index = 1,
                         .item = .{ .function_call = .{
@@ -1173,34 +1147,26 @@ pub fn transformResponsesStreamLine(
                             .name = fc.name,
                             .arguments = "",
                             .status = "in_progress",
-                        } },
-                    }};
-                    content.writeResponsesSSE(fc_item_ev, &out, allocator) catch continue;
+                        }},
+                    }}) catch continue;
                     state.sequence_number += 1;
-
-                    // Emit arguments delta + done (Gemini gives the full args at once).
-                    const args_delta_ev = Responses.StreamEvent{ .function_call_arguments_delta = .{
+                    events.append(allocator, .{ .function_call_arguments_delta = .{
                         .sequence_number = state.sequence_number,
                         .output_index = 1,
                         .item_id = state.response_id,
                         .call_id = fc.name,
                         .delta = args_buf.items,
-                    }};
-                    content.writeResponsesSSE(args_delta_ev, &out, allocator) catch continue;
+                    }}) catch continue;
                     state.sequence_number += 1;
-
-                    const args_done_ev = Responses.StreamEvent{ .function_call_arguments_done = .{
+                    events.append(allocator, .{ .function_call_arguments_done = .{
                         .sequence_number = state.sequence_number,
                         .output_index = 1,
                         .item_id = state.response_id,
                         .call_id = fc.name,
                         .arguments = args_buf.items,
-                    }};
-                    content.writeResponsesSSE(args_done_ev, &out, allocator) catch continue;
+                    }}) catch continue;
                     state.sequence_number += 1;
-
-                    // Emit output_item.done for function_call.
-                    const fc_done_ev = Responses.StreamEvent{ .output_item_done = .{
+                    events.append(allocator, .{ .output_item_done = .{
                         .sequence_number = state.sequence_number,
                         .output_index = 1,
                         .item = .{ .function_call = .{
@@ -1210,9 +1176,8 @@ pub fn transformResponsesStreamLine(
                             .arguments = args_buf.items,
                             .call_id = null,
                             .status = "completed",
-                        } },
-                    }};
-                    content.writeResponsesSSE(fc_done_ev, &out, allocator) catch continue;
+                        }},
+                    }}) catch continue;
                     state.sequence_number += 1;
                 },
                 else => {},
@@ -1227,50 +1192,45 @@ pub fn transformResponsesStreamLine(
                 if (state.finish_reason) |prev| allocator.free(prev);
                 state.finish_reason = allocator.dupe(u8, finish) catch null;
 
-                // output_text.done
-                const text_done = Responses.StreamEvent{ .output_text_done = .{
+                events.append(allocator, .{ .output_text_done = .{
                     .sequence_number = state.sequence_number,
                     .output_index = 0,
                     .item_id = state.response_id,
                     .content_index = 0,
                     .text = state.text_buf.items,
-                }};
-                content.writeResponsesSSE(text_done, &out, allocator) catch return .{ .skip = {} };
+                }}) catch return .{ .skip = {} };
                 state.sequence_number += 1;
-
-                // content_part.done
-                const part_done = Responses.StreamEvent{ .content_part_done = .{
+                events.append(allocator, .{ .content_part_done = .{
                     .sequence_number = state.sequence_number,
                     .output_index = 0,
                     .item_id = state.response_id,
                     .content_index = 0,
                     .part = .{ .output_text = .{ .type = "output_text", .text = state.text_buf.items } },
-                }};
-                content.writeResponsesSSE(part_done, &out, allocator) catch return .{ .skip = {} };
+                }}) catch return .{ .skip = {} };
                 state.sequence_number += 1;
             }
         }
     }
 
-    if (out.items.len == 0) return .{ .skip = {} };
-    return .{ .output = out.toOwnedSlice(allocator) catch return .{ .skip = {} } };
+    if (events.items.len == 0) return .{ .skip = {} };
+    return .{ .events = events.toOwnedSlice(allocator) catch return .{ .skip = {} } };
 }
 
-/// Emit the terminal Responses events after the upstream stream ends:
-/// `response.output_item.done` (message item) + `response.completed` or
-/// `response.incomplete`. Returns `null` when there is nothing to flush.
+/// Emit the terminal Responses events after the upstream stream ends.
+/// Returns null when there is nothing to flush.
+/// Caller serializes and frees the returned slice.
 pub fn flushResponsesStream(
     state: *ResponsesStreamState,
     allocator: std.mem.Allocator,
-) ?[]const u8 {
+) ?[]const Responses.StreamEvent {
     const reason = state.finish_reason orelse return null;
     const is_incomplete = std.mem.eql(u8, reason, "length") or
         std.mem.eql(u8, reason, "content_filter");
     const status: []const u8 = if (is_incomplete) "incomplete" else "completed";
 
-    var buf: std.ArrayList(u8) = .empty;
+    const events = allocator.alloc(Responses.StreamEvent, 2) catch return null;
 
-    const item_done = Responses.StreamEvent{ .output_item_done = .{
+    events[0] = .{ .output_item_done = .{
         .sequence_number = state.sequence_number,
         .output_index = 0,
         .item = .{ .message = .{
@@ -1279,10 +1239,8 @@ pub fn flushResponsesStream(
             .role = "assistant",
             .content = &.{},
             .status = status,
-        } },
+        }},
     }};
-    content.writeResponsesSSE(item_done, &buf, allocator) catch return null;
-    state.sequence_number += 1;
 
     const terminal_response = Responses.Response{
         .id = state.response_id,
@@ -1299,17 +1257,16 @@ pub fn flushResponsesStream(
         .parallel_tool_calls = true,
     };
 
-    const completed_ev = if (is_incomplete)
-        Responses.StreamEvent{ .response_incomplete = .{
-            .sequence_number = state.sequence_number,
+    events[1] = if (is_incomplete)
+        .{ .response_incomplete = .{
+            .sequence_number = state.sequence_number + 1,
             .response = terminal_response,
         }}
     else
-        Responses.StreamEvent{ .response_completed = .{
-            .sequence_number = state.sequence_number,
+        .{ .response_completed = .{
+            .sequence_number = state.sequence_number + 1,
             .response = terminal_response,
         }};
-    content.writeResponsesSSE(completed_ev, &buf, allocator) catch { buf.deinit(allocator); return null; };
 
-    return buf.toOwnedSlice(allocator) catch null;
+    return events;
 }

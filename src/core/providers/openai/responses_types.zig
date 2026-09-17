@@ -1866,8 +1866,8 @@ pub const StreamEvent = union(enum) {
 };
 
 /// Result type for Responses-flow stream line transforms.
-/// The transformer returns a typed StreamEvent; the caller serializes to wire bytes.
+/// The transformer returns a slice of typed StreamEvents; the caller serializes to wire bytes.
 pub const ResponsesStreamLineResult = union(enum) {
-    event: StreamEvent,
+    events: []const StreamEvent,
     skip: void,
 };

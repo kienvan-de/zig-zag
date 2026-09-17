@@ -752,7 +752,7 @@ pub const Response = struct {
 /// Result type for Chat-flow stream line transforms.
 /// The transformer returns a typed StreamChunk; the caller serializes to wire bytes.
 pub const ChatStreamLineResult = union(enum) {
-    event: StreamChunk,
+    events: []const StreamChunk,
     skip: void,
 };
 
