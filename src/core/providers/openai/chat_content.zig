@@ -12,36 +12,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Mapping internals for the openai provider's chat transformer.
-//!
-//! `pub` here means **internal to the openai provider** — these are support
-//! functions for `chat_transformer.zig`, not a public API. Nothing outside
-//! `src/core/providers/openai/` should import this module.
-//!
-//! Per P6: every helper lives here; `chat_transformer.zig` holds only the four
-//! flow sections' main functions and stream states. Helpers are stateless —
-//! stream state stays in `chat_transformer.zig`, so this module never imports
-//! it (no cycle); main functions pass the needed fields explicitly.
-//!
-//! The openai provider is largely a pass-through (proxy and upstream both
-//! speak OpenAI format), so most "mapping" here is ownership bookkeeping:
-//! which fields are owned by the transformed value and freed on cleanup, and
-//! which borrow from the inbound parse.
+//! Mapping helpers for the openai provider's chat transformer.
+//! Internal to the openai provider — only for chat_transformer.zig.
+//! Stateless value-to-value transforms and ownership helpers.
+//! No serialization — the transformer returns typed structs; callers serialize.
 
 const std = @import("std");
-const common = @import("types.zig"); // shared primitives
-
-const Messages = @import("../anthropic/types.zig"); // Anthropic Messages wire types
-const Chat = @import("chat_types.zig"); // chat schema (proxy + upstream wire)
+const common = @import("types.zig");
+const Messages = @import("../anthropic/types.zig");
+const Chat = @import("chat_types.zig");
 const log = @import("../../log.zig");
 
 // ============================================================================
-// Error parsing (chat stream)
+// Error helpers (chat stream)
 // ============================================================================
 
-/// Try to parse a raw SSE payload as an OpenAI error response. All strings in
-/// the result are freshly allocated — free with `freeError`. Returns null when
-/// the payload is not an error.
+/// Parse a raw SSE payload as an OpenAI ErrorResponse.
+/// All strings are freshly duped — caller owns via freeError.
+/// Returns null when the payload is not a recognisable error.
 pub fn tryParseError(json_part: []const u8, allocator: std.mem.Allocator) ?common.ErrorResponse {
     const parsed = std.json.parseFromSlice(
         common.ErrorResponse,
@@ -51,99 +39,29 @@ pub fn tryParseError(json_part: []const u8, allocator: std.mem.Allocator) ?commo
     ) catch return null;
     defer parsed.deinit();
 
-    // Own the strings: the parse dies below (bug #3 class — never return
-    // slices into a Parsed that is freed).
-    return .{ .@"error" = .{
-        .message = allocator.dupe(u8, parsed.value.@"error".message) catch return null,
-        .type = allocator.dupe(u8, parsed.value.@"error".type) catch return null,
-        .param = blk: {
-            const p = parsed.value.@"error".param orelse break :blk null;
-            break :blk allocator.dupe(u8, p) catch return null;
-        },
-        .code = blk: {
-            const c = parsed.value.@"error".code orelse break :blk null;
-            break :blk allocator.dupe(u8, c) catch return null;
-        },
-    } };
+    const src = parsed.value.@"error";
+    const msg = allocator.dupe(u8, src.message) catch return null;
+    errdefer allocator.free(msg);
+    const typ = allocator.dupe(u8, src.type) catch return null;
+    errdefer allocator.free(typ);
+    const param: ?[]const u8 = if (src.param) |p| allocator.dupe(u8, p) catch null else null;
+    const code: ?[]const u8 = if (src.code) |c| allocator.dupe(u8, c) catch null else null;
+    return .{ .@"error" = .{ .message = msg, .type = typ, .param = param, .code = code } };
 }
 
-/// Free an error response returned by `tryParseError`.
-pub fn freeError(error_response: common.ErrorResponse, allocator: std.mem.Allocator) void {
-    allocator.free(error_response.@"error".message);
-    allocator.free(error_response.@"error".type);
-    if (error_response.@"error".param) |v| allocator.free(v);
-    if (error_response.@"error".code) |v| allocator.free(v);
-}
-
-/// Render a chat error into `data: {json}\n\n` bytes (caller frees), or null
-/// on allocation failure.
-pub fn formatChatError(
-    error_response: common.ErrorResponse,
-    allocator: std.mem.Allocator,
-) ?[]const u8 {
-    var buf: std.ArrayList(u8) = .empty;
-    buf.print(allocator, "data: {f}\n\n", .{std.json.fmt(error_response, .{})}) catch return null;
-    return buf.toOwnedSlice(allocator) catch null;
-}
-
-/// Parse a raw SSE payload as an error and render it to chat-format bytes
-/// (P4). Returns null when the payload is not an error.
-pub fn formatChatErrorLine(
-    json_part: []const u8,
-    allocator: std.mem.Allocator,
-) ?[]const u8 {
-    const error_response = tryParseError(json_part, allocator) orelse return null;
-    defer freeError(error_response, allocator);
-    log.warn("[openai] [chat-stream] upstream error: {s}", .{error_response.@"error".message});
-    return formatChatError(error_response, allocator);
+/// Free an ErrorResponse returned by tryParseError.
+pub fn freeError(err: common.ErrorResponse, allocator: std.mem.Allocator) void {
+    allocator.free(err.@"error".message);
+    allocator.free(err.@"error".type);
+    if (err.@"error".param) |v| allocator.free(v);
+    if (err.@"error".code) |v| allocator.free(v);
 }
 
 // ============================================================================
-// Chat streaming support (stateless)
+// Messages flow — stop-reason mapping
 // ============================================================================
 
-/// Everything a chat chunk carries besides its delta.
-/// Defined in anthropic/types.zig; re-exported here for callers that import
-/// this module without needing to know about the anthropic types path.
-pub const ChatChunkContext = Messages.ChatChunkContext;
-
-/// Serialize one `chat.completion.chunk` as a ready `data: {json}\n\n` line.
-/// The chunk borrows from `ctx` and `delta`, so the caller writes the result
-/// immediately.
-pub fn buildChatChunk(
-    ctx: ChatChunkContext,
-    delta: Chat.Delta,
-    finish_reason: ?[]const u8,
-    usage: ?Chat.Usage,
-    allocator: std.mem.Allocator,
-) ?[]const u8 {
-    const choices = [_]Chat.StreamChoice{.{
-        .index = 0,
-        .delta = delta,
-        .finish_reason = finish_reason,
-    }};
-
-    const chunk = Chat.StreamChunk{
-        .id = if (ctx.id.len > 0) ctx.id else "chatcmpl-unknown",
-        .object = "chat.completion.chunk",
-        .created = ctx.created,
-        .model = ctx.original_model,
-        .choices = &choices,
-        .usage = usage,
-        .system_fingerprint = ctx.system_fingerprint,
-        .service_tier = ctx.service_tier,
-    };
-
-    var buf: std.ArrayList(u8) = .empty;
-    buf.print(allocator, "data: {f}\n\n", .{std.json.fmt(chunk, .{})}) catch return null;
-    return buf.toOwnedSlice(allocator) catch null;
-}
-
-// ============================================================================
-// Messages flow support (Anthropic wire → chat wire)
-// ============================================================================
-
-/// Map chat finish_reason to the Messages-wire stop_reason vocabulary.
+/// Map a chat finish_reason to the Anthropic Messages stop_reason vocabulary.
 pub fn transformStopReasonToMessages(finish_reason: []const u8) []const u8 {
     if (std.mem.eql(u8, finish_reason, "stop")) return "end_turn";
     if (std.mem.eql(u8, finish_reason, "length")) return "max_tokens";
@@ -151,39 +69,22 @@ pub fn transformStopReasonToMessages(finish_reason: []const u8) []const u8 {
     return "end_turn";
 }
 
-/// Parse tool-call `arguments` into an owned JSON tree for a tool_use block
-/// (messages flow response). Leaky parse with `allocator` — freed by
-/// `freeMessageOwnedBlocks`. Unparseable arguments become an empty object.
-pub fn parseToolArguments(
-    arguments: []const u8,
-    allocator: std.mem.Allocator,
-) !std.json.Value {
+// ============================================================================
+// Messages flow — tool argument parsing
+// ============================================================================
+
+/// Leaky-parse tool-call arguments JSON into a std.json.Value.
+/// On failure returns an empty object.
+pub fn parseToolArguments(arguments: []const u8, allocator: std.mem.Allocator) !std.json.Value {
     return std.json.parseFromSliceLeaky(std.json.Value, allocator, arguments, .{}) catch
         .{ .object = .{} };
 }
 
-/// Free a messages-flow response's content blocks: the owned tool_use id/name
-/// and the leaky-parsed argument trees. Text block strings are dupes too.
-/// (Bug #17 fix: the old code leaked the parse arena and left the copied value
-/// dangling after scope exit.)
-pub fn freeMessageOwnedBlocks(blocks: []const Messages.ContentBlock, allocator: std.mem.Allocator) void {
-    for (blocks) |block| {
-        switch (block) {
-            .text => |tb| allocator.free(tb.text),
-            .tool_use => |tu| {
-                allocator.free(tu.id);
-                allocator.free(tu.name);
-                freeParsedJsonValue(tu.input, allocator);
-            },
-            .thinking, .redacted_thinking,
-            .server_tool_use, .tool_result, .web_search_tool_result, .web_fetch_tool_result,
-            .code_execution_tool_result, .bash_code_execution_tool_result,
-            .text_editor_code_execution_tool_result, .tool_search_tool_result => {},
-        }
-    }
-}
+// ============================================================================
+// Messages flow — owned-block lifecycle
+// ============================================================================
 
-/// Free a leaky-parsed JSON tree (keys AND allocated string leaves owned).
+/// Recursively free a leaky-parsed JSON tree (keys + string leaves owned).
 pub fn freeParsedJsonValue(value: std.json.Value, allocator: std.mem.Allocator) void {
     switch (value) {
         .object => |obj| {
@@ -199,71 +100,38 @@ pub fn freeParsedJsonValue(value: std.json.Value, allocator: std.mem.Allocator) 
             for (arr.items) |item| freeParsedJsonValue(item, allocator);
             arr.deinit();
         },
-        .string => |str| allocator.free(str),
-        .number_string => |str| allocator.free(str),
+        .string => |s| allocator.free(s),
+        .number_string => |s| allocator.free(s),
         else => {},
     }
 }
 
-// ============================================================================
-// Messages flow streaming support (stateless)
-// ============================================================================
-
-/// Opening frames of the synthesized Messages protocol: `message_start`
-/// (with the served model) and `content_block_start`. Concatenated bytes are
-/// owned by the caller. Returns null on allocation failure.
-pub fn messagesOpen(
-    original_model: []const u8,
-    allocator: std.mem.Allocator,
-) ?[]const u8 {
-    var buf: std.ArrayList(u8) = .empty;
-    const msg_start = Messages.MessageStart{
-        .type = "message_start",
-        .message = .{
-            .id = "msg_proxy",
-            .type = "message",
-            .role = "assistant",
-            .content = &.{},
-            .model = original_model,
-            .stop_reason = null,
-            .stop_sequence = null,
-            .usage = .{ .input_tokens = 0, .output_tokens = 0 },
-        },
-    };
-    buf.print(allocator, "event: message_start\ndata: {f}\n\n", .{std.json.fmt(msg_start, .{})}) catch return null;
-    const cb_start = Messages.ContentBlockStart{
-        .type = "content_block_start",
-        .index = 0,
-        .content_block = .{ .type = "text", .text = "" },
-    };
-    buf.print(allocator, "event: content_block_start\ndata: {f}\n\n", .{std.json.fmt(cb_start, .{ .emit_null_optional_fields = false })}) catch return null;
-    return buf.toOwnedSlice(allocator) catch null;
+/// Free a Messages-flow response content-block slice.
+/// .text: duped text string. .tool_use: duped id/name + leaky input tree.
+pub fn freeMessageOwnedBlocks(blocks: []const Messages.ContentBlock, allocator: std.mem.Allocator) void {
+    for (blocks) |block| {
+        switch (block) {
+            .text => |tb| allocator.free(tb.text),
+            .tool_use => |tu| {
+                allocator.free(tu.id);
+                allocator.free(tu.name);
+                freeParsedJsonValue(tu.input, allocator);
+            },
+            .thinking, .redacted_thinking,
+            .server_tool_use, .tool_result, .web_search_tool_result, .web_fetch_tool_result,
+            .code_execution_tool_result, .bash_code_execution_tool_result,
+            .text_editor_code_execution_tool_result, .tool_search_tool_result,
+            .fallback => {},
+        }
+    }
 }
 
-/// Closing frames of the synthesized Messages protocol: `content_block_stop`,
-/// `message_delta` (terminal reason + output tokens), `message_stop`.
-pub fn messagesClose(
-    stop_reason: []const u8,
-    output_tokens: u32,
-    allocator: std.mem.Allocator,
-) ?[]const u8 {
-    var buf: std.ArrayList(u8) = .empty;
-    const cb_stop = Messages.ContentBlockStop{ .type = "content_block_stop", .index = 0 };
-    buf.print(allocator, "event: content_block_stop\ndata: {f}\n\n", .{std.json.fmt(cb_stop, .{})}) catch return null;
-    const msg_delta = Messages.MessageDelta{
-        .type = "message_delta",
-        .delta = .{ .stop_reason = stop_reason, .stop_sequence = null },
-        .usage = .{ .output_tokens = output_tokens },
-    };
-    buf.print(allocator, "event: message_delta\ndata: {f}\n\n", .{std.json.fmt(msg_delta, .{})}) catch return null;
-    const msg_stop = Messages.MessageStop{ .type = "message_stop" };
-    buf.print(allocator, "event: message_stop\ndata: {f}\n\n", .{std.json.fmt(msg_stop, .{})}) catch return null;
-    return buf.toOwnedSlice(allocator) catch null;
-}
+// ============================================================================
+// Messages flow — request lifecycle
+// ============================================================================
 
 /// Free a tool_choice object built by the messages-flow request transform
-/// (the `.tool` case): the two nested ObjectMaps' entry storage. Keys and
-/// values are static literals — NOT freed here.
+/// (the .tool case): frees the two nested ObjectMaps' entry storage.
 pub fn freeBuiltToolChoice(tool_choice: std.json.Value, allocator: std.mem.Allocator) void {
     switch (tool_choice) {
         .object => |obj| {
@@ -276,26 +144,21 @@ pub fn freeBuiltToolChoice(tool_choice: std.json.Value, allocator: std.mem.Alloc
             var owned = obj;
             owned.deinit(allocator);
         },
-        else => {}, // string modes are static literals
+        else => {},
     }
 }
 
-/// Free a messages-flow request's message as built by the reverse transform:
-/// duped text (except system messages, which borrow the inbound system string)
-/// and tool-call argument strings. The slice itself is freed by the caller.
+/// Free a messages-flow request message built by the reverse transform:
+/// all text content is duped (including system messages), tool-call argument strings + slice.
 pub fn freeMessageOwnedText(msg: Chat.Message, allocator: std.mem.Allocator) void {
     if (msg.content) |c| {
         switch (c) {
-            .text => |text| {
-                if (msg.role != .system) allocator.free(text);
-            },
+            .text => |text| allocator.free(text),
             .parts => {},
         }
     }
     if (msg.tool_calls) |tool_calls| {
-        for (tool_calls) |tc| {
-            allocator.free(tc.function.arguments);
-        }
+        for (tool_calls) |tc| allocator.free(tc.function.arguments);
         allocator.free(tool_calls);
     }
 }
