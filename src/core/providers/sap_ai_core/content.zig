@@ -223,3 +223,25 @@ pub fn freeMessageOwnedText(msg: Chat.Message, allocator: std.mem.Allocator) voi
         allocator.free(tcs);
     }
 }
+
+/// Map a SAP numeric error code to an OpenAI error type string.
+pub fn sapErrorType(err: Sap.ErrorDetails) []const u8 {
+    return if (err.code) |c|
+        if (c >= 400 and c < 500) "invalid_request_error" else "server_error"
+    else
+        "server_error";
+}
+
+/// Map a SAP numeric error code to an OpenAI error code string.
+pub fn sapErrorCode(err: Sap.ErrorDetails) ?[]const u8 {
+    return if (err.code) |c| switch (c) {
+        400 => "bad_request",
+        401 => "invalid_api_key",
+        403 => "forbidden",
+        404 => "not_found",
+        429 => "rate_limit_exceeded",
+        500 => "server_error",
+        503 => "service_unavailable",
+        else => "unknown_error",
+    } else null;
+}

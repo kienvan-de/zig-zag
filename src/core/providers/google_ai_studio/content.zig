@@ -852,3 +852,46 @@ fn mergeOrAppend(
     }
     try contents.append(allocator, .{ .role = role, .parts = new_parts });
 }
+
+/// Try to parse a raw SSE payload as a Gemini error envelope.
+/// Returns a heap-duped Chat.ErrorResponse on success, null otherwise.
+/// Caller frees via chat_content.freeError.
+pub fn tryParseGeminiError(json_part: []const u8, allocator: std.mem.Allocator) ?Chat.ErrorResponse {
+    const parsed = std.json.parseFromSlice(
+        Google.GoogleErrorResponse,
+        allocator,
+        json_part,
+        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+    ) catch return null;
+    defer parsed.deinit();
+
+    const src = parsed.value.@"error";
+    const err_type: []const u8 = if (src.status) |s| blk: {
+        if (std.mem.eql(u8, s, "RESOURCE_EXHAUSTED")) break :blk "rate_limit_error";
+        if (std.mem.eql(u8, s, "PERMISSION_DENIED")) break :blk "authentication_error";
+        if (std.mem.eql(u8, s, "INVALID_ARGUMENT")) break :blk "invalid_request_error";
+        if (src.code) |c| break :blk if (c >= 400 and c < 500) "invalid_request_error" else "server_error";
+        break :blk "server_error";
+    } else if (src.code) |c|
+        if (c >= 400 and c < 500) "invalid_request_error" else "server_error"
+    else
+        "server_error";
+
+    const code_str: ?[]const u8 = if (src.code) |c| switch (c) {
+        400 => "bad_request",
+        401 => "invalid_api_key",
+        403 => "forbidden",
+        404 => "not_found",
+        429 => "rate_limit_exceeded",
+        500 => "server_error",
+        503 => "service_unavailable",
+        else => "unknown_error",
+    } else null;
+
+    const msg = allocator.dupe(u8, src.message orelse "Unknown error from Google AI Studio") catch return null;
+    const typ = allocator.dupe(u8, err_type) catch { allocator.free(msg); return null; };
+    const code: ?[]const u8 = if (code_str) |s| allocator.dupe(u8, s) catch {
+        allocator.free(msg); allocator.free(typ); return null;
+    } else null;
+    return .{ .@"error" = .{ .message = msg, .type = typ, .param = null, .code = code } };
+}

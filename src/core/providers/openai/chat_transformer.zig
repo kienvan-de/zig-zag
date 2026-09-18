@@ -589,7 +589,21 @@ pub fn transformMessagesStreamLine(
         allocator,
         json_part,
         .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
-    ) catch return .{ .skip = {} };
+    ) catch {
+        if (content.tryParseError(json_part, allocator)) |err| {
+            defer content.freeError(err, allocator);
+            const ev = allocator.alloc(Messages.SseEvent, 1) catch return .{ .skip = {} };
+            ev[0] = .{ .error_event = .{
+                .type = "error",
+                .@"error" = .{
+                    .type = allocator.dupe(u8, err.@"error".type) catch return .{ .skip = {} },
+                    .message = allocator.dupe(u8, err.@"error".message) catch return .{ .skip = {} },
+                },
+            }};
+            return .{ .events = ev };
+        }
+        return .{ .skip = {} };
+    };
     defer parsed.deinit();
 
     var events: std.ArrayList(Messages.SseEvent) = .empty;
@@ -1024,7 +1038,19 @@ pub fn transformResponsesStreamLine(
         allocator,
         json_part,
         .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
-    ) catch return .{ .skip = {} };
+    ) catch {
+        if (content.tryParseError(json_part, allocator)) |err| {
+            defer content.freeError(err, allocator);
+            const ev = allocator.alloc(Responses.StreamEvent, 1) catch return .{ .skip = {} };
+            ev[0] = .{ .stream_error = .{
+                .sequence_number = state.sequence_number,
+                .code = if (err.@"error".code) |c| allocator.dupe(u8, c) catch null else null,
+                .message = allocator.dupe(u8, err.@"error".message) catch return .{ .skip = {} },
+            }};
+            return .{ .events = ev };
+        }
+        return .{ .skip = {} };
+    };
     defer parsed.deinit();
 
     // Capture id on first sight (owned by state).

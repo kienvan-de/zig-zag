@@ -27,6 +27,7 @@ const Responses = @import("../openai/responses_types.zig");
 const common = @import("../openai/types.zig");
 const Google = @import("types.zig");
 const content = @import("content.zig");
+const chat_content = @import("../openai/chat_content.zig");
 const log = @import("../../log.zig");
 const time = @import("../../time.zig");
 
@@ -324,7 +325,10 @@ pub fn transformChatStreamLine(
         allocator,
         json_part,
         .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
-    ) catch return .{ .skip = {} };
+    ) catch {
+        if (content.tryParseGeminiError(json_part, allocator)) |err| return .{ .@"error" = err };
+        return .{ .skip = {} };
+    };
     defer parsed.deinit();
 
     if (parsed.value.candidates.len == 0) return .{ .skip = {} };
@@ -676,7 +680,20 @@ pub fn transformMessagesStreamLine(
         allocator,
         json_part,
         .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
-    ) catch return .{ .skip = {} };
+    ) catch {
+        if (content.tryParseGeminiError(json_part, allocator)) |err| {
+            const ev = allocator.alloc(Messages.SseEvent, 1) catch {
+                chat_content.freeError(err, allocator);
+                return .{ .skip = {} };
+            };
+            ev[0] = .{ .error_event = .{
+                .type = "error",
+                .@"error" = .{ .type = err.@"error".type, .message = err.@"error".message },
+            }};
+            return .{ .events = ev };
+        }
+        return .{ .skip = {} };
+    };
     defer parsed.deinit();
 
     var events: std.ArrayList(Messages.SseEvent) = .empty;
@@ -1133,7 +1150,21 @@ pub fn transformResponsesStreamLine(
         allocator,
         json_part,
         .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
-    ) catch return .{ .skip = {} };
+    ) catch {
+        if (content.tryParseGeminiError(json_part, allocator)) |err| {
+            const ev = allocator.alloc(Responses.StreamEvent, 1) catch {
+                chat_content.freeError(err, allocator);
+                return .{ .skip = {} };
+            };
+            ev[0] = .{ .stream_error = .{
+                .sequence_number = state.sequence_number,
+                .code = err.@"error".code,
+                .message = err.@"error".message,
+            }};
+            return .{ .events = ev };
+        }
+        return .{ .skip = {} };
+    };
     defer parsed.deinit();
 
     var events: std.ArrayList(Responses.StreamEvent) = .empty;

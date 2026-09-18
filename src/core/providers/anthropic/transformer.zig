@@ -432,6 +432,20 @@ pub fn transformChatStreamLine(
         return .{ .events = chunks };
     }
 
+    if (std.mem.eql(u8, event_type, "error")) {
+        const parsed = std.json.parseFromSlice(
+            Messages.SseErrorEvent,
+            allocator,
+            json_part,
+            .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+        ) catch return .{ .skip = {} };
+        defer parsed.deinit();
+        const mapped = content.transformErrorResponse(.{ .@"error" = parsed.value.@"error" });
+        const msg = allocator.dupe(u8, mapped.@"error".message) catch return .{ .skip = {} };
+        const typ = allocator.dupe(u8, mapped.@"error".type) catch { allocator.free(msg); return .{ .skip = {} }; };
+        return .{ .@"error" = .{ .@"error" = .{ .message = msg, .type = typ, .param = null, .code = null } } };
+    }
+
     return .{ .skip = {} }; // content_block_stop, message_stop, ping, …
 }
 

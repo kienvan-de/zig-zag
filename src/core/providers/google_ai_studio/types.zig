@@ -831,6 +831,17 @@ pub const Candidate = struct {
     }
 };
 
+/// Google RPC error details ({"error":{"code":...,"message":...,"status":...}}).
+pub const GoogleErrorDetails = struct {
+    code: ?i64 = null,
+    message: ?[]const u8 = null,
+    status: ?[]const u8 = null,
+};
+
+pub const GoogleErrorResponse = struct {
+    @"error": GoogleErrorDetails,
+};
+
 /// Full generateContent response.
 pub const Response = struct {
     candidates: []const Candidate = &.{},

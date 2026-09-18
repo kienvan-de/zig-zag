@@ -239,23 +239,9 @@ pub fn transformChatStreamLine(
 
     const final_result = switch (parsed.value) {
         .@"error" => |err| {
-            const code_str: ?[]const u8 = if (err.code) |c| switch (c) {
-                400 => "bad_request",
-                401 => "invalid_api_key",
-                403 => "forbidden",
-                404 => "not_found",
-                429 => "rate_limit_exceeded",
-                500 => "server_error",
-                503 => "service_unavailable",
-                else => "unknown_error",
-            } else null;
-            const err_type: []const u8 = if (err.code) |c|
-                if (c >= 400 and c < 500) "invalid_request_error" else "server_error"
-            else
-                "server_error";
             const msg = allocator.dupe(u8, err.message orelse "Unknown error from SAP AI Core") catch return .{ .skip = {} };
-            const typ = allocator.dupe(u8, err_type) catch { allocator.free(msg); return .{ .skip = {} }; };
-            const code: ?[]const u8 = if (code_str) |s| allocator.dupe(u8, s) catch {
+            const typ = allocator.dupe(u8, content.sapErrorType(err)) catch { allocator.free(msg); return .{ .skip = {} }; };
+            const code: ?[]const u8 = if (content.sapErrorCode(err)) |s| allocator.dupe(u8, s) catch {
                 allocator.free(msg); allocator.free(typ); return .{ .skip = {} };
             } else null;
             return .{ .@"error" = .{ .@"error" = .{ .message = msg, .type = typ, .param = null, .code = code } } };
@@ -698,7 +684,15 @@ pub fn transformMessagesStreamLine(
     defer parsed.deinit();
 
     const final_result = switch (parsed.value) {
-        .@"error" => return .{ .skip = {} },
+        .@"error" => |err| {
+            const msg = allocator.dupe(u8, err.message orelse "Unknown error from SAP AI Core") catch return .{ .skip = {} };
+            const ev = allocator.alloc(Messages.SseEvent, 1) catch { allocator.free(msg); return .{ .skip = {} }; };
+            ev[0] = .{ .error_event = .{ .type = "error", .@"error" = .{
+                .type = content.sapErrorType(err),
+                .message = msg,
+            }}};
+            return .{ .events = ev };
+        },
         .result => |r| r.final_result,
     };
     if (final_result.id.len == 0) return .{ .skip = {} };
@@ -1164,7 +1158,16 @@ pub fn transformResponsesStreamLine(
     defer parsed.deinit();
 
     const final_result = switch (parsed.value) {
-        .@"error" => return .{ .skip = {} },
+        .@"error" => |err| {
+            const msg = allocator.dupe(u8, err.message orelse "Unknown error from SAP AI Core") catch return .{ .skip = {} };
+            const ev = allocator.alloc(Responses.StreamEvent, 1) catch { allocator.free(msg); return .{ .skip = {} }; };
+            ev[0] = .{ .stream_error = .{
+                .sequence_number = state.sequence_number,
+                .code = content.sapErrorCode(err),
+                .message = msg,
+            }};
+            return .{ .events = ev };
+        },
         .result => |r| r.final_result,
     };
     if (final_result.id.len == 0) return .{ .skip = {} };

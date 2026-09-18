@@ -464,6 +464,15 @@ pub fn transformChatStreamLine(
         return .{ .events = chunks };
     }
 
+    if (std.mem.eql(u8, event_type, "error")) {
+        const msg_v = obj.get("message") orelse return .{ .skip = {} };
+        if (msg_v != .string) return .{ .skip = {} };
+        const msg = allocator.dupe(u8, msg_v.string) catch return .{ .skip = {} };
+        const typ = allocator.dupe(u8, "server_error") catch { allocator.free(msg); return .{ .skip = {} }; };
+        const code: ?[]const u8 = if (obj.get("code")) |c| if (c == .string) allocator.dupe(u8, c.string) catch null else null else null;
+        return .{ .@"error" = .{ .@"error" = .{ .message = msg, .type = typ, .param = null, .code = code } } };
+    }
+
     return .{ .skip = {} };
 }
 
@@ -819,6 +828,18 @@ pub fn transformMessagesStreamLine(
         };
 
         return .{ .events = events.toOwnedSlice(allocator) catch return .{ .skip = {} } };
+    }
+
+    if (std.mem.eql(u8, event_type, "error")) {
+        const msg_v = obj.get("message") orelse return .{ .skip = {} };
+        if (msg_v != .string) return .{ .skip = {} };
+        const msg = allocator.dupe(u8, msg_v.string) catch return .{ .skip = {} };
+        const ev = allocator.alloc(Messages.SseEvent, 1) catch { allocator.free(msg); return .{ .skip = {} }; };
+        ev[0] = .{ .error_event = .{
+            .type = "error",
+            .@"error" = .{ .type = "server_error", .message = msg },
+        }};
+        return .{ .events = ev };
     }
 
     return .{ .skip = {} };
