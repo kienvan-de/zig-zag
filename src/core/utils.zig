@@ -17,6 +17,7 @@ const time = @import("time.zig");
 const config_mod = @import("config.zig");
 const log = @import("log.zig");
 const metrics = @import("metrics.zig");
+const pricing = @import("pricing.zig");
 
 /// Result of parsing a `"provider/model-name"` string via `parseModelString`.
 ///
@@ -181,5 +182,43 @@ pub fn enforceBudget(config: *const config_mod.Config) BudgetError!void {
 // ============================================================================
 // Unit Tests
 // ============================================================================
+
+// ============================================================================
+// Dispatcher shared helpers
+// ============================================================================
+
+/// Attempt automatic re-authentication for sync-auth providers (SAP AI Core, HAI).
+/// Returns `true` if auth succeeded and the request should be retried.
+/// Returns `false` for async-auth providers (Copilot device flow) or on failure.
+pub fn tryAutoReauth(allocator: std.mem.Allocator, provider_name: []const u8) bool {
+    log.info("[AUTH] Attempting auto-reauth for provider '{s}'...", .{provider_name});
+    const result = config_mod.initiateAuth(allocator, provider_name, .{});
+    return switch (result) {
+        .authenticated => true,
+        .device_flow => false,
+        .err => |e| {
+            log.err("[AUTH] Auto-reauth failed for '{s}': {s}", .{ provider_name, e.message });
+            return false;
+        },
+    };
+}
+
+/// Record input/output token usage and compute costs for a completed LLM call.
+/// Zero-usage calls are ignored so failed/empty streams don't skew counters.
+pub fn recordTokenUsage(
+    input_tokens: u64,
+    output_tokens: u64,
+    model: []const u8,
+    provider_name: []const u8,
+) void {
+    if (input_tokens == 0 and output_tokens == 0) return;
+    metrics.addInputTokens(input_tokens);
+    metrics.addOutputTokens(output_tokens);
+    if (pricing.getCost(provider_name, model)) |cost_entry| {
+        const cost = pricing.calculateCost(cost_entry, input_tokens, output_tokens);
+        metrics.addInputCost(cost.input_cost);
+        metrics.addOutputCost(cost.output_cost);
+    }
+}
 
 const testing = std.testing;

@@ -14,7 +14,7 @@
 
 //! Responses Handler
 //!
-//! Thin HTTP wrapper over core.completion.responsesComplete().
+//! Thin HTTP wrapper over core.responses_dispatcher.dispatch().
 //! Handles POST /v1/responses requests.
 
 const std = @import("std");
@@ -61,7 +61,7 @@ pub fn handle(
     if (is_streaming) {
         try http.sendSseHeaders(connection);
         var chunked = http.ChunkedWriter.init(connection);
-        core.completion.responsesComplete(&chunked, allocator, request.value) catch |err| {
+        core.responses_dispatcher.dispatch(&chunked, allocator, request.value) catch |err| {
             try handleStreamingError(&chunked, allocator, err);
         };
         chunked.finish() catch |err| {
@@ -71,7 +71,7 @@ pub fn handle(
         var buf = std.ArrayList(u8).empty;
         defer buf.deinit(allocator);
         var list_writer = http.ArrayListWriter{ .list = &buf, .allocator = allocator };
-        core.completion.responsesComplete(&list_writer, allocator, request.value) catch |err| {
+        core.responses_dispatcher.dispatch(&list_writer, allocator, request.value) catch |err| {
             try handleSyncError(allocator, connection, err);
             return;
         };

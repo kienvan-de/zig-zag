@@ -16,7 +16,7 @@
 //! core.metrics.load();
 //! core.pricing.init(allocator, provider_names);
 //!
-//! try core.completion.chatComplete(writer, allocator, request);
+//! try core.chat_dispatcher.dispatch(writer, allocator, request);
 //!
 //! // Auth management
 //! const status = core.config.checkAuthStatus(allocator, "copilot");
@@ -27,9 +27,17 @@
 // High-level completion API
 // =========================================================================
 
-/// Transport-agnostic LLM completion functions.
-/// `chatComplete`, `messagesComplete`, `listModels`, `freeModels`.
-pub const completion = @import("completion.zig");
+/// OpenAI /v1/chat/completions dispatcher.
+pub const chat_dispatcher = @import("chat_dispatcher.zig");
+
+/// Anthropic /v1/messages dispatcher.
+pub const messages_dispatcher = @import("messages_dispatcher.zig");
+
+/// OpenAI /v1/responses dispatcher.
+pub const responses_dispatcher = @import("responses_dispatcher.zig");
+
+/// GET /v1/models dispatcher.
+pub const models_dispatcher = @import("models_dispatcher.zig");
 
 // =========================================================================
 // Core infrastructure

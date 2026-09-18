@@ -14,7 +14,7 @@
 
 //! Chat Completions Handler
 //!
-//! Thin HTTP wrapper over core.completion.chatComplete().
+//! Thin HTTP wrapper over core.chat_dispatcher.dispatch().
 //! Handles POST /v1/chat/completions requests.
 
 const std = @import("std");
@@ -63,7 +63,7 @@ pub fn handle(
         // Streaming: send SSE headers first, then use ChunkedWriter
         try http.sendSseHeaders(connection);
         var chunked = http.ChunkedWriter.init(connection);
-        core.completion.chatComplete(&chunked, allocator, openai_request.value) catch |err| {
+        core.chat_dispatcher.dispatch(&chunked, allocator, openai_request.value) catch |err| {
             // For streaming, errors after headers are sent as SSE error events
             try handleStreamingError(&chunked, allocator, err);
         };
@@ -76,7 +76,7 @@ pub fn handle(
         var buf = std.ArrayList(u8).empty;
         defer buf.deinit(allocator);
         var list_writer = http.ArrayListWriter{ .list = &buf, .allocator = allocator };
-        core.completion.chatComplete(&list_writer, allocator, openai_request.value) catch |err| {
+        core.chat_dispatcher.dispatch(&list_writer, allocator, openai_request.value) catch |err| {
             try handleSyncError(allocator, connection, err);
             return;
         };

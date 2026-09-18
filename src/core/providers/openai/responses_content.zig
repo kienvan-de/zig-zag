@@ -110,3 +110,85 @@ pub fn passThrough(allocator: std.mem.Allocator, line: []const u8) Responses.Res
     const bytes = std.fmt.allocPrint(allocator, "{s}\n\n", .{line}) catch return .{ .skip = {} };
     return wrapRawBytes(bytes, allocator);
 }
+
+// ============================================================================
+// SSE serialization
+// ============================================================================
+
+/// Write a single SSE event to `buf` using the Responses stream format:
+///   event: {type}\ndata: {json}\n\n
+pub fn writeResponsesSSE(
+    event: Responses.StreamEvent,
+    buf: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+) !void {
+    const type_str: []const u8 = switch (event) {
+        .response_created => "response.created",
+        .response_in_progress => "response.in_progress",
+        .response_completed => "response.completed",
+        .response_failed => "response.failed",
+        .response_incomplete => "response.incomplete",
+        .output_item_added => "response.output_item.added",
+        .output_item_done => "response.output_item.done",
+        .content_part_added => "response.content_part.added",
+        .content_part_done => "response.content_part.done",
+        .output_text_delta => "response.output_text.delta",
+        .output_text_done => "response.output_text.done",
+        .function_call_arguments_delta => "response.function_call_arguments.delta",
+        .function_call_arguments_done => "response.function_call_arguments.done",
+        .stream_error => "error",
+        .response_queued => "response.queued",
+        .output_text_annotation_added => "response.output_text.annotation.added",
+        .refusal_delta => "response.refusal.delta",
+        .refusal_done => "response.refusal.done",
+        .reasoning_text_delta => "response.reasoning_text.delta",
+        .reasoning_text_done => "response.reasoning_text.done",
+        .reasoning_summary_part_added => "response.reasoning_summary_part.added",
+        .reasoning_summary_part_done => "response.reasoning_summary_part.done",
+        .reasoning_summary_text_delta => "response.reasoning_summary_text.delta",
+        .reasoning_summary_text_done => "response.reasoning_summary_text.done",
+        .web_search_call_in_progress => "response.web_search_call.in_progress",
+        .web_search_call_searching => "response.web_search_call.searching",
+        .web_search_call_completed => "response.web_search_call.completed",
+        .file_search_call_in_progress => "response.file_search_call.in_progress",
+        .file_search_call_searching => "response.file_search_call.searching",
+        .file_search_call_completed => "response.file_search_call.completed",
+        .code_interpreter_call_in_progress => "response.code_interpreter_call.in_progress",
+        .code_interpreter_call_code_delta => "response.code_interpreter_call_code.delta",
+        .code_interpreter_call_code_done => "response.code_interpreter_call_code.done",
+        .code_interpreter_call_interpreting => "response.code_interpreter_call.interpreting",
+        .code_interpreter_call_completed => "response.code_interpreter_call.completed",
+        .mcp_list_tools_in_progress => "response.mcp_list_tools.in_progress",
+        .mcp_list_tools_completed => "response.mcp_list_tools.completed",
+        .mcp_list_tools_failed => "response.mcp_list_tools.failed",
+        .mcp_call_arguments_delta => "response.mcp_call_arguments.delta",
+        .mcp_call_arguments_done => "response.mcp_call_arguments.done",
+        .mcp_call_in_progress => "response.mcp_call.in_progress",
+        .mcp_call_completed => "response.mcp_call.completed",
+        .mcp_call_failed => "response.mcp_call.failed",
+        .image_generation_call_in_progress => "response.image_generation_call.in_progress",
+        .image_generation_call_generating => "response.image_generation_call.generating",
+        .image_generation_call_partial_image => "response.image_generation_call.partial_image",
+        .image_generation_call_completed => "response.image_generation_call.completed",
+        .audio_delta => "response.audio.delta",
+        .audio_done => "response.audio.done",
+        .audio_transcript_delta => "response.audio.transcript.delta",
+        .audio_transcript_done => "response.audio.transcript.done",
+        .shell_call_command_added => "response.shell_call_command.added",
+        .shell_call_command_delta => "response.shell_call_command.delta",
+        .shell_call_command_done => "response.shell_call_command.done",
+        .shell_call_output_delta => "response.shell_call_output_content.delta",
+        .shell_call_output_done => "response.shell_call_output_content.done",
+        .custom_tool_call_input_delta => "response.custom_tool_call_input.delta",
+        .custom_tool_call_input_done => "response.custom_tool_call_input.done",
+        .response_compaction_compacting => "response.compaction.compacting",
+        .raw_bytes => "",
+    };
+
+    if (event == .raw_bytes) {
+        try buf.appendSlice(allocator, event.raw_bytes);
+        return;
+    }
+
+    try buf.print(allocator, "event: {s}\ndata: {f}\n\n", .{ type_str, std.json.fmt(event, .{}) });
+}

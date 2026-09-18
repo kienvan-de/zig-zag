@@ -162,3 +162,16 @@ pub fn freeMessageOwnedText(msg: Chat.Message, allocator: std.mem.Allocator) voi
         allocator.free(tool_calls);
     }
 }
+
+// ============================================================================
+// SSE serialization
+// ============================================================================
+
+/// Write a single `chat.completion.chunk` as `data: {json}\n\n` to `buf`.
+pub fn writeChatSSE(
+    chunk: Chat.StreamChunk,
+    buf: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+) !void {
+    try buf.print(allocator, "data: {f}\n\n", .{std.json.fmt(chunk, .{})});
+}
