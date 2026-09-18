@@ -82,6 +82,19 @@ pub fn logConfiguredProviders(cfg: *const config_mod.Config) void {
     log.info("{d} provider(s) configured (auth is lazy, on first request)", .{count});
 }
 
+/// Resolve a `compatible` field value to a `Provider`.
+///
+/// Used when `fromString` fails (unknown provider name) and the config has a
+/// `compatible = "openai" | "anthropic"` field specifying which wire protocol
+/// to use instead.
+///
+/// Returns `error.UnknownCompatibleType` for unrecognised values.
+pub fn resolveCompatible(compatible: []const u8) !Provider {
+    if (std.mem.eql(u8, compatible, "openai")) return .openai;
+    if (std.mem.eql(u8, compatible, "anthropic")) return .anthropic;
+    return error.UnknownCompatibleType;
+}
+
 // ============================================================================
 // TESTS
 // ============================================================================

@@ -373,12 +373,12 @@ fn fetchModelsForProviderInner(
     provider_config: *const config_mod.ProviderConfig,
 ) !?[]openai_common.Model {
     if (provider_config.getString("compatible")) |compatible| {
-        if (std.mem.eql(u8, compatible, "openai")) {
-            return try fetchModels(openai.client.OpenAIClient, openai.chat_transformer, allocator, provider_name, provider_config);
-        } else if (std.mem.eql(u8, compatible, "anthropic")) {
-            return try fetchModels(anthropic.client.AnthropicClient, anthropic.transformer, allocator, provider_name, provider_config);
-        }
-        return null;
+        const resolved = provider_mod.resolveCompatible(compatible) catch return null;
+        return switch (resolved) {
+            .openai    => try fetchModels(openai.client.OpenAIClient, openai.chat_transformer, allocator, provider_name, provider_config),
+            .anthropic => try fetchModels(anthropic.client.AnthropicClient, anthropic.transformer, allocator, provider_name, provider_config),
+            else       => null,
+        };
     }
 
     if (provider_mod.Provider.fromString(provider_name)) |native_provider| {

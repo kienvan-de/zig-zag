@@ -104,17 +104,17 @@ pub fn run(
             log.err("Provider '{s}' not supported and no 'compatible' field specified", .{model_info.provider});
             return error.CompatibleFieldMissing;
         };
-
-        if (std.mem.eql(u8, compatible, "anthropic")) {
-            try dispatchToProvider(anthropic.client.AnthropicClient, anthropic.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
-        } else if (std.mem.eql(u8, compatible, "openai")) {
-            switch (openai.client.transformerFor(provider_config)) {
-                .responses => try dispatchToProvider(openai.client.OpenAIClient, openai.responses_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
-                .chat      => try dispatchToProvider(openai.client.OpenAIClient, openai.chat_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
-            }
-        } else {
+        const resolved = provider_mod.resolveCompatible(compatible) catch {
             log.err("Unknown compatible provider type: '{s}'", .{compatible});
             return error.UnknownCompatibleType;
+        };
+        switch (resolved) {
+            .anthropic => try dispatchToProvider(anthropic.client.AnthropicClient, anthropic.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
+            .openai => switch (openai.client.transformerFor(provider_config)) {
+                .responses => try dispatchToProvider(openai.client.OpenAIClient, openai.responses_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
+                .chat      => try dispatchToProvider(openai.client.OpenAIClient, openai.chat_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
+            },
+            else => unreachable,
         }
     }
 }
