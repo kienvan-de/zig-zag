@@ -1,70 +1,37 @@
-// Copyright 2025 kienvan.de
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
+// SPDX-License-Identifier: Apache-2.0
 //! Transformer for the SAP AI Core provider (orchestration envelope wire).
 //!
 //! The SAP wire wraps chat-format payloads (`config.modules.prompt_templating`
-//! on the way out, `final_result` on the way in); each flow converts its
-//! inbound schema to/from that envelope. Conversion is written locally (P11).
+//! on the way out, `final_result` on the way in). Each flow converts its
+//! inbound schema to/from that envelope.
 //!
-//! Four flows, named after the *inbound* schema (P2). Every `pub` symbol is
-//! defined here (P5).
+//! Four flows, named after the *inbound* schema. Every pub symbol is defined
+//! here. Conversion helpers live in content.zig only.
+//! Stream functions return typed event slices — callers own serialization.
 
 const std = @import("std");
-const common = @import("../openai/types.zig"); // shared primitives
+const common = @import("../openai/types.zig");
 
-const Chat = @import("../openai/chat_types.zig"); // chat schema (envelope payload)
-const Messages = @import("../anthropic/types.zig"); // Anthropic Messages wire types
-const Responses = @import("../openai/responses_types.zig"); // inbound responses schema
-const Sap = @import("types.zig"); // SAP AI Core wire types
-const content = @import("content.zig"); // own mapping internals
-const log = @import("../../log.zig");
+const Chat = @import("../openai/chat_types.zig");
+const Messages = @import("../anthropic/types.zig");
+const Responses = @import("../openai/responses_types.zig");
+const Sap = @import("types.zig");
+const content = @import("content.zig");
 const time = @import("../../time.zig");
 
 // ============================================================================
 // Contract
 // ============================================================================
 
-/// Re-export from anthropic/types.zig so callers can use `Transformer.StreamLineResult`.
-pub const StreamLineResult = Messages.StreamLineResult;
-
-/// Chat and Messages pipelines append their own `[DONE]` sentinel; the
-/// Responses pipeline does not (native Responses upstreams end silently).
 pub const appendsDoneMarker = true;
-
-/// A SAP model is usable through this provider only when it has a latest
-/// non-deprecated version and supports the "orchestration" scenario.
-fn isOrchestrationCapable(sap_model: Sap.SapModel) bool {
-    var has_latest = false;
-    for (sap_model.versions) |version| {
-        if (version.isLatest and !version.deprecated) has_latest = true;
-    }
-    if (!has_latest) return false;
-
-    for (sap_model.allowedScenarios) |scenario| {
-        if (std.mem.eql(u8, scenario.scenarioId, "orchestration")) return true;
-    }
-    return false;
-}
 
 // ============================================================================
 // Flow: /v1/models
 // ============================================================================
 
-/// Map the SAP models listing to inbound `Model` entries, prefixing ids with
+/// Map the SAP models listing to inbound Model entries, prefixing ids with
 /// the provider name. Only models with a latest non-deprecated version AND
-/// the "orchestration" scenario are usable through this provider.
+/// the "orchestration" scenario are included.
 pub fn transformModelsResponse(
     allocator: std.mem.Allocator,
     response: std.json.Parsed(Sap.SapModelsResponse),
@@ -72,22 +39,28 @@ pub fn transformModelsResponse(
 ) ![]common.Model {
     var valid_count: usize = 0;
     for (response.value.resources) |sap_model| {
-        if (isOrchestrationCapable(sap_model)) valid_count += 1;
+        if (content.isOrchestrationCapable(sap_model)) valid_count += 1;
     }
 
     var models = try allocator.alloc(common.Model, valid_count);
-    errdefer allocator.free(models);
+    var filled: usize = 0;
+    errdefer {
+        for (models[0..filled]) |m| {
+            allocator.free(m.id);
+            allocator.free(m.owned_by);
+        }
+        allocator.free(models);
+    }
 
-    var idx: usize = 0;
     for (response.value.resources) |sap_model| {
-        if (!isOrchestrationCapable(sap_model)) continue;
-        models[idx] = .{
+        if (!content.isOrchestrationCapable(sap_model)) continue;
+        models[filled] = .{
             .id = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ provider_name, sap_model.model }),
             .object = "model",
             .created = 0,
             .owned_by = try allocator.dupe(u8, sap_model.provider),
         };
-        idx += 1;
+        filled += 1;
     }
 
     return models;
@@ -97,10 +70,7 @@ pub fn transformModelsResponse(
 // Flow: /v1/chat/completions — chat wire in, SAP envelope out
 // ============================================================================
 
-/// Stream state for the chat flow. The SAP envelope carries chat chunks in
-/// `final_result`; ids/usage arrive on those inner chunks.
 pub const ChatStreamState = struct {
-    // --- uniform core (P3) ---
     allocator: std.mem.Allocator,
     original_model: []const u8,
     response_id: []const u8 = "",
@@ -109,29 +79,37 @@ pub const ChatStreamState = struct {
     output_tokens: u32 = 0,
 
     pub fn init(allocator: std.mem.Allocator, original_model: []const u8) ChatStreamState {
-        return .{
-            .allocator = allocator,
-            .original_model = original_model,
-        };
+        return .{ .allocator = allocator, .original_model = original_model };
     }
 
     pub fn deinit(self: *ChatStreamState) void {
         if (self.response_id.len > 0) self.allocator.free(self.response_id);
         self.response_id = "";
-        if (self.finish_reason) |reason| self.allocator.free(reason);
+        if (self.finish_reason) |r| self.allocator.free(r);
         self.finish_reason = null;
     }
 };
 
-/// Inbound chat request → SAP envelope, pinned to `model`. Sampling fields
-/// map onto `model.params`; messages/tools/tool_choice/response_format ride
-/// in the prompt_templating module (borrowed from the inbound parse).
+/// Inbound chat request → SAP envelope, pinned to model.
+///
+/// Chat.Request fields mapped:
+///   model (pinned), messages → template (borrowed), tools → tools (borrowed),
+///   tool_choice → tool_choice (borrowed), response_format → response_format
+///   (borrowed), stream → stream.enabled,
+///   temperature / max_completion_tokens / max_tokens / top_p → model.params.
+/// Skipped: stream_options, n, presence_penalty, frequency_penalty, stop,
+///   logit_bias, logprobs, top_logprobs, parallel_tool_calls, user, seed,
+///   reasoning_effort, modalities, audio, store, metadata, prediction,
+///   service_tier,
+///   web_search_options, moderation, verbosity
+///   (SAP envelope has no equivalent fields).
+///   Sap.Request.placeholder_values and messages_history are left null
+///   (no inbound chat equivalent).
 pub fn transformChatRequest(
     request: Chat.Request,
     model: []const u8,
     allocator: std.mem.Allocator,
 ) !Sap.Request {
-    // S1 — model params forwarding (max_completion_tokens wins over max_tokens)
     const max_tokens: ?u32 = request.max_completion_tokens orelse request.max_tokens;
     const params = try content.buildParams(.{
         .temperature = request.temperature,
@@ -145,10 +123,10 @@ pub fn transformChatRequest(
             .modules = .{
                 .prompt_templating = .{
                     .prompt = .{
-                        .template = request.messages, // borrows the inbound parse
+                        .template = request.messages,
                         .tools = request.tools,
-                        .tool_choice = request.tool_choice, // S2
-                        .response_format = request.response_format, // S3
+                        .tool_choice = request.tool_choice,
+                        .response_format = request.response_format,
                     },
                     .model = .{
                         .name = model,
@@ -158,8 +136,6 @@ pub fn transformChatRequest(
                 },
             },
             .stream = .{
-                // S19 — SAP AI Core's stream.enabled drives token usage in the
-                // final chunk; no include_usage workaround is applicable here.
                 .enabled = request.stream orelse false,
                 .chunk_size = null,
             },
@@ -167,18 +143,23 @@ pub fn transformChatRequest(
     };
 }
 
-/// Free what `transformChatRequest` allocated (the params object).
-pub fn cleanupChatRequest(
-    request: Sap.Request,
-    allocator: std.mem.Allocator,
-) void {
-    if (request.config.modules.prompt_templating.model.params) |p| {
+/// Free what transformChatRequest allocated: the params object.
+/// All other fields borrow from the inbound request.
+pub fn cleanupChatRequest(request: Sap.Request, allocator: std.mem.Allocator) void {
+    if (request.config.modules.prompt_templating.model.params) |p|
         content.freeParams(p, allocator);
-    }
 }
 
-/// SAP response → inbound chat response (deep-copies the inner final_result
-/// so the transformed value outlives the client response's parse arena).
+/// SAP response → inbound chat response.
+///
+/// Sap.Response.final_result (Chat.Response) fields mapped:
+///   id → id (duped), object → object (duped), created → created,
+///   choices → choices (deep-copied via dupeResponseChoice),
+///   usage → usage (direct copy), original_req.model → model (duped).
+/// Skipped: Sap.Response.request_id, intermediate_results,
+///   intermediate_failures (SAP envelope fields, not chat wire).
+///   Chat.Response: system_fingerprint, service_tier, metadata, moderation
+///   (set to null — no SAP equivalent).
 pub fn transformChatResponse(
     upstream_response: Sap.Response,
     original_req: Chat.Request,
@@ -186,11 +167,10 @@ pub fn transformChatResponse(
 ) !Chat.Response {
     const final_result = upstream_response.final_result;
 
-    // Deep-copy the inner chat response: it lives in the client response's
-    // parse arena, which dies when the pipeline deinits the upstream parse.
     const choices = try allocator.alloc(Chat.ResponseChoice, final_result.choices.len);
+    var filled: usize = 0;
     errdefer {
-        for (choices) |choice| {
+        for (choices[0..filled]) |choice| {
             content.freeResponseMessage(allocator, choice.message);
             allocator.free(choice.finish_reason);
         }
@@ -198,15 +178,22 @@ pub fn transformChatResponse(
     }
     for (final_result.choices, 0..) |choice, i| {
         choices[i] = try content.dupeResponseChoice(allocator, choice);
+        filled += 1;
     }
 
+    const owned_id = try allocator.dupe(u8, final_result.id);
+    errdefer allocator.free(owned_id);
+    const owned_object = try allocator.dupe(u8, final_result.object);
+    errdefer allocator.free(owned_object);
+    const owned_model = try allocator.dupe(u8, original_req.model);
+
     return .{
-        .id = try allocator.dupe(u8, final_result.id),
-        .object = try allocator.dupe(u8, final_result.object),
+        .id = owned_id,
+        .object = owned_object,
         .created = final_result.created,
-        .model = try allocator.dupe(u8, original_req.model),
+        .model = owned_model,
         .choices = choices,
-        .usage = final_result.usage orelse Chat.Usage{
+        .usage = final_result.usage orelse .{
             .prompt_tokens = 0,
             .completion_tokens = 0,
             .total_tokens = 0,
@@ -216,11 +203,8 @@ pub fn transformChatResponse(
     };
 }
 
-/// Free what `transformChatResponse` allocated (the deep copies).
-pub fn cleanupChatResponse(
-    inbound_response: Chat.Response,
-    allocator: std.mem.Allocator,
-) void {
+/// Free what transformChatResponse allocated.
+pub fn cleanupChatResponse(inbound_response: Chat.Response, allocator: std.mem.Allocator) void {
     allocator.free(inbound_response.id);
     allocator.free(inbound_response.object);
     allocator.free(inbound_response.model);
@@ -231,14 +215,16 @@ pub fn cleanupChatResponse(
     allocator.free(inbound_response.choices);
 }
 
-/// One SAP SSE line → zero or one chat-format SSE chunk as ready bytes (P4).
-/// The `final_result` chat chunk is re-emitted with the model rewritten;
-/// upstream errors render inline.
+/// One SAP SSE line → Chat.ChatStreamLineResult (typed StreamChunk slice).
+///
+/// The SAP envelope wraps a chat StreamChunk in `final_result`. Empty chunks
+/// (id.len == 0, initial templating results) are skipped. Unparseable lines
+/// (error payloads) are skipped.
 pub fn transformChatStreamLine(
     line: []const u8,
     state: *ChatStreamState,
     allocator: std.mem.Allocator,
-) StreamLineResult {
+) Chat.ChatStreamLineResult {
     if (!std.mem.startsWith(u8, line, "data: ")) return .{ .skip = {} };
     const json_part = line["data: ".len..];
 
@@ -247,86 +233,131 @@ pub fn transformChatStreamLine(
         allocator,
         json_part,
         .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
-    ) catch {
-        // Not a chunk — maybe an error payload; render it inline (P4).
-        const bytes = content.formatSapErrorLine(json_part, allocator) orelse
-            return .{ .skip = {} };
-        return .{ .output = bytes };
-    };
+    ) catch return .{ .skip = {} };
     defer parsed.deinit();
 
     const final_result = parsed.value.final_result;
-
-    // Skip empty chunks (initial templating results).
     if (final_result.id.len == 0) return .{ .skip = {} };
 
-    // Own the id: it borrows from `parsed`, which dies below (bug #18 class).
     if (state.response_id.len == 0) {
-        state.response_id = allocator.dupe(u8, final_result.id) catch
-            return .{ .skip = {} };
+        state.response_id = allocator.dupe(u8, final_result.id) catch return .{ .skip = {} };
     }
 
     if (final_result.choices.len > 0) {
         const choice = final_result.choices[0];
-        if (choice.finish_reason) |reason| {
-            if (reason.len > 0) {
-                if (state.finish_reason) |prev| allocator.free(prev);
-                state.finish_reason = allocator.dupe(u8, reason) catch null;
-            }
-        }
+        if (choice.finish_reason) |reason| if (reason.len > 0) {
+            if (state.finish_reason) |prev| allocator.free(prev);
+            state.finish_reason = allocator.dupe(u8, reason) catch null;
+        };
     }
-    if (final_result.usage) |usage| {
-        state.input_tokens = @intCast(usage.prompt_tokens);
-        state.output_tokens = @intCast(usage.completion_tokens);
+    if (final_result.usage) |u| {
+        state.input_tokens = @intCast(u.prompt_tokens);
+        state.output_tokens = @intCast(u.completion_tokens);
     }
 
-    const bytes = content.buildChatChunk(.{
-        .id = state.response_id,
-        .created = final_result.created,
-        .original_model = state.original_model,
-    }, if (final_result.choices.len > 0) final_result.choices[0].delta else .{}, if (final_result.choices.len > 0) final_result.choices[0].finish_reason else null, final_result.usage, allocator) orelse
+    const src_delta: Chat.Delta = if (final_result.choices.len > 0)
+        final_result.choices[0].delta
+    else
+        .{};
+    const src_finish: ?[]const u8 = if (final_result.choices.len > 0)
+        final_result.choices[0].finish_reason
+    else
+        null;
+
+    // Dupe owned strings from the parse arena before it dies.
+    var owned_delta = src_delta;
+    if (src_delta.content) |c| {
+        owned_delta.content = allocator.dupe(u8, c) catch return .{ .skip = {} };
+    }
+    if (src_delta.tool_calls) |tcs| {
+        const owned_tcs = allocator.alloc(Chat.DeltaToolCall, tcs.len) catch {
+            if (owned_delta.content) |c| allocator.free(c);
+            return .{ .skip = {} };
+        };
+        for (tcs, 0..) |tc, i| {
+            owned_tcs[i] = tc;
+            if (tc.id) |s| owned_tcs[i].id = allocator.dupe(u8, s) catch null;
+            if (tc.function) |f| {
+                var owned_f = f;
+                if (f.name) |s| owned_f.name = allocator.dupe(u8, s) catch null;
+                if (f.arguments) |s| owned_f.arguments = allocator.dupe(u8, s) catch null;
+                owned_tcs[i].function = owned_f;
+            }
+        }
+        owned_delta.tool_calls = owned_tcs;
+    }
+    owned_delta.audio = null;
+
+    const owned_finish: ?[]const u8 = if (src_finish) |r|
+        allocator.dupe(u8, r) catch null
+    else
+        null;
+
+    const choices = allocator.alloc(Chat.StreamChoice, 1) catch {
+        if (owned_delta.content) |c| allocator.free(c);
+        if (owned_delta.tool_calls) |tcs| allocator.free(tcs);
         return .{ .skip = {} };
-    return .{ .output = bytes };
+    };
+    choices[0] = .{
+        .index = if (final_result.choices.len > 0) final_result.choices[0].index else 0,
+        .delta = owned_delta,
+        .finish_reason = owned_finish,
+        .logprobs = null,
+    };
+
+    const chunks = allocator.alloc(Chat.StreamChunk, 1) catch {
+        if (owned_delta.content) |c| allocator.free(c);
+        if (owned_delta.tool_calls) |tcs| allocator.free(tcs);
+        allocator.free(choices);
+        return .{ .skip = {} };
+    };
+    chunks[0] = .{
+        .id = state.response_id,
+        .object = "chat.completion.chunk",
+        .created = final_result.created,
+        .model = state.original_model,
+        .choices = choices,
+        .usage = final_result.usage,
+    };
+    return .{ .events = chunks };
 }
 
 // ============================================================================
 // Flow: /v1/messages — messages wire in, SAP envelope out
 // ============================================================================
 
-/// Stream state for the messages flow: the SAP inner chat stream ends with
-/// `[DONE]`, which triggers the closing triple of the synthesized protocol.
 pub const MessagesStreamState = struct {
-    // --- uniform core (P3) ---
     allocator: std.mem.Allocator,
     original_model: []const u8,
-    response_id: []const u8 = "",
+    // finish_reason is a duped mapped stop_reason ("end_turn", "max_tokens", etc.)
     finish_reason: ?[]const u8 = null,
     input_tokens: u32 = 0,
     output_tokens: u32 = 0,
-
-    // --- messages-flow specifics ---
-    /// Whether the synthetic message_start was emitted.
     sent_message_start: bool = false,
-    /// Whether the synthetic content_block_start was emitted.
     sent_content_block_start: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, original_model: []const u8) MessagesStreamState {
-        return .{
-            .allocator = allocator,
-            .original_model = original_model,
-        };
+        return .{ .allocator = allocator, .original_model = original_model };
     }
 
     pub fn deinit(self: *MessagesStreamState) void {
-        // finish_reason is a dupe (mapped stop_reason captured from chunks).
-        if (self.finish_reason) |reason| self.allocator.free(reason);
+        if (self.finish_reason) |r| self.allocator.free(r);
         self.finish_reason = null;
     }
 };
 
-/// Inbound messages request → SAP envelope, pinned to `model`. Messages are
-/// converted to chat messages (system-first, tool_use → tool_calls,
-/// tool_result → tool messages); tools and tool_choice map to chat shapes.
+/// Inbound messages request → SAP envelope, pinned to model.
+///
+/// Messages.Request fields mapped:
+///   model (pinned), system → system chat message (borrows inbound string),
+///   messages (user/assistant, text/tool_use/tool_result blocks) → template,
+///   tools → chat function tools (schema borrows inbound parse),
+///   stream → stream.enabled,
+///   temperature / max_tokens / top_p → model.params.
+/// Skipped: tool_choice (Anthropic union not mapped to chat shape), top_k,
+///   thinking, betas, metadata, service_tier, output_config, container,
+///   inference_geo, cache_control, fallbacks, stop_sequences
+///   (SAP envelope has no equivalent fields).
 pub fn transformMessagesRequest(
     request: Messages.Request,
     model: []const u8,
@@ -338,18 +369,22 @@ pub fn transformMessagesRequest(
         messages.deinit(allocator);
     }
 
-    // System message first (borrows the inbound system string).
     if (request.system) |system_text| {
+        const sys_str: []const u8 = switch (system_text) {
+            .text => |t| t,
+            .blocks => |blks| if (blks.len > 0) blks[0].text else "",
+        };
         try messages.append(allocator, .{
             .role = .system,
-            .content = .{ .text = system_text },
+            .content = .{ .text = sys_str },
         });
     }
 
     for (request.messages) |msg| {
-        const role: common.Role = switch (msg.role) {
+        const role: Chat.Role = switch (msg.role) {
             .user => .user,
             .assistant => .assistant,
+            .system => continue,
         };
 
         switch (msg.content) {
@@ -363,9 +398,7 @@ pub fn transformMessagesRequest(
 
                 var tool_use_blocks: std.ArrayList(Chat.ToolCall) = .empty;
                 errdefer {
-                    for (tool_use_blocks.items) |tc| {
-                        allocator.free(tc.function.arguments);
-                    }
+                    for (tool_use_blocks.items) |tc| allocator.free(tc.function.arguments);
                     tool_use_blocks.deinit(allocator);
                 }
 
@@ -379,7 +412,6 @@ pub fn transformMessagesRequest(
                             var args_list: std.ArrayList(u8) = .empty;
                             defer args_list.deinit(allocator);
                             try args_list.print(allocator, "{f}", .{std.json.fmt(tu.input, .{})});
-
                             try tool_use_blocks.append(allocator, .{
                                 .id = tu.id,
                                 .type = "function",
@@ -389,10 +421,16 @@ pub fn transformMessagesRequest(
                                 },
                             });
                         },
-                        .tool_result => |tr| try tool_results.append(allocator, .{
-                            .id = tr.tool_use_id,
-                            .content = tr.content,
-                        }),
+                        .tool_result => |tr| {
+                            const c_text: ?[]const u8 = if (tr.content) |c| switch (c) {
+                                .text => |s| s,
+                                .blocks => null,
+                            } else null;
+                            try tool_results.append(allocator, .{
+                                .id = tr.tool_use_id,
+                                .content = c_text,
+                            });
+                        },
                         .image, .document, .thinking, .redacted_thinking,
                         .server_tool_use, .web_search_tool_result, .web_fetch_tool_result,
                         .code_execution_tool_result, .bash_code_execution_tool_result,
@@ -401,7 +439,6 @@ pub fn transformMessagesRequest(
                     }
                 }
 
-                // Tool results first — one tool message per result.
                 for (tool_results.items) |tr| {
                     try messages.append(allocator, .{
                         .role = .tool,
@@ -411,13 +448,12 @@ pub fn transformMessagesRequest(
                 }
 
                 if (text_parts.items.len > 0 or tool_use_blocks.items.len > 0) {
-                    const content_text: ?Chat.MessageContent = if (text_parts.items.len > 0) blk: {
-                        break :blk .{ .text = try std.mem.join(allocator, "", text_parts.items) };
-                    } else null;
-
                     try messages.append(allocator, .{
                         .role = role,
-                        .content = content_text,
+                        .content = if (text_parts.items.len > 0)
+                            .{ .text = try std.mem.join(allocator, "", text_parts.items) }
+                        else
+                            null,
                         .tool_calls = if (tool_use_blocks.items.len > 0)
                             try tool_use_blocks.toOwnedSlice(allocator)
                         else
@@ -428,8 +464,7 @@ pub fn transformMessagesRequest(
         }
     }
 
-    // Anthropic tools → chat function tools (schema borrows the inbound parse).
-    const tools: ?[]Chat.Tool = if (request.tools) |anthro_tools| blk: {
+    const tools: ?[]const Chat.Tool = if (request.tools) |anthro_tools| blk: {
         const oai_tools = try allocator.alloc(Chat.Tool, anthro_tools.len);
         for (anthro_tools, 0..) |at, i| {
             oai_tools[i] = .{
@@ -460,7 +495,7 @@ pub fn transformMessagesRequest(
                     .prompt = .{
                         .template = try messages.toOwnedSlice(allocator),
                         .tools = tools,
-                        .tool_choice = null, // Anthropic union not mapped (gap, as before)
+                        .tool_choice = null,
                         .response_format = null,
                     },
                     .model = .{
@@ -478,23 +513,28 @@ pub fn transformMessagesRequest(
     };
 }
 
-/// Free what `transformMessagesRequest` allocated: the params object, the
-/// tools slice, and the owned parts of the template messages.
-pub fn cleanupMessagesRequest(
-    request: Sap.Request,
-    allocator: std.mem.Allocator,
-) void {
+/// Free what transformMessagesRequest allocated: template messages, tools
+/// slice, and params object.
+pub fn cleanupMessagesRequest(request: Sap.Request, allocator: std.mem.Allocator) void {
     const prompt = request.config.modules.prompt_templating.prompt;
     for (prompt.template) |msg| content.freeMessageOwnedText(msg, allocator);
     allocator.free(prompt.template);
-    if (prompt.tools) |tools| allocator.free(tools);
-    if (request.config.modules.prompt_templating.model.params) |p| {
+    if (prompt.tools) |ts| allocator.free(ts);
+    if (request.config.modules.prompt_templating.model.params) |p|
         content.freeParams(p, allocator);
-    }
 }
 
-/// SAP response → inbound messages response (bug #17-pattern ownership:
-/// leaky-parsed args freed via `content.freeMessageOwnedBlocks`).
+/// SAP response → inbound messages response.
+///
+/// Sap.Response.final_result (Chat.Response) fields mapped:
+///   choices[0].message.content → content[].text (duped)
+///   choices[0].message.tool_calls → content[].tool_use (id/name duped,
+///     input leaky-parsed)
+///   choices[0].finish_reason → stop_reason (mapped via transformStopReasonToMessages)
+///   id → id (duped), original_req.model → model (duped)
+///   usage.prompt_tokens → input_tokens, usage.completion_tokens → output_tokens
+/// Skipped: Sap.Response.request_id, intermediate_results,
+///   intermediate_failures (SAP envelope fields, not Messages wire).
 pub fn transformMessagesResponse(
     upstream_response: Sap.Response,
     original_req: Messages.Request,
@@ -510,17 +550,13 @@ pub fn transformMessagesResponse(
 
     if (final_result.choices.len > 0) {
         const message = final_result.choices[0].message;
-
-        if (message.content) |text| {
-            if (text.len > 0) {
-                try content_blocks.append(allocator, .{ .text = .{
-                    .type = "text",
-                    .text = try allocator.dupe(u8, text),
-                } });
-            }
-        }
-
-        if (message.tool_calls) |tool_calls| for (tool_calls) |tc| {
+        if (message.content) |text| if (text.len > 0) {
+            try content_blocks.append(allocator, .{ .text = .{
+                .type = "text",
+                .text = try allocator.dupe(u8, text),
+            } });
+        };
+        if (message.tool_calls) |tcs| for (tcs) |tc| {
             try content_blocks.append(allocator, .{ .tool_use = .{
                 .type = "tool_use",
                 .id = try allocator.dupe(u8, tc.id),
@@ -531,7 +567,10 @@ pub fn transformMessagesResponse(
     }
 
     if (content_blocks.items.len == 0) {
-        try content_blocks.append(allocator, .{ .text = .{ .type = "text", .text = "" } });
+        try content_blocks.append(allocator, .{ .text = .{
+            .type = "text",
+            .text = try allocator.dupe(u8, ""),
+        } });
     }
 
     const stop_reason: ?[]const u8 = if (final_result.choices.len > 0)
@@ -539,12 +578,21 @@ pub fn transformMessagesResponse(
     else
         "end_turn";
 
+    const owned_content = try content_blocks.toOwnedSlice(allocator);
+    errdefer {
+        content.freeMessageOwnedBlocks(owned_content, allocator);
+        allocator.free(owned_content);
+    }
+    const owned_id = try allocator.dupe(u8, final_result.id);
+    errdefer allocator.free(owned_id);
+    const owned_model = try allocator.dupe(u8, original_req.model);
+
     return .{
-        .id = try allocator.dupe(u8, final_result.id),
+        .id = owned_id,
         .type = "message",
         .role = "assistant",
-        .content = try content_blocks.toOwnedSlice(allocator),
-        .model = try allocator.dupe(u8, original_req.model),
+        .content = owned_content,
+        .model = owned_model,
         .stop_reason = stop_reason,
         .stop_sequence = null,
         .usage = if (final_result.usage) |u| .{
@@ -554,52 +602,65 @@ pub fn transformMessagesResponse(
     };
 }
 
-/// Free what `transformMessagesResponse` allocated.
-pub fn cleanupMessagesResponse(
-    inbound_response: Messages.Response,
-    allocator: std.mem.Allocator,
-) void {
+/// Free what transformMessagesResponse allocated.
+pub fn cleanupMessagesResponse(inbound_response: Messages.Response, allocator: std.mem.Allocator) void {
     content.freeMessageOwnedBlocks(inbound_response.content, allocator);
     allocator.free(inbound_response.id);
     allocator.free(inbound_response.model);
     allocator.free(inbound_response.content);
 }
 
-/// One SAP SSE line → Anthropic-format SSE events as ready bytes: the first
-/// text delta lazily emits the protocol opening; the `[DONE]` sentinel emits
-/// the closing triple with the accumulated usage.
+/// One SAP SSE line → Messages.MessagesStreamLineResult (typed SseEvent slice).
+///
+/// The SAP inner stream ends with `[DONE]`, which triggers the closing triple.
+/// Text deltas lazily open the synthesized protocol on the first chunk.
 pub fn transformMessagesStreamLine(
     line: []const u8,
     state: *MessagesStreamState,
     allocator: std.mem.Allocator,
-) StreamLineResult {
+) Messages.MessagesStreamLineResult {
     if (!std.mem.startsWith(u8, line, "data: ")) return .{ .skip = {} };
     const json_part = line["data: ".len..];
 
-    // [DONE] — the SAP chat stream's terminal sentinel: close the synthesized
-    // message. States that never opened still close as a complete message.
-    if (std.mem.eql(u8, json_part, "[DONE]")) {
-        var out: std.ArrayList(u8) = .empty;
-        errdefer out.deinit(allocator);
+    var events: std.ArrayList(Messages.SseEvent) = .empty;
+    defer events.deinit(allocator);
 
+    if (std.mem.eql(u8, json_part, "[DONE]")) {
         if (!state.sent_message_start or !state.sent_content_block_start) {
-            const open = content.messagesOpen(state.original_model, allocator) orelse
-                return .{ .skip = {} };
-            out.appendSlice(allocator, open) catch return .{ .skip = {} };
-            allocator.free(open);
+            events.append(allocator, .{ .message_start = .{
+                .type = "message_start",
+                .message = .{
+                    .id = "msg_proxy",
+                    .type = "message",
+                    .role = "assistant",
+                    .content = &.{},
+                    .model = state.original_model,
+                    .stop_reason = null,
+                    .stop_sequence = null,
+                    .usage = .{ .input_tokens = state.input_tokens, .output_tokens = 0 },
+                },
+            }}) catch return .{ .skip = {} };
+            events.append(allocator, .{ .content_block_start = .{
+                .type = "content_block_start",
+                .index = 0,
+                .content_block = .{ .type = "text", .text = "" },
+            }}) catch return .{ .skip = {} };
             state.sent_message_start = true;
             state.sent_content_block_start = true;
         }
 
-        const close = content.messagesClose(
-            state.finish_reason orelse "end_turn",
-            state.output_tokens,
-            allocator,
-        ) orelse return .{ .skip = {} };
-        out.appendSlice(allocator, close) catch return .{ .skip = {} };
-        allocator.free(close);
-
-        return .{ .output = out.toOwnedSlice(allocator) catch return .{ .skip = {} } };
+        const stop_reason = state.finish_reason orelse "end_turn";
+        events.append(allocator, .{ .content_block_stop = .{
+            .type = "content_block_stop", .index = 0,
+        }}) catch return .{ .skip = {} };
+        events.append(allocator, .{ .message_delta = .{
+            .type = "message_delta",
+            .delta = .{ .stop_reason = stop_reason, .stop_sequence = null },
+            .usage = .{ .output_tokens = state.output_tokens },
+        }}) catch return .{ .skip = {} };
+        events.append(allocator, .{ .message_stop = .{ .type = "message_stop" } }) catch
+            return .{ .skip = {} };
+        return .{ .events = events.toOwnedSlice(allocator) catch return .{ .skip = {} } };
     }
 
     const parsed = std.json.parseFromSlice(
@@ -613,15 +674,25 @@ pub fn transformMessagesStreamLine(
     const final_result = parsed.value.final_result;
     if (final_result.id.len == 0) return .{ .skip = {} };
 
-    var out: std.ArrayList(u8) = .empty;
-    errdefer out.deinit(allocator);
-
-    // Lazy protocol opening, once per stream.
     if (!state.sent_message_start or !state.sent_content_block_start) {
-        const open = content.messagesOpen(state.original_model, allocator) orelse
-            return .{ .skip = {} };
-        out.appendSlice(allocator, open) catch return .{ .skip = {} };
-        allocator.free(open);
+        events.append(allocator, .{ .message_start = .{
+            .type = "message_start",
+            .message = .{
+                .id = "msg_proxy",
+                .type = "message",
+                .role = "assistant",
+                .content = &.{},
+                .model = state.original_model,
+                .stop_reason = null,
+                .stop_sequence = null,
+                .usage = .{ .input_tokens = state.input_tokens, .output_tokens = 0 },
+            },
+        }}) catch return .{ .skip = {} };
+        events.append(allocator, .{ .content_block_start = .{
+            .type = "content_block_start",
+            .index = 0,
+            .content_block = .{ .type = "text", .text = "" },
+        }}) catch return .{ .skip = {} };
         state.sent_message_start = true;
         state.sent_content_block_start = true;
     }
@@ -629,53 +700,42 @@ pub fn transformMessagesStreamLine(
     if (final_result.choices.len > 0) {
         const choice = final_result.choices[0];
 
-        // Usage from the final chunk.
-        if (final_result.usage) |usage| {
-            state.input_tokens = @intCast(usage.prompt_tokens);
-            state.output_tokens = @intCast(usage.completion_tokens);
+        if (final_result.usage) |u| {
+            state.input_tokens = @intCast(u.prompt_tokens);
+            state.output_tokens = @intCast(u.completion_tokens);
         }
 
-        if (choice.finish_reason) |reason| {
-            if (reason.len > 0) {
-                if (state.finish_reason) |prev| allocator.free(prev);
-                state.finish_reason = allocator.dupe(
-                    u8,
-                    content.transformStopReasonToMessages(reason),
-                ) catch null;
-            }
-        }
+        if (choice.finish_reason) |reason| if (reason.len > 0) {
+            if (state.finish_reason) |prev| allocator.free(prev);
+            state.finish_reason = allocator.dupe(
+                u8,
+                content.transformStopReasonToMessages(reason),
+            ) catch null;
+        };
 
-        // Text deltas (chat wire tool_calls stream deltas are not forwarded,
-        // matching the other bridged providers).
-        if (choice.delta.content) |text| {
-            if (text.len > 0) {
-                const delta_ev = Messages.ContentBlockDelta{
-                    .type = "content_block_delta",
-                    .index = 0,
-                    .delta = .{ .type = "text_delta", .text = text },
-                };
-                out.print(
-                    allocator,
-                    "event: content_block_delta\ndata: {f}\n\n",
-                    .{std.json.fmt(delta_ev, .{})},
-                ) catch return .{ .skip = {} };
-            }
-        }
+        if (choice.delta.content) |text| if (text.len > 0) {
+            // Dupe — text borrows from parsed which dies after this function returns.
+            const owned_text = allocator.dupe(u8, text) catch return .{ .skip = {} };
+            events.append(allocator, .{ .content_block_delta = .{
+                .type = "content_block_delta",
+                .index = 0,
+                .delta = .{ .type = "text_delta", .text = owned_text },
+            }}) catch {
+                allocator.free(owned_text);
+                return .{ .skip = {} };
+            };
+        };
     }
 
-    if (out.items.len == 0) return .{ .skip = {} };
-    return .{ .output = out.toOwnedSlice(allocator) catch return .{ .skip = {} } };
+    if (events.items.len == 0) return .{ .skip = {} };
+    return .{ .events = events.toOwnedSlice(allocator) catch return .{ .skip = {} } };
 }
 
 // ============================================================================
 // Flow: /v1/responses — responses wire in, SAP envelope out
 // ============================================================================
 
-/// Stream state for the responses flow: accumulates id / terminal reason /
-/// usage so `flushResponsesStream` can synthesize the closing Responses
-/// events. The SAP inner chat stream ends with `[DONE]`.
 pub const ResponsesStreamState = struct {
-    // --- uniform core (P3) ---
     allocator: std.mem.Allocator,
     original_model: []const u8,
     response_id: []const u8 = "",
@@ -685,29 +745,38 @@ pub const ResponsesStreamState = struct {
     sequence_number: u32 = 0,
 
     pub fn init(allocator: std.mem.Allocator, original_model: []const u8) ResponsesStreamState {
-        return .{
-            .allocator = allocator,
-            .original_model = original_model,
-        };
+        return .{ .allocator = allocator, .original_model = original_model };
     }
 
     pub fn deinit(self: *ResponsesStreamState) void {
         if (self.response_id.len > 0) self.allocator.free(self.response_id);
         self.response_id = "";
-        if (self.finish_reason) |reason| self.allocator.free(reason);
+        if (self.finish_reason) |r| self.allocator.free(r);
         self.finish_reason = null;
     }
 };
 
-/// Inbound responses request → SAP envelope, pinned to `model`. Messages are
-/// derived from `instructions` + `input` (text-first, mirroring the rt bridge);
-/// `max_output_tokens` maps to `max_tokens` in params.
+/// Inbound responses request → SAP envelope, pinned to model.
+///
+/// Responses.Request fields mapped:
+///   model (pinned), instructions → system message (borrows),
+///   input.text → user message (borrows),
+///   input.items (message/function_call/function_call_output) → template,
+///   tools (.function only → Chat.Tool; built-in types skipped),
+///   tool_choice → tool_choice (borrowed),
+///   text.format → response_format (borrowed),
+///   stream → stream.enabled,
+///   temperature / max_output_tokens / top_p → model.params.
+/// Skipped: stream_options, previous_response_id, reasoning, reasoning_effort,
+///   parallel_tool_calls, store, include, truncation, background, max_tool_calls,
+///   conversation, context_management, metadata, top_logprobs, moderation,
+///   safety_identifier, prompt_cache_key, prompt_cache_options, user, prompt,
+///   verbosity, service_tier (SAP envelope has no equivalent fields).
 pub fn transformResponsesRequest(
     request: Responses.Request,
     model: []const u8,
     allocator: std.mem.Allocator,
 ) !Sap.Request {
-    // Messages from instructions + input (text-first mirror of the rt bridge).
     var messages: std.ArrayList(Chat.Message) = .empty;
     errdefer {
         for (messages.items) |msg| content.freeMessageOwnedText(msg, allocator);
@@ -717,7 +786,7 @@ pub fn transformResponsesRequest(
     if (request.instructions) |inst| {
         try messages.append(allocator, .{
             .role = .system,
-            .content = .{ .text = inst }, // borrows the inbound parse
+            .content = .{ .text = inst },
         });
     }
 
@@ -728,39 +797,90 @@ pub fn transformResponsesRequest(
         }),
         .items => |items| for (items) |item| {
             if (item != .object) continue;
-            const role_val = item.object.get("role") orelse continue;
-            if (role_val != .string) continue;
-            const role = std.meta.stringToEnum(common.Role, role_val.string) orelse continue;
+            const obj = item.object;
+            const item_type_val = obj.get("type") orelse continue;
+            if (item_type_val != .string) continue;
+            const item_type = item_type_val.string;
 
-            const content_val = item.object.get("content");
-            const message_content: ?Chat.MessageContent = blk: {
-                const cv = content_val orelse break :blk null;
-                switch (cv) {
-                    .string => |s| break :blk .{ .text = s },
-                    .array => |arr| {
-                        for (arr.items) |part| {
-                            if (part != .object) continue;
-                            const text_val = part.object.get("text") orelse continue;
-                            if (text_val == .string and text_val.string.len > 0) {
-                                break :blk .{ .text = text_val.string };
+            if (std.mem.eql(u8, item_type, "message")) {
+                const role_val = obj.get("role") orelse continue;
+                if (role_val != .string) continue;
+                const role = std.meta.stringToEnum(Chat.Role, role_val.string) orelse continue;
+                const message_content: ?Chat.MessageContent = blk: {
+                    const cv = obj.get("content") orelse break :blk null;
+                    switch (cv) {
+                        .string => |s| break :blk .{ .text = s },
+                        .array => |arr| {
+                            for (arr.items) |part| {
+                                if (part != .object) continue;
+                                const tv = part.object.get("text") orelse continue;
+                                if (tv == .string and tv.string.len > 0)
+                                    break :blk .{ .text = tv.string };
                             }
-                        }
-                        break :blk null;
+                            break :blk null;
+                        },
+                        else => break :blk null,
+                    }
+                };
+                try messages.append(allocator, .{
+                    .role = role,
+                    .content = message_content,
+                    .tool_call_id = if (obj.get("tool_call_id")) |v|
+                        if (v == .string) v.string else null
+                    else
+                        null,
+                });
+            } else if (std.mem.eql(u8, item_type, "function_call")) {
+                const name_val = obj.get("name") orelse continue;
+                if (name_val != .string) continue;
+                const id_val = obj.get("call_id") orelse obj.get("id") orelse continue;
+                if (id_val != .string) continue;
+                const args_str: []const u8 = if (obj.get("arguments")) |a|
+                    if (a == .string) a.string else "{}"
+                else "{}";
+                const tcs = try allocator.alloc(Chat.ToolCall, 1);
+                tcs[0] = .{
+                    .id = id_val.string,         // borrows inbound parse arena
+                    .type = "function",
+                    .function = .{
+                        .name = name_val.string, // borrows inbound parse arena
+                        .arguments = try allocator.dupe(u8, args_str),
                     },
-                    else => break :blk null,
-                }
-            };
-
-            try messages.append(allocator, .{
-                .role = role,
-                .content = message_content,
-                .tool_call_id = if (item.object.get("tool_call_id")) |v|
-                    if (v == .string) v.string else null
-                else
-                    null,
-            });
+                };
+                try messages.append(allocator, .{
+                    .role = .assistant,
+                    .content = null,
+                    .tool_calls = tcs,
+                });
+            } else if (std.mem.eql(u8, item_type, "function_call_output")) {
+                const call_id_val = obj.get("call_id") orelse continue;
+                if (call_id_val != .string) continue;
+                const output_text: ?[]const u8 = if (obj.get("output")) |o|
+                    if (o == .string) o.string else null
+                else null;
+                try messages.append(allocator, .{
+                    .role = .tool,
+                    .content = if (output_text) |t| .{ .text = t } else null,
+                    .tool_call_id = call_id_val.string,
+                });
+            }
         },
     }
+
+    const chat_tools: ?[]const Chat.Tool = if (request.tools) |rt| blk: {
+        var list: std.ArrayList(Chat.Tool) = .empty;
+        errdefer list.deinit(allocator);
+        for (rt) |t| switch (t) {
+            .function => |f| try list.append(allocator, .{ .type = "function", .function = f.function }),
+            .web_search_preview, .file_search, .code_interpreter_tool, .mcp_tool, .other => {},
+        };
+        if (list.items.len == 0) {
+            list.deinit(allocator);
+            break :blk null;
+        }
+        break :blk try list.toOwnedSlice(allocator);
+    } else null;
+    errdefer if (chat_tools) |ts| allocator.free(ts);
 
     const params = try content.buildParams(.{
         .temperature = request.temperature,
@@ -768,15 +888,6 @@ pub fn transformResponsesRequest(
         .top_p = request.top_p,
     }, allocator);
     errdefer if (params) |pv| content.freeParams(pv, allocator);
-
-    const chat_tools: ?[]const Chat.Tool = if (request.tools) |rt| blk: {
-        const tools = try allocator.alloc(Chat.Tool, rt.len);
-        for (rt, 0..) |t, i| tools[i] = switch (t) {
-            .function => |f| .{ .type = "function", .function = f.function },
-            .other => .{ .type = "function", .function = .{ .name = "", .description = null, .parameters = null, .strict = null } },
-        };
-        break :blk tools;
-    } else null;
 
     return .{
         .config = .{
@@ -803,23 +914,39 @@ pub fn transformResponsesRequest(
     };
 }
 
-/// Free what `transformResponsesRequest` allocated: the params object and
-/// the template slice. All message text borrows the inbound parse (unlike
-/// the messages face, which dupes and frees via freeMessageOwnedText).
-pub fn cleanupResponsesRequest(
-    request: Sap.Request,
-    allocator: std.mem.Allocator,
-) void {
+/// Free what transformResponsesRequest allocated: function_call tool_calls
+/// (arguments duped; id and name borrow inbound arena), template slice,
+/// tools slice, params object.
+/// Note: message content strings and tool_call_id borrow from the inbound
+/// request arena (not freed here).
+pub fn cleanupResponsesRequest(request: Sap.Request, allocator: std.mem.Allocator) void {
     const prompt = request.config.modules.prompt_templating.prompt;
+    for (prompt.template) |msg| content.freeMessageOwnedText(msg, allocator);
     allocator.free(prompt.template);
-    if (prompt.tools) |t| allocator.free(t);
-    if (request.config.modules.prompt_templating.model.params) |p| {
+    if (prompt.tools) |ts| allocator.free(ts);
+    if (request.config.modules.prompt_templating.model.params) |p|
         content.freeParams(p, allocator);
-    }
 }
 
-/// SAP response → inbound responses response (message + function_call items,
-/// echo fields from `original_req`, status from finish_reason).
+/// SAP response → inbound responses response.
+///
+/// Sap.Response.final_result (Chat.Response) fields mapped:
+///   choices[0].message.content → output[0].message.content[output_text] (duped)
+///   choices[0].message.tool_calls → output[N].function_call (id/name/arguments duped)
+///   choices[0].finish_reason="length" → status="incomplete"
+///   id → id (duped), output[0].message.id (duped)
+///   original_req.model → model (duped)
+///   created → created_at, usage (prompt/completion/total_tokens)
+/// Echo from original_req: temperature, top_p, parallel_tool_calls, store,
+///   max_output_tokens, metadata.
+/// Skipped: Sap.Response.request_id, intermediate_results,
+///   intermediate_failures, object, completed_at, output_text,
+///   incomplete_details, error, reasoning, instructions, tool_choice, tools,
+///   background, max_tool_calls, truncation, previous_response_id,
+///   conversation, moderation, safety_identifier, prompt_cache_key,
+///   prompt_cache_options, prompt_cache_diagnostics, prompt,
+///   text, user, service_tier, top_logprobs (no Responses.Response equivalent
+///   from the SAP wire, or echoed from original_req).
 pub fn transformResponsesResponse(
     upstream_response: Sap.Response,
     original_req: Responses.Request,
@@ -827,30 +954,50 @@ pub fn transformResponsesResponse(
 ) !Responses.Response {
     const final_result = upstream_response.final_result;
 
-    var output_items: std.ArrayList(Responses.OutputItem) = .empty;
-    errdefer output_items.deinit(allocator);
-
     var content_parts: std.ArrayList(Responses.OutputContent) = .empty;
-    errdefer content_parts.deinit(allocator);
-
-    var finish_reason: []const u8 = "stop";
-
-    if (final_result.choices.len > 0) {
-        const choice = final_result.choices[0];
-        finish_reason = choice.finish_reason;
-
-        if (choice.message.content) |c| {
-            if (c.len > 0) {
-                try content_parts.append(allocator, .{ .output_text = .{
-                    .type = "output_text",
-                    .text = try allocator.dupe(u8, c),
-                } });
-            }
-        }
+    errdefer {
+        for (content_parts.items) |c| switch (c) {
+            .output_text => |t| allocator.free(t.text),
+            .refusal, .other => {},
+        };
+        content_parts.deinit(allocator);
     }
 
+    var output_items: std.ArrayList(Responses.OutputItem) = .empty;
+    errdefer {
+        for (output_items.items) |item| switch (item) {
+            .function_call => |f| {
+                allocator.free(f.id);
+                allocator.free(f.name);
+                allocator.free(f.arguments);
+            },
+            .message => |m| {
+                allocator.free(m.id);
+                for (m.content) |c| switch (c) {
+                    .output_text => |t| allocator.free(t.text),
+                    .refusal, .other => {},
+                };
+                allocator.free(m.content);
+            },
+            else => {},
+        };
+        output_items.deinit(allocator);
+    }
+
+    const finish_reason: []const u8 = if (final_result.choices.len > 0)
+        final_result.choices[0].finish_reason
+    else
+        "stop";
+
     if (final_result.choices.len > 0) {
-        if (final_result.choices[0].message.tool_calls) |tool_calls| for (tool_calls) |tc| {
+        const message = final_result.choices[0].message;
+        if (message.content) |c| if (c.len > 0) {
+            try content_parts.append(allocator, .{ .output_text = .{
+                .type = "output_text",
+                .text = try allocator.dupe(u8, c),
+            } });
+        };
+        if (message.tool_calls) |tcs| for (tcs) |tc| {
             try output_items.append(allocator, .{ .function_call = .{
                 .id = try allocator.dupe(u8, tc.id),
                 .type = "function_call",
@@ -861,21 +1008,68 @@ pub fn transformResponsesResponse(
         };
     }
 
+    const msg_status: []const u8 = if (std.mem.eql(u8, finish_reason, "length"))
+        "incomplete"
+    else
+        "completed";
+
+    const msg_id = try allocator.dupe(u8, final_result.id);
+    var msg_transferred = false;
+    errdefer if (!msg_transferred) allocator.free(msg_id);
+    const msg_content = try content_parts.toOwnedSlice(allocator);
+    errdefer if (!msg_transferred) {
+        for (msg_content) |c| switch (c) {
+            .output_text => |t| allocator.free(t.text),
+            .refusal, .other => {},
+        };
+        allocator.free(msg_content);
+    };
+
     try output_items.insert(allocator, 0, .{ .message = .{
-        .id = try allocator.dupe(u8, final_result.id),
+        .id = msg_id,
         .type = "message",
         .role = "assistant",
-        .content = try content_parts.toOwnedSlice(allocator),
-        .status = "completed",
+        .content = msg_content,
+        .status = msg_status,
     } });
+    msg_transferred = true; // output_items errdefer now owns msg_id and msg_content
+
+    const top_status: []const u8 = if (std.mem.eql(u8, finish_reason, "length"))
+        "incomplete"
+    else
+        "completed";
+
+    const owned_id = try allocator.dupe(u8, final_result.id);
+    errdefer allocator.free(owned_id);
+    const owned_output = try output_items.toOwnedSlice(allocator);
+    errdefer {
+        for (owned_output) |item| switch (item) {
+            .message => |m| {
+                allocator.free(m.id);
+                for (m.content) |c| switch (c) {
+                    .output_text => |t| allocator.free(t.text),
+                    .refusal, .other => {},
+                };
+                allocator.free(m.content);
+            },
+            .function_call => |f| {
+                allocator.free(f.id);
+                allocator.free(f.name);
+                allocator.free(f.arguments);
+            },
+            else => {},
+        };
+        allocator.free(owned_output);
+    }
+    const owned_model = try allocator.dupe(u8, original_req.model);
 
     return .{
-        .id = try allocator.dupe(u8, final_result.id),
+        .id = owned_id,
         .object = "response",
         .created_at = @floatFromInt(final_result.created),
-        .model = try allocator.dupe(u8, original_req.model),
-        .status = "completed",
-        .output = try output_items.toOwnedSlice(allocator),
+        .model = owned_model,
+        .status = top_status,
+        .output = owned_output,
         .usage = if (final_result.usage) |u| .{
             .input_tokens = u.prompt_tokens,
             .output_tokens = u.completion_tokens,
@@ -890,11 +1084,8 @@ pub fn transformResponsesResponse(
     };
 }
 
-/// Free what `transformResponsesResponse` allocated.
-pub fn cleanupResponsesResponse(
-    inbound_response: Responses.Response,
-    allocator: std.mem.Allocator,
-) void {
+/// Free what transformResponsesResponse allocated.
+pub fn cleanupResponsesResponse(inbound_response: Responses.Response, allocator: std.mem.Allocator) void {
     allocator.free(inbound_response.id);
     allocator.free(inbound_response.model);
     for (inbound_response.output) |item| {
@@ -903,8 +1094,7 @@ pub fn cleanupResponsesResponse(
                 allocator.free(m.id);
                 for (m.content) |c| switch (c) {
                     .output_text => |txt| allocator.free(txt.text),
-                    .refusal => {},
-                    .other => {},
+                    .refusal, .other => {},
                 };
                 allocator.free(m.content);
             },
@@ -913,26 +1103,28 @@ pub fn cleanupResponsesResponse(
                 allocator.free(f.name);
                 allocator.free(f.arguments);
             },
-            .reasoning => {},
-            .other => {},
+            .reasoning, .web_search_call, .file_search_call, .code_interpreter_call,
+            .mcp_list_tools_item, .mcp_call_item, .image_generation_call,
+            .local_shell_call, .other => {},
         }
     }
     allocator.free(inbound_response.output);
 }
 
-/// One SAP SSE line → Responses SSE events as ready bytes: text deltas emit
-/// `response.output_text.delta`, tool-argument deltas emit
-/// `response.function_call_arguments.delta`, the terminal chunk captures
-/// finish_reason + usage for the flush.
+/// One SAP SSE line → Responses.ResponsesStreamLineResult (typed StreamEvent slice).
+///
+/// The SAP inner stream ends with `[DONE]`, handled by the pipeline
+/// (appendsDoneMarker = true). Text deltas → output_text_delta events;
+/// tool-argument deltas → function_call_arguments_delta events.
+/// Terminal chunk (finish_reason present) captures state for flushResponsesStream.
 pub fn transformResponsesStreamLine(
     line: []const u8,
     state: *ResponsesStreamState,
     allocator: std.mem.Allocator,
-) StreamLineResult {
+) Responses.ResponsesStreamLineResult {
     if (!std.mem.startsWith(u8, line, "data: ")) return .{ .skip = {} };
     const json_part = line["data: ".len..];
 
-    // [DONE] handled by the pipeline; SAP chunks carry the terminal state.
     const parsed = std.json.parseFromSlice(
         Sap.StreamChunk,
         allocator,
@@ -944,93 +1136,109 @@ pub fn transformResponsesStreamLine(
     const final_result = parsed.value.final_result;
     if (final_result.id.len == 0) return .{ .skip = {} };
 
-    // Own the id (bug #18 class: dupe before the parse dies).
     if (state.response_id.len == 0) {
-        state.response_id = allocator.dupe(u8, final_result.id) catch
+        state.response_id = allocator.dupe(u8, final_result.id) catch return .{ .skip = {} };
+    }
+
+    if (final_result.choices.len == 0) return .{ .skip = {} };
+    const choice = final_result.choices[0];
+
+    if (choice.finish_reason) |reason| if (reason.len > 0) {
+        if (state.finish_reason) |prev| allocator.free(prev);
+        state.finish_reason = allocator.dupe(u8, reason) catch null;
+    };
+
+    if (final_result.usage) |u| {
+        state.input_tokens = @intCast(u.prompt_tokens);
+        state.output_tokens = @intCast(u.completion_tokens);
+    }
+
+    var events: std.ArrayList(Responses.StreamEvent) = .empty;
+    defer events.deinit(allocator);
+
+    if (choice.delta.content) |text| if (text.len > 0) {
+        // Dupe — text borrows from parsed which dies after this function returns.
+        const owned = allocator.dupe(u8, text) catch return .{ .skip = {} };
+        events.append(allocator, .{ .output_text_delta = .{
+            .sequence_number = state.sequence_number,
+            .item_id = state.response_id,
+            .delta = owned,
+        }}) catch {
+            allocator.free(owned);
             return .{ .skip = {} };
-    }
+        };
+        state.sequence_number += 1;
+    };
 
-    if (final_result.choices.len > 0) {
-        const choice = final_result.choices[0];
-
-        // Terminal reason FIRST (bug #20: a chunk may carry both).
-        if (choice.finish_reason) |reason| {
-            if (reason.len > 0) {
-                if (state.finish_reason) |prev| allocator.free(prev);
-                state.finish_reason = allocator.dupe(u8, reason) catch null;
-            }
+    if (choice.delta.tool_calls) |tcs| if (tcs.len > 0) {
+        const args = if (tcs[0].function) |f| (f.arguments orelse "") else "";
+        if (args.len > 0) {
+            const owned = allocator.dupe(u8, args) catch return .{ .skip = {} };
+            events.append(allocator, .{ .function_call_arguments_delta = .{
+                .sequence_number = state.sequence_number,
+                .item_id = state.response_id,
+                .delta = owned,
+            }}) catch {
+                allocator.free(owned);
+                return .{ .skip = {} };
+            };
+            state.sequence_number += 1;
         }
+    };
 
-        if (final_result.usage) |usage| {
-            state.input_tokens = @intCast(usage.prompt_tokens);
-            state.output_tokens = @intCast(usage.completion_tokens);
-        }
-
-        // Text delta → response.output_text.delta
-        if (choice.delta.content) |text| {
-            if (text.len > 0) {
-                var buf: std.ArrayList(u8) = .empty;
-                const ev = Responses.StreamEvent{ .output_text_delta = .{
-                    .sequence_number = state.sequence_number,
-                    .item_id = state.response_id,
-                    .delta = text,
-                }};
-                ev.writeSSE(&buf, allocator) catch return .{ .skip = {} };
-                state.sequence_number += 1;
-                return .{ .output = buf.toOwnedSlice(allocator) catch return .{ .skip = {} } };
-            }
-        }
-
-        // Tool-args delta → response.function_call_arguments.delta
-        if (choice.delta.tool_calls) |tcs| {
-            if (tcs.len > 0) {
-                const args = if (tcs[0].function) |f| (f.arguments orelse "") else "";
-                if (args.len > 0) {
-                    var buf: std.ArrayList(u8) = .empty;
-                    const ev = Responses.StreamEvent{ .function_call_arguments_delta = .{
-                        .sequence_number = state.sequence_number,
-                        .item_id = state.response_id,
-                        .delta = args,
-                    }};
-                    ev.writeSSE(&buf, allocator) catch return .{ .skip = {} };
-                    state.sequence_number += 1;
-                    return .{ .output = buf.toOwnedSlice(allocator) catch return .{ .skip = {} } };
-                }
-            }
-        }
-    }
-
-    return .{ .skip = {} };
+    if (events.items.len == 0) return .{ .skip = {} };
+    return .{ .events = events.toOwnedSlice(allocator) catch return .{ .skip = {} } };
 }
 
-/// Emit the terminal Responses events after the upstream stream ends
-/// (`response.output_item.done` + `response.completed`, or
-/// `response.incomplete` when the finish reason is `length`) with the usage
-/// accumulated in `state`. Returns `null` when there is nothing to flush.
+/// Emit the terminal Responses events after `[DONE]`: output_item_done +
+/// response_completed (or response_incomplete when finish_reason="length").
+/// Returns null when no finish_reason was captured.
 pub fn flushResponsesStream(
     state: *ResponsesStreamState,
     allocator: std.mem.Allocator,
-) ?[]const u8 {
+) ?[]const Responses.StreamEvent {
     const reason = state.finish_reason orelse return null;
     const status: []const u8 = if (std.mem.eql(u8, reason, "length")) "incomplete" else "completed";
-    const input_tok = state.input_tokens;
-    const output_tok = state.output_tokens;
 
-    var buf: std.ArrayList(u8) = .empty;
-    const item_done = Responses.StreamEvent{ .output_item_done = .{
+    const events = allocator.alloc(Responses.StreamEvent, 2) catch return null;
+
+    events[0] = .{ .output_item_done = .{
         .sequence_number = state.sequence_number,
-        .item = .{ .message = .{ .id = state.response_id, .type = "message", .role = "assistant", .content = &.{}, .status = status } },
-    }};
-    item_done.writeSSE(&buf, allocator) catch return null;
-    state.sequence_number += 1;
-    const completed = Responses.StreamEvent{ .response_completed = .{
-        .sequence_number = state.sequence_number,
-        .response = .{ .id = state.response_id, .model = state.original_model, .status = status, .output = &.{}, .usage = .{
-            .input_tokens = input_tok,
-            .output_tokens = output_tok,
-            .total_tokens = input_tok + output_tok,
+        .output_index = 0,
+        .item = .{ .message = .{
+            .id = state.response_id,
+            .type = "message",
+            .role = "assistant",
+            .content = &.{},
+            .status = status,
         }},
     }};
-    completed.writeSSE(&buf, allocator) catch { buf.deinit(allocator); return null; };
-    return buf.toOwnedSlice(allocator) catch null;
+
+    const terminal_response = Responses.Response{
+        .id = state.response_id,
+        .object = "response",
+        .created_at = @floatFromInt(time.timestamp()),
+        .model = state.original_model,
+        .status = status,
+        .output = &.{},
+        .usage = .{
+            .input_tokens = state.input_tokens,
+            .output_tokens = state.output_tokens,
+            .total_tokens = state.input_tokens + state.output_tokens,
+        },
+        .parallel_tool_calls = true,
+    };
+
+    events[1] = if (std.mem.eql(u8, status, "incomplete"))
+        .{ .response_incomplete = .{
+            .sequence_number = state.sequence_number + 1,
+            .response = terminal_response,
+        }}
+    else
+        .{ .response_completed = .{
+            .sequence_number = state.sequence_number + 1,
+            .response = terminal_response,
+        }};
+
+    return events;
 }
