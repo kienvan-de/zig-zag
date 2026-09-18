@@ -742,46 +742,6 @@ pub fn freeToolCallList(tool_calls: []const Chat.ToolCall, allocator: std.mem.Al
 }
 
 // ============================================================================
-// Chat streaming support
-// ============================================================================
-
-/// Everything a chat chunk needs besides its delta.
-pub const ChatChunkContext = struct {
-    id: []const u8,
-    created: i64,
-    original_model: []const u8,
-};
-
-/// Serialize one `chat.completion.chunk` as a ready `data: {json}\n\n` line.
-pub fn buildChatChunk(
-    ctx: ChatChunkContext,
-    delta: Chat.Delta,
-    finish_reason: ?[]const u8,
-    usage: ?Chat.Usage,
-    allocator: std.mem.Allocator,
-) ?[]const u8 {
-    const choices = [_]Chat.StreamChoice{.{
-        .index = 0,
-        .delta = delta,
-        .finish_reason = finish_reason,
-    }};
-
-    const chunk = Chat.StreamChunk{
-        .id = if (ctx.id.len > 0) ctx.id else "chatcmpl-google",
-        .object = "chat.completion.chunk",
-        .created = ctx.created,
-        .model = ctx.original_model,
-        .choices = &choices,
-        .usage = usage,
-    };
-
-    var buf = std.ArrayList(u8).empty;
-    errdefer buf.deinit(allocator);
-    buf.print(allocator, "data: {f}\n\n", .{std.json.fmt(chunk, .{})}) catch return null;
-    return buf.toOwnedSlice(allocator) catch null;
-}
-
-// ============================================================================
 // Cleanup helpers
 // ============================================================================
 

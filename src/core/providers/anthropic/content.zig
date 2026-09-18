@@ -524,46 +524,6 @@ pub fn freeError(error_response: common.ErrorResponse, allocator: std.mem.Alloca
     if (error_response.@"error".code) |code| allocator.free(code);
 }
 
-// ============================================================================
-// Chat streaming support (stateless)
-// ============================================================================
-
-/// Everything a chat chunk carries besides its delta.
-pub const ChatChunkContext = struct {
-    id: []const u8,
-    created: i64,
-    original_model: []const u8,
-};
-
-/// Serialize one `chat.completion.chunk` as a ready `data: {json}\n\n` line.
-pub fn buildChatChunk(
-    ctx: ChatChunkContext,
-    delta: Chat.Delta,
-    finish_reason: ?[]const u8,
-    usage: ?Chat.Usage,
-    allocator: std.mem.Allocator,
-) ?[]const u8 {
-    const choices = [_]Chat.StreamChoice{.{
-        .index = 0,
-        .delta = delta,
-        .finish_reason = finish_reason,
-    }};
-
-    const chunk = Chat.StreamChunk{
-        .id = if (ctx.id.len > 0) ctx.id else "msg_unknown",
-        .object = "chat.completion.chunk",
-        .created = ctx.created,
-        .model = ctx.original_model,
-        .choices = &choices,
-        .usage = usage,
-    };
-
-    var buf = std.ArrayList(u8).empty;
-    errdefer buf.deinit(allocator);
-    buf.print(allocator, "data: {f}\n\n", .{std.json.fmt(chunk, .{})}) catch return null;
-    return buf.toOwnedSlice(allocator) catch null;
-}
-
 /// Render a chat-schema error into `data: {json}\n\n` bytes.
 pub fn formatChatError(
     error_response: common.ErrorResponse,
