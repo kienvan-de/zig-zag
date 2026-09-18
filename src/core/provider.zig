@@ -46,21 +46,6 @@ pub const Provider = enum {
     }
 };
 
-/// Provider-related errors — defined in errors.zig
-pub const ProviderError = @import("errors.zig").ProviderError;
-
-/// Check if provider is currently supported
-pub fn isSupported(p: Provider) bool {
-    return switch (p) {
-        .anthropic => true,
-        .openai => true,
-        .sap_ai_core => true,
-        .hai => true,
-        .copilot => true,
-        .google_ai_studio => true,
-    };
-}
-
 // ============================================================================
 // Provider Initialization (placeholder)
 // ============================================================================

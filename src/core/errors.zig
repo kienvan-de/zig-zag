@@ -68,12 +68,6 @@ pub const CallbackError = error{
     BrowserOpenFailed,
 };
 
-/// Provider resolution errors (provider.zig)
-pub const ProviderError = error{
-    UnsupportedProvider,
-    InvalidProvider,
-};
-
 /// Model string parsing errors (utils.zig)
 pub const ModelParseError = error{
     InvalidModelFormat,

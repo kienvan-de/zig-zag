@@ -524,28 +524,6 @@ pub fn freeError(error_response: common.ErrorResponse, allocator: std.mem.Alloca
     if (error_response.@"error".code) |code| allocator.free(code);
 }
 
-/// Render a chat-schema error into `data: {json}\n\n` bytes.
-pub fn formatChatError(
-    error_response: common.ErrorResponse,
-    allocator: std.mem.Allocator,
-) ?[]const u8 {
-    var buf = std.ArrayList(u8).empty;
-    buf.print(allocator, "data: {f}\n\n", .{std.json.fmt(error_response, .{})}) catch return null;
-    return buf.toOwnedSlice(allocator) catch null;
-}
-
-/// Parse a raw SSE payload as an Anthropic error and render it to chat-format
-/// `data: {json}\n\n` bytes. Returns null when the payload is not an error.
-pub fn formatChatErrorLine(
-    json_part: []const u8,
-    allocator: std.mem.Allocator,
-) ?[]const u8 {
-    const error_response = tryParseError(json_part, allocator) orelse return null;
-    defer freeError(error_response, allocator);
-    log.warn("[anthropic] [chat-stream] upstream error: {s}", .{error_response.@"error".message});
-    return formatChatError(error_response, allocator);
-}
-
 /// Free a `tool_calls` slice as built by `extractToolCalls`.
 pub fn freeToolCalls(tool_calls: []const Chat.ToolCall, allocator: std.mem.Allocator) void {
     for (tool_calls) |tool_call| {
