@@ -237,7 +237,31 @@ pub fn transformChatStreamLine(
     ) catch return .{ .skip = {} };
     defer parsed.deinit();
 
-    const final_result = parsed.value.final_result;
+    const final_result = switch (parsed.value) {
+        .@"error" => |err| {
+            const code_str: ?[]const u8 = if (err.code) |c| switch (c) {
+                400 => "bad_request",
+                401 => "invalid_api_key",
+                403 => "forbidden",
+                404 => "not_found",
+                429 => "rate_limit_exceeded",
+                500 => "server_error",
+                503 => "service_unavailable",
+                else => "unknown_error",
+            } else null;
+            const err_type: []const u8 = if (err.code) |c|
+                if (c >= 400 and c < 500) "invalid_request_error" else "server_error"
+            else
+                "server_error";
+            const msg = allocator.dupe(u8, err.message orelse "Unknown error from SAP AI Core") catch return .{ .skip = {} };
+            const typ = allocator.dupe(u8, err_type) catch { allocator.free(msg); return .{ .skip = {} }; };
+            const code: ?[]const u8 = if (code_str) |s| allocator.dupe(u8, s) catch {
+                allocator.free(msg); allocator.free(typ); return .{ .skip = {} };
+            } else null;
+            return .{ .@"error" = .{ .@"error" = .{ .message = msg, .type = typ, .param = null, .code = code } } };
+        },
+        .result => |r| r.final_result,
+    };
     if (final_result.id.len == 0) return .{ .skip = {} };
 
     if (state.response_id.len == 0) {
@@ -673,7 +697,10 @@ pub fn transformMessagesStreamLine(
     ) catch return .{ .skip = {} };
     defer parsed.deinit();
 
-    const final_result = parsed.value.final_result;
+    const final_result = switch (parsed.value) {
+        .@"error" => return .{ .skip = {} },
+        .result => |r| r.final_result,
+    };
     if (final_result.id.len == 0) return .{ .skip = {} };
 
     if (!state.sent_message_start or !state.sent_content_block_start) {
@@ -1136,7 +1163,10 @@ pub fn transformResponsesStreamLine(
     ) catch return .{ .skip = {} };
     defer parsed.deinit();
 
-    const final_result = parsed.value.final_result;
+    const final_result = switch (parsed.value) {
+        .@"error" => return .{ .skip = {} },
+        .result => |r| r.final_result,
+    };
     if (final_result.id.len == 0) return .{ .skip = {} };
 
     if (state.response_id.len == 0) {

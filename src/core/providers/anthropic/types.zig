@@ -2135,8 +2135,23 @@ pub const ContentBlockInfo = struct {
     thinking: ?[]const u8 = null,
     signature: ?[]const u8 = null,
     data: ?[]const u8 = null,
-    tool_use_id: ?[]const u8 = null, // web_search_tool_result block
-    content: ?[]const WebSearchResult = null, // web_search_tool_result block (complete, no deltas)
+    tool_use_id: ?[]const u8 = null,
+    content: ?[]const WebSearchResult = null,
+
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        if (self.text) |v| { try jw.objectField("text"); try jw.write(v); }
+        if (self.id) |v| { try jw.objectField("id"); try jw.write(v); }
+        if (self.name) |v| { try jw.objectField("name"); try jw.write(v); }
+        if (self.input) |v| { try jw.objectField("input"); try jw.write(v); }
+        if (self.thinking) |v| { try jw.objectField("thinking"); try jw.write(v); }
+        if (self.signature) |v| { try jw.objectField("signature"); try jw.write(v); }
+        if (self.data) |v| { try jw.objectField("data"); try jw.write(v); }
+        if (self.tool_use_id) |v| { try jw.objectField("tool_use_id"); try jw.write(v); }
+        if (self.content) |v| { try jw.objectField("content"); try jw.write(v); }
+        try jw.endObject();
+    }
 };
 
 /// Content block delta event

@@ -2,7 +2,7 @@
   "id": "msg_01XFDUDYJgAACzvnptvVoYEL",
   "object": "chat.completion",
   "created": 1710000000,
-  "model": "anthropic/claude-3-5-sonnet-20241022",
+  "model": "anthropic/claude-3-5-sonnet-latest",
   "choices": [
     {
       "index": 0,

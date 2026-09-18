@@ -141,9 +141,8 @@ pub fn transformChatStreamLine(
         .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
     ) catch {
         if (content.tryParseError(json_part, allocator)) |err| {
-            defer content.freeError(err, allocator);
-            log.warn("[openai] [chat-stream] upstream error: {s}", .{err.@"error".message});
-        }
+                return .{ .@"error" = err };
+            }
         return .{ .skip = {} };
     };
     defer parsed.deinit();

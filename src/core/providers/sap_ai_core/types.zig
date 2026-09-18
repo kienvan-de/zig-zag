@@ -358,11 +358,32 @@ pub const Response = struct {
     intermediate_failures: ?std.json.Value = null,
 };
 
-/// SAP AI Core Streaming Chunk
-pub const StreamChunk = struct {
+/// SAP AI Core Streaming Chunk (normal result shape)
+pub const StreamChunkResult = struct {
     request_id: []const u8,
     intermediate_results: ?IntermediateResults = null,
     final_result: OpenAIChat.StreamChunk,
+};
+
+/// SAP AI Core SSE event — either a normal result or an error
+pub const StreamChunk = union(enum) {
+    result: StreamChunkResult,
+    @"error": ErrorDetails,
+
+    pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, options: std.json.ParseOptions) !@This() {
+        if (source != .object) return error.UnexpectedToken;
+        if (source.object.contains("error")) {
+            const err = try std.json.innerParseFromValue(ErrorDetails, allocator, source.object.get("error").?, options);
+            return .{ .@"error" = err };
+        }
+        const result = try std.json.innerParseFromValue(StreamChunkResult, allocator, source, options);
+        return .{ .result = result };
+    }
+
+    pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
+        const v = try std.json.innerParse(std.json.Value, allocator, source, options);
+        return jsonParseFromValue(allocator, v, options);
+    }
 };
 
 // ============================================================================
@@ -372,7 +393,7 @@ pub const StreamChunk = struct {
 /// SAP AI Core error details
 pub const ErrorDetails = struct {
     request_id: ?[]const u8 = null,
-    code: ?i64 = null, // SAP uses numeric HTTP status code
+    code: ?i64 = null,
     message: ?[]const u8 = null,
     location: ?[]const u8 = null,
     intermediate_results: ?IntermediateResults = null,

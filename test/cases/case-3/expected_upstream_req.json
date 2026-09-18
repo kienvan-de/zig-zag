@@ -98,6 +98,7 @@
     }
   ],
   "tool_choice": {
-    "type": "auto"
+    "type": "auto",
+    "disable_parallel_tool_use": false
   }
 }

@@ -469,7 +469,7 @@ pub fn extractToolCalls(
 /// Borrows the message; allocates nothing.
 pub fn transformErrorResponse(
     error_response: Messages.ErrorResponse,
-) common.ErrorResponse {
+) Chat.ErrorResponse {
     const kind = error_response.@"error".type;
     const provider_side = std.mem.eql(u8, kind, "overloaded_error");
 
@@ -512,5 +512,7 @@ pub fn writeMessagesSSE(
         .ping                => "ping",
         .error_event         => "error",
     };
-    try buf.print(allocator, "event: {s}\ndata: {f}\n\n", .{ type_str, std.json.fmt(event, .{}) });
+    switch (event) {
+        inline else => |payload| try buf.print(allocator, "event: {s}\ndata: {f}\n\n", .{ type_str, std.json.fmt(payload, .{}) }),
+    }
 }

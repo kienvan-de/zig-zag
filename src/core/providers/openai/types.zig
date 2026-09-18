@@ -84,39 +84,6 @@ pub const StreamOptions = struct {
 };
 
 // ============================================================================
-// Error Response Structures (OpenAI format)
-// ============================================================================
-
-/// OpenAI error details
-pub const ErrorDetails = struct {
-    message: []const u8,
-    type: []const u8,
-    param: ?[]const u8 = null,
-    code: ?[]const u8 = null,
-
-    pub fn jsonStringify(self: @This(), jw: anytype) !void {
-        try jw.beginObject();
-        try jw.objectField("message"); try jw.write(self.message);
-        try jw.objectField("type"); try jw.write(self.type);
-        if (self.param) |v| { try jw.objectField("param"); try jw.write(v); }
-        if (self.code) |v| { try jw.objectField("code"); try jw.write(v); }
-        try jw.endObject();
-    }
-};
-
-/// OpenAI error response wrapper
-pub const ErrorResponse = struct {
-    @"error": ErrorDetails,
-
-    pub fn jsonStringify(self: @This(), jw: anytype) !void {
-        try jw.beginObject();
-        try jw.objectField("error");
-        try self.@"error".jsonStringify(jw);
-        try jw.endObject();
-    }
-};
-
-// ============================================================================
 // Shared token detail and logprob types
 // ============================================================================
 

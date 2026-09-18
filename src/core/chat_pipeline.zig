@@ -297,7 +297,7 @@ fn streaming(
 
             var err_buf = std.ArrayList(u8).empty;
             defer err_buf.deinit(allocator);
-            const err_payload = openai_common.ErrorResponse{ .@"error" = .{
+            const err_payload = chat_types.ErrorResponse{ .@"error" = .{
                 .message = "Upstream connection lost while streaming response",
                 .type = "server_error",
                 .param = null,
@@ -332,6 +332,12 @@ fn streaming(
                     chunk_count += 1;
                     try writer.writeAll(buf.items);
                 }
+            },
+            .@"error" => |err| {
+                defer chat_content.freeError(err, allocator);
+                buf.clearRetainingCapacity();
+                buf.print(allocator, "data: {f}\n\n", .{std.json.fmt(err, .{})}) catch {};
+                if (buf.items.len > 0) try writer.writeAll(buf.items);
             },
             .skip => {},
         }

@@ -9,6 +9,35 @@ const common = @import("types.zig");
 // Chat-completions-only types (not shared with Responses API)
 // ============================================================================
 
+/// OpenAI error details (chat completions format).
+pub const ErrorDetails = struct {
+    message: []const u8,
+    type: []const u8,
+    param: ?[]const u8 = null,
+    code: ?[]const u8 = null,
+
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("message"); try jw.write(self.message);
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("param"); try jw.write(self.param);
+        try jw.objectField("code"); try jw.write(self.code);
+        try jw.endObject();
+    }
+};
+
+/// OpenAI error response wrapper (`{"error": {...}}`).
+pub const ErrorResponse = struct {
+    @"error": ErrorDetails,
+
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("error");
+        try self.@"error".jsonStringify(jw);
+        try jw.endObject();
+    }
+};
+
 /// Role in a Chat Completions conversation.
 /// The Responses API uses plain strings for roles in input items.
 pub const Role = enum {
@@ -761,6 +790,7 @@ pub const Response = struct {
 /// The transformer returns a typed StreamChunk; the caller serializes to wire bytes.
 pub const ChatStreamLineResult = union(enum) {
     events: []const StreamChunk,
+    @"error": ErrorResponse,
     skip: void,
 };
 
