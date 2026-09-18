@@ -333,9 +333,9 @@ pub fn transformChatStreamLine(
         const tool_calls = allocator.alloc(Chat.DeltaToolCall, 1) catch return .{ .skip = {} };
         tool_calls[0] = .{
             .index = parsed.value.index,
-            .id = block.id,
+            .id = if (block.id) |s| allocator.dupe(u8, s) catch return .{ .skip = {} } else null,
             .type = "function",
-            .function = .{ .name = block.name, .arguments = "" },
+            .function = .{ .name = if (block.name) |s| allocator.dupe(u8, s) catch return .{ .skip = {} } else null, .arguments = "" },
         };
         const choices = allocator.alloc(Chat.StreamChoice, 1) catch return .{ .skip = {} };
         choices[0] = .{ .index = 0, .delta = .{ .tool_calls = tool_calls }, .finish_reason = null };
@@ -363,8 +363,9 @@ pub fn transformChatStreamLine(
 
         if (std.mem.eql(u8, delta.type, "text_delta")) {
             const text = delta.text orelse return .{ .skip = {} };
+            const owned_text = allocator.dupe(u8, text) catch return .{ .skip = {} };
             const choices = allocator.alloc(Chat.StreamChoice, 1) catch return .{ .skip = {} };
-            choices[0] = .{ .index = 0, .delta = .{ .content = text }, .finish_reason = null };
+            choices[0] = .{ .index = 0, .delta = .{ .content = owned_text }, .finish_reason = null };
             const chunks = allocator.alloc(Chat.StreamChunk, 1) catch return .{ .skip = {} };
             chunks[0] = .{
                 .id = if (state.response_id.len > 0) state.response_id else "chatcmpl-unknown",
@@ -378,10 +379,11 @@ pub fn transformChatStreamLine(
 
         if (std.mem.eql(u8, delta.type, "input_json_delta")) {
             const partial = delta.partial_json orelse return .{ .skip = {} };
+            const owned_partial = allocator.dupe(u8, partial) catch return .{ .skip = {} };
             const tool_calls = allocator.alloc(Chat.DeltaToolCall, 1) catch return .{ .skip = {} };
             tool_calls[0] = .{
                 .index = parsed.value.index,
-                .function = .{ .arguments = partial },
+                .function = .{ .arguments = owned_partial },
             };
             const choices = allocator.alloc(Chat.StreamChoice, 1) catch return .{ .skip = {} };
             choices[0] = .{ .index = 0, .delta = .{ .tool_calls = tool_calls }, .finish_reason = null };
@@ -502,6 +504,7 @@ pub fn cleanupMessagesResponse(
 
 /// Forward one Anthropic SSE line as a typed Messages.SseEvent (caller serializes).
 /// Accumulates usage into state.
+/// All string fields in the returned events are duped — caller frees the slice with `allocator.free`.
 pub fn transformMessagesStreamLine(
     line: []const u8,
     state: *MessagesStreamState,
@@ -524,39 +527,92 @@ pub fn transformMessagesStreamLine(
             const parsed = std.json.parseFromSlice(Messages.MessageStart, allocator, json_part,
                 .{ .allocate = .alloc_always, .ignore_unknown_fields = true }) catch return .{ .skip = {} };
             defer parsed.deinit();
-            state.input_tokens = parsed.value.message.usage.input_tokens;
-            break :blk .{ .message_start = parsed.value };
+            const v = parsed.value;
+            state.input_tokens = v.message.usage.input_tokens;
+            break :blk .{ .message_start = .{
+                .type = allocator.dupe(u8, v.type) catch return .{ .skip = {} },
+                .message = .{
+                    .id = allocator.dupe(u8, v.message.id) catch return .{ .skip = {} },
+                    .type = allocator.dupe(u8, v.message.type) catch return .{ .skip = {} },
+                    .role = allocator.dupe(u8, v.message.role) catch return .{ .skip = {} },
+                    .model = allocator.dupe(u8, v.message.model) catch return .{ .skip = {} },
+                    .stop_reason = if (v.message.stop_reason) |s| allocator.dupe(u8, s) catch return .{ .skip = {} } else null,
+                    .stop_sequence = if (v.message.stop_sequence) |s| allocator.dupe(u8, s) catch return .{ .skip = {} } else null,
+                    .usage = v.message.usage,
+                },
+            }};
         }
         if (std.mem.eql(u8, event_type, "content_block_start")) {
             const parsed = std.json.parseFromSlice(Messages.ContentBlockStart, allocator, json_part,
                 .{ .allocate = .alloc_always, .ignore_unknown_fields = true }) catch return .{ .skip = {} };
             defer parsed.deinit();
-            break :blk .{ .content_block_start = parsed.value };
+            const v = parsed.value;
+            const cb = v.content_block;
+            break :blk .{ .content_block_start = .{
+                .type = allocator.dupe(u8, v.type) catch return .{ .skip = {} },
+                .index = v.index,
+                .content_block = .{
+                    .type = allocator.dupe(u8, cb.type) catch return .{ .skip = {} },
+                    .text = if (cb.text) |s| allocator.dupe(u8, s) catch return .{ .skip = {} } else null,
+                    .id = if (cb.id) |s| allocator.dupe(u8, s) catch return .{ .skip = {} } else null,
+                    .name = if (cb.name) |s| allocator.dupe(u8, s) catch return .{ .skip = {} } else null,
+                    .thinking = if (cb.thinking) |s| allocator.dupe(u8, s) catch return .{ .skip = {} } else null,
+                    .signature = if (cb.signature) |s| allocator.dupe(u8, s) catch return .{ .skip = {} } else null,
+                    .data = if (cb.data) |s| allocator.dupe(u8, s) catch return .{ .skip = {} } else null,
+                    .tool_use_id = if (cb.tool_use_id) |s| allocator.dupe(u8, s) catch return .{ .skip = {} } else null,
+                },
+            }};
         }
         if (std.mem.eql(u8, event_type, "content_block_delta")) {
             const parsed = std.json.parseFromSlice(Messages.ContentBlockDelta, allocator, json_part,
                 .{ .allocate = .alloc_always, .ignore_unknown_fields = true }) catch return .{ .skip = {} };
             defer parsed.deinit();
-            break :blk .{ .content_block_delta = parsed.value };
+            const v = parsed.value;
+            const d = v.delta;
+            break :blk .{ .content_block_delta = .{
+                .type = allocator.dupe(u8, v.type) catch return .{ .skip = {} },
+                .index = v.index,
+                .delta = .{
+                    .type = allocator.dupe(u8, d.type) catch return .{ .skip = {} },
+                    .text = if (d.text) |s| allocator.dupe(u8, s) catch return .{ .skip = {} } else null,
+                    .partial_json = if (d.partial_json) |s| allocator.dupe(u8, s) catch return .{ .skip = {} } else null,
+                    .thinking = if (d.thinking) |s| allocator.dupe(u8, s) catch return .{ .skip = {} } else null,
+                    .signature = if (d.signature) |s| allocator.dupe(u8, s) catch return .{ .skip = {} } else null,
+                },
+            }};
         }
         if (std.mem.eql(u8, event_type, "content_block_stop")) {
             const parsed = std.json.parseFromSlice(Messages.ContentBlockStop, allocator, json_part,
                 .{ .allocate = .alloc_always, .ignore_unknown_fields = true }) catch return .{ .skip = {} };
             defer parsed.deinit();
-            break :blk .{ .content_block_stop = parsed.value };
+            const v = parsed.value;
+            break :blk .{ .content_block_stop = .{
+                .type = allocator.dupe(u8, v.type) catch return .{ .skip = {} },
+                .index = v.index,
+            }};
         }
         if (std.mem.eql(u8, event_type, "message_delta")) {
             const parsed = std.json.parseFromSlice(Messages.MessageDelta, allocator, json_part,
                 .{ .allocate = .alloc_always, .ignore_unknown_fields = true }) catch return .{ .skip = {} };
             defer parsed.deinit();
-            state.output_tokens = parsed.value.usage.output_tokens;
-            break :blk .{ .message_delta = parsed.value };
+            const v = parsed.value;
+            state.output_tokens = v.usage.output_tokens;
+            break :blk .{ .message_delta = .{
+                .type = allocator.dupe(u8, v.type) catch return .{ .skip = {} },
+                .delta = .{
+                    .stop_reason = if (v.delta.stop_reason) |s| allocator.dupe(u8, s) catch return .{ .skip = {} } else null,
+                    .stop_sequence = if (v.delta.stop_sequence) |s| allocator.dupe(u8, s) catch return .{ .skip = {} } else null,
+                },
+                .usage = v.usage,
+            }};
         }
         if (std.mem.eql(u8, event_type, "message_stop")) {
             const parsed = std.json.parseFromSlice(Messages.MessageStop, allocator, json_part,
                 .{ .allocate = .alloc_always, .ignore_unknown_fields = true }) catch return .{ .skip = {} };
             defer parsed.deinit();
-            break :blk .{ .message_stop = parsed.value };
+            break :blk .{ .message_stop = .{
+                .type = allocator.dupe(u8, parsed.value.type) catch return .{ .skip = {} },
+            }};
         }
         if (std.mem.eql(u8, event_type, "ping")) {
             break :blk .{ .ping = .{} };
@@ -565,7 +621,14 @@ pub fn transformMessagesStreamLine(
             const parsed = std.json.parseFromSlice(Messages.SseErrorEvent, allocator, json_part,
                 .{ .allocate = .alloc_always, .ignore_unknown_fields = true }) catch return .{ .skip = {} };
             defer parsed.deinit();
-            break :blk .{ .error_event = parsed.value };
+            const v = parsed.value;
+            break :blk .{ .error_event = .{
+                .type = allocator.dupe(u8, v.type) catch return .{ .skip = {} },
+                .@"error" = .{
+                    .type = allocator.dupe(u8, v.@"error".type) catch return .{ .skip = {} },
+                    .message = allocator.dupe(u8, v.@"error".message) catch return .{ .skip = {} },
+                },
+            }};
         }
         return .{ .skip = {} };
     };
@@ -611,8 +674,12 @@ pub const ResponsesStreamState = struct {
     pub fn deinit(self: *ResponsesStreamState) void {
         if (self.response_id.len > 0) self.allocator.free(self.response_id);
         if (self.finish_reason) |reason| self.allocator.free(reason);
+        if (self.tool_use_id.len > 0) self.allocator.free(self.tool_use_id);
+        if (self.tool_use_name.len > 0) self.allocator.free(self.tool_use_name);
         self.response_id = "";
         self.finish_reason = null;
+        self.tool_use_id = "";
+        self.tool_use_name = "";
         self.text_buf.deinit(self.allocator);
         self.arguments_buf.deinit(self.allocator);
     }
@@ -1136,8 +1203,11 @@ pub fn transformResponsesStreamLine(
             .{ .allocate = .alloc_always, .ignore_unknown_fields = true })) |parsed|
         {
             defer parsed.deinit();
-            err_message = parsed.value.@"error".message;
-            err_code = parsed.value.@"error".type;
+            err_message = allocator.dupe(u8, parsed.value.@"error".message) catch err_message;
+            err_code = if (parsed.value.@"error".type.len > 0)
+                allocator.dupe(u8, parsed.value.@"error".type) catch null
+            else
+                null;
         } else |_| {}
         const events = allocator.alloc(Responses.StreamEvent, 1) catch return .{ .skip = {} };
         events[0] = .{ .stream_error = .{
@@ -1172,8 +1242,10 @@ pub fn transformResponsesStreamLine(
         state.output_index = parsed.value.index;
         state.text_buf.clearRetainingCapacity();
         state.arguments_buf.clearRetainingCapacity();
-        state.tool_use_id = block.id orelse "";
-        state.tool_use_name = block.name orelse "";
+        if (state.tool_use_id.len > 0) state.allocator.free(state.tool_use_id);
+        if (state.tool_use_name.len > 0) state.allocator.free(state.tool_use_name);
+        state.tool_use_id = if (block.id) |s| state.allocator.dupe(u8, s) catch "" else "";
+        state.tool_use_name = if (block.name) |s| state.allocator.dupe(u8, s) catch "" else "";
 
         if (is_text) {
             // Two events: output_item_added + content_part_added.
@@ -1224,13 +1296,14 @@ pub fn transformResponsesStreamLine(
             const text = delta.text orelse return .{ .skip = {} };
             if (text.len == 0) return .{ .skip = {} };
             state.text_buf.appendSlice(allocator, text) catch return .{ .skip = {} };
+            const owned_text = allocator.dupe(u8, text) catch return .{ .skip = {} };
             const events = allocator.alloc(Responses.StreamEvent, 1) catch return .{ .skip = {} };
             events[0] = .{ .output_text_delta = .{
                 .sequence_number = state.sequence_number,
                 .output_index = state.output_index,
                 .item_id = state.response_id,
                 .content_index = 0,
-                .delta = text,
+                .delta = owned_text,
             }};
             return .{ .events = events };
         }
@@ -1239,13 +1312,14 @@ pub fn transformResponsesStreamLine(
             const partial = delta.partial_json orelse return .{ .skip = {} };
             if (partial.len == 0) return .{ .skip = {} };
             state.arguments_buf.appendSlice(allocator, partial) catch return .{ .skip = {} };
+            const owned_partial = allocator.dupe(u8, partial) catch return .{ .skip = {} };
             const events = allocator.alloc(Responses.StreamEvent, 1) catch return .{ .skip = {} };
             events[0] = .{ .function_call_arguments_delta = .{
                 .sequence_number = state.sequence_number,
                 .output_index = state.output_index,
                 .item_id = state.response_id,
                 .call_id = if (state.tool_use_id.len > 0) state.tool_use_id else null,
-                .delta = partial,
+                .delta = owned_partial,
             }};
             return .{ .events = events };
         }

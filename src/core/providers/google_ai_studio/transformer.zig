@@ -360,11 +360,12 @@ pub fn transformChatStreamLine(
             .function_call => |fc| {
                 var arg_buf: std.ArrayList(u8) = .empty;
                 arg_buf.print(allocator, "{f}", .{std.json.fmt(fc.args, .{})}) catch return .{ .skip = {} };
+                const owned_name = allocator.dupe(u8, fc.name) catch return .{ .skip = {} };
                 tool_call_buf.append(allocator, .{
                     .index = fc_index,
-                    .id = fc.name,
+                    .id = owned_name,
                     .type = "function",
-                    .function = .{ .name = fc.name, .arguments = arg_buf.items },
+                    .function = .{ .name = owned_name, .arguments = arg_buf.items },
                 }) catch return .{ .skip = {} };
                 arg_bufs.append(allocator, arg_buf) catch return .{ .skip = {} };
                 fc_index += 1;
@@ -383,8 +384,8 @@ pub fn transformChatStreamLine(
     choices[0] = .{
         .index = 0,
         .delta = .{
-            .content = if (text_buf.items.len > 0) text_buf.items else null,
-            .tool_calls = if (tool_call_buf.items.len > 0) tool_call_buf.items else null,
+            .content = if (text_buf.items.len > 0) allocator.dupe(u8, text_buf.items) catch return .{ .skip = {} } else null,
+            .tool_calls = if (tool_call_buf.items.len > 0) tool_call_buf.toOwnedSlice(allocator) catch return .{ .skip = {} } else null,
         },
         .finish_reason = if (is_final) state.finish_reason else null,
     };
@@ -558,22 +559,47 @@ pub fn transformMessagesResponse(
     _ = original_req;
 
     var content_blocks: std.ArrayList(Messages.ContentBlock) = .empty;
-    errdefer content_blocks.deinit(allocator);
+    errdefer {
+        for (content_blocks.items) |block| switch (block) {
+            .text => |t| allocator.free(t.text),
+            .tool_use => |tu| {
+                allocator.free(tu.id);
+                content.freeParsedJsonValue(tu.input, allocator);
+            },
+            else => {},
+        };
+        content_blocks.deinit(allocator);
+    }
 
     if (upstream_response.candidates.len > 0) {
         for (upstream_response.candidates[0].content.parts) |part| {
             switch (part) {
-                .text => |tp| try content_blocks.append(allocator, .{ .text = .{
-                    .type = "text",
-                    .text = tp.text,
-                } }),
+                .text => |tp| {
+                    const owned_text = try allocator.dupe(u8, tp.text);
+                    errdefer allocator.free(owned_text);
+                    try content_blocks.append(allocator, .{ .text = .{
+                        .type = "text",
+                        .text = owned_text,
+                    } });
+                },
                 .function_call => |fc| {
                     // Gemini has no tool-call ids — name used as id.
+                    const owned_name = try allocator.dupe(u8, fc.name);
+                    errdefer allocator.free(owned_name);
+                    // Deep-copy fc.args: serialize then re-parse onto allocator so the
+                    // returned response does not borrow from the upstream parse arena.
+                    var args_buf: std.ArrayList(u8) = .empty;
+                    defer args_buf.deinit(allocator);
+                    try args_buf.print(allocator, "{f}", .{std.json.fmt(fc.args, .{})});
+                    const owned_args = std.json.parseFromSliceLeaky(
+                        std.json.Value, allocator, args_buf.items, .{},
+                    ) catch std.json.Value{ .object = .{} };
+                    errdefer content.freeParsedJsonValue(owned_args, allocator);
                     try content_blocks.append(allocator, .{ .tool_use = .{
                         .type = "tool_use",
-                        .id = fc.name,
-                        .name = fc.name,
-                        .input = fc.args,
+                        .id = owned_name,
+                        .name = owned_name,
+                        .input = owned_args,
                     } });
                 },
                 else => {},
@@ -581,8 +607,11 @@ pub fn transformMessagesResponse(
         }
     }
 
-    if (content_blocks.items.len == 0)
-        try content_blocks.append(allocator, .{ .text = .{ .type = "text", .text = "" } });
+    if (content_blocks.items.len == 0) {
+        const owned_text = try allocator.dupe(u8, "");
+        errdefer allocator.free(owned_text);
+        try content_blocks.append(allocator, .{ .text = .{ .type = "text", .text = owned_text } });
+    }
 
     const stop_reason: []const u8 = if (upstream_response.candidates.len > 0)
         content.transformStopReasonToMessages(upstream_response.candidates[0].finish_reason)
@@ -612,6 +641,16 @@ pub fn cleanupMessagesResponse(
     inbound_response: Messages.Response,
     allocator: std.mem.Allocator,
 ) void {
+    for (inbound_response.content) |block| {
+        switch (block) {
+            .text => |t| allocator.free(t.text),
+            .tool_use => |tu| {
+                allocator.free(tu.id); // id and name point to the same allocation
+                content.freeParsedJsonValue(tu.input, allocator);
+            },
+            else => {},
+        }
+    }
     allocator.free(inbound_response.content);
     allocator.free(inbound_response.id);
     allocator.free(inbound_response.model);
@@ -674,16 +713,24 @@ pub fn transformMessagesStreamLine(
             switch (part) {
                 .text => |tp| {
                     if (tp.text.len == 0) continue;
+                    const owned_text = allocator.dupe(u8, tp.text) catch continue;
                     events.append(allocator, .{ .content_block_delta = .{
                         .type = "content_block_delta",
                         .index = 0,
-                        .delta = .{ .type = "text_delta", .text = tp.text },
-                    }}) catch continue;
+                        .delta = .{ .type = "text_delta", .text = owned_text },
+                    }}) catch {
+                        allocator.free(owned_text);
+                        continue;
+                    };
                 },
                 .function_call => |fc| {
                     var args_buf: std.ArrayList(u8) = .empty;
-                    defer args_buf.deinit(allocator);
                     args_buf.print(allocator, "{f}", .{std.json.fmt(fc.args, .{})}) catch continue;
+                    const owned_args = args_buf.toOwnedSlice(allocator) catch continue;
+                    const owned_name = allocator.dupe(u8, fc.name) catch {
+                        allocator.free(owned_args);
+                        continue;
+                    };
 
                     const block_idx = state.next_block_index;
                     state.next_block_index += 1;
@@ -691,12 +738,12 @@ pub fn transformMessagesStreamLine(
                     events.append(allocator, .{ .content_block_start = .{
                         .type = "content_block_start",
                         .index = block_idx,
-                        .content_block = .{ .type = "tool_use", .id = fc.name, .name = fc.name },
+                        .content_block = .{ .type = "tool_use", .id = owned_name, .name = owned_name },
                     }}) catch continue;
                     events.append(allocator, .{ .content_block_delta = .{
                         .type = "content_block_delta",
                         .index = block_idx,
-                        .delta = .{ .type = "input_json_delta", .partial_json = args_buf.items },
+                        .delta = .{ .type = "input_json_delta", .partial_json = owned_args },
                     }}) catch continue;
                     events.append(allocator, .{ .content_block_stop = .{
                         .type = "content_block_stop",
@@ -1124,27 +1171,35 @@ pub fn transformResponsesStreamLine(
                 .text => |tp| {
                     if (tp.text.len == 0) continue;
                     state.text_buf.appendSlice(allocator, tp.text) catch continue;
+                    const owned_text = allocator.dupe(u8, tp.text) catch continue;
                     events.append(allocator, .{ .output_text_delta = .{
                         .sequence_number = state.sequence_number,
                         .output_index = 0,
                         .item_id = state.response_id,
                         .content_index = 0,
-                        .delta = tp.text,
-                    }}) catch continue;
+                        .delta = owned_text,
+                    }}) catch {
+                        allocator.free(owned_text);
+                        continue;
+                    };
                     state.sequence_number += 1;
                 },
                 .function_call => |fc| {
                     var args_buf: std.ArrayList(u8) = .empty;
-                    defer args_buf.deinit(allocator);
                     args_buf.print(allocator, "{f}", .{std.json.fmt(fc.args, .{})}) catch continue;
+                    const owned_args = args_buf.toOwnedSlice(allocator) catch continue;
+                    const owned_name = allocator.dupe(u8, fc.name) catch {
+                        allocator.free(owned_args);
+                        continue;
+                    };
 
                     events.append(allocator, .{ .output_item_added = .{
                         .sequence_number = state.sequence_number,
                         .output_index = 1,
                         .item = .{ .function_call = .{
-                            .id = fc.name,
+                            .id = owned_name,
                             .type = "function_call",
-                            .name = fc.name,
+                            .name = owned_name,
                             .arguments = "",
                             .status = "in_progress",
                         }},
@@ -1154,26 +1209,26 @@ pub fn transformResponsesStreamLine(
                         .sequence_number = state.sequence_number,
                         .output_index = 1,
                         .item_id = state.response_id,
-                        .call_id = fc.name,
-                        .delta = args_buf.items,
+                        .call_id = owned_name,
+                        .delta = owned_args,
                     }}) catch continue;
                     state.sequence_number += 1;
                     events.append(allocator, .{ .function_call_arguments_done = .{
                         .sequence_number = state.sequence_number,
                         .output_index = 1,
                         .item_id = state.response_id,
-                        .call_id = fc.name,
-                        .arguments = args_buf.items,
+                        .call_id = owned_name,
+                        .arguments = owned_args,
                     }}) catch continue;
                     state.sequence_number += 1;
                     events.append(allocator, .{ .output_item_done = .{
                         .sequence_number = state.sequence_number,
                         .output_index = 1,
                         .item = .{ .function_call = .{
-                            .id = fc.name,
+                            .id = owned_name,
                             .type = "function_call",
-                            .name = fc.name,
-                            .arguments = args_buf.items,
+                            .name = owned_name,
+                            .arguments = owned_args,
                             .call_id = null,
                             .status = "completed",
                         }},
