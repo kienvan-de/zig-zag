@@ -288,6 +288,7 @@ pub fn transformMessagesRequest(
         const role: Chat.Role = switch (msg.role) {
             .user => .user,
             .assistant => .assistant,
+            .system => .system,
         };
 
         switch (msg.content) {
@@ -735,7 +736,7 @@ pub fn transformResponsesRequest(
             if (std.mem.eql(u8, item_type, "message")) {
                 const role_val = obj.get("role") orelse continue;
                 if (role_val != .string) continue;
-                const role = std.meta.stringToEnum(common.Role, role_val.string) orelse continue;
+                const role = std.meta.stringToEnum(Chat.Role, role_val.string) orelse continue;
 
                 const message_content: ?Chat.MessageContent = blk: {
                     const cv = obj.get("content") orelse break :blk null;
@@ -838,7 +839,6 @@ pub fn transformResponsesRequest(
         .metadata = request.metadata,
         .user = request.user,
         .service_tier = request.service_tier,
-        .stop = request.stop,
         .response_format = if (request.text) |txt| txt.format else null,
         .reasoning_effort = if (request.reasoning_effort) |re| re
         else if (request.reasoning) |r| blk: {

@@ -108,15 +108,18 @@ pub const AzureContentSafetyOutput = struct {
     protected_material_code: ?bool = null,
 };
 
+pub const InputFilterAzureContentSafety = struct {
+    type: []const u8 = "azure_content_safety",
+    config: ?AzureContentSafetyInput = null,
+};
+pub const InputFilterLlamaGuard = struct {
+    type: []const u8 = "llama_guard_3_8b",
+    config: ?std.json.Value = null,
+};
+
 pub const InputFilterConfig = union(enum) {
-    azure_content_safety: struct {
-        type: []const u8 = "azure_content_safety",
-        config: ?AzureContentSafetyInput = null,
-    },
-    llama_guard_3_8b: struct {
-        type: []const u8 = "llama_guard_3_8b",
-        config: ?std.json.Value = null,
-    },
+    azure_content_safety: InputFilterAzureContentSafety,
+    llama_guard_3_8b: InputFilterLlamaGuard,
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         switch (self) {
@@ -126,15 +129,18 @@ pub const InputFilterConfig = union(enum) {
     }
 };
 
+pub const OutputFilterAzureContentSafety = struct {
+    type: []const u8 = "azure_content_safety",
+    config: ?AzureContentSafetyOutput = null,
+};
+pub const OutputFilterLlamaGuard = struct {
+    type: []const u8 = "llama_guard_3_8b",
+    config: ?std.json.Value = null,
+};
+
 pub const OutputFilterConfig = union(enum) {
-    azure_content_safety: struct {
-        type: []const u8 = "azure_content_safety",
-        config: ?AzureContentSafetyOutput = null,
-    },
-    llama_guard_3_8b: struct {
-        type: []const u8 = "llama_guard_3_8b",
-        config: ?std.json.Value = null,
-    },
+    azure_content_safety: OutputFilterAzureContentSafety,
+    llama_guard_3_8b: OutputFilterLlamaGuard,
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         switch (self) {

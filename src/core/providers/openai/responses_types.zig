@@ -19,51 +19,67 @@ pub const MCPToolFilter = struct {
     read_only: ?bool = null,
 };
 
+pub const ToolFunction = struct {
+    type: []const u8 = "function",
+    function: common.ToolFunction,
+};
+
+pub const ToolUserLocation = struct {
+    type: []const u8 = "approximate",
+    country: ?[]const u8 = null,
+    city: ?[]const u8 = null,
+    region: ?[]const u8 = null,
+    timezone: ?[]const u8 = null,
+};
+
+pub const ToolWebSearchPreview = struct {
+    type: []const u8 = "web_search_preview",
+    search_context_size: ?[]const u8 = null,
+    user_location: ?ToolUserLocation = null,
+};
+
+pub const ToolFileSearchRankingOptions = struct {
+    ranker: ?[]const u8 = null,
+    score_threshold: ?f32 = null,
+};
+
+pub const ToolFileSearch = struct {
+    type: []const u8 = "file_search",
+    vector_store_ids: []const []const u8 = &.{},
+    max_num_results: ?u32 = null,
+    filters: ?std.json.Value = null,
+    ranking_options: ?ToolFileSearchRankingOptions = null,
+};
+
+pub const ToolCodeInterpreterContainer = struct {
+    type: []const u8 = "",
+};
+
+pub const ToolCodeInterpreter = struct {
+    type: []const u8 = "code_interpreter",
+    container: ?ToolCodeInterpreterContainer = null,
+};
+
+pub const ToolMcp = struct {
+    type: []const u8 = "mcp",
+    server_label: []const u8 = "",
+    server_url: []const u8 = "",
+    allowed_tools: ?MCPToolFilter = null,
+    headers: ?std.json.Value = null,
+    require_approval: ?[]const u8 = null,
+    connector_id: ?[]const u8 = null,
+    tunnel_id: ?[]const u8 = null,
+    authorization: ?[]const u8 = null,
+};
+
 /// Tool definition for the Responses API — flat format for "function" type,
 /// plus pass-through for built-in tools (web_search_preview, file_search, etc.)
 pub const Tool = union(enum) {
-    function: struct {
-        type: []const u8 = "function",
-        function: common.ToolFunction,
-    },
-    web_search_preview: struct {
-        type: []const u8 = "web_search_preview",
-        search_context_size: ?[]const u8 = null,
-        user_location: ?struct {
-            type: []const u8 = "approximate",
-            country: ?[]const u8 = null,
-            city: ?[]const u8 = null,
-            region: ?[]const u8 = null,
-            timezone: ?[]const u8 = null,
-        } = null,
-    },
-    file_search: struct {
-        type: []const u8 = "file_search",
-        vector_store_ids: []const []const u8 = &.{},
-        max_num_results: ?u32 = null,
-        filters: ?std.json.Value = null,
-        ranking_options: ?struct {
-            ranker: ?[]const u8 = null,
-            score_threshold: ?f32 = null,
-        } = null,
-    },
-    code_interpreter_tool: struct {
-        type: []const u8 = "code_interpreter",
-        container: ?struct {
-            type: []const u8 = "",
-        } = null,
-    },
-    mcp_tool: struct {
-        type: []const u8 = "mcp",
-        server_label: []const u8 = "",
-        server_url: []const u8 = "",
-        allowed_tools: ?MCPToolFilter = null,
-        headers: ?std.json.Value = null,
-        require_approval: ?[]const u8 = null,
-        connector_id: ?[]const u8 = null,
-        tunnel_id: ?[]const u8 = null,
-        authorization: ?[]const u8 = null,
-    },
+    function: ToolFunction,
+    web_search_preview: ToolWebSearchPreview,
+    file_search: ToolFileSearch,
+    code_interpreter_tool: ToolCodeInterpreter,
+    mcp_tool: ToolMcp,
     /// Pass-through for built-in and unknown tool types
     other: std.json.Value,
 
@@ -93,17 +109,17 @@ pub const Tool = union(enum) {
             } } };
         } else if (std.mem.eql(u8, type_val.string, "web_search_preview")) {
             return .{ .web_search_preview = try std.json.innerParseFromValue(
-                @TypeOf(@as(Tool, .{ .web_search_preview = .{} }).web_search_preview),
+                ToolWebSearchPreview,
                 allocator, source, options,
             ) };
         } else if (std.mem.eql(u8, type_val.string, "file_search")) {
             return .{ .file_search = try std.json.innerParseFromValue(
-                @TypeOf(@as(Tool, .{ .file_search = .{} }).file_search),
+                ToolFileSearch,
                 allocator, source, options,
             ) };
         } else if (std.mem.eql(u8, type_val.string, "code_interpreter")) {
             return .{ .code_interpreter_tool = try std.json.innerParseFromValue(
-                @TypeOf(@as(Tool, .{ .code_interpreter_tool = .{} }).code_interpreter_tool),
+                ToolCodeInterpreter,
                 allocator, source, options,
             ) };
         } else if (std.mem.eql(u8, type_val.string, "mcp")) {
@@ -398,13 +414,15 @@ pub const OutputTextContent = struct {
     }
 };
 
+pub const OutputContentRefusal = struct {
+    type: []const u8 = "refusal",
+    refusal: []const u8,
+};
+
 /// Content inside an output message — text or refusal
 pub const OutputContent = union(enum) {
     output_text: OutputTextContent,
-    refusal: struct {
-        type: []const u8 = "refusal",
-        refusal: []const u8,
-    },
+    refusal: OutputContentRefusal,
     other: std.json.Value,
 
     pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
@@ -476,96 +494,118 @@ pub const OutputMessage = struct {
     }
 };
 
+pub const OutputItemFunctionCall = struct {
+    id: []const u8 = "",
+    type: []const u8 = "function_call",
+    name: []const u8 = "",
+    arguments: []const u8 = "",
+    call_id: ?[]const u8 = null,
+    status: ?[]const u8 = null,
+    @"async": ?bool = null,
+    namespace: ?[]const u8 = null,
+    caller: ?std.json.Value = null,
+};
+
+pub const OutputItemReasoning = struct {
+    id: []const u8 = "",
+    type: []const u8 = "reasoning",
+    summary: ?std.json.Value = null,
+    encrypted_content: ?std.json.Value = null,
+    status: ?[]const u8 = null,
+    content: []const std.json.Value = &.{},
+};
+
+pub const OutputItemWebSearchCallAction = struct {
+    type: []const u8 = "",
+    query: []const u8 = "",
+};
+
+pub const OutputItemWebSearchCall = struct {
+    type: []const u8 = "web_search_call",
+    id: []const u8 = "",
+    status: []const u8 = "",
+    action: ?OutputItemWebSearchCallAction = null,
+};
+
+pub const OutputItemFileSearchCall = struct {
+    type: []const u8 = "file_search_call",
+    id: []const u8 = "",
+    status: []const u8 = "",
+    queries: []const []const u8 = &.{},
+    results: []const std.json.Value = &.{},
+};
+
+pub const OutputItemCodeInterpreterCall = struct {
+    type: []const u8 = "code_interpreter_call",
+    id: []const u8 = "",
+    status: []const u8 = "",
+    code: []const u8 = "",
+    results: []const std.json.Value = &.{},
+};
+
+pub const OutputItemMcpListTools = struct {
+    type: []const u8 = "mcp_list_tools",
+    id: []const u8 = "",
+    server_label: []const u8 = "",
+    status: []const u8 = "",
+    tools: []const std.json.Value = &.{},
+    @"error": ?[]const u8 = null,
+};
+
+pub const OutputItemMcpCall = struct {
+    type: []const u8 = "mcp_call",
+    id: []const u8 = "",
+    server_label: []const u8 = "",
+    name: []const u8 = "",
+    arguments: []const u8 = "",
+    status: []const u8 = "",
+    output: ?[]const u8 = null,
+    @"error": ?std.json.Value = null,
+    approval_request_id: ?[]const u8 = null,
+};
+
+pub const OutputItemImageGenerationCall = struct {
+    type: []const u8 = "image_generation_call",
+    id: []const u8 = "",
+    status: []const u8 = "",
+    result: ?[]const u8 = null,
+    size: ?[]const u8 = null,
+    quality: ?[]const u8 = null,
+    action: ?std.json.Value = null,
+    background: ?[]const u8 = null,
+    output_format: ?[]const u8 = null,
+    revised_prompt: ?[]const u8 = null,
+};
+
+pub const OutputItemLocalShellCallAction = struct {
+    type: []const u8 = "",
+    command: []const []const u8 = &.{},
+    env: ?std.json.Value = null,
+    timeout_ms: ?u32 = null,
+    working_directory: ?[]const u8 = null,
+    user: ?[]const u8 = null,
+};
+
+pub const OutputItemLocalShellCall = struct {
+    type: []const u8 = "local_shell_call",
+    id: []const u8 = "",
+    call_id: []const u8 = "",
+    status: []const u8 = "",
+    action: ?OutputItemLocalShellCallAction = null,
+};
+
 /// An item in the output array — polymorphic
 pub const OutputItem = union(enum) {
     message: OutputMessage,
-    function_call: struct {
-        id: []const u8 = "",
-        type: []const u8 = "function_call",
-        name: []const u8 = "",
-        arguments: []const u8 = "",
-        call_id: ?[]const u8 = null,
-        status: ?[]const u8 = null,
-        @"async": ?bool = null,
-        namespace: ?[]const u8 = null,
-        caller: ?std.json.Value = null,
-    },
-    reasoning: struct {
-        id: []const u8 = "",
-        type: []const u8 = "reasoning",
-        summary: ?std.json.Value = null,
-        encrypted_content: ?std.json.Value = null,
-        status: ?[]const u8 = null,
-        content: []const std.json.Value = &.{},
-    },
-    web_search_call: struct {
-        type: []const u8 = "web_search_call",
-        id: []const u8 = "",
-        status: []const u8 = "",
-        action: ?struct {
-            type: []const u8 = "",
-            query: []const u8 = "",
-        } = null,
-    },
-    file_search_call: struct {
-        type: []const u8 = "file_search_call",
-        id: []const u8 = "",
-        status: []const u8 = "",
-        queries: []const []const u8 = &.{},
-        results: []const std.json.Value = &.{},
-    },
-    code_interpreter_call: struct {
-        type: []const u8 = "code_interpreter_call",
-        id: []const u8 = "",
-        status: []const u8 = "",
-        code: []const u8 = "",
-        results: []const std.json.Value = &.{},
-    },
-    mcp_list_tools_item: struct {
-        type: []const u8 = "mcp_list_tools",
-        id: []const u8 = "",
-        server_label: []const u8 = "",
-        status: []const u8 = "",
-        tools: []const std.json.Value = &.{},
-        @"error": ?[]const u8 = null,
-    },
-    mcp_call_item: struct {
-        type: []const u8 = "mcp_call",
-        id: []const u8 = "",
-        server_label: []const u8 = "",
-        name: []const u8 = "",
-        arguments: []const u8 = "",
-        status: []const u8 = "",
-        output: ?[]const u8 = null,
-        @"error": ?std.json.Value = null,
-        approval_request_id: ?[]const u8 = null,
-    },
-    image_generation_call: struct {
-        type: []const u8 = "image_generation_call",
-        id: []const u8 = "",
-        status: []const u8 = "",
-        result: ?[]const u8 = null,
-        size: ?[]const u8 = null,
-        quality: ?[]const u8 = null,
-        action: ?std.json.Value = null,
-        background: ?[]const u8 = null,
-        output_format: ?[]const u8 = null,
-        revised_prompt: ?[]const u8 = null,
-    },
-    local_shell_call: struct {
-        type: []const u8 = "local_shell_call",
-        id: []const u8 = "",
-        call_id: []const u8 = "",
-        status: []const u8 = "",
-        action: ?struct {
-            type: []const u8 = "",
-            command: []const []const u8 = &.{},
-            env: ?std.json.Value = null,
-            timeout_ms: ?u32 = null,
-            working_directory: ?[]const u8 = null,
-            user: ?[]const u8 = null,
-        } = null,
-    },
+    function_call: OutputItemFunctionCall,
+    reasoning: OutputItemReasoning,
+    web_search_call: OutputItemWebSearchCall,
+    file_search_call: OutputItemFileSearchCall,
+    code_interpreter_call: OutputItemCodeInterpreterCall,
+    mcp_list_tools_item: OutputItemMcpListTools,
+    mcp_call_item: OutputItemMcpCall,
+    image_generation_call: OutputItemImageGenerationCall,
+    local_shell_call: OutputItemLocalShellCall,
     other: std.json.Value,
 
     pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
@@ -621,37 +661,37 @@ pub const OutputItem = union(enum) {
             } };
         } else if (std.mem.eql(u8, type_val.string, "web_search_call")) {
             return .{ .web_search_call = try std.json.innerParseFromValue(
-                @TypeOf(@as(OutputItem, .{ .web_search_call = .{} }).web_search_call),
+                OutputItemWebSearchCall,
                 allocator, source, options,
             ) };
         } else if (std.mem.eql(u8, type_val.string, "file_search_call")) {
             return .{ .file_search_call = try std.json.innerParseFromValue(
-                @TypeOf(@as(OutputItem, .{ .file_search_call = .{} }).file_search_call),
+                OutputItemFileSearchCall,
                 allocator, source, options,
             ) };
         } else if (std.mem.eql(u8, type_val.string, "code_interpreter_call")) {
             return .{ .code_interpreter_call = try std.json.innerParseFromValue(
-                @TypeOf(@as(OutputItem, .{ .code_interpreter_call = .{} }).code_interpreter_call),
+                OutputItemCodeInterpreterCall,
                 allocator, source, options,
             ) };
         } else if (std.mem.eql(u8, type_val.string, "mcp_list_tools")) {
             return .{ .mcp_list_tools_item = try std.json.innerParseFromValue(
-                @TypeOf(@as(OutputItem, .{ .mcp_list_tools_item = .{} }).mcp_list_tools_item),
+                OutputItemMcpListTools,
                 allocator, source, options,
             ) };
         } else if (std.mem.eql(u8, type_val.string, "mcp_call")) {
             return .{ .mcp_call_item = try std.json.innerParseFromValue(
-                @TypeOf(@as(OutputItem, .{ .mcp_call_item = .{} }).mcp_call_item),
+                OutputItemMcpCall,
                 allocator, source, options,
             ) };
         } else if (std.mem.eql(u8, type_val.string, "image_generation_call")) {
             return .{ .image_generation_call = try std.json.innerParseFromValue(
-                @TypeOf(@as(OutputItem, .{ .image_generation_call = .{} }).image_generation_call),
+                OutputItemImageGenerationCall,
                 allocator, source, options,
             ) };
         } else if (std.mem.eql(u8, type_val.string, "local_shell_call")) {
             return .{ .local_shell_call = try std.json.innerParseFromValue(
-                @TypeOf(@as(OutputItem, .{ .local_shell_call = .{} }).local_shell_call),
+                OutputItemLocalShellCall,
                 allocator, source, options,
             ) };
         } else {
@@ -825,22 +865,30 @@ pub const ModerationOutput = struct {
     output: ?ModerationResult = null,
 };
 
+pub const PromptCacheDiagnosticsCacheMiss = struct {
+    type: []const u8 = "cache_miss",
+    reason: []const u8 = "",
+    cache_missed_tokens: u32 = 0,
+    comparison_reusable_tokens: u32 = 0,
+};
+
+pub const PromptCacheDiagnosticsCacheHit = struct {
+    type: []const u8 = "cache_hit",
+};
+
+pub const PromptCacheDiagnosticsComparisonResponseNotFound = struct {
+    type: []const u8 = "comparison_response_not_found",
+};
+
+pub const PromptCacheDiagnosticsUnavailable = struct {
+    type: []const u8 = "unavailable",
+};
+
 pub const PromptCacheDiagnostics = union(enum) {
-    cache_miss: struct {
-        type: []const u8 = "cache_miss",
-        reason: []const u8 = "",
-        cache_missed_tokens: u32 = 0,
-        comparison_reusable_tokens: u32 = 0,
-    },
-    cache_hit: struct {
-        type: []const u8 = "cache_hit",
-    },
-    comparison_response_not_found: struct {
-        type: []const u8 = "comparison_response_not_found",
-    },
-    unavailable: struct {
-        type: []const u8 = "unavailable",
-    },
+    cache_miss: PromptCacheDiagnosticsCacheMiss,
+    cache_hit: PromptCacheDiagnosticsCacheHit,
+    comparison_response_not_found: PromptCacheDiagnosticsComparisonResponseNotFound,
+    unavailable: PromptCacheDiagnosticsUnavailable,
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         switch (self) {
@@ -853,7 +901,7 @@ pub const PromptCacheDiagnostics = union(enum) {
         const type_v = source.object.get("type") orelse return error.MissingField;
         if (type_v != .string) return error.UnexpectedToken;
         const t = type_v.string;
-        if (std.mem.eql(u8, t, "cache_miss")) return .{ .cache_miss = try std.json.innerParseFromValue(@TypeOf(@as(PromptCacheDiagnostics, undefined).cache_miss), allocator, source, options) };
+        if (std.mem.eql(u8, t, "cache_miss")) return .{ .cache_miss = try std.json.innerParseFromValue(PromptCacheDiagnosticsCacheMiss, allocator, source, options) };
         if (std.mem.eql(u8, t, "cache_hit")) return .{ .cache_hit = .{} };
         if (std.mem.eql(u8, t, "comparison_response_not_found")) return .{ .comparison_response_not_found = .{} };
         if (std.mem.eql(u8, t, "unavailable")) return .{ .unavailable = .{} };
@@ -925,932 +973,1049 @@ pub const OutputAnnotation = union(enum) {
 // Streaming — SSE event wrapper + payload types
 // ============================================================================
 
+pub const StreamEventResponseCreated = struct {
+    type: []const u8 = "response.created",
+    sequence_number: u32,
+    response: Response,
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        try jw.objectField("response"); try self.response.jsonStringify(jw);
+        try jw.endObject();
+    }
+};
+
+pub const StreamEventResponseInProgress = struct {
+    type: []const u8 = "response.in_progress",
+    sequence_number: u32,
+    response: Response,
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        try jw.objectField("response"); try self.response.jsonStringify(jw);
+        try jw.endObject();
+    }
+};
+
+pub const StreamEventResponseCompleted = struct {
+    type: []const u8 = "response.completed",
+    sequence_number: u32,
+    response: Response,
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        try jw.objectField("response"); try self.response.jsonStringify(jw);
+        try jw.endObject();
+    }
+};
+
+pub const StreamEventResponseFailed = struct {
+    type: []const u8 = "response.failed",
+    sequence_number: u32,
+    response: Response,
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        try jw.objectField("response"); try self.response.jsonStringify(jw);
+        try jw.endObject();
+    }
+};
+
+pub const StreamEventResponseIncomplete = struct {
+    type: []const u8 = "response.incomplete",
+    sequence_number: u32,
+    response: Response,
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        try jw.objectField("response"); try self.response.jsonStringify(jw);
+        try jw.endObject();
+    }
+};
+
+pub const StreamEventOutputItemAdded = struct {
+    type: []const u8 = "response.output_item.added",
+    sequence_number: u32,
+    output_index: u32 = 0,
+    item: OutputItem,
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        try jw.objectField("output_index"); try jw.write(self.output_index);
+        try jw.objectField("item"); try self.item.jsonStringify(jw);
+        try jw.endObject();
+    }
+};
+
+pub const StreamEventOutputItemDone = struct {
+    type: []const u8 = "response.output_item.done",
+    sequence_number: u32,
+    output_index: u32 = 0,
+    item: OutputItem,
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        try jw.objectField("output_index"); try jw.write(self.output_index);
+        try jw.objectField("item"); try self.item.jsonStringify(jw);
+        try jw.endObject();
+    }
+};
+
+pub const StreamEventContentPartAdded = struct {
+    type: []const u8 = "response.content_part.added",
+    sequence_number: u32,
+    output_index: u32 = 0,
+    item_id: []const u8 = "",
+    content_index: u32 = 0,
+    part: OutputContent,
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        try jw.objectField("output_index"); try jw.write(self.output_index);
+        try jw.objectField("item_id"); try jw.write(self.item_id);
+        try jw.objectField("content_index"); try jw.write(self.content_index);
+        try jw.objectField("part"); try self.part.jsonStringify(jw);
+        try jw.endObject();
+    }
+};
+
+pub const StreamEventContentPartDone = struct {
+    type: []const u8 = "response.content_part.done",
+    sequence_number: u32,
+    output_index: u32 = 0,
+    item_id: []const u8 = "",
+    content_index: u32 = 0,
+    part: OutputContent,
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        try jw.objectField("output_index"); try jw.write(self.output_index);
+        try jw.objectField("item_id"); try jw.write(self.item_id);
+        try jw.objectField("content_index"); try jw.write(self.content_index);
+        try jw.objectField("part"); try self.part.jsonStringify(jw);
+        try jw.endObject();
+    }
+};
+
+pub const StreamEventOutputTextDelta = struct {
+    type: []const u8 = "response.output_text.delta",
+    sequence_number: u32,
+    output_index: u32 = 0,
+    item_id: []const u8 = "",
+    content_index: u32 = 0,
+    delta: []const u8 = "",
+    logprobs: ?[]const common.LogprobEntry = null,
+};
+
+pub const StreamEventOutputTextDone = struct {
+    type: []const u8 = "response.output_text.done",
+    sequence_number: u32,
+    output_index: u32 = 0,
+    item_id: []const u8 = "",
+    content_index: u32 = 0,
+    text: []const u8 = "",
+    logprobs: ?[]const common.LogprobEntry = null,
+};
+
+pub const StreamEventFunctionCallArgumentsDelta = struct {
+    type: []const u8 = "response.function_call_arguments.delta",
+    sequence_number: u32,
+    output_index: u32 = 0,
+    item_id: []const u8 = "",
+    call_id: ?[]const u8 = null,
+    delta: []const u8 = "",
+};
+
+pub const StreamEventFunctionCallArgumentsDone = struct {
+    type: []const u8 = "response.function_call_arguments.done",
+    sequence_number: u32,
+    output_index: u32 = 0,
+    item_id: []const u8 = "",
+    call_id: ?[]const u8 = null,
+    arguments: []const u8 = "",
+};
+
+pub const StreamEventStreamError = struct {
+    type: []const u8 = "error",
+    sequence_number: u32,
+    code: ?[]const u8 = null,
+    message: []const u8 = "",
+    param: ?[]const u8 = null,
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        if (self.code) |v| { try jw.objectField("code"); try jw.write(v); }
+        try jw.objectField("message"); try jw.write(self.message);
+        if (self.param) |v| { try jw.objectField("param"); try jw.write(v); }
+        try jw.endObject();
+    }
+};
+
+pub const StreamEventResponseQueued = struct {
+    type: []const u8 = "response.queued",
+    sequence_number: u32,
+    response: Response,
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        try jw.objectField("response"); try self.response.jsonStringify(jw);
+        try jw.endObject();
+    }
+};
+
+pub const StreamEventOutputTextAnnotationAdded = struct {
+    type: []const u8 = "response.output_text.annotation.added",
+    sequence_number: u32,
+    output_index: u32 = 0,
+    item_id: []const u8 = "",
+    content_index: u32 = 0,
+    annotation_index: u32 = 0,
+    annotation: std.json.Value,
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        try jw.objectField("output_index"); try jw.write(self.output_index);
+        try jw.objectField("item_id"); try jw.write(self.item_id);
+        try jw.objectField("content_index"); try jw.write(self.content_index);
+        try jw.objectField("annotation_index"); try jw.write(self.annotation_index);
+        try jw.objectField("annotation"); try jw.write(self.annotation);
+        try jw.endObject();
+    }
+};
+
+pub const StreamEventRefusalDelta = struct {
+    type: []const u8 = "response.refusal.delta",
+    sequence_number: u32,
+    output_index: u32 = 0,
+    item_id: []const u8 = "",
+    content_index: u32 = 0,
+    delta: []const u8 = "",
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        try jw.objectField("output_index"); try jw.write(self.output_index);
+        try jw.objectField("item_id"); try jw.write(self.item_id);
+        try jw.objectField("content_index"); try jw.write(self.content_index);
+        try jw.objectField("delta"); try jw.write(self.delta);
+        try jw.endObject();
+    }
+};
+
+pub const StreamEventRefusalDone = struct {
+    type: []const u8 = "response.refusal.done",
+    sequence_number: u32,
+    output_index: u32 = 0,
+    item_id: []const u8 = "",
+    content_index: u32 = 0,
+    refusal: []const u8 = "",
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        try jw.objectField("output_index"); try jw.write(self.output_index);
+        try jw.objectField("item_id"); try jw.write(self.item_id);
+        try jw.objectField("content_index"); try jw.write(self.content_index);
+        try jw.objectField("refusal"); try jw.write(self.refusal);
+        try jw.endObject();
+    }
+};
+
+pub const StreamEventReasoningTextDelta = struct {
+    type: []const u8 = "response.reasoning_text.delta",
+    sequence_number: u32,
+    output_index: u32 = 0,
+    item_id: []const u8 = "",
+    content_index: u32 = 0,
+    delta: []const u8 = "",
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        try jw.objectField("output_index"); try jw.write(self.output_index);
+        try jw.objectField("item_id"); try jw.write(self.item_id);
+        try jw.objectField("content_index"); try jw.write(self.content_index);
+        try jw.objectField("delta"); try jw.write(self.delta);
+        try jw.endObject();
+    }
+};
+
+pub const StreamEventReasoningTextDone = struct {
+    type: []const u8 = "response.reasoning_text.done",
+    sequence_number: u32,
+    output_index: u32 = 0,
+    item_id: []const u8 = "",
+    content_index: u32 = 0,
+    text: []const u8 = "",
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        try jw.objectField("output_index"); try jw.write(self.output_index);
+        try jw.objectField("item_id"); try jw.write(self.item_id);
+        try jw.objectField("content_index"); try jw.write(self.content_index);
+        try jw.objectField("text"); try jw.write(self.text);
+        try jw.endObject();
+    }
+};
+
+pub const StreamEventReasoningSummaryPartAdded = struct {
+    type: []const u8 = "response.reasoning_summary_part.added",
+    sequence_number: u32,
+    output_index: u32 = 0,
+    item_id: []const u8 = "",
+    summary_index: u32 = 0,
+    part: std.json.Value,
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        try jw.objectField("output_index"); try jw.write(self.output_index);
+        try jw.objectField("item_id"); try jw.write(self.item_id);
+        try jw.objectField("summary_index"); try jw.write(self.summary_index);
+        try jw.objectField("part"); try jw.write(self.part);
+        try jw.endObject();
+    }
+};
+
+pub const StreamEventReasoningSummaryPartDone = struct {
+    type: []const u8 = "response.reasoning_summary_part.done",
+    sequence_number: u32,
+    output_index: u32 = 0,
+    item_id: []const u8 = "",
+    summary_index: u32 = 0,
+    part: std.json.Value,
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        try jw.objectField("output_index"); try jw.write(self.output_index);
+        try jw.objectField("item_id"); try jw.write(self.item_id);
+        try jw.objectField("summary_index"); try jw.write(self.summary_index);
+        try jw.objectField("part"); try jw.write(self.part);
+        try jw.endObject();
+    }
+};
+
+pub const StreamEventReasoningSummaryTextDelta = struct {
+    type: []const u8 = "response.reasoning_summary_text.delta",
+    sequence_number: u32,
+    output_index: u32 = 0,
+    item_id: []const u8 = "",
+    summary_index: u32 = 0,
+    delta: []const u8 = "",
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        try jw.objectField("output_index"); try jw.write(self.output_index);
+        try jw.objectField("item_id"); try jw.write(self.item_id);
+        try jw.objectField("summary_index"); try jw.write(self.summary_index);
+        try jw.objectField("delta"); try jw.write(self.delta);
+        try jw.endObject();
+    }
+};
+
+pub const StreamEventReasoningSummaryTextDone = struct {
+    type: []const u8 = "response.reasoning_summary_text.done",
+    sequence_number: u32,
+    output_index: u32 = 0,
+    item_id: []const u8 = "",
+    summary_index: u32 = 0,
+    text: []const u8 = "",
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        try jw.objectField("output_index"); try jw.write(self.output_index);
+        try jw.objectField("item_id"); try jw.write(self.item_id);
+        try jw.objectField("summary_index"); try jw.write(self.summary_index);
+        try jw.objectField("text"); try jw.write(self.text);
+        try jw.endObject();
+    }
+};
+
+pub const StreamEventWebSearchCallInProgress = struct {
+    type: []const u8 = "response.web_search_call.in_progress",
+    sequence_number: u32,
+    output_index: u32 = 0,
+    item_id: []const u8 = "",
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        try jw.objectField("output_index"); try jw.write(self.output_index);
+        try jw.objectField("item_id"); try jw.write(self.item_id);
+        try jw.endObject();
+    }
+};
+
+pub const StreamEventWebSearchCallSearching = struct {
+    type: []const u8 = "response.web_search_call.searching",
+    sequence_number: u32,
+    output_index: u32 = 0,
+    item_id: []const u8 = "",
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        try jw.objectField("output_index"); try jw.write(self.output_index);
+        try jw.objectField("item_id"); try jw.write(self.item_id);
+        try jw.endObject();
+    }
+};
+
+pub const StreamEventWebSearchCallCompleted = struct {
+    type: []const u8 = "response.web_search_call.completed",
+    sequence_number: u32,
+    output_index: u32 = 0,
+    item_id: []const u8 = "",
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        try jw.objectField("output_index"); try jw.write(self.output_index);
+        try jw.objectField("item_id"); try jw.write(self.item_id);
+        try jw.endObject();
+    }
+};
+
+pub const StreamEventFileSearchCallInProgress = struct {
+    type: []const u8 = "response.file_search_call.in_progress",
+    sequence_number: u32,
+    output_index: u32 = 0,
+    item_id: []const u8 = "",
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        try jw.objectField("output_index"); try jw.write(self.output_index);
+        try jw.objectField("item_id"); try jw.write(self.item_id);
+        try jw.endObject();
+    }
+};
+
+pub const StreamEventFileSearchCallSearching = struct {
+    type: []const u8 = "response.file_search_call.searching",
+    sequence_number: u32,
+    output_index: u32 = 0,
+    item_id: []const u8 = "",
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        try jw.objectField("output_index"); try jw.write(self.output_index);
+        try jw.objectField("item_id"); try jw.write(self.item_id);
+        try jw.endObject();
+    }
+};
+
+pub const StreamEventFileSearchCallCompleted = struct {
+    type: []const u8 = "response.file_search_call.completed",
+    sequence_number: u32,
+    output_index: u32 = 0,
+    item_id: []const u8 = "",
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        try jw.objectField("output_index"); try jw.write(self.output_index);
+        try jw.objectField("item_id"); try jw.write(self.item_id);
+        try jw.endObject();
+    }
+};
+
+pub const StreamEventCodeInterpreterCallInProgress = struct {
+    type: []const u8 = "response.code_interpreter_call.in_progress",
+    sequence_number: u32,
+    output_index: u32 = 0,
+    item_id: []const u8 = "",
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        try jw.objectField("output_index"); try jw.write(self.output_index);
+        try jw.objectField("item_id"); try jw.write(self.item_id);
+        try jw.endObject();
+    }
+};
+
+pub const StreamEventCodeInterpreterCallCodeDelta = struct {
+    type: []const u8 = "response.code_interpreter_call_code.delta",
+    sequence_number: u32,
+    output_index: u32 = 0,
+    item_id: []const u8 = "",
+    delta: []const u8 = "",
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        try jw.objectField("output_index"); try jw.write(self.output_index);
+        try jw.objectField("item_id"); try jw.write(self.item_id);
+        try jw.objectField("delta"); try jw.write(self.delta);
+        try jw.endObject();
+    }
+};
+
+pub const StreamEventCodeInterpreterCallCodeDone = struct {
+    type: []const u8 = "response.code_interpreter_call_code.done",
+    sequence_number: u32,
+    output_index: u32 = 0,
+    item_id: []const u8 = "",
+    code: []const u8 = "",
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        try jw.objectField("output_index"); try jw.write(self.output_index);
+        try jw.objectField("item_id"); try jw.write(self.item_id);
+        try jw.objectField("code"); try jw.write(self.code);
+        try jw.endObject();
+    }
+};
+
+pub const StreamEventCodeInterpreterCallInterpreting = struct {
+    type: []const u8 = "response.code_interpreter_call.interpreting",
+    sequence_number: u32,
+    output_index: u32 = 0,
+    item_id: []const u8 = "",
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        try jw.objectField("output_index"); try jw.write(self.output_index);
+        try jw.objectField("item_id"); try jw.write(self.item_id);
+        try jw.endObject();
+    }
+};
+
+pub const StreamEventCodeInterpreterCallCompleted = struct {
+    type: []const u8 = "response.code_interpreter_call.completed",
+    sequence_number: u32,
+    output_index: u32 = 0,
+    item_id: []const u8 = "",
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        try jw.objectField("output_index"); try jw.write(self.output_index);
+        try jw.objectField("item_id"); try jw.write(self.item_id);
+        try jw.endObject();
+    }
+};
+
+pub const StreamEventMcpListToolsInProgress = struct {
+    type: []const u8 = "response.mcp_list_tools.in_progress",
+    sequence_number: u32,
+    output_index: u32 = 0,
+    item_id: []const u8 = "",
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        try jw.objectField("output_index"); try jw.write(self.output_index);
+        try jw.objectField("item_id"); try jw.write(self.item_id);
+        try jw.endObject();
+    }
+};
+
+pub const StreamEventMcpListToolsCompleted = struct {
+    type: []const u8 = "response.mcp_list_tools.completed",
+    sequence_number: u32,
+    output_index: u32 = 0,
+    item_id: []const u8 = "",
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        try jw.objectField("output_index"); try jw.write(self.output_index);
+        try jw.objectField("item_id"); try jw.write(self.item_id);
+        try jw.endObject();
+    }
+};
+
+pub const StreamEventMcpListToolsFailed = struct {
+    type: []const u8 = "response.mcp_list_tools.failed",
+    sequence_number: u32,
+    output_index: u32 = 0,
+    item_id: []const u8 = "",
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        try jw.objectField("output_index"); try jw.write(self.output_index);
+        try jw.objectField("item_id"); try jw.write(self.item_id);
+        try jw.endObject();
+    }
+};
+
+pub const StreamEventMcpCallArgumentsDelta = struct {
+    type: []const u8 = "response.mcp_call_arguments.delta",
+    sequence_number: u32,
+    output_index: u32 = 0,
+    item_id: []const u8 = "",
+    delta: []const u8 = "",
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        try jw.objectField("output_index"); try jw.write(self.output_index);
+        try jw.objectField("item_id"); try jw.write(self.item_id);
+        try jw.objectField("delta"); try jw.write(self.delta);
+        try jw.endObject();
+    }
+};
+
+pub const StreamEventMcpCallArgumentsDone = struct {
+    type: []const u8 = "response.mcp_call_arguments.done",
+    sequence_number: u32,
+    output_index: u32 = 0,
+    item_id: []const u8 = "",
+    arguments: []const u8 = "",
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        try jw.objectField("output_index"); try jw.write(self.output_index);
+        try jw.objectField("item_id"); try jw.write(self.item_id);
+        try jw.objectField("arguments"); try jw.write(self.arguments);
+        try jw.endObject();
+    }
+};
+
+pub const StreamEventMcpCallInProgress = struct {
+    type: []const u8 = "response.mcp_call.in_progress",
+    sequence_number: u32,
+    output_index: u32 = 0,
+    item_id: []const u8 = "",
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        try jw.objectField("output_index"); try jw.write(self.output_index);
+        try jw.objectField("item_id"); try jw.write(self.item_id);
+        try jw.endObject();
+    }
+};
+
+pub const StreamEventMcpCallCompleted = struct {
+    type: []const u8 = "response.mcp_call.completed",
+    sequence_number: u32,
+    output_index: u32 = 0,
+    item_id: []const u8 = "",
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        try jw.objectField("output_index"); try jw.write(self.output_index);
+        try jw.objectField("item_id"); try jw.write(self.item_id);
+        try jw.endObject();
+    }
+};
+
+pub const StreamEventMcpCallFailed = struct {
+    type: []const u8 = "response.mcp_call.failed",
+    sequence_number: u32,
+    output_index: u32 = 0,
+    item_id: []const u8 = "",
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        try jw.objectField("output_index"); try jw.write(self.output_index);
+        try jw.objectField("item_id"); try jw.write(self.item_id);
+        try jw.endObject();
+    }
+};
+
+pub const StreamEventImageGenerationCallInProgress = struct {
+    type: []const u8 = "response.image_generation_call.in_progress",
+    sequence_number: u32,
+    output_index: u32 = 0,
+    item_id: []const u8 = "",
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        try jw.objectField("output_index"); try jw.write(self.output_index);
+        try jw.objectField("item_id"); try jw.write(self.item_id);
+        try jw.endObject();
+    }
+};
+
+pub const StreamEventImageGenerationCallGenerating = struct {
+    type: []const u8 = "response.image_generation_call.generating",
+    sequence_number: u32,
+    output_index: u32 = 0,
+    item_id: []const u8 = "",
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        try jw.objectField("output_index"); try jw.write(self.output_index);
+        try jw.objectField("item_id"); try jw.write(self.item_id);
+        try jw.endObject();
+    }
+};
+
+pub const StreamEventImageGenerationCallPartialImage = struct {
+    type: []const u8 = "response.image_generation_call.partial_image",
+    sequence_number: u32,
+    output_index: u32 = 0,
+    item_id: []const u8 = "",
+    partial_image_index: u32 = 0,
+    partial_image_b64: []const u8 = "",
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        try jw.objectField("output_index"); try jw.write(self.output_index);
+        try jw.objectField("item_id"); try jw.write(self.item_id);
+        try jw.objectField("partial_image_index"); try jw.write(self.partial_image_index);
+        try jw.objectField("partial_image_b64"); try jw.write(self.partial_image_b64);
+        try jw.endObject();
+    }
+};
+
+pub const StreamEventImageGenerationCallCompleted = struct {
+    type: []const u8 = "response.image_generation_call.completed",
+    sequence_number: u32,
+    output_index: u32 = 0,
+    item_id: []const u8 = "",
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        try jw.objectField("output_index"); try jw.write(self.output_index);
+        try jw.objectField("item_id"); try jw.write(self.item_id);
+        try jw.endObject();
+    }
+};
+
+pub const StreamEventAudioDelta = struct {
+    type: []const u8 = "response.audio.delta",
+    sequence_number: u32,
+    output_index: u32 = 0,
+    item_id: []const u8 = "",
+    response_id: []const u8 = "",
+    delta: []const u8 = "",
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        try jw.objectField("output_index"); try jw.write(self.output_index);
+        try jw.objectField("item_id"); try jw.write(self.item_id);
+        try jw.objectField("response_id"); try jw.write(self.response_id);
+        try jw.objectField("delta"); try jw.write(self.delta);
+        try jw.endObject();
+    }
+};
+
+pub const StreamEventAudioDone = struct {
+    type: []const u8 = "response.audio.done",
+    sequence_number: u32,
+    output_index: u32 = 0,
+    item_id: []const u8 = "",
+    response_id: []const u8 = "",
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        try jw.objectField("output_index"); try jw.write(self.output_index);
+        try jw.objectField("item_id"); try jw.write(self.item_id);
+        try jw.objectField("response_id"); try jw.write(self.response_id);
+        try jw.endObject();
+    }
+};
+
+pub const StreamEventAudioTranscriptDelta = struct {
+    type: []const u8 = "response.audio.transcript.delta",
+    sequence_number: u32,
+    output_index: u32 = 0,
+    item_id: []const u8 = "",
+    delta: []const u8 = "",
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        try jw.objectField("output_index"); try jw.write(self.output_index);
+        try jw.objectField("item_id"); try jw.write(self.item_id);
+        try jw.objectField("delta"); try jw.write(self.delta);
+        try jw.endObject();
+    }
+};
+
+pub const StreamEventAudioTranscriptDone = struct {
+    type: []const u8 = "response.audio.transcript.done",
+    sequence_number: u32,
+    output_index: u32 = 0,
+    item_id: []const u8 = "",
+    transcript: []const u8 = "",
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        try jw.objectField("output_index"); try jw.write(self.output_index);
+        try jw.objectField("item_id"); try jw.write(self.item_id);
+        try jw.objectField("transcript"); try jw.write(self.transcript);
+        try jw.endObject();
+    }
+};
+
+pub const StreamEventShellCallCommandAdded = struct {
+    type: []const u8 = "response.shell_call_command.added",
+    sequence_number: u32,
+    output_index: u32 = 0,
+    item_id: []const u8 = "",
+    command_index: u32 = 0,
+    command: []const u8 = "",
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        try jw.objectField("output_index"); try jw.write(self.output_index);
+        try jw.objectField("item_id"); try jw.write(self.item_id);
+        try jw.objectField("command_index"); try jw.write(self.command_index);
+        try jw.objectField("command"); try jw.write(self.command);
+        try jw.endObject();
+    }
+};
+
+pub const StreamEventShellCallCommandDelta = struct {
+    type: []const u8 = "response.shell_call_command.delta",
+    sequence_number: u32,
+    output_index: u32 = 0,
+    item_id: []const u8 = "",
+    command_index: u32 = 0,
+    delta: []const u8 = "",
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        try jw.objectField("output_index"); try jw.write(self.output_index);
+        try jw.objectField("item_id"); try jw.write(self.item_id);
+        try jw.objectField("command_index"); try jw.write(self.command_index);
+        try jw.objectField("delta"); try jw.write(self.delta);
+        try jw.endObject();
+    }
+};
+
+pub const StreamEventShellCallCommandDone = struct {
+    type: []const u8 = "response.shell_call_command.done",
+    sequence_number: u32,
+    output_index: u32 = 0,
+    item_id: []const u8 = "",
+    command_index: u32 = 0,
+    command: []const u8 = "",
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        try jw.objectField("output_index"); try jw.write(self.output_index);
+        try jw.objectField("item_id"); try jw.write(self.item_id);
+        try jw.objectField("command_index"); try jw.write(self.command_index);
+        try jw.objectField("command"); try jw.write(self.command);
+        try jw.endObject();
+    }
+};
+
+pub const StreamEventShellCallOutputDelta = struct {
+    type: []const u8 = "response.shell_call_output_content.delta",
+    sequence_number: u32,
+    output_index: u32 = 0,
+    item_id: []const u8 = "",
+    delta: std.json.Value,
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        try jw.objectField("output_index"); try jw.write(self.output_index);
+        try jw.objectField("item_id"); try jw.write(self.item_id);
+        try jw.objectField("delta"); try jw.write(self.delta);
+        try jw.endObject();
+    }
+};
+
+pub const StreamEventShellCallOutputDone = struct {
+    type: []const u8 = "response.shell_call_output_content.done",
+    sequence_number: u32,
+    output_index: u32 = 0,
+    item_id: []const u8 = "",
+    output: []const std.json.Value = &.{},
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        try jw.objectField("output_index"); try jw.write(self.output_index);
+        try jw.objectField("item_id"); try jw.write(self.item_id);
+        try jw.objectField("output"); try jw.write(self.output);
+        try jw.endObject();
+    }
+};
+
+pub const StreamEventCustomToolCallInputDelta = struct {
+    type: []const u8 = "response.custom_tool_call_input.delta",
+    sequence_number: u32,
+    output_index: u32 = 0,
+    item_id: []const u8 = "",
+    delta: []const u8 = "",
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        try jw.objectField("output_index"); try jw.write(self.output_index);
+        try jw.objectField("item_id"); try jw.write(self.item_id);
+        try jw.objectField("delta"); try jw.write(self.delta);
+        try jw.endObject();
+    }
+};
+
+pub const StreamEventCustomToolCallInputDone = struct {
+    type: []const u8 = "response.custom_tool_call_input.done",
+    sequence_number: u32,
+    output_index: u32 = 0,
+    item_id: []const u8 = "",
+    input: []const u8 = "",
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        try jw.objectField("output_index"); try jw.write(self.output_index);
+        try jw.objectField("item_id"); try jw.write(self.item_id);
+        try jw.objectField("input"); try jw.write(self.input);
+        try jw.endObject();
+    }
+};
+
+pub const StreamEventResponseCompactionCompacting = struct {
+    type: []const u8 = "response.compaction.compacting",
+    sequence_number: u32,
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
+        try jw.endObject();
+    }
+};
+
 /// Typed SSE event for the Responses streaming API.
 /// Every variant includes `sequence_number` (required by the official schema).
 /// Each payload struct also carries `type` so std.json.stringify emits it.
 pub const StreamEvent = union(enum) {
     // --- response lifecycle ---
-    response_created: struct {
-        type: []const u8 = "response.created",
-        sequence_number: u32,
-        response: Response,
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            try jw.objectField("response"); try self.response.jsonStringify(jw);
-            try jw.endObject();
-        }
-    },
-    response_in_progress: struct {
-        type: []const u8 = "response.in_progress",
-        sequence_number: u32,
-        response: Response,
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            try jw.objectField("response"); try self.response.jsonStringify(jw);
-            try jw.endObject();
-        }
-    },
-    response_completed: struct {
-        type: []const u8 = "response.completed",
-        sequence_number: u32,
-        response: Response,
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            try jw.objectField("response"); try self.response.jsonStringify(jw);
-            try jw.endObject();
-        }
-    },
-    response_failed: struct {
-        type: []const u8 = "response.failed",
-        sequence_number: u32,
-        response: Response,
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            try jw.objectField("response"); try self.response.jsonStringify(jw);
-            try jw.endObject();
-        }
-    },
-    response_incomplete: struct {
-        type: []const u8 = "response.incomplete",
-        sequence_number: u32,
-        response: Response,
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            try jw.objectField("response"); try self.response.jsonStringify(jw);
-            try jw.endObject();
-        }
-    },
+    response_created: StreamEventResponseCreated,
+    response_in_progress: StreamEventResponseInProgress,
+    response_completed: StreamEventResponseCompleted,
+    response_failed: StreamEventResponseFailed,
+    response_incomplete: StreamEventResponseIncomplete,
 
     // --- output item ---
-    output_item_added: struct {
-        type: []const u8 = "response.output_item.added",
-        sequence_number: u32,
-        output_index: u32 = 0,
-        item: OutputItem,
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            try jw.objectField("output_index"); try jw.write(self.output_index);
-            try jw.objectField("item"); try self.item.jsonStringify(jw);
-            try jw.endObject();
-        }
-    },
-    output_item_done: struct {
-        type: []const u8 = "response.output_item.done",
-        sequence_number: u32,
-        output_index: u32 = 0,
-        item: OutputItem,
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            try jw.objectField("output_index"); try jw.write(self.output_index);
-            try jw.objectField("item"); try self.item.jsonStringify(jw);
-            try jw.endObject();
-        }
-    },
+    output_item_added: StreamEventOutputItemAdded,
+    output_item_done: StreamEventOutputItemDone,
 
     // --- content part ---
-    content_part_added: struct {
-        type: []const u8 = "response.content_part.added",
-        sequence_number: u32,
-        output_index: u32 = 0,
-        item_id: []const u8 = "",
-        content_index: u32 = 0,
-        part: OutputContent,
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            try jw.objectField("output_index"); try jw.write(self.output_index);
-            try jw.objectField("item_id"); try jw.write(self.item_id);
-            try jw.objectField("content_index"); try jw.write(self.content_index);
-            try jw.objectField("part"); try self.part.jsonStringify(jw);
-            try jw.endObject();
-        }
-    },
-    content_part_done: struct {
-        type: []const u8 = "response.content_part.done",
-        sequence_number: u32,
-        output_index: u32 = 0,
-        item_id: []const u8 = "",
-        content_index: u32 = 0,
-        part: OutputContent,
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            try jw.objectField("output_index"); try jw.write(self.output_index);
-            try jw.objectField("item_id"); try jw.write(self.item_id);
-            try jw.objectField("content_index"); try jw.write(self.content_index);
-            try jw.objectField("part"); try self.part.jsonStringify(jw);
-            try jw.endObject();
-        }
-    },
+    content_part_added: StreamEventContentPartAdded,
+    content_part_done: StreamEventContentPartDone,
 
     // --- text streaming ---
-    output_text_delta: struct {
-        type: []const u8 = "response.output_text.delta",
-        sequence_number: u32,
-        output_index: u32 = 0,
-        item_id: []const u8 = "",
-        content_index: u32 = 0,
-        delta: []const u8 = "",
-        logprobs: ?[]const common.LogprobEntry = null,
-    },
-    output_text_done: struct {
-        type: []const u8 = "response.output_text.done",
-        sequence_number: u32,
-        output_index: u32 = 0,
-        item_id: []const u8 = "",
-        content_index: u32 = 0,
-        text: []const u8 = "",
-        logprobs: ?[]const common.LogprobEntry = null,
-    },
+    output_text_delta: StreamEventOutputTextDelta,
+    output_text_done: StreamEventOutputTextDone,
 
     // --- function call streaming ---
-    function_call_arguments_delta: struct {
-        type: []const u8 = "response.function_call_arguments.delta",
-        sequence_number: u32,
-        output_index: u32 = 0,
-        item_id: []const u8 = "",
-        call_id: ?[]const u8 = null,
-        delta: []const u8 = "",
-    },
-    function_call_arguments_done: struct {
-        type: []const u8 = "response.function_call_arguments.done",
-        sequence_number: u32,
-        output_index: u32 = 0,
-        item_id: []const u8 = "",
-        call_id: ?[]const u8 = null,
-        arguments: []const u8 = "",
-    },
+    function_call_arguments_delta: StreamEventFunctionCallArgumentsDelta,
+    function_call_arguments_done: StreamEventFunctionCallArgumentsDone,
 
     // --- error ---
-    stream_error: struct {
-        type: []const u8 = "error",
-        sequence_number: u32,
-        code: ?[]const u8 = null,
-        message: []const u8 = "",
-        param: ?[]const u8 = null,
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            if (self.code) |v| { try jw.objectField("code"); try jw.write(v); }
-            try jw.objectField("message"); try jw.write(self.message);
-            if (self.param) |v| { try jw.objectField("param"); try jw.write(v); }
-            try jw.endObject();
-        }
-    },
+    stream_error: StreamEventStreamError,
 
     // --- response queued ---
-    response_queued: struct {
-        type: []const u8 = "response.queued",
-        sequence_number: u32,
-        response: Response,
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            try jw.objectField("response"); try self.response.jsonStringify(jw);
-            try jw.endObject();
-        }
-    },
+    response_queued: StreamEventResponseQueued,
 
     // --- annotation ---
-    output_text_annotation_added: struct {
-        type: []const u8 = "response.output_text.annotation.added",
-        sequence_number: u32,
-        output_index: u32 = 0,
-        item_id: []const u8 = "",
-        content_index: u32 = 0,
-        annotation_index: u32 = 0,
-        annotation: std.json.Value,
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            try jw.objectField("output_index"); try jw.write(self.output_index);
-            try jw.objectField("item_id"); try jw.write(self.item_id);
-            try jw.objectField("content_index"); try jw.write(self.content_index);
-            try jw.objectField("annotation_index"); try jw.write(self.annotation_index);
-            try jw.objectField("annotation"); try jw.write(self.annotation);
-            try jw.endObject();
-        }
-    },
+    output_text_annotation_added: StreamEventOutputTextAnnotationAdded,
 
     // --- refusal streaming ---
-    refusal_delta: struct {
-        type: []const u8 = "response.refusal.delta",
-        sequence_number: u32,
-        output_index: u32 = 0,
-        item_id: []const u8 = "",
-        content_index: u32 = 0,
-        delta: []const u8 = "",
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            try jw.objectField("output_index"); try jw.write(self.output_index);
-            try jw.objectField("item_id"); try jw.write(self.item_id);
-            try jw.objectField("content_index"); try jw.write(self.content_index);
-            try jw.objectField("delta"); try jw.write(self.delta);
-            try jw.endObject();
-        }
-    },
-    refusal_done: struct {
-        type: []const u8 = "response.refusal.done",
-        sequence_number: u32,
-        output_index: u32 = 0,
-        item_id: []const u8 = "",
-        content_index: u32 = 0,
-        refusal: []const u8 = "",
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            try jw.objectField("output_index"); try jw.write(self.output_index);
-            try jw.objectField("item_id"); try jw.write(self.item_id);
-            try jw.objectField("content_index"); try jw.write(self.content_index);
-            try jw.objectField("refusal"); try jw.write(self.refusal);
-            try jw.endObject();
-        }
-    },
+    refusal_delta: StreamEventRefusalDelta,
+    refusal_done: StreamEventRefusalDone,
 
     // --- reasoning text streaming ---
-    reasoning_text_delta: struct {
-        type: []const u8 = "response.reasoning_text.delta",
-        sequence_number: u32,
-        output_index: u32 = 0,
-        item_id: []const u8 = "",
-        content_index: u32 = 0,
-        delta: []const u8 = "",
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            try jw.objectField("output_index"); try jw.write(self.output_index);
-            try jw.objectField("item_id"); try jw.write(self.item_id);
-            try jw.objectField("content_index"); try jw.write(self.content_index);
-            try jw.objectField("delta"); try jw.write(self.delta);
-            try jw.endObject();
-        }
-    },
-    reasoning_text_done: struct {
-        type: []const u8 = "response.reasoning_text.done",
-        sequence_number: u32,
-        output_index: u32 = 0,
-        item_id: []const u8 = "",
-        content_index: u32 = 0,
-        text: []const u8 = "",
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            try jw.objectField("output_index"); try jw.write(self.output_index);
-            try jw.objectField("item_id"); try jw.write(self.item_id);
-            try jw.objectField("content_index"); try jw.write(self.content_index);
-            try jw.objectField("text"); try jw.write(self.text);
-            try jw.endObject();
-        }
-    },
+    reasoning_text_delta: StreamEventReasoningTextDelta,
+    reasoning_text_done: StreamEventReasoningTextDone,
 
     // --- reasoning summary streaming ---
-    reasoning_summary_part_added: struct {
-        type: []const u8 = "response.reasoning_summary_part.added",
-        sequence_number: u32,
-        output_index: u32 = 0,
-        item_id: []const u8 = "",
-        summary_index: u32 = 0,
-        part: std.json.Value,
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            try jw.objectField("output_index"); try jw.write(self.output_index);
-            try jw.objectField("item_id"); try jw.write(self.item_id);
-            try jw.objectField("summary_index"); try jw.write(self.summary_index);
-            try jw.objectField("part"); try jw.write(self.part);
-            try jw.endObject();
-        }
-    },
-    reasoning_summary_part_done: struct {
-        type: []const u8 = "response.reasoning_summary_part.done",
-        sequence_number: u32,
-        output_index: u32 = 0,
-        item_id: []const u8 = "",
-        summary_index: u32 = 0,
-        part: std.json.Value,
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            try jw.objectField("output_index"); try jw.write(self.output_index);
-            try jw.objectField("item_id"); try jw.write(self.item_id);
-            try jw.objectField("summary_index"); try jw.write(self.summary_index);
-            try jw.objectField("part"); try jw.write(self.part);
-            try jw.endObject();
-        }
-    },
-    reasoning_summary_text_delta: struct {
-        type: []const u8 = "response.reasoning_summary_text.delta",
-        sequence_number: u32,
-        output_index: u32 = 0,
-        item_id: []const u8 = "",
-        summary_index: u32 = 0,
-        delta: []const u8 = "",
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            try jw.objectField("output_index"); try jw.write(self.output_index);
-            try jw.objectField("item_id"); try jw.write(self.item_id);
-            try jw.objectField("summary_index"); try jw.write(self.summary_index);
-            try jw.objectField("delta"); try jw.write(self.delta);
-            try jw.endObject();
-        }
-    },
-    reasoning_summary_text_done: struct {
-        type: []const u8 = "response.reasoning_summary_text.done",
-        sequence_number: u32,
-        output_index: u32 = 0,
-        item_id: []const u8 = "",
-        summary_index: u32 = 0,
-        text: []const u8 = "",
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            try jw.objectField("output_index"); try jw.write(self.output_index);
-            try jw.objectField("item_id"); try jw.write(self.item_id);
-            try jw.objectField("summary_index"); try jw.write(self.summary_index);
-            try jw.objectField("text"); try jw.write(self.text);
-            try jw.endObject();
-        }
-    },
+    reasoning_summary_part_added: StreamEventReasoningSummaryPartAdded,
+    reasoning_summary_part_done: StreamEventReasoningSummaryPartDone,
+    reasoning_summary_text_delta: StreamEventReasoningSummaryTextDelta,
+    reasoning_summary_text_done: StreamEventReasoningSummaryTextDone,
 
     // --- web search call ---
-    web_search_call_in_progress: struct {
-        type: []const u8 = "response.web_search_call.in_progress",
-        sequence_number: u32,
-        output_index: u32 = 0,
-        item_id: []const u8 = "",
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            try jw.objectField("output_index"); try jw.write(self.output_index);
-            try jw.objectField("item_id"); try jw.write(self.item_id);
-            try jw.endObject();
-        }
-    },
-    web_search_call_searching: struct {
-        type: []const u8 = "response.web_search_call.searching",
-        sequence_number: u32,
-        output_index: u32 = 0,
-        item_id: []const u8 = "",
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            try jw.objectField("output_index"); try jw.write(self.output_index);
-            try jw.objectField("item_id"); try jw.write(self.item_id);
-            try jw.endObject();
-        }
-    },
-    web_search_call_completed: struct {
-        type: []const u8 = "response.web_search_call.completed",
-        sequence_number: u32,
-        output_index: u32 = 0,
-        item_id: []const u8 = "",
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            try jw.objectField("output_index"); try jw.write(self.output_index);
-            try jw.objectField("item_id"); try jw.write(self.item_id);
-            try jw.endObject();
-        }
-    },
+    web_search_call_in_progress: StreamEventWebSearchCallInProgress,
+    web_search_call_searching: StreamEventWebSearchCallSearching,
+    web_search_call_completed: StreamEventWebSearchCallCompleted,
 
     // --- file search call ---
-    file_search_call_in_progress: struct {
-        type: []const u8 = "response.file_search_call.in_progress",
-        sequence_number: u32,
-        output_index: u32 = 0,
-        item_id: []const u8 = "",
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            try jw.objectField("output_index"); try jw.write(self.output_index);
-            try jw.objectField("item_id"); try jw.write(self.item_id);
-            try jw.endObject();
-        }
-    },
-    file_search_call_searching: struct {
-        type: []const u8 = "response.file_search_call.searching",
-        sequence_number: u32,
-        output_index: u32 = 0,
-        item_id: []const u8 = "",
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            try jw.objectField("output_index"); try jw.write(self.output_index);
-            try jw.objectField("item_id"); try jw.write(self.item_id);
-            try jw.endObject();
-        }
-    },
-    file_search_call_completed: struct {
-        type: []const u8 = "response.file_search_call.completed",
-        sequence_number: u32,
-        output_index: u32 = 0,
-        item_id: []const u8 = "",
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            try jw.objectField("output_index"); try jw.write(self.output_index);
-            try jw.objectField("item_id"); try jw.write(self.item_id);
-            try jw.endObject();
-        }
-    },
+    file_search_call_in_progress: StreamEventFileSearchCallInProgress,
+    file_search_call_searching: StreamEventFileSearchCallSearching,
+    file_search_call_completed: StreamEventFileSearchCallCompleted,
 
     // --- code interpreter call ---
-    code_interpreter_call_in_progress: struct {
-        type: []const u8 = "response.code_interpreter_call.in_progress",
-        sequence_number: u32,
-        output_index: u32 = 0,
-        item_id: []const u8 = "",
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            try jw.objectField("output_index"); try jw.write(self.output_index);
-            try jw.objectField("item_id"); try jw.write(self.item_id);
-            try jw.endObject();
-        }
-    },
-    code_interpreter_call_code_delta: struct {
-        type: []const u8 = "response.code_interpreter_call_code.delta",
-        sequence_number: u32,
-        output_index: u32 = 0,
-        item_id: []const u8 = "",
-        delta: []const u8 = "",
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            try jw.objectField("output_index"); try jw.write(self.output_index);
-            try jw.objectField("item_id"); try jw.write(self.item_id);
-            try jw.objectField("delta"); try jw.write(self.delta);
-            try jw.endObject();
-        }
-    },
-    code_interpreter_call_code_done: struct {
-        type: []const u8 = "response.code_interpreter_call_code.done",
-        sequence_number: u32,
-        output_index: u32 = 0,
-        item_id: []const u8 = "",
-        code: []const u8 = "",
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            try jw.objectField("output_index"); try jw.write(self.output_index);
-            try jw.objectField("item_id"); try jw.write(self.item_id);
-            try jw.objectField("code"); try jw.write(self.code);
-            try jw.endObject();
-        }
-    },
-    code_interpreter_call_interpreting: struct {
-        type: []const u8 = "response.code_interpreter_call.interpreting",
-        sequence_number: u32,
-        output_index: u32 = 0,
-        item_id: []const u8 = "",
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            try jw.objectField("output_index"); try jw.write(self.output_index);
-            try jw.objectField("item_id"); try jw.write(self.item_id);
-            try jw.endObject();
-        }
-    },
-    code_interpreter_call_completed: struct {
-        type: []const u8 = "response.code_interpreter_call.completed",
-        sequence_number: u32,
-        output_index: u32 = 0,
-        item_id: []const u8 = "",
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            try jw.objectField("output_index"); try jw.write(self.output_index);
-            try jw.objectField("item_id"); try jw.write(self.item_id);
-            try jw.endObject();
-        }
-    },
+    code_interpreter_call_in_progress: StreamEventCodeInterpreterCallInProgress,
+    code_interpreter_call_code_delta: StreamEventCodeInterpreterCallCodeDelta,
+    code_interpreter_call_code_done: StreamEventCodeInterpreterCallCodeDone,
+    code_interpreter_call_interpreting: StreamEventCodeInterpreterCallInterpreting,
+    code_interpreter_call_completed: StreamEventCodeInterpreterCallCompleted,
 
     // --- MCP list tools ---
-    mcp_list_tools_in_progress: struct {
-        type: []const u8 = "response.mcp_list_tools.in_progress",
-        sequence_number: u32,
-        output_index: u32 = 0,
-        item_id: []const u8 = "",
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            try jw.objectField("output_index"); try jw.write(self.output_index);
-            try jw.objectField("item_id"); try jw.write(self.item_id);
-            try jw.endObject();
-        }
-    },
-    mcp_list_tools_completed: struct {
-        type: []const u8 = "response.mcp_list_tools.completed",
-        sequence_number: u32,
-        output_index: u32 = 0,
-        item_id: []const u8 = "",
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            try jw.objectField("output_index"); try jw.write(self.output_index);
-            try jw.objectField("item_id"); try jw.write(self.item_id);
-            try jw.endObject();
-        }
-    },
-    mcp_list_tools_failed: struct {
-        type: []const u8 = "response.mcp_list_tools.failed",
-        sequence_number: u32,
-        output_index: u32 = 0,
-        item_id: []const u8 = "",
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            try jw.objectField("output_index"); try jw.write(self.output_index);
-            try jw.objectField("item_id"); try jw.write(self.item_id);
-            try jw.endObject();
-        }
-    },
+    mcp_list_tools_in_progress: StreamEventMcpListToolsInProgress,
+    mcp_list_tools_completed: StreamEventMcpListToolsCompleted,
+    mcp_list_tools_failed: StreamEventMcpListToolsFailed,
 
     // --- MCP call arguments ---
-    mcp_call_arguments_delta: struct {
-        type: []const u8 = "response.mcp_call_arguments.delta",
-        sequence_number: u32,
-        output_index: u32 = 0,
-        item_id: []const u8 = "",
-        delta: []const u8 = "",
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            try jw.objectField("output_index"); try jw.write(self.output_index);
-            try jw.objectField("item_id"); try jw.write(self.item_id);
-            try jw.objectField("delta"); try jw.write(self.delta);
-            try jw.endObject();
-        }
-    },
-    mcp_call_arguments_done: struct {
-        type: []const u8 = "response.mcp_call_arguments.done",
-        sequence_number: u32,
-        output_index: u32 = 0,
-        item_id: []const u8 = "",
-        arguments: []const u8 = "",
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            try jw.objectField("output_index"); try jw.write(self.output_index);
-            try jw.objectField("item_id"); try jw.write(self.item_id);
-            try jw.objectField("arguments"); try jw.write(self.arguments);
-            try jw.endObject();
-        }
-    },
+    mcp_call_arguments_delta: StreamEventMcpCallArgumentsDelta,
+    mcp_call_arguments_done: StreamEventMcpCallArgumentsDone,
 
     // --- MCP call lifecycle ---
-    mcp_call_in_progress: struct {
-        type: []const u8 = "response.mcp_call.in_progress",
-        sequence_number: u32,
-        output_index: u32 = 0,
-        item_id: []const u8 = "",
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            try jw.objectField("output_index"); try jw.write(self.output_index);
-            try jw.objectField("item_id"); try jw.write(self.item_id);
-            try jw.endObject();
-        }
-    },
-    mcp_call_completed: struct {
-        type: []const u8 = "response.mcp_call.completed",
-        sequence_number: u32,
-        output_index: u32 = 0,
-        item_id: []const u8 = "",
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            try jw.objectField("output_index"); try jw.write(self.output_index);
-            try jw.objectField("item_id"); try jw.write(self.item_id);
-            try jw.endObject();
-        }
-    },
-    mcp_call_failed: struct {
-        type: []const u8 = "response.mcp_call.failed",
-        sequence_number: u32,
-        output_index: u32 = 0,
-        item_id: []const u8 = "",
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            try jw.objectField("output_index"); try jw.write(self.output_index);
-            try jw.objectField("item_id"); try jw.write(self.item_id);
-            try jw.endObject();
-        }
-    },
+    mcp_call_in_progress: StreamEventMcpCallInProgress,
+    mcp_call_completed: StreamEventMcpCallCompleted,
+    mcp_call_failed: StreamEventMcpCallFailed,
 
     // --- image generation call ---
-    image_generation_call_in_progress: struct {
-        type: []const u8 = "response.image_generation_call.in_progress",
-        sequence_number: u32,
-        output_index: u32 = 0,
-        item_id: []const u8 = "",
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            try jw.objectField("output_index"); try jw.write(self.output_index);
-            try jw.objectField("item_id"); try jw.write(self.item_id);
-            try jw.endObject();
-        }
-    },
-    image_generation_call_generating: struct {
-        type: []const u8 = "response.image_generation_call.generating",
-        sequence_number: u32,
-        output_index: u32 = 0,
-        item_id: []const u8 = "",
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            try jw.objectField("output_index"); try jw.write(self.output_index);
-            try jw.objectField("item_id"); try jw.write(self.item_id);
-            try jw.endObject();
-        }
-    },
-    image_generation_call_partial_image: struct {
-        type: []const u8 = "response.image_generation_call.partial_image",
-        sequence_number: u32,
-        output_index: u32 = 0,
-        item_id: []const u8 = "",
-        partial_image_index: u32 = 0,
-        partial_image_b64: []const u8 = "",
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            try jw.objectField("output_index"); try jw.write(self.output_index);
-            try jw.objectField("item_id"); try jw.write(self.item_id);
-            try jw.objectField("partial_image_index"); try jw.write(self.partial_image_index);
-            try jw.objectField("partial_image_b64"); try jw.write(self.partial_image_b64);
-            try jw.endObject();
-        }
-    },
-    image_generation_call_completed: struct {
-        type: []const u8 = "response.image_generation_call.completed",
-        sequence_number: u32,
-        output_index: u32 = 0,
-        item_id: []const u8 = "",
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            try jw.objectField("output_index"); try jw.write(self.output_index);
-            try jw.objectField("item_id"); try jw.write(self.item_id);
-            try jw.endObject();
-        }
-    },
+    image_generation_call_in_progress: StreamEventImageGenerationCallInProgress,
+    image_generation_call_generating: StreamEventImageGenerationCallGenerating,
+    image_generation_call_partial_image: StreamEventImageGenerationCallPartialImage,
+    image_generation_call_completed: StreamEventImageGenerationCallCompleted,
 
     // --- audio streaming ---
-    audio_delta: struct {
-        type: []const u8 = "response.audio.delta",
-        sequence_number: u32,
-        output_index: u32 = 0,
-        item_id: []const u8 = "",
-        response_id: []const u8 = "",
-        delta: []const u8 = "",
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            try jw.objectField("output_index"); try jw.write(self.output_index);
-            try jw.objectField("item_id"); try jw.write(self.item_id);
-            try jw.objectField("response_id"); try jw.write(self.response_id);
-            try jw.objectField("delta"); try jw.write(self.delta);
-            try jw.endObject();
-        }
-    },
-    audio_done: struct {
-        type: []const u8 = "response.audio.done",
-        sequence_number: u32,
-        output_index: u32 = 0,
-        item_id: []const u8 = "",
-        response_id: []const u8 = "",
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            try jw.objectField("output_index"); try jw.write(self.output_index);
-            try jw.objectField("item_id"); try jw.write(self.item_id);
-            try jw.objectField("response_id"); try jw.write(self.response_id);
-            try jw.endObject();
-        }
-    },
-    audio_transcript_delta: struct {
-        type: []const u8 = "response.audio.transcript.delta",
-        sequence_number: u32,
-        output_index: u32 = 0,
-        item_id: []const u8 = "",
-        delta: []const u8 = "",
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            try jw.objectField("output_index"); try jw.write(self.output_index);
-            try jw.objectField("item_id"); try jw.write(self.item_id);
-            try jw.objectField("delta"); try jw.write(self.delta);
-            try jw.endObject();
-        }
-    },
-    audio_transcript_done: struct {
-        type: []const u8 = "response.audio.transcript.done",
-        sequence_number: u32,
-        output_index: u32 = 0,
-        item_id: []const u8 = "",
-        transcript: []const u8 = "",
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            try jw.objectField("output_index"); try jw.write(self.output_index);
-            try jw.objectField("item_id"); try jw.write(self.item_id);
-            try jw.objectField("transcript"); try jw.write(self.transcript);
-            try jw.endObject();
-        }
-    },
-
+    audio_delta: StreamEventAudioDelta,
+    audio_done: StreamEventAudioDone,
+    audio_transcript_delta: StreamEventAudioTranscriptDelta,
+    audio_transcript_done: StreamEventAudioTranscriptDone,
 
     // --- shell call ---
-    shell_call_command_added: struct {
-        type: []const u8 = "response.shell_call_command.added",
-        sequence_number: u32,
-        output_index: u32 = 0,
-        item_id: []const u8 = "",
-        command_index: u32 = 0,
-        command: []const u8 = "",
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            try jw.objectField("output_index"); try jw.write(self.output_index);
-            try jw.objectField("item_id"); try jw.write(self.item_id);
-            try jw.objectField("command_index"); try jw.write(self.command_index);
-            try jw.objectField("command"); try jw.write(self.command);
-            try jw.endObject();
-        }
-    },
-    shell_call_command_delta: struct {
-        type: []const u8 = "response.shell_call_command.delta",
-        sequence_number: u32,
-        output_index: u32 = 0,
-        item_id: []const u8 = "",
-        command_index: u32 = 0,
-        delta: []const u8 = "",
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            try jw.objectField("output_index"); try jw.write(self.output_index);
-            try jw.objectField("item_id"); try jw.write(self.item_id);
-            try jw.objectField("command_index"); try jw.write(self.command_index);
-            try jw.objectField("delta"); try jw.write(self.delta);
-            try jw.endObject();
-        }
-    },
-    shell_call_command_done: struct {
-        type: []const u8 = "response.shell_call_command.done",
-        sequence_number: u32,
-        output_index: u32 = 0,
-        item_id: []const u8 = "",
-        command_index: u32 = 0,
-        command: []const u8 = "",
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            try jw.objectField("output_index"); try jw.write(self.output_index);
-            try jw.objectField("item_id"); try jw.write(self.item_id);
-            try jw.objectField("command_index"); try jw.write(self.command_index);
-            try jw.objectField("command"); try jw.write(self.command);
-            try jw.endObject();
-        }
-    },
-    shell_call_output_delta: struct {
-        type: []const u8 = "response.shell_call_output_content.delta",
-        sequence_number: u32,
-        output_index: u32 = 0,
-        item_id: []const u8 = "",
-        delta: std.json.Value,
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            try jw.objectField("output_index"); try jw.write(self.output_index);
-            try jw.objectField("item_id"); try jw.write(self.item_id);
-            try jw.objectField("delta"); try jw.write(self.delta);
-            try jw.endObject();
-        }
-    },
-    shell_call_output_done: struct {
-        type: []const u8 = "response.shell_call_output_content.done",
-        sequence_number: u32,
-        output_index: u32 = 0,
-        item_id: []const u8 = "",
-        output: []const std.json.Value = &.{},
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            try jw.objectField("output_index"); try jw.write(self.output_index);
-            try jw.objectField("item_id"); try jw.write(self.item_id);
-            try jw.objectField("output"); try jw.write(self.output);
-            try jw.endObject();
-        }
-    },
+    shell_call_command_added: StreamEventShellCallCommandAdded,
+    shell_call_command_delta: StreamEventShellCallCommandDelta,
+    shell_call_command_done: StreamEventShellCallCommandDone,
+    shell_call_output_delta: StreamEventShellCallOutputDelta,
+    shell_call_output_done: StreamEventShellCallOutputDone,
 
     // --- custom tool call ---
-    custom_tool_call_input_delta: struct {
-        type: []const u8 = "response.custom_tool_call_input.delta",
-        sequence_number: u32,
-        output_index: u32 = 0,
-        item_id: []const u8 = "",
-        delta: []const u8 = "",
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            try jw.objectField("output_index"); try jw.write(self.output_index);
-            try jw.objectField("item_id"); try jw.write(self.item_id);
-            try jw.objectField("delta"); try jw.write(self.delta);
-            try jw.endObject();
-        }
-    },
-    custom_tool_call_input_done: struct {
-        type: []const u8 = "response.custom_tool_call_input.done",
-        sequence_number: u32,
-        output_index: u32 = 0,
-        item_id: []const u8 = "",
-        input: []const u8 = "",
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            try jw.objectField("output_index"); try jw.write(self.output_index);
-            try jw.objectField("item_id"); try jw.write(self.item_id);
-            try jw.objectField("input"); try jw.write(self.input);
-            try jw.endObject();
-        }
-    },
+    custom_tool_call_input_delta: StreamEventCustomToolCallInputDelta,
+    custom_tool_call_input_done: StreamEventCustomToolCallInputDone,
 
     // --- response compaction ---
-    response_compaction_compacting: struct {
-        type: []const u8 = "response.compaction.compacting",
-        sequence_number: u32,
-        pub fn jsonStringify(self: @This(), jw: anytype) !void {
-            try jw.beginObject();
-            try jw.objectField("type"); try jw.write(self.type);
-            try jw.objectField("sequence_number"); try jw.write(self.sequence_number);
-            try jw.endObject();
-        }
-    },
+    response_compaction_compacting: StreamEventResponseCompactionCompacting,
 
     // --- pass-through (native Responses upstream bytes, e.g. copilot) ---
     raw_bytes: []const u8,

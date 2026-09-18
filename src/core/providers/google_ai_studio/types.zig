@@ -26,44 +26,59 @@ const std = @import("std");
 // Content / Part structures
 // ============================================================================
 
+pub const PartText = struct {
+    text: []const u8,
+};
+pub const PartInlineData = struct {
+    mime_type: []const u8,
+    data: []const u8,
+};
+pub const PartFileData = struct {
+    mime_type: []const u8,
+    file_uri: []const u8,
+};
+pub const PartExecutableCode = struct {
+    language: []const u8,
+    code: []const u8,
+};
+pub const PartCodeExecutionResult = struct {
+    outcome: []const u8,
+    output: []const u8,
+};
+pub const PartFunctionCall = struct {
+    name: []const u8,
+    args: std.json.Value,
+};
+pub const PartFunctionResponse = struct {
+    name: []const u8,
+    response: std.json.Value,
+};
+pub const PartThought = struct {
+    thought: bool = false,
+};
+pub const PartOffset = struct {
+    seconds: ?i64 = null,
+    nanos: ?i32 = null,
+};
+pub const PartVideoMetadataInner = struct {
+    start_offset: ?PartOffset = null,
+    end_offset: ?PartOffset = null,
+};
+pub const PartVideoMetadata = struct {
+    video_metadata: PartVideoMetadataInner = .{},
+};
+
 /// A single part inside a Content object.
 pub const Part = union(enum) {
-    text: struct {
-        text: []const u8,
-    },
-    inline_data: struct {
-        mime_type: []const u8,
-        data: []const u8,
-    },
-    file_data: struct {
-        mime_type: []const u8,
-        file_uri: []const u8,
-    },
-    executable_code: struct {
-        language: []const u8,
-        code: []const u8,
-    },
-    code_execution_result: struct {
-        outcome: []const u8,
-        output: []const u8,
-    },
-    function_call: struct {
-        name: []const u8,
-        args: std.json.Value,
-    },
-    function_response: struct {
-        name: []const u8,
-        response: std.json.Value,
-    },
-    thought: struct {
-        thought: bool = false,
-    },
-    video_metadata: struct {
-        video_metadata: struct {
-            start_offset: ?struct { seconds: ?i64 = null, nanos: ?i32 = null } = null,
-            end_offset: ?struct { seconds: ?i64 = null, nanos: ?i32 = null } = null,
-        } = .{},
-    },
+    text: PartText,
+    inline_data: PartInlineData,
+    file_data: PartFileData,
+    executable_code: PartExecutableCode,
+    code_execution_result: PartCodeExecutionResult,
+    function_call: PartFunctionCall,
+    function_response: PartFunctionResponse,
+    thought: PartThought,
+    video_metadata: PartVideoMetadata,
 
     pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
         const v = try std.json.innerParse(std.json.Value, allocator, source, options);
@@ -126,14 +141,14 @@ pub const Part = union(enum) {
             if (v == .object) {
                 const so = v.object.get("startOffset");
                 const eo = v.object.get("endOffset");
-                const start: ?struct { seconds: ?i64 = null, nanos: ?i32 = null } = if (so) |s| blk: {
+                const start: ?PartOffset = if (so) |s| blk: {
                     if (s == .object) break :blk .{
                         .seconds = if (s.object.get("seconds")) |sv| (if (sv == .integer) sv.integer else null) else null,
                         .nanos = if (s.object.get("nanos")) |nv| (if (nv == .integer) @as(i32, @intCast(nv.integer)) else null) else null,
                     };
                     break :blk null;
                 } else null;
-                const end_: ?struct { seconds: ?i64 = null, nanos: ?i32 = null } = if (eo) |e| blk: {
+                const end_: ?PartOffset = if (eo) |e| blk: {
                     if (e == .object) break :blk .{
                         .seconds = if (e.object.get("seconds")) |sv| (if (sv == .integer) sv.integer else null) else null,
                         .nanos = if (e.object.get("nanos")) |nv| (if (nv == .integer) @as(i32, @intCast(nv.integer)) else null) else null,
@@ -1006,15 +1021,18 @@ pub const CitationMetadata = struct {
     }
 };
 
+pub const GroundingChunkWeb = struct {
+    uri: []const u8 = "",
+    title: []const u8 = "",
+};
+pub const GroundingChunkRetrievedContext = struct {
+    uri: []const u8 = "",
+    title: []const u8 = "",
+};
+
 pub const GroundingChunk = struct {
-    web: ?struct {
-        uri: []const u8 = "",
-        title: []const u8 = "",
-    } = null,
-    retrieved_context: ?struct {
-        uri: []const u8 = "",
-        title: []const u8 = "",
-    } = null,
+    web: ?GroundingChunkWeb = null,
+    retrieved_context: ?GroundingChunkRetrievedContext = null,
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         try jw.beginObject();
@@ -1048,13 +1066,15 @@ pub const GroundingSupport = struct {
     confidenceScores: []const f64 = &.{},
 };
 
+pub const SearchEntryPoint = struct {
+    renderedContent: []const u8 = "",
+    sdk_blob: ?[]const u8 = null,
+};
+
 pub const GroundingMetadata = struct {
     webSearchQueries: []const []const u8 = &.{},
     groundingChunks: []const GroundingChunk = &.{},
-    searchEntryPoint: ?struct {
-        renderedContent: []const u8 = "",
-        sdk_blob: ?[]const u8 = null,
-    } = null,
+    searchEntryPoint: ?SearchEntryPoint = null,
     groundingSupports: []const GroundingSupport = &.{},
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
@@ -1100,7 +1120,7 @@ pub const GroundingMetadata = struct {
             }
         }
 
-        var search_entry_point: ?struct { renderedContent: []const u8 = "", sdk_blob: ?[]const u8 = null } = null;
+        var search_entry_point: ?SearchEntryPoint = null;
         if (obj.get("searchEntryPoint")) |v| {
             if (v == .object) {
                 const rc: []const u8 = if (v.object.get("renderedContent")) |rc_v|

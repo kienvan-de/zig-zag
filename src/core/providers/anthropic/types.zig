@@ -62,20 +62,27 @@ pub const Role = enum {
 
 /// Message in conversation
 /// Image source for content blocks
+
+pub const ImageSourceBase64 = struct {
+    type: []const u8 = "base64",
+    media_type: []const u8, // "image/jpeg", "image/png", "image/gif", "image/webp"
+    data: []const u8,
+};
+
+pub const ImageSourceUrl = struct {
+    type: []const u8 = "url",
+    url: []const u8,
+};
+
+pub const ImageSourceFile = struct {
+    type: []const u8 = "file",
+    file_id: []const u8,
+};
+
 pub const ImageSource = union(enum) {
-    base64: struct {
-        type: []const u8 = "base64",
-        media_type: []const u8, // "image/jpeg", "image/png", "image/gif", "image/webp"
-        data: []const u8,
-    },
-    url: struct {
-        type: []const u8 = "url",
-        url: []const u8,
-    },
-    file: struct {
-        type: []const u8 = "file",
-        file_id: []const u8,
-    },
+    base64: ImageSourceBase64,
+    url: ImageSourceUrl,
+    file: ImageSourceFile,
 
     pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
         const json_value = try std.json.innerParse(std.json.Value, allocator, source, options);
@@ -118,25 +125,34 @@ pub const ImageSource = union(enum) {
 };
 
 /// Document source for content blocks
+
+pub const DocumentSourceBase64Pdf = struct {
+    type: []const u8 = "base64",
+    media_type: []const u8 = "application/pdf",
+    data: []const u8,
+};
+
+pub const DocumentSourcePlainText = struct {
+    type: []const u8 = "text",
+    media_type: []const u8 = "text/plain",
+    data: []const u8,
+};
+
+pub const DocumentSourceUrlPdf = struct {
+    type: []const u8 = "url",
+    url: []const u8,
+};
+
+pub const DocumentSourceFile = struct {
+    type: []const u8 = "file",
+    file_id: []const u8,
+};
+
 pub const DocumentSource = union(enum) {
-    base64_pdf: struct {
-        type: []const u8 = "base64",
-        media_type: []const u8 = "application/pdf",
-        data: []const u8,
-    },
-    plain_text: struct {
-        type: []const u8 = "text",
-        media_type: []const u8 = "text/plain",
-        data: []const u8,
-    },
-    url_pdf: struct {
-        type: []const u8 = "url",
-        url: []const u8,
-    },
-    file: struct {
-        type: []const u8 = "file",
-        file_id: []const u8,
-    },
+    base64_pdf: DocumentSourceBase64Pdf,
+    plain_text: DocumentSourcePlainText,
+    url_pdf: DocumentSourceUrlPdf,
+    file: DocumentSourceFile,
 
     pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
         const json_value = try std.json.innerParse(std.json.Value, allocator, source, options);
@@ -440,27 +456,34 @@ pub const BashCodeExecutionResult = struct {
 };
 
 /// Union covering all three text editor command result shapes.
+
+pub const TextEditorCodeExecutionView = struct {
+    type: []const u8 = "text_editor_code_execution_view_result",
+    content: []const u8 = "",
+    file_type: []const u8 = "",
+    num_lines: u32 = 0,
+    start_line: u32 = 1,
+    total_lines: u32 = 0,
+};
+
+pub const TextEditorCodeExecutionCreate = struct {
+    type: []const u8 = "text_editor_code_execution_create_result",
+    is_file_update: bool = false,
+};
+
+pub const TextEditorCodeExecutionStrReplace = struct {
+    type: []const u8 = "text_editor_code_execution_str_replace_result",
+    old_start: u32 = 0,
+    old_lines: u32 = 0,
+    new_start: u32 = 0,
+    new_lines: u32 = 0,
+    lines: []const []const u8 = &.{},
+};
+
 pub const TextEditorCodeExecutionResult = union(enum) {
-    view: struct {
-        type: []const u8 = "text_editor_code_execution_view_result",
-        content: []const u8 = "",
-        file_type: []const u8 = "",
-        num_lines: u32 = 0,
-        start_line: u32 = 1,
-        total_lines: u32 = 0,
-    },
-    create: struct {
-        type: []const u8 = "text_editor_code_execution_create_result",
-        is_file_update: bool = false,
-    },
-    str_replace: struct {
-        type: []const u8 = "text_editor_code_execution_str_replace_result",
-        old_start: u32 = 0,
-        old_lines: u32 = 0,
-        new_start: u32 = 0,
-        new_lines: u32 = 0,
-        lines: []const []const u8 = &.{},
-    },
+    view: TextEditorCodeExecutionView,
+    create: TextEditorCodeExecutionCreate,
+    str_replace: TextEditorCodeExecutionStrReplace,
 
     pub fn jsonParseFromValue(allocator: std.mem.Allocator, v: std.json.Value, options: std.json.ParseOptions) !TextEditorCodeExecutionResult {
         if (v == .object) {
@@ -504,104 +527,135 @@ pub const SearchResultCitations = struct {
 };
 
 /// Content block param for messages (request)
+
+pub const ContentBlockParamText = struct {
+    type: []const u8 = "text",
+    text: []const u8,
+    cache_control: ?CacheControl = null,
+    citations: ?[]const CitationEntry = null,
+};
+
+pub const ContentBlockParamImage = struct {
+    type: []const u8 = "image",
+    source: ImageSource,
+    cache_control: ?CacheControl = null,
+    transformations: ?std.json.Value = null,
+};
+
+pub const ContentBlockParamDocument = struct {
+    type: []const u8 = "document",
+    source: DocumentSource,
+    title: ?[]const u8 = null,
+    context: ?[]const u8 = null,
+    cache_control: ?CacheControl = null,
+    citations: ?SearchResultCitations = null,
+};
+
+pub const ContentBlockParamToolUse = struct {
+    type: []const u8 = "tool_use",
+    id: []const u8,
+    name: []const u8,
+    input: std.json.Value,
+    cache_control: ?CacheControl = null,
+    caller: ?Caller = null,
+    toolset_name: ?[]const u8 = null,
+};
+
+pub const ContentBlockParamServerToolUse = struct {
+    type: []const u8 = "server_tool_use",
+    id: []const u8,
+    name: []const u8,
+    input: std.json.Value,
+    cache_control: ?CacheControl = null,
+    caller: ?Caller = null,
+};
+
+pub const ContentBlockParamWebSearchToolResult = struct {
+    type: []const u8 = "web_search_tool_result",
+    tool_use_id: []const u8,
+    content: []const WebSearchResult,
+    cache_control: ?CacheControl = null,
+    caller: ?Caller = null,
+};
+
+pub const ContentBlockParamWebFetchToolResult = struct {
+    type: []const u8 = "web_fetch_tool_result",
+    tool_use_id: []const u8,
+    content: WebFetchResult,
+    cache_control: ?CacheControl = null,
+    caller: ?Caller = null,
+};
+
+pub const ContentBlockParamCodeExecutionToolResult = struct {
+    type: []const u8 = "code_execution_tool_result",
+    tool_use_id: []const u8,
+    content: CodeExecutionResultContent,
+};
+
+pub const ContentBlockParamBashCodeExecutionToolResult = struct {
+    type: []const u8 = "bash_code_execution_tool_result",
+    tool_use_id: []const u8,
+    content: BashCodeExecutionResult,
+    cache_control: ?CacheControl = null,
+};
+
+pub const ContentBlockParamTextEditorCodeExecutionToolResult = struct {
+    type: []const u8 = "text_editor_code_execution_tool_result",
+    tool_use_id: []const u8,
+    content: TextEditorCodeExecutionResult,
+    cache_control: ?CacheControl = null,
+};
+
+pub const ContentBlockParamToolSearchToolResult = struct {
+    type: []const u8 = "tool_search_tool_result",
+    tool_use_id: []const u8,
+    content: ToolSearchToolSearchResult,
+    cache_control: ?CacheControl = null,
+};
+
+pub const ContentBlockParamSearchResult = struct {
+    type: []const u8 = "search_result",
+    title: ?[]const u8 = null,
+    source: ?[]const u8 = null,
+    content: []const SearchResultTextContent,
+    cache_control: ?CacheControl = null,
+    citations: ?SearchResultCitations = null,
+};
+
+pub const ContentBlockParamThinking = struct {
+    type: []const u8 = "thinking",
+    thinking: []const u8,
+    signature: []const u8,
+};
+
+pub const ContentBlockParamRedactedThinking = struct {
+    type: []const u8 = "redacted_thinking",
+    data: []const u8,
+};
+
+pub const ContentBlockParamContainerUpload = struct {
+    type: []const u8 = "container_upload",
+    file_id: []const u8,
+    cache_control: ?CacheControl = null,
+};
+
 pub const ContentBlockParam = union(enum) {
-    text: struct {
-        type: []const u8 = "text",
-        text: []const u8,
-        cache_control: ?CacheControl = null,
-        citations: ?[]const CitationEntry = null,
-    },
-    image: struct {
-        type: []const u8 = "image",
-        source: ImageSource,
-        cache_control: ?CacheControl = null,
-        transformations: ?std.json.Value = null,
-    },
-    document: struct {
-        type: []const u8 = "document",
-        source: DocumentSource,
-        title: ?[]const u8 = null,
-        context: ?[]const u8 = null,
-        cache_control: ?CacheControl = null,
-        citations: ?SearchResultCitations = null,
-    },
-    tool_use: struct {
-        type: []const u8 = "tool_use",
-        id: []const u8,
-        name: []const u8,
-        input: std.json.Value,
-        cache_control: ?CacheControl = null,
-        caller: ?Caller = null,
-        toolset_name: ?[]const u8 = null,
-    },
-    server_tool_use: struct {
-        type: []const u8 = "server_tool_use",
-        id: []const u8,
-        name: []const u8,
-        input: std.json.Value,
-        cache_control: ?CacheControl = null,
-        caller: ?Caller = null,
-    },
+    text: ContentBlockParamText,
+    image: ContentBlockParamImage,
+    document: ContentBlockParamDocument,
+    tool_use: ContentBlockParamToolUse,
+    server_tool_use: ContentBlockParamServerToolUse,
     tool_result: ToolResultBlock,
-    web_search_tool_result: struct {
-        type: []const u8 = "web_search_tool_result",
-        tool_use_id: []const u8,
-        content: []const WebSearchResult,
-        cache_control: ?CacheControl = null,
-        caller: ?Caller = null,
-    },
-    web_fetch_tool_result: struct {
-        type: []const u8 = "web_fetch_tool_result",
-        tool_use_id: []const u8,
-        content: WebFetchResult,
-        cache_control: ?CacheControl = null,
-        caller: ?Caller = null,
-    },
-    code_execution_tool_result: struct {
-        type: []const u8 = "code_execution_tool_result",
-        tool_use_id: []const u8,
-        content: CodeExecutionResultContent,
-    },
-    bash_code_execution_tool_result: struct {
-        type: []const u8 = "bash_code_execution_tool_result",
-        tool_use_id: []const u8,
-        content: BashCodeExecutionResult,
-        cache_control: ?CacheControl = null,
-    },
-    text_editor_code_execution_tool_result: struct {
-        type: []const u8 = "text_editor_code_execution_tool_result",
-        tool_use_id: []const u8,
-        content: TextEditorCodeExecutionResult,
-        cache_control: ?CacheControl = null,
-    },
-    tool_search_tool_result: struct {
-        type: []const u8 = "tool_search_tool_result",
-        tool_use_id: []const u8,
-        content: ToolSearchToolSearchResult,
-        cache_control: ?CacheControl = null,
-    },
-    search_result: struct {
-        type: []const u8 = "search_result",
-        title: ?[]const u8 = null,
-        source: ?[]const u8 = null,
-        content: []const SearchResultTextContent,
-        cache_control: ?CacheControl = null,
-        citations: ?SearchResultCitations = null,
-    },
-    thinking: struct {
-        type: []const u8 = "thinking",
-        thinking: []const u8,
-        signature: []const u8,
-    },
-    redacted_thinking: struct {
-        type: []const u8 = "redacted_thinking",
-        data: []const u8,
-    },
-    container_upload: struct {
-        type: []const u8 = "container_upload",
-        file_id: []const u8,
-        cache_control: ?CacheControl = null,
-    },
+    web_search_tool_result: ContentBlockParamWebSearchToolResult,
+    web_fetch_tool_result: ContentBlockParamWebFetchToolResult,
+    code_execution_tool_result: ContentBlockParamCodeExecutionToolResult,
+    bash_code_execution_tool_result: ContentBlockParamBashCodeExecutionToolResult,
+    text_editor_code_execution_tool_result: ContentBlockParamTextEditorCodeExecutionToolResult,
+    tool_search_tool_result: ContentBlockParamToolSearchToolResult,
+    search_result: ContentBlockParamSearchResult,
+    thinking: ContentBlockParamThinking,
+    redacted_thinking: ContentBlockParamRedactedThinking,
+    container_upload: ContentBlockParamContainerUpload,
 
     pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
         const json_value = try std.json.innerParse(std.json.Value, allocator, source, options);
@@ -1129,23 +1183,32 @@ pub const Tool = struct {
 };
 
 /// Tool choice for Anthropic API
+
+pub const ToolChoiceAuto = struct {
+    type: []const u8 = "auto",
+    disable_parallel_tool_use: ?bool = null,
+};
+
+pub const ToolChoiceAny = struct {
+    type: []const u8 = "any",
+    disable_parallel_tool_use: ?bool = null,
+};
+
+pub const ToolChoiceTool = struct {
+    type: []const u8 = "tool",
+    name: []const u8,
+    disable_parallel_tool_use: ?bool = null,
+};
+
+pub const ToolChoiceNone = struct {
+    type: []const u8 = "none",
+};
+
 pub const ToolChoice = union(enum) {
-    auto: struct {
-        type: []const u8 = "auto",
-        disable_parallel_tool_use: ?bool = null,
-    },
-    any: struct {
-        type: []const u8 = "any",
-        disable_parallel_tool_use: ?bool = null,
-    },
-    tool: struct {
-        type: []const u8 = "tool",
-        name: []const u8,
-        disable_parallel_tool_use: ?bool = null,
-    },
-    none: struct {
-        type: []const u8 = "none",
-    },
+    auto: ToolChoiceAuto,
+    any: ToolChoiceAny,
+    tool: ToolChoiceTool,
+    none: ToolChoiceNone,
 
     pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
         const json_value = try std.json.innerParse(std.json.Value, allocator, source, options);
@@ -1557,79 +1620,106 @@ pub const Container = struct {
 };
 
 /// Content block in response — mirrors all variants from ContentBlockParam
+
+pub const ContentBlockText = struct {
+    type: []const u8,
+    text: []const u8,
+    citations: ?[]const CitationEntry = null,
+};
+
+pub const ContentBlockToolUse = struct {
+    type: []const u8,
+    id: []const u8,
+    name: []const u8,
+    input: std.json.Value,
+    caller: ?Caller = null,
+    toolset_name: ?[]const u8 = null,
+};
+
+pub const ContentBlockServerToolUse = struct {
+    type: []const u8,
+    id: []const u8,
+    name: []const u8,
+    input: std.json.Value,
+    caller: ?Caller = null,
+};
+
+pub const ContentBlockThinking = struct {
+    type: []const u8,
+    thinking: []const u8,
+    signature: []const u8,
+};
+
+pub const ContentBlockRedactedThinking = struct {
+    type: []const u8,
+    data: []const u8,
+};
+
+pub const ContentBlockToolResult = struct {
+    type: []const u8,
+    tool_use_id: []const u8,
+    is_error: ?bool = null,
+    content: std.json.Value,
+    cache_control: ?CacheControl = null,
+    toolset_name: ?[]const u8 = null,
+};
+
+pub const ContentBlockWebSearchToolResult = struct {
+    type: []const u8,
+    tool_use_id: []const u8,
+    content: []const WebSearchResult,
+    caller: ?Caller = null,
+};
+
+pub const ContentBlockWebFetchToolResult = struct {
+    type: []const u8,
+    tool_use_id: []const u8,
+    content: WebFetchResult,
+    caller: ?Caller = null,
+};
+
+pub const ContentBlockCodeExecutionToolResult = struct {
+    type: []const u8,
+    tool_use_id: []const u8,
+    content: CodeExecutionResultContent,
+};
+
+pub const ContentBlockBashCodeExecutionToolResult = struct {
+    type: []const u8,
+    tool_use_id: []const u8,
+    content: BashCodeExecutionResult,
+};
+
+pub const ContentBlockTextEditorCodeExecutionToolResult = struct {
+    type: []const u8,
+    tool_use_id: []const u8,
+    content: TextEditorCodeExecutionResult,
+};
+
+pub const ContentBlockToolSearchToolResult = struct {
+    type: []const u8,
+    tool_use_id: []const u8,
+    content: ToolSearchToolSearchResult,
+};
+
+pub const ContentBlockFallback = struct {
+    type: []const u8 = "fallback",
+};
+
 pub const ContentBlock = union(enum) {
-    text: struct {
-        type: []const u8,
-        text: []const u8,
-        citations: ?[]const CitationEntry = null,
-    },
-    tool_use: struct {
-        type: []const u8,
-        id: []const u8,
-        name: []const u8,
-        input: std.json.Value,
-        caller: ?Caller = null,
-        toolset_name: ?[]const u8 = null,
-    },
-    server_tool_use: struct {
-        type: []const u8,
-        id: []const u8,
-        name: []const u8,
-        input: std.json.Value,
-        caller: ?Caller = null,
-    },
-    thinking: struct {
-        type: []const u8,
-        thinking: []const u8,
-        signature: []const u8,
-    },
-    redacted_thinking: struct {
-        type: []const u8,
-        data: []const u8,
-    },
-    tool_result: struct {
-        type: []const u8,
-        tool_use_id: []const u8,
-        is_error: ?bool = null,
-        content: std.json.Value,
-        cache_control: ?CacheControl = null,
-        toolset_name: ?[]const u8 = null,
-    },
-    web_search_tool_result: struct {
-        type: []const u8,
-        tool_use_id: []const u8,
-        content: []const WebSearchResult,
-        caller: ?Caller = null,
-    },
-    web_fetch_tool_result: struct {
-        type: []const u8,
-        tool_use_id: []const u8,
-        content: WebFetchResult,
-        caller: ?Caller = null,
-    },
-    code_execution_tool_result: struct {
-        type: []const u8,
-        tool_use_id: []const u8,
-        content: CodeExecutionResultContent,
-    },
-    bash_code_execution_tool_result: struct {
-        type: []const u8,
-        tool_use_id: []const u8,
-        content: BashCodeExecutionResult,
-    },
-    text_editor_code_execution_tool_result: struct {
-        type: []const u8,
-        tool_use_id: []const u8,
-        content: TextEditorCodeExecutionResult,
-    },
-    tool_search_tool_result: struct {
-        type: []const u8,
-        tool_use_id: []const u8,
-        content: ToolSearchToolSearchResult,
-    },
-    fallback: struct {
-        type: []const u8 = "fallback",
-    },
+    text: ContentBlockText,
+    tool_use: ContentBlockToolUse,
+    server_tool_use: ContentBlockServerToolUse,
+    thinking: ContentBlockThinking,
+    redacted_thinking: ContentBlockRedactedThinking,
+    tool_result: ContentBlockToolResult,
+    web_search_tool_result: ContentBlockWebSearchToolResult,
+    web_fetch_tool_result: ContentBlockWebFetchToolResult,
+    code_execution_tool_result: ContentBlockCodeExecutionToolResult,
+    bash_code_execution_tool_result: ContentBlockBashCodeExecutionToolResult,
+    text_editor_code_execution_tool_result: ContentBlockTextEditorCodeExecutionToolResult,
+    tool_search_tool_result: ContentBlockToolSearchToolResult,
+    fallback: ContentBlockFallback,
 
     pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
         const json_value = try std.json.innerParse(std.json.Value, allocator, source, options);
@@ -2011,18 +2101,21 @@ pub const Response = struct {
 // ============================================================================
 
 /// Message start event - contains initial message metadata
+
+pub const MessageStartMessage = struct {
+    id: []const u8,
+    type: []const u8 = "",
+    role: []const u8 = "",
+    content: []const std.json.Value = &.{},
+    model: []const u8 = "",
+    stop_reason: ?[]const u8 = null,
+    stop_sequence: ?[]const u8 = null,
+    usage: Usage = .{ .input_tokens = 0 },
+};
+
 pub const MessageStart = struct {
     type: []const u8,
-    message: struct {
-        id: []const u8,
-        type: []const u8 = "",
-        role: []const u8 = "",
-        content: []const std.json.Value = &.{},
-        model: []const u8 = "",
-        stop_reason: ?[]const u8 = null,
-        stop_sequence: ?[]const u8 = null,
-        usage: Usage = .{ .input_tokens = 0 },
-    },
+    message: MessageStartMessage,
 };
 
 /// Content block start event
@@ -2129,12 +2222,15 @@ pub const MessageDeltaUsage = struct {
 };
 
 /// Message delta event - contains stop reason
+
+pub const MessageDeltaDelta = struct {
+    stop_reason: ?[]const u8 = null,
+    stop_sequence: ?[]const u8 = null,
+};
+
 pub const MessageDelta = struct {
     type: []const u8 = "",
-    delta: struct {
-        stop_reason: ?[]const u8 = null,
-        stop_sequence: ?[]const u8 = null,
-    } = .{},
+    delta: MessageDeltaDelta = .{},
     usage: MessageDeltaUsage = .{},
 };
 

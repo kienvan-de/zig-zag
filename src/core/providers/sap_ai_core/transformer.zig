@@ -146,8 +146,9 @@ pub fn transformChatRequest(
 /// Free what transformChatRequest allocated: the params object.
 /// All other fields borrow from the inbound request.
 pub fn cleanupChatRequest(request: Sap.Request, allocator: std.mem.Allocator) void {
-    if (request.config.modules.prompt_templating.model.params) |p|
-        content.freeParams(p, allocator);
+    if (request.config.modules.prompt_templating) |pt|
+        if (pt.model.params) |p|
+            content.freeParams(p, allocator);
 }
 
 /// SAP response → inbound chat response.
@@ -516,11 +517,12 @@ pub fn transformMessagesRequest(
 /// Free what transformMessagesRequest allocated: template messages, tools
 /// slice, and params object.
 pub fn cleanupMessagesRequest(request: Sap.Request, allocator: std.mem.Allocator) void {
-    const prompt = request.config.modules.prompt_templating.prompt;
+    const pt = request.config.modules.prompt_templating.?;
+    const prompt = pt.prompt;
     for (prompt.template) |msg| content.freeMessageOwnedText(msg, allocator);
     allocator.free(prompt.template);
     if (prompt.tools) |ts| allocator.free(ts);
-    if (request.config.modules.prompt_templating.model.params) |p|
+    if (pt.model.params) |p|
         content.freeParams(p, allocator);
 }
 
@@ -920,11 +922,12 @@ pub fn transformResponsesRequest(
 /// Note: message content strings and tool_call_id borrow from the inbound
 /// request arena (not freed here).
 pub fn cleanupResponsesRequest(request: Sap.Request, allocator: std.mem.Allocator) void {
-    const prompt = request.config.modules.prompt_templating.prompt;
+    const pt = request.config.modules.prompt_templating.?;
+    const prompt = pt.prompt;
     for (prompt.template) |msg| content.freeMessageOwnedText(msg, allocator);
     allocator.free(prompt.template);
     if (prompt.tools) |ts| allocator.free(ts);
-    if (request.config.modules.prompt_templating.model.params) |p|
+    if (pt.model.params) |p|
         content.freeParams(p, allocator);
 }
 

@@ -35,34 +35,42 @@ pub const Role = enum {
     }
 };
 
+pub const ContentPartText = struct {
+    type: []const u8 = "text",
+    text: []const u8,
+};
+pub const ContentPartImageUrlInner = struct {
+    url: []const u8,
+    detail: ?[]const u8 = null,
+};
+pub const ContentPartImageUrl = struct {
+    type: []const u8 = "image_url",
+    image_url: ContentPartImageUrlInner,
+};
+pub const ContentPartInputAudioInner = struct {
+    data: []const u8 = "",
+    format: []const u8 = "", // "wav" | "mp3"
+};
+pub const ContentPartInputAudio = struct {
+    type: []const u8 = "input_audio",
+    input_audio: ContentPartInputAudioInner,
+};
+pub const ContentPartFileInner = struct {
+    file_id: ?[]const u8 = null,
+    file_data: ?[]const u8 = null,
+    filename: ?[]const u8 = null,
+};
+pub const ContentPartFile = struct {
+    type: []const u8 = "file",
+    file: ContentPartFileInner,
+};
+
 /// Content part for chat message content arrays (text or image)
 pub const ContentPart = union(enum) {
-    text: struct {
-        type: []const u8 = "text",
-        text: []const u8,
-    },
-    image_url: struct {
-        type: []const u8 = "image_url",
-        image_url: struct {
-            url: []const u8,
-            detail: ?[]const u8 = null,
-        },
-    },
-    input_audio: struct {
-        type: []const u8 = "input_audio",
-        input_audio: struct {
-            data: []const u8 = "",
-            format: []const u8 = "",  // "wav" | "mp3"
-        },
-    },
-    file: struct {
-        type: []const u8 = "file",
-        file: struct {
-            file_id: ?[]const u8 = null,
-            file_data: ?[]const u8 = null,
-            filename: ?[]const u8 = null,
-        },
-    },
+    text: ContentPartText,
+    image_url: ContentPartImageUrl,
+    input_audio: ContentPartInputAudio,
+    file: ContentPartFile,
 
     pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
         const json_value = try std.json.innerParse(std.json.Value, allocator, source, options);

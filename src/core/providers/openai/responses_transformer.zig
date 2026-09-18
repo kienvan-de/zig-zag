@@ -355,7 +355,9 @@ pub fn transformChatStreamLine(
     if (state.response_id.len == 0) {
         if (obj.get("item_id")) |id_v| {
             if (id_v == .string and id_v.string.len > 0) {
-                state.response_id = state.allocator.dupe(u8, id_v.string) catch {};
+                if (state.allocator.dupe(u8, id_v.string)) |duped| {
+                                state.response_id = duped;
+                            } else |_| {}
             }
         }
     }
