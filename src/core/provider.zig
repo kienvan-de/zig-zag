@@ -13,7 +13,6 @@
 // limitations under the License.
 
 const std = @import("std");
-const testing = std.testing;
 const config_mod = @import("config.zig");
 const log = @import("log.zig");
 

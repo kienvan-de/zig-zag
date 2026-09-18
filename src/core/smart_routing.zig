@@ -339,41 +339,6 @@ fn patchCurrentModels(allocator: Allocator, raw_json: []const u8, groups: []Rout
 // API key derivation
 // ============================================================================
 
-/// Derive a valid api_key from a group name.
-/// Rules: lowercase, replace any char not in [a-z0-9_] with '-',
-/// collapse consecutive '-' runs, strip leading/trailing '-'.
-/// Caller owns the returned slice.
-pub fn deriveApiKey(allocator: Allocator, name: []const u8) ![]u8 {
-    if (name.len == 0) return allocator.dupe(u8, "");
-
-    var buf = try allocator.alloc(u8, name.len);
-    errdefer allocator.free(buf);
-
-    var len: usize = 0;
-    var last_was_dash = false;
-    for (name) |c| {
-        const lc: u8 = if (c >= 'A' and c <= 'Z') c + 32 else c;
-        if ((lc >= 'a' and lc <= 'z') or (lc >= '0' and lc <= '9') or lc == '_') {
-            buf[len] = lc;
-            len += 1;
-            last_was_dash = false;
-        } else if (!last_was_dash) {
-            buf[len] = '-';
-            len += 1;
-            last_was_dash = true;
-        }
-    }
-    // Strip trailing dash
-    while (len > 0 and buf[len - 1] == '-') len -= 1;
-    // Strip leading dash
-    var start: usize = 0;
-    while (start < len and buf[start] == '-') start += 1;
-
-    const result = try allocator.dupe(u8, buf[start..len]);
-    allocator.free(buf);
-    return result;
-}
-
 // ============================================================================
 // Global singleton
 // ============================================================================

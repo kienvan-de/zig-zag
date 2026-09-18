@@ -183,45 +183,6 @@ pub fn createErrorResponse(
     return try buffer.toOwnedSlice(allocator);
 }
 
-/// Map HTTP status codes to OpenAI error types
-pub fn statusCodeToErrorType(status: std.http.Status) ErrorType {
-    return switch (status) {
-        .bad_request => .invalid_request_error,
-        .unauthorized => .authentication_error,
-        .forbidden => .permission_error,
-        .not_found => .not_found_error,
-        .too_many_requests => .rate_limit_error,
-        .internal_server_error, .bad_gateway, .gateway_timeout => .server_error,
-        .service_unavailable => .service_unavailable_error,
-        else => .server_error,
-    };
-}
-
-/// Create error response from HTTP status code
-pub fn createErrorFromStatus(
-    allocator: std.mem.Allocator,
-    status: std.http.Status,
-    message: ?[]const u8,
-) ![]const u8 {
-    const error_type = statusCodeToErrorType(status);
-    const default_message = switch (error_type) {
-        .invalid_request_error => "Invalid request",
-        .authentication_error => "Authentication failed",
-        .permission_error => "Permission denied",
-        .not_found_error => "Resource not found",
-        .rate_limit_error => "Rate limit exceeded",
-        .server_error => "Internal server error",
-        .service_unavailable_error => "Service temporarily unavailable",
-    };
-
-    return try createErrorResponse(
-        allocator,
-        message orelse default_message,
-        error_type,
-        null,
-    );
-}
-
 // ============================================================================
 // Unit Tests
 // ============================================================================

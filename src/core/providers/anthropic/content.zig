@@ -483,47 +483,6 @@ pub fn transformErrorResponse(
 
 /// Best-effort parse of a raw JSON payload as an Anthropic error, mapped to
 /// the common error shape. Returns `null` when the payload is not an error.
-///
-/// Ownership: `message` and `code` are freshly duplicated and become the
-/// caller's property. `type` is a static literal — never free it.
-pub fn tryParseError(
-    json_part: []const u8,
-    allocator: std.mem.Allocator,
-) ?common.ErrorResponse {
-    const parsed = std.json.parseFromSlice(
-        Messages.ErrorResponse,
-        allocator,
-        json_part,
-        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
-    ) catch return null;
-    defer parsed.deinit();
-
-    const mapped = transformErrorResponse(parsed.value);
-
-    const message = allocator.dupe(u8, mapped.@"error".message) catch return null;
-    errdefer allocator.free(message);
-
-    var code: ?[]const u8 = null;
-    if (mapped.@"error".code) |c| {
-        code = allocator.dupe(u8, c) catch null;
-    }
-
-    return .{
-        .@"error" = .{
-            .message = message,
-            .type = mapped.@"error".type,
-            .param = null,
-            .code = code,
-        },
-    };
-}
-
-/// Free what `tryParseError` returned.
-pub fn freeError(error_response: common.ErrorResponse, allocator: std.mem.Allocator) void {
-    allocator.free(error_response.@"error".message);
-    if (error_response.@"error".code) |code| allocator.free(code);
-}
-
 /// Free a `tool_calls` slice as built by `extractToolCalls`.
 pub fn freeToolCalls(tool_calls: []const Chat.ToolCall, allocator: std.mem.Allocator) void {
     for (tool_calls) |tool_call| {

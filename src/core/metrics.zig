@@ -118,19 +118,6 @@ pub fn addOutputCost(dollars: f64) void {
 
 /// Reset **all** counters to zero, including network I/O, tokens, costs, and `period_start`.
 ///
-/// Primarily used in tests or when the server is fully restarted from a clean state.
-/// For budget-period resets (which preserve network counters), use `resetCosts()` instead.
-/// Thread-safe: each counter is stored atomically with monotonic ordering.
-pub fn reset() void {
-    network_rx_bytes.store(0, .monotonic);
-    network_tx_bytes.store(0, .monotonic);
-    input_tokens.store(0, .monotonic);
-    output_tokens.store(0, .monotonic);
-    input_cost_micros.store(0, .monotonic);
-    output_cost_micros.store(0, .monotonic);
-    period_start.store(0, .monotonic);
-}
-
 /// Reset cost **and** token counters, and set `period_start` to the current wall-clock time.
 ///
 /// Called by `utils.checkAndResetBudgetPeriod()` when the budget period configured in
