@@ -14,7 +14,7 @@
 
 //! Messages Handler
 //!
-//! Thin HTTP wrapper over core.messages_dispatcher.dispatch().
+//! Thin HTTP wrapper over core.dispatcher.complete(core.messages_pipeline.run, ...).
 //! Handles POST /v1/messages requests (Anthropic Messages API format).
 
 const std = @import("std");
@@ -63,7 +63,7 @@ pub fn handle(
         // Streaming: send SSE headers first, then use ChunkedWriter
         try http.sendSseHeaders(connection);
         var chunked = http.ChunkedWriter.init(connection);
-        core.messages_dispatcher.dispatch(&chunked, allocator, anthropic_request.value) catch |err| {
+        core.dispatcher.complete(core.messages_pipeline.run, &chunked, allocator, anthropic_request.value) catch |err| {
             try handleStreamingError(&chunked, allocator, err);
         };
         // Send chunked terminator
@@ -75,7 +75,7 @@ pub fn handle(
         var buf = std.ArrayList(u8).empty;
         defer buf.deinit(allocator);
         var list_writer = http.ArrayListWriter{ .list = &buf, .allocator = allocator };
-        core.messages_dispatcher.dispatch(&list_writer, allocator, anthropic_request.value) catch |err| {
+        core.dispatcher.complete(core.messages_pipeline.run, &list_writer, allocator, anthropic_request.value) catch |err| {
             try handleSyncError(allocator, connection, err);
             return;
         };

@@ -12,24 +12,26 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Models Dispatcher
+//! Core Dispatcher
 //!
-//! Fetch the model catalogue from all configured providers.
+//! Two public entry points:
 //!
-//! ## Public API
+//!   complete   — smart-routing loop + budget enforcement for any completion
+//!                protocol (chat / messages / responses). Calls a per-protocol
+//!                `run` function supplied as a comptime parameter.
 //!
-//!   listModels — Fetch models from all providers (parallel or sequential)
-//!   freeModels — Free the slice returned by listModels
+//!   listModels — fetch the model catalogue from all configured providers
+//!   freeModels — free the slice returned by listModels
 
 const std = @import("std");
 const time = @import("time.zig");
 const sync = @import("sync.zig");
 const config_mod = @import("config.zig");
 const log = @import("log.zig");
-const provider_mod = @import("provider.zig");
 const utils = @import("utils.zig");
-const worker_pool = @import("worker_pool.zig");
 const smart_routing = @import("smart_routing.zig");
+const worker_pool = @import("worker_pool.zig");
+const provider_mod = @import("provider.zig");
 const openai_common = @import("providers/openai/types.zig");
 
 const openai = struct {
@@ -54,6 +56,71 @@ const google_ai_studio = struct {
     const client = @import("providers/google_ai_studio/client.zig");
     const transformer = @import("providers/google_ai_studio/transformer.zig");
 };
+
+// ============================================================================
+// complete — smart-routing loop for completion protocols
+// ============================================================================
+
+/// Enforce budget, acquire smart-routing, and run `inner` with automatic model
+/// rollover on retryable errors. `inner` must have the signature:
+///
+///   fn(writer: anytype, allocator, cfg, request: anytype, model: []const u8) anyerror!void
+///
+/// `request` must have a `.model: []const u8` field used for smart-routing lookup.
+pub fn complete(
+    comptime inner: anytype,
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    request: anytype,
+) !void {
+    const cfg = config_mod.get();
+    try utils.enforceBudget(cfg);
+
+    const sr_handle = smart_routing.acquire();
+    defer if (sr_handle) |h| h.release();
+    const sr = if (sr_handle) |h| h.sr else null;
+    const sr_group = if (sr) |s| s.lookup(request.model) else null;
+    var current_model_buf: ?[]u8 = if (sr_group) |g| try sr.?.getCurrentModel(g, allocator) else null;
+    defer if (current_model_buf) |buf| allocator.free(buf);
+    var did_rollover = false;
+
+    while (true) {
+        const effective_model = if (current_model_buf) |buf| buf else request.model;
+
+        const dispatch_err = inner(writer, allocator, cfg, request, effective_model);
+        if (dispatch_err) |_| {
+            if (did_rollover and sr != null) {
+                sr.?.writeBack(allocator) catch |e| {
+                    log.warn("[smart_routing] writeBack failed: {}", .{e});
+                };
+            }
+            return;
+        } else |err| {
+            const retryable = (err == error.RateLimitError or
+                err == error.AuthenticationError or
+                err == error.ServerError);
+            if (retryable and sr_group != null) {
+                log.warn("[smart_routing] Model '{s}' failed ({s}), attempting rollover...", .{ effective_model, @errorName(err) });
+                const next = sr.?.rollover(sr_group.?, allocator) catch null;
+                if (next) |n| {
+                    if (current_model_buf) |old| allocator.free(old);
+                    current_model_buf = n;
+                    did_rollover = true;
+                    log.info("[smart_routing] Rolling over to '{s}'", .{n});
+                    continue;
+                } else {
+                    log.err("[smart_routing] All alternatives exhausted for '{s}'", .{request.model});
+                }
+            }
+            return err;
+        }
+    }
+    unreachable;
+}
+
+// ============================================================================
+// listModels / freeModels
+// ============================================================================
 
 const ThreadSafeAllocator = struct {
     backing_allocator: std.mem.Allocator,
@@ -125,9 +192,7 @@ const FetchContext = struct {
 /// models from all providers that responded successfully, sorted
 /// alphabetically by model `id`.
 ///
-/// The returned slice is **caller-owned**. Free it with `freeModels()` when
-/// done — that function handles freeing both the slice and the heap-allocated
-/// strings inside each `Model`.
+/// The returned slice is **caller-owned**. Free it with `freeModels()`.
 pub fn listModels(allocator: std.mem.Allocator) ![]openai_common.Model {
     const cfg = config_mod.get();
     const provider_count = cfg.providers.count();
@@ -153,12 +218,7 @@ pub fn listModels(allocator: std.mem.Allocator) ![]openai_common.Model {
     defer safe_allocator.free(results);
 
     for (results) |*result| {
-        result.* = .{
-            .provider_name = "",
-            .models = null,
-            .err = null,
-            .elapsed_ms = 0,
-        };
+        result.* = .{ .provider_name = "", .models = null, .err = null, .elapsed_ms = 0 };
     }
 
     var wg = worker_pool.WaitGroup.init();
@@ -168,7 +228,6 @@ pub fn listModels(allocator: std.mem.Allocator) ![]openai_common.Model {
     while (provider_iter.next()) |entry| {
         const pname = entry.key_ptr.*;
         const pconfig = entry.value_ptr;
-
         contexts[i] = .{
             .allocator = safe_allocator,
             .provider_name = pname,
@@ -176,7 +235,6 @@ pub fn listModels(allocator: std.mem.Allocator) ![]openai_common.Model {
             .result = &results[i],
             .wg = &wg,
         };
-
         wg.add(1);
         worker_pool.submit(&fetchTask, @ptrCast(&contexts[i])) catch |err| {
             log.warn("Failed to submit task for provider '{s}': {}", .{ pname, err });
@@ -184,7 +242,6 @@ pub fn listModels(allocator: std.mem.Allocator) ![]openai_common.Model {
             results[i].provider_name = pname;
             wg.done();
         };
-
         i += 1;
     }
 
@@ -198,12 +255,9 @@ pub fn listModels(allocator: std.mem.Allocator) ![]openai_common.Model {
             log.warn("Provider '{s}' failed after {d}ms: {}", .{ result.provider_name, result.elapsed_ms, err });
             continue;
         }
-
         if (result.models) |model_list| {
             log.info("Provider '{s}' returned {d} models in {d}ms", .{ result.provider_name, model_list.len, result.elapsed_ms });
-            for (model_list) |m| {
-                try all_models.append(safe_allocator, m);
-            }
+            for (model_list) |m| try all_models.append(safe_allocator, m);
             safe_allocator.free(model_list);
         } else {
             log.debug("Provider '{s}' returned no models in {d}ms", .{ result.provider_name, result.elapsed_ms });
@@ -223,7 +277,6 @@ pub fn listModels(allocator: std.mem.Allocator) ![]openai_common.Model {
             return std.mem.order(u8, a.id, b.id) == .lt;
         }
     }.lessThan);
-
     return sorted;
 }
 
@@ -239,20 +292,13 @@ pub fn freeModels(allocator: std.mem.Allocator, models: []openai_common.Model) v
 fn fetchTask(ctx_ptr: *anyopaque) void {
     const ctx: *FetchContext = @ptrCast(@alignCast(ctx_ptr));
     defer ctx.wg.done();
-
     const start_time = time.milliTimestamp();
     ctx.result.provider_name = ctx.provider_name;
-
-    ctx.result.models = fetchModelsForProvider(
-        ctx.allocator,
-        ctx.provider_name,
-        ctx.provider_config,
-    ) catch |err| {
+    ctx.result.models = fetchModelsForProvider(ctx.allocator, ctx.provider_name, ctx.provider_config) catch |err| {
         ctx.result.err = err;
         ctx.result.elapsed_ms = time.milliTimestamp() - start_time;
         return;
     };
-
     ctx.result.elapsed_ms = time.milliTimestamp() - start_time;
 }
 
@@ -279,20 +325,15 @@ fn listModelsSequential(allocator: std.mem.Allocator, cfg: *const config_mod.Con
         const pname = entry.key_ptr.*;
         const pconfig = entry.value_ptr;
         const provider_start = time.milliTimestamp();
-
         const models = fetchModelsForProvider(allocator, pname, pconfig) catch |err| {
             const elapsed = time.milliTimestamp() - provider_start;
             log.warn("Provider '{s}' failed after {d}ms: {}", .{ pname, elapsed, err });
             continue;
         };
-
         const elapsed = time.milliTimestamp() - provider_start;
-
         if (models) |model_list| {
             log.info("Provider '{s}' returned {d} models in {d}ms", .{ pname, model_list.len, elapsed });
-            for (model_list) |m| {
-                try all_models.append(allocator, m);
-            }
+            for (model_list) |m| try all_models.append(allocator, m);
             allocator.free(model_list);
         } else {
             log.debug("Provider '{s}' returned no models in {d}ms", .{ pname, elapsed });
@@ -310,7 +351,6 @@ fn listModelsSequential(allocator: std.mem.Allocator, cfg: *const config_mod.Con
             return std.mem.order(u8, a.id, b.id) == .lt;
         }
     }.lessThan);
-
     return sorted;
 }
 
@@ -367,20 +407,13 @@ fn fetchModels(
 
     const response = try client.listModels();
 
-    if (@TypeOf(response) == ?void) {
-        return null;
-    }
-
+    if (@TypeOf(response) == ?void) return null;
     if (@typeInfo(@TypeOf(response)) == .optional) {
-        if (response == null) {
-            return null;
-        }
+        if (response == null) return null;
     }
 
     const models = try transformer.transformModelsResponse(allocator, response, provider_name);
-
     var r = response;
     r.deinit();
-
     return models;
 }

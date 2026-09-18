@@ -12,23 +12,23 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Responses Dispatcher
+//! Messages Pipeline
 //!
-//! Transport-agnostic pipeline for OpenAI /v1/responses.
-//! Writes results to a generic `writer: anytype`.
+//! Provider-dispatch pipeline for Anthropic /v1/messages.
+//! Called by dispatcher.complete — do not call directly.
 //!
 //! ## Public API
 //!
-//!   dispatch — OpenAI /v1/responses (streaming + non-streaming)
+//!   run — resolve provider, transform, call client, write response
 
 const std = @import("std");
+const time = @import("time.zig");
 const config_mod = @import("config.zig");
 const log = @import("log.zig");
 const provider_mod = @import("provider.zig");
 const utils = @import("utils.zig");
-const smart_routing = @import("smart_routing.zig");
-const responses_types = @import("providers/openai/responses_types.zig");
-const responses_content = @import("providers/openai/responses_content.zig");
+const messages_types = @import("providers/anthropic/types.zig");
+const anthropic_content = @import("providers/anthropic/content.zig");
 
 const openai = struct {
     const client = @import("providers/openai/client.zig");
@@ -54,67 +54,14 @@ const google_ai_studio = struct {
     const transformer = @import("providers/google_ai_studio/transformer.zig");
 };
 
-/// Perform a completion using the OpenAI Responses API schema (`/v1/responses`).
-///
-/// Streaming or non-streaming mode is determined by `request.stream`.
-///
-/// **Pipeline**: enforceBudget → parseModel → resolve provider → transform request →
-/// init client → send upstream → transform response → track metrics → write to `writer`.
-pub fn dispatch(
-    writer: anytype,
-    allocator: std.mem.Allocator,
-    request: responses_types.Request,
-) !void {
-    const cfg = config_mod.get();
-    try utils.enforceBudget(cfg);
-
-    const sr_handle = smart_routing.acquire();
-    defer if (sr_handle) |h| h.release();
-    const sr = if (sr_handle) |h| h.sr else null;
-    const sr_group = if (sr) |s| s.lookup(request.model) else null;
-    var current_model_buf: ?[]u8 = if (sr_group) |g| try sr.?.getCurrentModel(g, allocator) else null;
-    defer if (current_model_buf) |buf| allocator.free(buf);
-    var did_rollover = false;
-
-    while (true) {
-        const effective_model = if (current_model_buf) |buf| buf else request.model;
-
-        const dispatch_err = dispatchInner(writer, allocator, cfg, request, effective_model);
-        if (dispatch_err) |_| {
-            if (did_rollover and sr != null) {
-                sr.?.writeBack(allocator) catch |e| {
-                    log.warn("[smart_routing] writeBack failed: {}", .{e});
-                };
-            }
-            return;
-        } else |err| {
-            const retryable = (err == error.RateLimitError or
-                err == error.AuthenticationError or
-                err == error.ServerError);
-            if (retryable and sr_group != null) {
-                log.warn("[smart_routing] Model '{s}' failed ({s}), attempting rollover...", .{ effective_model, @errorName(err) });
-                const next = sr.?.rollover(sr_group.?, allocator) catch null;
-                if (next) |n| {
-                    if (current_model_buf) |old| allocator.free(old);
-                    current_model_buf = n;
-                    did_rollover = true;
-                    log.info("[smart_routing] Rolling over to '{s}'", .{n});
-                    continue;
-                } else {
-                    log.err("[smart_routing] All alternatives exhausted for '{s}'", .{request.model});
-                }
-            }
-            return err;
-        }
-    }
-    unreachable;
-}
-
-fn dispatchInner(
+/// Perform an Anthropic Messages API completion (`/v1/messages`).
+/// Resolve provider, transform request, call client, write response.
+/// Called by dispatcher.complete with the effective model after smart-routing.
+pub fn run(
     writer: anytype,
     allocator: std.mem.Allocator,
     cfg: *const config_mod.Config,
-    request: responses_types.Request,
+    request: messages_types.Request,
     model_str: []const u8,
 ) !void {
     const model_info = utils.parseModelString(model_str, allocator) catch |err| {
@@ -134,19 +81,22 @@ fn dispatchInner(
     if (provider_mod.Provider.fromString(model_info.provider)) |native_provider| {
         switch (native_provider) {
             .anthropic => try dispatchToProvider(anthropic.client.AnthropicClient, anthropic.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
-            .openai => try dispatchToProvider(openai.client.OpenAIClient, openai.responses_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
-            .sap_ai_core => try dispatchToProvider(sap_ai_core.client.SapAiCoreClient, sap_ai_core.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
             .hai => switch (hai.client.transformerFor(model_info.model, provider_config)) {
                 .messages  => try dispatchToProvider(hai.client.HaiClient, anthropic.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
                 .responses => try dispatchToProvider(hai.client.HaiClient, openai.responses_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
                 .gemini    => try dispatchToProvider(hai.client.HaiClient, google_ai_studio.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
                 .chat      => try dispatchToProvider(hai.client.HaiClient, openai.chat_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
             },
+            .openai => switch (openai.client.transformerFor(provider_config)) {
+                .responses => try dispatchToProvider(openai.client.OpenAIClient, openai.responses_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
+                .chat      => try dispatchToProvider(openai.client.OpenAIClient, openai.chat_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
+            },
             .copilot => switch (copilot.client.transformerFor(model_info.model)) {
                 .messages  => try dispatchToProvider(copilot.client.CopilotClient, anthropic.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
                 .responses => try dispatchToProvider(copilot.client.CopilotClient, openai.responses_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
                 .gemini, .chat => try dispatchToProvider(copilot.client.CopilotClient, openai.chat_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
             },
+            .sap_ai_core => try dispatchToProvider(sap_ai_core.client.SapAiCoreClient, sap_ai_core.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
             .google_ai_studio => try dispatchToProvider(google_ai_studio.client.GoogleAiStudioClient, google_ai_studio.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
         }
     } else |_| {
@@ -155,13 +105,13 @@ fn dispatchInner(
             return error.CompatibleFieldMissing;
         };
 
-        if (std.mem.eql(u8, compatible, "openai")) {
+        if (std.mem.eql(u8, compatible, "anthropic")) {
+            try dispatchToProvider(anthropic.client.AnthropicClient, anthropic.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
+        } else if (std.mem.eql(u8, compatible, "openai")) {
             switch (openai.client.transformerFor(provider_config)) {
                 .responses => try dispatchToProvider(openai.client.OpenAIClient, openai.responses_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
                 .chat      => try dispatchToProvider(openai.client.OpenAIClient, openai.chat_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
             }
-        } else if (std.mem.eql(u8, compatible, "anthropic")) {
-            try dispatchToProvider(anthropic.client.AnthropicClient, anthropic.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config);
         } else {
             log.err("Unknown compatible provider type: '{s}'", .{compatible});
             return error.UnknownCompatibleType;
@@ -175,7 +125,7 @@ fn dispatchToProvider(
     writer: anytype,
     is_streaming: bool,
     allocator: std.mem.Allocator,
-    request: responses_types.Request,
+    request: messages_types.Request,
     model: []const u8,
     provider_name: []const u8,
     provider_config: *const config_mod.ProviderConfig,
@@ -202,24 +152,35 @@ fn sync(
     comptime Transformer: type,
     writer: anytype,
     allocator: std.mem.Allocator,
-    request: responses_types.Request,
+    request: messages_types.Request,
     model: []const u8,
     provider_name: []const u8,
     provider_config: *const config_mod.ProviderConfig,
 ) !void {
-    const provider_req = Transformer.transformResponsesRequest(request, model, allocator) catch |err| {
-        log.err("[RESPONSES] transformResponsesRequest failed: {}", .{err});
+    const start_time = time.milliTimestamp();
+    log.info("[SYNC] POST /v1/messages - request received for model '{s}/{s}'", .{ provider_name, model });
+
+    const transform_start = start_time;
+    const provider_request = Transformer.transformMessagesRequest(request, model, allocator) catch |err| {
+        log.err("[SYNC] Transform request error: {} for model '{s}/{s}'", .{ err, provider_name, model });
         return error.TransformFailed;
     };
-    defer Transformer.cleanupResponsesRequest(provider_req, allocator);
+    defer Transformer.cleanupMessagesRequest(provider_request, allocator);
+    const transform_request_time = time.milliTimestamp() - transform_start;
+    log.debug("[SYNC] Transform request completed in {d}ms", .{transform_request_time});
 
+    const client_init_start = time.milliTimestamp();
     var client = Client.init(allocator, provider_config) catch |err| {
-        log.err("[RESPONSES] Client init failed: {}", .{err});
+        log.err("[SYNC] Client initialization error: {} for model '{s}'", .{ err, request.model });
         return error.ClientInitFailed;
     };
     defer client.deinit();
+    const client_init_time = time.milliTimestamp() - client_init_start;
+    log.debug("[SYNC] Client init completed in {d}ms", .{client_init_time});
 
-    const provider_response = client.sendRequest(provider_req) catch |err| {
+    const provider_request_start = time.milliTimestamp();
+    const provider_response = client.sendRequest(provider_request) catch |err| {
+        log.err("[SYNC] Provider API error: {} for model '{s}/{s}'", .{ err, provider_name, model });
         if (err == error.AuthRequired) return error.AuthRequired;
         if (err == error.RateLimitError) return error.RateLimitError;
         if (err == error.AuthenticationError) return error.AuthenticationError;
@@ -227,23 +188,38 @@ fn sync(
         return error.UpstreamError;
     };
     defer provider_response.deinit();
+    const provider_request_time = time.milliTimestamp() - provider_request_start;
+    log.debug("[SYNC] Provider request/response completed in {d}ms", .{provider_request_time});
 
-    const resp = Transformer.transformResponsesResponse(provider_response.value, request, allocator) catch |err| {
-        log.err("[RESPONSES] transformToResponse failed: {}", .{err});
+    const transform_response_start = time.milliTimestamp();
+    const anthropic_response = Transformer.transformMessagesResponse(provider_response.value, request, allocator) catch |err| {
+        log.err("[SYNC] Transform response error: {} for model '{s}/{s}'", .{ err, provider_name, model });
         return error.TransformResponseFailed;
     };
-    defer Transformer.cleanupResponsesResponse(resp, allocator);
+    defer Transformer.cleanupMessagesResponse(anthropic_response, allocator);
+    const transform_response_time = time.milliTimestamp() - transform_response_start;
+    log.debug("[SYNC] Transform response completed in {d}ms", .{transform_response_time});
 
-    var buf = std.ArrayList(u8).empty;
-    defer buf.deinit(allocator);
-    try buf.print(allocator, "{f}", .{std.json.fmt(resp, .{})});
-    try writer.writeAll(buf.items);
     utils.recordTokenUsage(
-        if (resp.usage) |u| u.input_tokens else 0,
-        if (resp.usage) |u| u.output_tokens else 0,
+        @intCast(anthropic_response.usage.input_tokens),
+        @intCast(anthropic_response.usage.output_tokens),
         model,
         provider_name,
     );
+
+    const serialize_start = time.milliTimestamp();
+    var response_buffer = std.ArrayList(u8).empty;
+    defer response_buffer.deinit(allocator);
+    try response_buffer.print(allocator, "{f}", .{std.json.fmt(anthropic_response, .{})});
+    const serialize_time = time.milliTimestamp() - serialize_start;
+    log.debug("[SYNC] Response serialization completed in {d}ms", .{serialize_time});
+
+    try writer.writeAll(response_buffer.items);
+
+    const total_elapsed = time.milliTimestamp() - start_time;
+    log.info("[SYNC] POST /v1/messages - completed | model='{s}/{s}' | total={d}ms | transform_req={d}ms | client_init={d}ms | provider_req={d}ms | transform_resp={d}ms | serialize={d}ms", .{
+        provider_name, model, total_elapsed, transform_request_time, client_init_time, provider_request_time, transform_response_time, serialize_time,
+    });
 }
 
 fn streaming(
@@ -251,24 +227,37 @@ fn streaming(
     comptime Transformer: type,
     writer: anytype,
     allocator: std.mem.Allocator,
-    request: responses_types.Request,
+    request: messages_types.Request,
     model: []const u8,
     provider_name: []const u8,
     provider_config: *const config_mod.ProviderConfig,
 ) !void {
-    const provider_req = Transformer.transformResponsesRequest(request, model, allocator) catch |err| {
-        log.err("[RESPONSES] transformResponsesRequest failed: {}", .{err});
+    const start_time = time.milliTimestamp();
+    log.info("[STREAM] POST /v1/messages - request received for model '{s}/{s}'", .{ provider_name, model });
+
+    const transform_start = start_time;
+    var mutable_request = request;
+    mutable_request.stream = true;
+    const provider_request = Transformer.transformMessagesRequest(mutable_request, model, allocator) catch |err| {
+        log.err("[STREAM] Transform request error: {} for model '{s}/{s}'", .{ err, provider_name, model });
         return error.TransformFailed;
     };
-    defer Transformer.cleanupResponsesRequest(provider_req, allocator);
+    defer Transformer.cleanupMessagesRequest(provider_request, allocator);
+    const transform_time = time.milliTimestamp() - transform_start;
+    log.debug("[STREAM] Transform request completed in {d}ms", .{transform_time});
 
+    const client_init_start = time.milliTimestamp();
     var client = Client.init(allocator, provider_config) catch |err| {
-        log.err("[RESPONSES] Client init failed: {}", .{err});
+        log.err("[STREAM] Client initialization error: {} for model '{s}'", .{ err, request.model });
         return error.ClientInitFailed;
     };
     defer client.deinit();
+    const client_init_time = time.milliTimestamp() - client_init_start;
+    log.debug("[STREAM] Client init completed in {d}ms", .{client_init_time});
 
-    const stream_result = client.sendStreamingRequest(provider_req) catch |err| {
+    const stream_connect_start = time.milliTimestamp();
+    const stream_result = client.sendStreamingRequest(provider_request) catch |err| {
+        log.err("[STREAM] Provider streaming error: {} for model '{s}/{s}'", .{ err, provider_name, model });
         if (err == error.AuthRequired) return error.AuthRequired;
         if (err == error.RateLimitError) return error.RateLimitError;
         if (err == error.AuthenticationError) return error.AuthenticationError;
@@ -276,44 +265,68 @@ fn streaming(
         return error.UpstreamError;
     };
     defer client.freeStreamingResult(stream_result);
+    const stream_connect_time = time.milliTimestamp() - stream_connect_start;
+    log.debug("[STREAM] Stream connection established in {d}ms", .{stream_connect_time});
 
-    var stream_state = Transformer.ResponsesStreamState.init(allocator, request.model);
+    const process_start = time.milliTimestamp();
+    var chunk_count: u32 = 0;
+    var had_error = false;
+
+    var stream_state = Transformer.MessagesStreamState.init(allocator, request.model);
     defer stream_state.deinit();
 
     var buf = std.ArrayList(u8).empty;
     defer buf.deinit(allocator);
 
     while (true) {
-        const maybe_line = stream_result.iterator.next() catch break;
+        const maybe_line = stream_result.iterator.next() catch |err| {
+            had_error = true;
+            const body_err = stream_result.response.bodyErr();
+            if (body_err) |underlying| {
+                log.err("[STREAM] Upstream read failed for model '{s}/{s}': {} (underlying: {})", .{ provider_name, model, err, underlying });
+            } else {
+                log.err("[STREAM] Upstream read failed for model '{s}/{s}': {} (after {d} chunks)", .{ provider_name, model, err, chunk_count });
+            }
+            break;
+        };
+
         const line = maybe_line orelse break;
-        if (std.mem.startsWith(u8, line, "data: [DONE]")) break;
-        switch (Transformer.transformResponsesStreamLine(line, &stream_state, allocator)) {
+
+        const result = Transformer.transformMessagesStreamLine(line, &stream_state, allocator);
+        switch (result) {
             .events => |events| {
                 defer allocator.free(events);
+
                 buf.clearRetainingCapacity();
                 for (events) |event| {
-                    responses_content.writeResponsesSSE(event, &buf, allocator) catch continue;
+                    anthropic_content.writeMessagesSSE(event, &buf, allocator) catch continue;
                 }
-                writer.writeAll(buf.items) catch {};
+                if (buf.items.len > 0) {
+                    chunk_count += 1;
+                    writer.writeAll(buf.items) catch |write_err| {
+                        log.err("[STREAM] Failed to write to client: {}", .{write_err});
+                        had_error = true;
+                        break;
+                    };
+                }
             },
             .skip => {},
         }
     }
-    if (Transformer.flushResponsesStream(&stream_state, allocator)) |flush_events| {
-        defer allocator.free(flush_events);
-        buf.clearRetainingCapacity();
-        for (flush_events) |event| {
-            responses_content.writeResponsesSSE(event, &buf, allocator) catch continue;
-        }
-        writer.writeAll(buf.items) catch {};
+
+    utils.recordTokenUsage(stream_state.input_tokens, stream_state.output_tokens, model, provider_name);
+
+    const process_time = time.milliTimestamp() - process_start;
+    log.debug("[STREAM] Processed {d} chunks in {d}ms", .{ chunk_count, process_time });
+
+    const total_elapsed = time.milliTimestamp() - start_time;
+    if (had_error) {
+        log.warn("[STREAM] POST /v1/messages - completed with error | model='{s}/{s}' | total={d}ms | transform_req={d}ms | client_init={d}ms | stream_connect={d}ms | process={d}ms | chunks={d}", .{
+            provider_name, model, total_elapsed, transform_time, client_init_time, stream_connect_time, process_time, chunk_count,
+        });
+    } else {
+        log.info("[STREAM] POST /v1/messages - completed | model='{s}/{s}' | total={d}ms | transform_req={d}ms | client_init={d}ms | stream_connect={d}ms | process={d}ms | chunks={d}", .{
+            provider_name, model, total_elapsed, transform_time, client_init_time, stream_connect_time, process_time, chunk_count,
+        });
     }
-    if (Transformer.appendsDoneMarker) {
-        try writer.writeAll("data: [DONE]\n\n");
-    }
-    utils.recordTokenUsage(
-        stream_state.input_tokens,
-        stream_state.output_tokens,
-        model,
-        provider_name,
-    );
 }

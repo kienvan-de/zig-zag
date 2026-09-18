@@ -16,7 +16,7 @@
 //! core.metrics.load();
 //! core.pricing.init(allocator, provider_names);
 //!
-//! try core.chat_dispatcher.dispatch(writer, allocator, request);
+//! try core.dispatcher.complete(core.chat_pipeline.run, writer, allocator, request);
 //!
 //! // Auth management
 //! const status = core.config.checkAuthStatus(allocator, "copilot");
@@ -27,17 +27,17 @@
 // High-level completion API
 // =========================================================================
 
-/// OpenAI /v1/chat/completions dispatcher.
-pub const chat_dispatcher = @import("chat_dispatcher.zig");
+/// Smart-routing loop, budget enforcement, and model catalogue.
+pub const dispatcher = @import("dispatcher.zig");
 
-/// Anthropic /v1/messages dispatcher.
-pub const messages_dispatcher = @import("messages_dispatcher.zig");
+/// OpenAI /v1/chat/completions provider pipeline.
+pub const chat_pipeline = @import("chat_pipeline.zig");
 
-/// OpenAI /v1/responses dispatcher.
-pub const responses_dispatcher = @import("responses_dispatcher.zig");
+/// Anthropic /v1/messages provider pipeline.
+pub const messages_pipeline = @import("messages_pipeline.zig");
 
-/// GET /v1/models dispatcher.
-pub const models_dispatcher = @import("models_dispatcher.zig");
+/// OpenAI /v1/responses provider pipeline.
+pub const responses_pipeline = @import("responses_pipeline.zig");
 
 // =========================================================================
 // Core infrastructure

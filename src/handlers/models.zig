@@ -14,7 +14,7 @@
 
 //! Models Handler
 //!
-//! Thin HTTP wrapper over core.models_dispatcher.listModels().
+//! Thin HTTP wrapper over core.dispatcher.listModels().
 //! Handles GET /v1/models requests.
 
 const std = @import("std");
@@ -37,7 +37,7 @@ pub fn handle(
     _ = path;
     _ = body;
 
-    const models = core.models_dispatcher.listModels(allocator) catch |err| {
+    const models = core.dispatcher.listModels(allocator) catch |err| {
         log.err("Failed to list models: {}", .{err});
         const error_json = try errors.createErrorResponse(
             allocator,
@@ -49,7 +49,7 @@ pub fn handle(
         try http.sendJsonResponse(connection, .internal_server_error, error_json);
         return;
     };
-    defer core.models_dispatcher.freeModels(allocator, models);
+    defer core.dispatcher.freeModels(allocator, models);
 
     const response = OpenAICommon.ModelsResponse{
         .data = models,
