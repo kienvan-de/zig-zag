@@ -83,6 +83,8 @@ pub fn complete(
     var current_model_buf: ?[]u8 = if (sr_group) |g| try sr.?.getCurrentModel(g, allocator) else null;
     defer if (current_model_buf) |buf| allocator.free(buf);
     var did_rollover = false;
+    var rollover_count: usize = 0;
+    const rollover_limit: usize = if (sr_group) |g| g.alternatives.len else 0;
 
     while (true) {
         const effective_model = if (current_model_buf) |buf| buf else request.model;
@@ -98,19 +100,25 @@ pub fn complete(
         } else |err| {
             const retryable = (err == error.RateLimitError or
                 err == error.AuthenticationError or
-                err == error.ServerError);
-            if (retryable and sr_group != null) {
-                log.warn("[smart_routing] Model '{s}' failed ({s}), attempting rollover...", .{ effective_model, @errorName(err) });
+                err == error.ServerError or
+                err == error.InvalidStatusCode or
+                err == error.RequestFailed or
+                err == error.UpstreamError);
+            if (retryable and sr_group != null and rollover_count < rollover_limit) {
+                log.warn("[smart_routing] Model '{s}' failed ({s}), attempting rollover ({d}/{d})...", .{ effective_model, @errorName(err), rollover_count + 1, rollover_limit });
                 const next = sr.?.rollover(sr_group.?, allocator) catch null;
                 if (next) |n| {
                     if (current_model_buf) |old| allocator.free(old);
                     current_model_buf = n;
                     did_rollover = true;
+                    rollover_count += 1;
                     log.info("[smart_routing] Rolling over to '{s}'", .{n});
                     continue;
                 } else {
                     log.err("[smart_routing] All alternatives exhausted for '{s}'", .{request.model});
                 }
+            } else if (retryable and sr_group != null and rollover_count >= rollover_limit) {
+                log.err("[smart_routing] Rollover limit reached ({d}) for '{s}'", .{ rollover_limit, request.model });
             }
             return err;
         }
