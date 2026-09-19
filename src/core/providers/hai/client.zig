@@ -139,7 +139,7 @@ pub const HaiClient = struct {
         const messages_path = provider_config.getString("messages_path") orelse "";
         const responses_path = provider_config.getString("responses_path") orelse "";
         const gemini_path = provider_config.getString("gemini_path") orelse "";
-        const app_version = provider_config.getString("app_version") orelse "hai-cli/1.4.3";
+        const app_version = provider_config.getString("app_version") orelse "";
 
         // Optional timeout settings (these can have defaults as they're not HAI-specific)
         const timeout_ms = provider_config.getInt("timeout_ms") orelse config_mod.defaults.provider_timeout_ms;

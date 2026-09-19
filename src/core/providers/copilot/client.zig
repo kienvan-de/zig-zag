@@ -67,10 +67,10 @@ pub const StreamingResult = http_client.SSEResult;
 // ============================================================================
 
 const DEFAULT_CLIENT_ID = "Iv1.b507a08c87ecfe98";
-const DEFAULT_EDITOR_VERSION = "vscode/1.95.0";
-const DEFAULT_EDITOR_PLUGIN_VERSION = "copilot-chat/0.26.7";
-const DEFAULT_USER_AGENT = "GitHubCopilotChat/0.26.7";
-const DEFAULT_API_VERSION = "2025-04-01";
+const DEFAULT_EDITOR_VERSION = "vscode/1.388.0";
+const DEFAULT_EDITOR_PLUGIN_VERSION = "copilot-chat/0.32.5";
+const DEFAULT_USER_AGENT = "GitHubCopilotChat/0.32.5";
+const DEFAULT_API_VERSION = "2025-08-20";
 
 const TOKEN_ENDPOINT = "https://api.github.com/copilot_internal/v2/token";
 const GITHUB_DEVICE_CODE_URL = "https://github.com/login/device/code";
@@ -547,7 +547,7 @@ pub const CopilotClient = struct {
             const msgs = request.messages;
             if (msgs.len == 0) return "user";
             const last = msgs[msgs.len - 1];
-            return if (last.role == .assistant) "agent" else "user";
+            return if (last.role == .assistant or last.role == .tool) "agent" else "user";
         } else {
             switch (request.input) {
                 .items => |items| {

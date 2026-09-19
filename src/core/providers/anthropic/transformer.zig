@@ -548,7 +548,7 @@ pub fn transformMessagesStreamLine(
                     .id = allocator.dupe(u8, v.message.id) catch return .{ .skip = {} },
                     .type = allocator.dupe(u8, v.message.type) catch return .{ .skip = {} },
                     .role = allocator.dupe(u8, v.message.role) catch return .{ .skip = {} },
-                    .model = allocator.dupe(u8, v.message.model) catch return .{ .skip = {} },
+                    .model = allocator.dupe(u8, state.original_model) catch return .{ .skip = {} },
                     .stop_reason = if (v.message.stop_reason) |s| allocator.dupe(u8, s) catch return .{ .skip = {} } else null,
                     .stop_sequence = if (v.message.stop_sequence) |s| allocator.dupe(u8, s) catch return .{ .skip = {} } else null,
                     .usage = v.message.usage,

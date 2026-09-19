@@ -125,6 +125,9 @@ fn mapErrorMessage(err: anyerror) []const u8 {
         error.UnknownCompatibleType => "Unknown compatible provider type. Must be 'openai' or 'anthropic'",
         error.TransformFailed => "Failed to transform request",
         error.ClientInitFailed => "Failed to initialize provider client",
+        error.RateLimitError => "Upstream rate limit exceeded",
+        error.AuthenticationError => "Upstream authentication failed",
+        error.ServerError => "Upstream server error",
         error.UpstreamError => "Failed to communicate with upstream API",
         error.TransformResponseFailed => "Failed to transform response",
         else => "Internal server error",
@@ -140,7 +143,9 @@ fn mapErrorType(err: anyerror) errors.ErrorType {
         error.UnknownCompatibleType, error.TransformFailed,
         error.ClientInitFailed,
         => .invalid_request_error,
-        error.UpstreamError, error.TransformResponseFailed => .server_error,
+        error.UpstreamError, error.TransformResponseFailed, error.ServerError => .server_error,
+        error.RateLimitError => .rate_limit_error,
+        error.AuthenticationError => .authentication_error,
         else => .server_error,
     };
 }
@@ -163,6 +168,9 @@ fn mapHttpStatus(err: anyerror) std.http.Status {
         error.ClientInitFailed,
         => .bad_request,
         error.UpstreamError => .bad_gateway,
+        error.ServerError => .bad_gateway,
+        error.RateLimitError => .too_many_requests,
+        error.AuthenticationError => .unauthorized,
         error.TransformResponseFailed => .internal_server_error,
         else => .internal_server_error,
     };
