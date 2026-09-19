@@ -231,6 +231,8 @@ pub const MessagesStreamState = struct {
     finish_reason: ?[]const u8 = null,
     input_tokens: u32 = 0,
     output_tokens: u32 = 0,
+    cache_write_tokens: u32 = 0,
+    cache_read_tokens: u32 = 0,
     sent_open: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, original_model: []const u8) MessagesStreamState {
@@ -511,9 +513,15 @@ pub fn transformMessagesResponse(
         .model = try allocator.dupe(u8, original_req.model),
         .stop_reason = stop_reason,
         .stop_sequence = null,
-        .usage = if (upstream.usage) |u| .{
-            .input_tokens = u.prompt_tokens,
-            .output_tokens = u.completion_tokens,
+        .usage = if (upstream.usage) |u| blk: {
+            const cached = if (u.prompt_tokens_details) |d| d.cached_tokens else 0;
+            const written = if (u.prompt_tokens_details) |d| d.cache_write_tokens else 0;
+            break :blk .{
+                .input_tokens = u.prompt_tokens - cached - written,
+                .output_tokens = u.completion_tokens,
+                .cache_read_input_tokens = if (cached > 0) cached else null,
+                .cache_creation_input_tokens = if (written > 0) written else null,
+            };
         } else .{ .input_tokens = 0, .output_tokens = 0 },
     };
 }
@@ -577,7 +585,11 @@ pub fn transformMessagesStreamLine(
         events.append(allocator, .{ .message_delta = .{
             .type = "message_delta",
             .delta = .{ .stop_reason = stop_reason, .stop_sequence = null },
-            .usage = .{ .output_tokens = state.output_tokens },
+            .usage = .{
+                .output_tokens = state.output_tokens,
+                .cache_read_input_tokens = if (state.cache_read_tokens > 0) state.cache_read_tokens else null,
+                .cache_creation_input_tokens = if (state.cache_write_tokens > 0) state.cache_write_tokens else null,
+            },
         }}) catch return .{ .skip = {} };
         events.append(allocator, .{ .message_stop = .{ .type = "message_stop" } }) catch
             return .{ .skip = {} };
@@ -636,8 +648,12 @@ pub fn transformMessagesStreamLine(
         const choice = parsed.value.choices[0];
 
         if (parsed.value.usage) |u| {
-            state.input_tokens = u.prompt_tokens;
             state.output_tokens = u.completion_tokens;
+            if (u.prompt_tokens_details) |d| {
+                state.cache_write_tokens = d.cache_write_tokens;
+                state.cache_read_tokens = d.cached_tokens;
+            }
+            state.input_tokens = u.prompt_tokens - state.cache_read_tokens - state.cache_write_tokens;
         }
 
         if (choice.finish_reason) |reason| {
@@ -679,6 +695,8 @@ pub const ResponsesStreamState = struct {
     finish_reason: ?[]const u8 = null,
     input_tokens: u32 = 0,
     output_tokens: u32 = 0,
+    cache_write_tokens: u32 = 0,
+    cache_read_tokens: u32 = 0,
     sequence_number: u32 = 0,
 
     pub fn init(allocator: std.mem.Allocator, original_model: []const u8) ResponsesStreamState {
@@ -973,6 +991,14 @@ pub fn transformResponsesResponse(
             .input_tokens = if (upstream.usage) |u| u.prompt_tokens else 0,
             .output_tokens = if (upstream.usage) |u| u.completion_tokens else 0,
             .total_tokens = if (upstream.usage) |u| u.total_tokens else 0,
+            .input_tokens_details = if (upstream.usage) |u|
+                if (u.prompt_tokens_details) |d|
+                    if (d.cached_tokens > 0 or d.cache_write_tokens > 0) .{
+                        .cached_tokens = d.cached_tokens,
+                        .cache_write_tokens = d.cache_write_tokens,
+                    } else null
+                else null
+            else null,
         },
         .temperature = original_req.temperature,
         .top_p = original_req.top_p,
@@ -1062,6 +1088,10 @@ pub fn transformResponsesStreamLine(
     if (parsed.value.usage) |u| {
         state.input_tokens = u.prompt_tokens;
         state.output_tokens = u.completion_tokens;
+        if (u.prompt_tokens_details) |d| {
+            state.cache_read_tokens = d.cached_tokens;
+            state.cache_write_tokens = d.cache_write_tokens;
+        }
     }
 
     if (parsed.value.choices.len == 0) return .{ .skip = {} };
@@ -1153,6 +1183,10 @@ pub fn flushResponsesStream(
             .input_tokens = state.input_tokens,
             .output_tokens = state.output_tokens,
             .total_tokens = state.input_tokens + state.output_tokens,
+            .input_tokens_details = if (state.cache_read_tokens > 0 or state.cache_write_tokens > 0) .{
+                .cached_tokens = state.cache_read_tokens,
+                .cache_write_tokens = state.cache_write_tokens,
+            } else null,
         },
         .parallel_tool_calls = true,
     };

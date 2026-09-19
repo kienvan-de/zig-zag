@@ -378,10 +378,12 @@ pub fn transformChatStreamLine(
         }
     }
 
+    const stream_cached = parsed.value.usage_metadata.cached_content_token_count;
     const usage: ?Chat.Usage = if (is_final and parsed.value.usage_metadata.total_token_count > 0) .{
         .prompt_tokens = parsed.value.usage_metadata.prompt_token_count,
         .completion_tokens = parsed.value.usage_metadata.candidates_token_count,
         .total_tokens = parsed.value.usage_metadata.total_token_count,
+        .prompt_tokens_details = if (stream_cached > 0) .{ .cached_tokens = stream_cached } else null,
     } else null;
 
     const choices = allocator.alloc(Chat.StreamChoice, 1) catch return .{ .skip = {} };
@@ -421,6 +423,7 @@ pub const MessagesStreamState = struct {
     finish_reason: ?[]const u8 = null,
     input_tokens: u32 = 0,
     output_tokens: u32 = 0,
+    cache_read_tokens: u32 = 0,
     /// Whether the synthetic message_start + content_block_start were emitted.
     sent_start: bool = false,
     /// Index of the next content block to open (text is always 0; tool_use starts at 1+).
@@ -632,7 +635,7 @@ pub fn transformMessagesResponse(
         .stop_reason = stop_reason,
         .stop_sequence = null,
         .usage = .{
-            .input_tokens = upstream_response.usage_metadata.prompt_token_count,
+            .input_tokens = upstream_response.usage_metadata.prompt_token_count - cached,
             .output_tokens = upstream_response.usage_metadata.candidates_token_count,
             .cache_read_input_tokens = if (cached > 0) cached else null,
         },
@@ -774,6 +777,8 @@ pub fn transformMessagesStreamLine(
             if (reason.len > 0) {
                 state.input_tokens = parsed.value.usage_metadata.prompt_token_count;
                 state.output_tokens = parsed.value.usage_metadata.candidates_token_count;
+                state.cache_read_tokens = parsed.value.usage_metadata.cached_content_token_count;
+                state.input_tokens -= state.cache_read_tokens;
                 const stop_reason = content.transformStopReasonToMessages(candidate.finish_reason);
                 state.finish_reason = stop_reason;
 
@@ -784,7 +789,10 @@ pub fn transformMessagesStreamLine(
                 events.append(allocator, .{ .message_delta = .{
                     .type = "message_delta",
                     .delta = .{ .stop_reason = stop_reason, .stop_sequence = null },
-                    .usage = .{ .output_tokens = state.output_tokens },
+                    .usage = .{
+                        .output_tokens = state.output_tokens,
+                        .cache_read_input_tokens = if (state.cache_read_tokens > 0) state.cache_read_tokens else null,
+                    },
                 }}) catch return .{ .skip = {} };
                 events.append(allocator, .{ .message_stop = .{
                     .type = "message_stop",
@@ -809,6 +817,7 @@ pub const ResponsesStreamState = struct {
     finish_reason: ?[]const u8 = null,
     input_tokens: u32 = 0,
     output_tokens: u32 = 0,
+    cache_read_tokens: u32 = 0,
     /// Whether the synthetic output_item.added + content_part.added were emitted.
     sent_start: bool = false,
     sequence_number: u32 = 0,
@@ -1073,6 +1082,9 @@ pub fn transformResponsesResponse(
             .input_tokens = upstream_response.usage_metadata.prompt_token_count,
             .output_tokens = upstream_response.usage_metadata.candidates_token_count,
             .total_tokens = upstream_response.usage_metadata.total_token_count,
+            .input_tokens_details = if (upstream_response.usage_metadata.cached_content_token_count > 0) .{
+                .cached_tokens = upstream_response.usage_metadata.cached_content_token_count,
+            } else null,
         },
         .incomplete_details = incomplete_details,
         .temperature = original_req.temperature,
@@ -1273,6 +1285,7 @@ pub fn transformResponsesStreamLine(
             if (reason.len > 0) {
                 state.input_tokens = parsed.value.usage_metadata.prompt_token_count;
                 state.output_tokens = parsed.value.usage_metadata.candidates_token_count;
+                state.cache_read_tokens = parsed.value.usage_metadata.cached_content_token_count;
                 const finish = content.transformStopReason(candidate.finish_reason);
                 if (state.finish_reason) |prev| allocator.free(prev);
                 state.finish_reason = allocator.dupe(u8, finish) catch null;
@@ -1338,6 +1351,9 @@ pub fn flushResponsesStream(
             .input_tokens = state.input_tokens,
             .output_tokens = state.output_tokens,
             .total_tokens = state.input_tokens + state.output_tokens,
+            .input_tokens_details = if (state.cache_read_tokens > 0) .{
+                .cached_tokens = state.cache_read_tokens,
+            } else null,
         },
         .parallel_tool_calls = true,
     };

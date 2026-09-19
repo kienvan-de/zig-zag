@@ -65,6 +65,8 @@ pub const ChatStreamState = struct {
     response_id: []const u8 = "",
     input_tokens: u32 = 0,
     output_tokens: u32 = 0,
+    cache_write_tokens: u32 = 0,
+    cache_read_tokens: u32 = 0,
     created: i64,
 
     pub fn init(allocator: std.mem.Allocator, original_model: []const u8) ChatStreamState {
@@ -305,6 +307,12 @@ pub fn transformChatResponse(
             .prompt_tokens = u.input_tokens,
             .completion_tokens = u.output_tokens,
             .total_tokens = u.total_tokens,
+            .prompt_tokens_details = if (u.input_tokens_details) |d|
+                if (d.cached_tokens > 0 or d.cache_write_tokens > 0) .{
+                    .cached_tokens = d.cached_tokens,
+                    .cache_write_tokens = d.cache_write_tokens,
+                } else null
+            else null,
         } else null,
         .service_tier = upstream_response.service_tier,
     };
@@ -430,6 +438,16 @@ pub fn transformChatStreamLine(
                         if (usage_v.object.get("output_tokens")) |ot| {
                             if (ot == .integer) state.output_tokens = @intCast(ot.integer);
                         }
+                        if (usage_v.object.get("input_tokens_details")) |dtl| {
+                            if (dtl == .object) {
+                                if (dtl.object.get("cached_tokens")) |ct| {
+                                    if (ct == .integer) state.cache_read_tokens = @intCast(ct.integer);
+                                }
+                                if (dtl.object.get("cache_write_tokens")) |cwt| {
+                                    if (cwt == .integer) state.cache_write_tokens = @intCast(cwt.integer);
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -459,6 +477,10 @@ pub fn transformChatStreamLine(
                 .prompt_tokens = state.input_tokens,
                 .completion_tokens = state.output_tokens,
                 .total_tokens = state.input_tokens + state.output_tokens,
+                .prompt_tokens_details = if (state.cache_read_tokens > 0 or state.cache_write_tokens > 0) .{
+                    .cached_tokens = state.cache_read_tokens,
+                    .cache_write_tokens = state.cache_write_tokens,
+                } else null,
             },
         };
         return .{ .events = chunks };
@@ -487,6 +509,8 @@ pub const MessagesStreamState = struct {
     finish_reason: ?[]const u8 = null,
     input_tokens: u32 = 0,
     output_tokens: u32 = 0,
+    cache_write_tokens: u32 = 0,
+    cache_read_tokens: u32 = 0,
     sent_open: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, original_model: []const u8) MessagesStreamState {
@@ -685,10 +709,16 @@ pub fn transformMessagesResponse(
         .model = owned_model,
         .stop_reason = stop_reason,
         .stop_sequence = null,
-        .usage = .{
-            .input_tokens = if (upstream_response.usage) |u| u.input_tokens else 0,
-            .output_tokens = if (upstream_response.usage) |u| u.output_tokens else 0,
-        },
+        .usage = if (upstream_response.usage) |u| blk: {
+            const cached = if (u.input_tokens_details) |d| d.cached_tokens else 0;
+            const written = if (u.input_tokens_details) |d| d.cache_write_tokens else 0;
+            break :blk .{
+                .input_tokens = u.input_tokens - cached - written,
+                .output_tokens = u.output_tokens,
+                .cache_read_input_tokens = if (cached > 0) cached else null,
+                .cache_creation_input_tokens = if (written > 0) written else null,
+            };
+        } else .{ .input_tokens = 0, .output_tokens = 0 },
     };
 }
 
@@ -744,6 +774,17 @@ pub fn transformMessagesStreamLine(
                         if (usage_v.object.get("output_tokens")) |ot| {
                             if (ot == .integer) state.output_tokens = @intCast(ot.integer);
                         }
+                        if (usage_v.object.get("input_tokens_details")) |dtl| {
+                            if (dtl == .object) {
+                                if (dtl.object.get("cached_tokens")) |ct| {
+                                    if (ct == .integer) state.cache_read_tokens = @intCast(ct.integer);
+                                }
+                                if (dtl.object.get("cache_write_tokens")) |cwt| {
+                                    if (cwt == .integer) state.cache_write_tokens = @intCast(cwt.integer);
+                                }
+                            }
+                        }
+                        state.input_tokens -= state.cache_read_tokens + state.cache_write_tokens;
                     }
                 }
             }
@@ -782,7 +823,11 @@ pub fn transformMessagesStreamLine(
         events.append(allocator, .{ .message_delta = .{
             .type = "message_delta",
             .delta = .{ .stop_reason = stop_reason, .stop_sequence = null },
-            .usage = .{ .output_tokens = state.output_tokens },
+            .usage = .{
+                .output_tokens = state.output_tokens,
+                .cache_read_input_tokens = if (state.cache_read_tokens > 0) state.cache_read_tokens else null,
+                .cache_creation_input_tokens = if (state.cache_write_tokens > 0) state.cache_write_tokens else null,
+            },
         }}) catch return .{ .skip = {} };
         events.append(allocator, .{ .message_stop = .{ .type = "message_stop" } }) catch
             return .{ .skip = {} };

@@ -78,6 +78,8 @@ pub const ChatStreamState = struct {
     finish_reason: ?[]const u8 = null,
     input_tokens: u32 = 0,
     output_tokens: u32 = 0,
+    cache_write_tokens: u32 = 0,
+    cache_read_tokens: u32 = 0,
     created: i64,
 
     pub fn init(allocator: std.mem.Allocator, original_model: []const u8) ChatStreamState {
@@ -234,7 +236,9 @@ pub fn transformChatResponse(
         .model = try allocator.dupe(u8, original_req.model),
         .choices = choices,
         .usage = .{
-            .prompt_tokens = upstream_response.usage.input_tokens,
+            .prompt_tokens = upstream_response.usage.input_tokens +
+                (upstream_response.usage.cache_creation_input_tokens orelse 0) +
+                (upstream_response.usage.cache_read_input_tokens orelse 0),
             .completion_tokens = upstream_response.usage.output_tokens,
             .total_tokens = upstream_response.usage.input_tokens + upstream_response.usage.output_tokens,
             .prompt_tokens_details = if (upstream_response.usage.cache_creation_input_tokens != null or
@@ -304,6 +308,8 @@ pub fn transformChatStreamLine(
             state.response_id = allocator.dupe(u8, parsed.value.message.id) catch return .{ .skip = {} };
         }
         state.input_tokens = parsed.value.message.usage.input_tokens;
+        state.cache_write_tokens = parsed.value.message.usage.cache_creation_input_tokens orelse 0;
+        state.cache_read_tokens = parsed.value.message.usage.cache_read_input_tokens orelse 0;
 
         const choices = allocator.alloc(Chat.StreamChoice, 1) catch return .{ .skip = {} };
         choices[0] = .{ .index = 0, .delta = .{ .role = .assistant }, .finish_reason = null };
@@ -411,6 +417,8 @@ pub fn transformChatStreamLine(
         defer parsed.deinit();
 
         state.output_tokens = parsed.value.usage.output_tokens;
+        if (parsed.value.usage.cache_creation_input_tokens) |v| state.cache_write_tokens = v;
+        if (parsed.value.usage.cache_read_input_tokens) |v| state.cache_read_tokens = v;
         const finish_reason = content.transformStopReason(parsed.value.delta.stop_reason);
         state.finish_reason = finish_reason;
 
@@ -424,9 +432,13 @@ pub fn transformChatStreamLine(
             .model = state.original_model,
             .choices = choices,
             .usage = .{
-                .prompt_tokens = state.input_tokens,
+                .prompt_tokens = state.input_tokens + state.cache_write_tokens + state.cache_read_tokens,
                 .completion_tokens = state.output_tokens,
-                .total_tokens = state.input_tokens + state.output_tokens,
+                .total_tokens = state.input_tokens + state.cache_write_tokens + state.cache_read_tokens + state.output_tokens,
+                .prompt_tokens_details = if (state.cache_write_tokens > 0 or state.cache_read_tokens > 0) .{
+                    .cache_write_tokens = state.cache_write_tokens,
+                    .cached_tokens = state.cache_read_tokens,
+                } else null,
             },
         };
         return .{ .events = chunks };
@@ -461,6 +473,8 @@ pub const MessagesStreamState = struct {
     finish_reason: ?[]const u8 = null,
     input_tokens: u32 = 0,
     output_tokens: u32 = 0,
+    cache_write_tokens: u32 = 0,
+    cache_read_tokens: u32 = 0,
 
     pub fn init(allocator: std.mem.Allocator, original_model: []const u8) MessagesStreamState {
         return .{
@@ -542,6 +556,8 @@ pub fn transformMessagesStreamLine(
             defer parsed.deinit();
             const v = parsed.value;
             state.input_tokens = v.message.usage.input_tokens;
+            state.cache_write_tokens = v.message.usage.cache_creation_input_tokens orelse 0;
+            state.cache_read_tokens = v.message.usage.cache_read_input_tokens orelse 0;
             break :blk .{ .message_start = .{
                 .type = allocator.dupe(u8, v.type) catch return .{ .skip = {} },
                 .message = .{
@@ -610,6 +626,8 @@ pub fn transformMessagesStreamLine(
             defer parsed.deinit();
             const v = parsed.value;
             state.output_tokens = v.usage.output_tokens;
+            if (v.usage.cache_creation_input_tokens) |vv| state.cache_write_tokens = vv;
+            if (v.usage.cache_read_input_tokens) |vv| state.cache_read_tokens = vv;
             break :blk .{ .message_delta = .{
                 .type = allocator.dupe(u8, v.type) catch return .{ .skip = {} },
                 .delta = .{
@@ -663,6 +681,8 @@ pub const ResponsesStreamState = struct {
     finish_reason: ?[]const u8 = null,
     input_tokens: u32 = 0,
     output_tokens: u32 = 0,
+    cache_write_tokens: u32 = 0,
+    cache_read_tokens: u32 = 0,
     sequence_number: u32 = 0,
     /// Type of the currently-open content block: "text" or "tool_use".
     open_block_type: []const u8 = "text",
@@ -1121,9 +1141,16 @@ pub fn transformResponsesResponse(
         .output = try output_items.toOwnedSlice(allocator),
         .output_text = output_text,
         .usage = .{
-            .input_tokens = upstream_response.usage.input_tokens,
+            .input_tokens = upstream_response.usage.input_tokens +
+                (upstream_response.usage.cache_creation_input_tokens orelse 0) +
+                (upstream_response.usage.cache_read_input_tokens orelse 0),
             .output_tokens = upstream_response.usage.output_tokens,
             .total_tokens = upstream_response.usage.input_tokens + upstream_response.usage.output_tokens,
+            .input_tokens_details = if (upstream_response.usage.cache_creation_input_tokens != null or
+                upstream_response.usage.cache_read_input_tokens != null) .{
+                .cache_write_tokens = upstream_response.usage.cache_creation_input_tokens orelse 0,
+                .cached_tokens = upstream_response.usage.cache_read_input_tokens orelse 0,
+            } else null,
         },
         .incomplete_details = incomplete_details,
         .temperature = original_req.temperature,
@@ -1240,6 +1267,8 @@ pub fn transformResponsesStreamLine(
                 state.response_id = state.allocator.dupe(u8, parsed.value.message.id) catch "";
             }
             state.input_tokens = parsed.value.message.usage.input_tokens;
+            state.cache_write_tokens = parsed.value.message.usage.cache_creation_input_tokens orelse 0;
+            state.cache_read_tokens = parsed.value.message.usage.cache_read_input_tokens orelse 0;
         } else |_| {}
         return .{ .skip = {} };
     }
@@ -1391,6 +1420,8 @@ pub fn transformResponsesStreamLine(
         {
             defer parsed.deinit();
             state.output_tokens = parsed.value.usage.output_tokens;
+            if (parsed.value.usage.cache_creation_input_tokens) |v| state.cache_write_tokens = v;
+            if (parsed.value.usage.cache_read_input_tokens) |v| state.cache_read_tokens = v;
             if (parsed.value.delta.stop_reason) |reason| {
                 if (reason.len > 0) {
                     if (state.finish_reason) |prev| allocator.free(prev);
@@ -1440,9 +1471,13 @@ pub fn flushResponsesStream(
         .status = status,
         .output = &.{},
         .usage = .{
-            .input_tokens = state.input_tokens,
+            .input_tokens = state.input_tokens + state.cache_write_tokens + state.cache_read_tokens,
             .output_tokens = state.output_tokens,
-            .total_tokens = state.input_tokens + state.output_tokens,
+            .total_tokens = state.input_tokens + state.cache_write_tokens + state.cache_read_tokens + state.output_tokens,
+            .input_tokens_details = if (state.cache_write_tokens > 0 or state.cache_read_tokens > 0) .{
+                .cache_write_tokens = state.cache_write_tokens,
+                .cached_tokens = state.cache_read_tokens,
+            } else null,
         },
         .parallel_tool_calls = true,
     };
