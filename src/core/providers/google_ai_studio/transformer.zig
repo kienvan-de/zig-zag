@@ -278,7 +278,7 @@ pub fn transformChatResponse(
         .id = try std.fmt.allocPrint(allocator, "chatcmpl-{d}", .{time.timestamp()}),
         .object = "chat.completion",
         .created = time.timestamp(),
-        .model = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ "google_ai_studio", original_req.model }),
+        .model = try allocator.dupe(u8, original_req.model),
         .choices = choices,
         .usage = .{
             .prompt_tokens = upstream_response.usage_metadata.prompt_token_count,
