@@ -502,18 +502,17 @@ pub fn transformMessagesResponse(
     original_req: Messages.Request,
     allocator: std.mem.Allocator,
 ) !Messages.Response {
-    _ = original_req;
-    _ = allocator;
-    return upstream_response;
+    var response = upstream_response;
+    response.model = try allocator.dupe(u8, original_req.model);
+    return response;
 }
 
-/// Pass-through cleanup — nothing was allocated.
+/// Free the model string allocated by transformMessagesResponse.
 pub fn cleanupMessagesResponse(
     inbound_response: Messages.Response,
     allocator: std.mem.Allocator,
 ) void {
-    _ = inbound_response;
-    _ = allocator;
+    allocator.free(inbound_response.model);
 }
 
 /// Forward one Anthropic SSE line as a typed Messages.SseEvent (caller serializes).

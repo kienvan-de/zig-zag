@@ -8,7 +8,7 @@
       "text": "Hello! I'm Claude. How can I help you today?"
     }
   ],
-  "model": "claude-3-5-sonnet-latest",
+  "model": "anthropic/claude-3-5-sonnet-latest",
   "stop_reason": "end_turn",
   "stop_sequence": null,
   "usage": {

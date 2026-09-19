@@ -560,7 +560,6 @@ pub fn transformMessagesResponse(
     original_req: Messages.Request,
     allocator: std.mem.Allocator,
 ) !Messages.Response {
-    _ = original_req;
 
     var content_blocks: std.ArrayList(Messages.ContentBlock) = .empty;
     errdefer {
@@ -629,7 +628,7 @@ pub fn transformMessagesResponse(
         .type = "message",
         .role = "assistant",
         .content = try content_blocks.toOwnedSlice(allocator),
-        .model = try allocator.dupe(u8, "google_ai_studio/gemini"),
+        .model = try allocator.dupe(u8, original_req.model),
         .stop_reason = stop_reason,
         .stop_sequence = null,
         .usage = .{
