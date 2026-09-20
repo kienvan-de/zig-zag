@@ -336,12 +336,6 @@ Each provider in `src/providers/` follows the same pattern:
 6. Response is transformed back to Anthropic Messages API format
 7. Response sent to client (streaming or buffered)
 
-### Pricing Engine
-- Price tables are loaded from CSV files at startup from `~/.config/zig-zag/pricing/`
-- On startup, `pricing.scheduleAutoUpdate()` checks GitHub Releases for a newer `pricing.tar.gz` and downloads it in the background
-- All tables are protected by a `RwLock` — reads are concurrent, writes (auto-update reload) are exclusive
-- Cost is calculated per request in `handlers/chat.zig` and `handlers/messages.zig` and added to `metrics`
-
 ### Budget Enforcement
 - `utils.checkBudgetPeriodOnStartup()` runs once after `metrics.load()` — if the period expired while the proxy was offline, costs **and tokens** are reset before any request is served
 - `utils.enforceBudget()` runs on every chat/messages request — checks period expiry and rejects with `429` if budget is exceeded
