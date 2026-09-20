@@ -73,6 +73,8 @@ pub const ChatStreamState = struct {
     finish_reason: ?[]const u8 = null,
     input_tokens: u32 = 0,
     output_tokens: u32 = 0,
+    cache_read_tokens: u32 = 0,
+    cache_write_tokens: u32 = 0,
 
     pub fn init(allocator: std.mem.Allocator, original_model: []const u8) ChatStreamState {
         return .{ .allocator = allocator, .original_model = original_model };
@@ -157,6 +159,10 @@ pub fn transformChatStreamLine(
     if (v.usage) |u| {
         state.input_tokens = u.prompt_tokens;
         state.output_tokens = u.completion_tokens;
+        if (u.prompt_tokens_details) |d| {
+            state.cache_read_tokens = d.cached_tokens;
+            state.cache_write_tokens = d.cache_write_tokens;
+        }
     }
 
     if (v.choices.len > 0) {

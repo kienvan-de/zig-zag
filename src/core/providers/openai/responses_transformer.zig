@@ -899,6 +899,8 @@ pub const ResponsesStreamState = struct {
     original_model: []const u8,
     input_tokens: u32 = 0,
     output_tokens: u32 = 0,
+    cache_read_tokens: u32 = 0,
+    cache_write_tokens: u32 = 0,
 
     pub fn init(allocator: std.mem.Allocator, original_model: []const u8) ResponsesStreamState {
         return .{ .allocator = allocator, .original_model = original_model };
@@ -982,6 +984,16 @@ pub fn transformResponsesStreamLine(
                         }
                         if (usage_v.object.get("output_tokens")) |ot| {
                             if (ot == .integer) state.output_tokens = @intCast(ot.integer);
+                        }
+                        if (usage_v.object.get("input_tokens_details")) |dtl| {
+                            if (dtl == .object) {
+                                if (dtl.object.get("cached_tokens")) |ct| {
+                                    if (ct == .integer) state.cache_read_tokens = @intCast(ct.integer);
+                                }
+                                if (dtl.object.get("cache_write_tokens")) |cwt| {
+                                    if (cwt == .integer) state.cache_write_tokens = @intCast(cwt.integer);
+                                }
+                            }
                         }
                     }
                 }

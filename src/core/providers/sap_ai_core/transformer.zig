@@ -77,6 +77,8 @@ pub const ChatStreamState = struct {
     finish_reason: ?[]const u8 = null,
     input_tokens: u32 = 0,
     output_tokens: u32 = 0,
+    cache_read_tokens: u32 = 0,
+    cache_write_tokens: u32 = 0,
 
     pub fn init(allocator: std.mem.Allocator, original_model: []const u8) ChatStreamState {
         return .{ .allocator = allocator, .original_model = original_model };
@@ -344,6 +346,8 @@ pub const MessagesStreamState = struct {
     finish_reason: ?[]const u8 = null,
     input_tokens: u32 = 0,
     output_tokens: u32 = 0,
+    cache_read_tokens: u32 = 0,
+    cache_write_tokens: u32 = 0,
     sent_message_start: bool = false,
     sent_content_block_start: bool = false,
 
@@ -765,6 +769,8 @@ pub const ResponsesStreamState = struct {
     finish_reason: ?[]const u8 = null,
     input_tokens: u32 = 0,
     output_tokens: u32 = 0,
+    cache_read_tokens: u32 = 0,
+    cache_write_tokens: u32 = 0,
     sequence_number: u32 = 0,
 
     pub fn init(allocator: std.mem.Allocator, original_model: []const u8) ResponsesStreamState {

@@ -88,6 +88,8 @@ pub const ChatStreamState = struct {
     finish_reason: ?[]const u8 = null,
     input_tokens: u32 = 0,
     output_tokens: u32 = 0,
+    cache_read_tokens: u32 = 0,
+    cache_write_tokens: u32 = 0,
     created: i64,
 
     pub fn init(allocator: std.mem.Allocator, original_model: []const u8) ChatStreamState {
@@ -337,6 +339,7 @@ pub fn transformChatStreamLine(
     if (parsed.value.usage_metadata.total_token_count > 0) {
         state.input_tokens = parsed.value.usage_metadata.prompt_token_count;
         state.output_tokens = parsed.value.usage_metadata.candidates_token_count;
+        state.cache_read_tokens = parsed.value.usage_metadata.cached_content_token_count;
     }
 
     const is_final = candidate.finish_reason != null and candidate.finish_reason.?.len > 0;
@@ -424,6 +427,7 @@ pub const MessagesStreamState = struct {
     input_tokens: u32 = 0,
     output_tokens: u32 = 0,
     cache_read_tokens: u32 = 0,
+    cache_write_tokens: u32 = 0,
     /// Whether the synthetic message_start + content_block_start were emitted.
     sent_start: bool = false,
     /// Index of the next content block to open (text is always 0; tool_use starts at 1+).
@@ -818,6 +822,7 @@ pub const ResponsesStreamState = struct {
     input_tokens: u32 = 0,
     output_tokens: u32 = 0,
     cache_read_tokens: u32 = 0,
+    cache_write_tokens: u32 = 0,
     /// Whether the synthetic output_item.added + content_part.added were emitted.
     sent_start: bool = false,
     sequence_number: u32 = 0,

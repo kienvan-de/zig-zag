@@ -307,9 +307,9 @@ pub fn transformChatStreamLine(
         if (state.response_id.len == 0 and parsed.value.message.id.len > 0) {
             state.response_id = allocator.dupe(u8, parsed.value.message.id) catch return .{ .skip = {} };
         }
-        state.input_tokens = parsed.value.message.usage.input_tokens;
         state.cache_write_tokens = parsed.value.message.usage.cache_creation_input_tokens orelse 0;
         state.cache_read_tokens = parsed.value.message.usage.cache_read_input_tokens orelse 0;
+        state.input_tokens = parsed.value.message.usage.input_tokens + state.cache_write_tokens + state.cache_read_tokens;
 
         const choices = allocator.alloc(Chat.StreamChoice, 1) catch return .{ .skip = {} };
         choices[0] = .{ .index = 0, .delta = .{ .role = .assistant }, .finish_reason = null };
@@ -419,6 +419,7 @@ pub fn transformChatStreamLine(
         state.output_tokens = parsed.value.usage.output_tokens;
         if (parsed.value.usage.cache_creation_input_tokens) |v| state.cache_write_tokens = v;
         if (parsed.value.usage.cache_read_input_tokens) |v| state.cache_read_tokens = v;
+        if (parsed.value.usage.input_tokens) |v| state.input_tokens = v + state.cache_write_tokens + state.cache_read_tokens;
         const finish_reason = content.transformStopReason(parsed.value.delta.stop_reason);
         state.finish_reason = finish_reason;
 
@@ -432,9 +433,9 @@ pub fn transformChatStreamLine(
             .model = state.original_model,
             .choices = choices,
             .usage = .{
-                .prompt_tokens = state.input_tokens + state.cache_write_tokens + state.cache_read_tokens,
+                .prompt_tokens = state.input_tokens,
                 .completion_tokens = state.output_tokens,
-                .total_tokens = state.input_tokens + state.cache_write_tokens + state.cache_read_tokens + state.output_tokens,
+                .total_tokens = state.input_tokens + state.output_tokens,
                 .prompt_tokens_details = if (state.cache_write_tokens > 0 or state.cache_read_tokens > 0) .{
                     .cache_write_tokens = state.cache_write_tokens,
                     .cached_tokens = state.cache_read_tokens,
@@ -555,9 +556,9 @@ pub fn transformMessagesStreamLine(
                 .{ .allocate = .alloc_always, .ignore_unknown_fields = true }) catch return .{ .skip = {} };
             defer parsed.deinit();
             const v = parsed.value;
-            state.input_tokens = v.message.usage.input_tokens;
             state.cache_write_tokens = v.message.usage.cache_creation_input_tokens orelse 0;
             state.cache_read_tokens = v.message.usage.cache_read_input_tokens orelse 0;
+            state.input_tokens = v.message.usage.input_tokens;
             break :blk .{ .message_start = .{
                 .type = allocator.dupe(u8, v.type) catch return .{ .skip = {} },
                 .message = .{
@@ -1266,9 +1267,9 @@ pub fn transformResponsesStreamLine(
             if (state.response_id.len == 0 and parsed.value.message.id.len > 0) {
                 state.response_id = state.allocator.dupe(u8, parsed.value.message.id) catch "";
             }
-            state.input_tokens = parsed.value.message.usage.input_tokens;
             state.cache_write_tokens = parsed.value.message.usage.cache_creation_input_tokens orelse 0;
             state.cache_read_tokens = parsed.value.message.usage.cache_read_input_tokens orelse 0;
+            state.input_tokens = parsed.value.message.usage.input_tokens + state.cache_write_tokens + state.cache_read_tokens;
         } else |_| {}
         return .{ .skip = {} };
     }
@@ -1422,6 +1423,7 @@ pub fn transformResponsesStreamLine(
             state.output_tokens = parsed.value.usage.output_tokens;
             if (parsed.value.usage.cache_creation_input_tokens) |v| state.cache_write_tokens = v;
             if (parsed.value.usage.cache_read_input_tokens) |v| state.cache_read_tokens = v;
+            if (parsed.value.usage.input_tokens) |v| state.input_tokens = v + state.cache_write_tokens + state.cache_read_tokens;
             if (parsed.value.delta.stop_reason) |reason| {
                 if (reason.len > 0) {
                     if (state.finish_reason) |prev| allocator.free(prev);
@@ -1471,9 +1473,9 @@ pub fn flushResponsesStream(
         .status = status,
         .output = &.{},
         .usage = .{
-            .input_tokens = state.input_tokens + state.cache_write_tokens + state.cache_read_tokens,
+            .input_tokens = state.input_tokens,
             .output_tokens = state.output_tokens,
-            .total_tokens = state.input_tokens + state.cache_write_tokens + state.cache_read_tokens + state.output_tokens,
+            .total_tokens = state.input_tokens + state.output_tokens,
             .input_tokens_details = if (state.cache_write_tokens > 0 or state.cache_read_tokens > 0) .{
                 .cache_write_tokens = state.cache_write_tokens,
                 .cached_tokens = state.cache_read_tokens,
