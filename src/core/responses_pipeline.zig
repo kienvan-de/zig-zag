@@ -183,12 +183,7 @@ fn sync(
     defer buf.deinit(allocator);
     try buf.print(allocator, "{f}", .{std.json.fmt(resp, .{})});
     try writer.writeAll(buf.items);
-    utils.recordTokenUsage(
-        if (resp.usage) |u| u.input_tokens else 0,
-        if (resp.usage) |u| u.output_tokens else 0,
-        model,
-        provider_name,
-    );
+    if (resp.usage) |usage| utils.recordResponsesTokenUsage(usage, provider_name, model);
 }
 
 fn streaming(
@@ -255,10 +250,5 @@ fn streaming(
     if (Transformer.appendsDoneMarker) {
         try writer.writeAll("data: [DONE]\n\n");
     }
-    utils.recordTokenUsage(
-        stream_state.input_tokens,
-        stream_state.output_tokens,
-        model,
-        provider_name,
-    );
+    utils.recordChatStreamTokenUsage(stream_state, provider_name, model);
 }

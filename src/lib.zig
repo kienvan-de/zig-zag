@@ -242,6 +242,7 @@ export fn startServer() bool {
 
     // Load persisted metrics (tokens, costs, period_start) from previous session
     metrics.load();
+    metrics.initUsageMap(std.heap.page_allocator);
 
     // Allocate State shell using page_allocator (stable address for GPA inside)
     const bootstrap = std.heap.page_allocator;
@@ -290,6 +291,7 @@ export fn stopServer() void {
 
     // Persist metrics before shutdown
     metrics.persist();
+    metrics.deinitUsageMap();
 
     // Signal server.zig to close the listener socket.
     // This unblocks all accept() calls and lets worker threads exit.

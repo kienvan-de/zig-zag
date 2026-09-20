@@ -203,22 +203,77 @@ pub fn tryAutoReauth(allocator: std.mem.Allocator, provider_name: []const u8) bo
     };
 }
 
-/// Record input/output token usage and compute costs for a completed LLM call.
-/// Zero-usage calls are ignored so failed/empty streams don't skew counters.
-pub fn recordTokenUsage(
-    input_tokens: u64,
-    output_tokens: u64,
-    model: []const u8,
-    provider_name: []const u8,
-) void {
-    if (input_tokens == 0 and output_tokens == 0) return;
-    metrics.addInputTokens(input_tokens);
-    metrics.addOutputTokens(output_tokens);
+fn recordUsage(input: u64, cache_write: u64, cache_read: u64, output: u64, provider_name: []const u8, model: []const u8) void {
+    if (input == 0 and output == 0 and cache_read == 0 and cache_write == 0) return;
+    metrics.recordUsage(provider_name, model, input, cache_write, cache_read, output);
     if (pricing.getCost(provider_name, model)) |cost_entry| {
-        const cost = pricing.calculateCost(cost_entry, input_tokens, output_tokens);
+        const cost = pricing.calculateCost(cost_entry, input, output);
         metrics.addInputCost(cost.input_cost);
         metrics.addOutputCost(cost.output_cost);
     }
+}
+
+/// Record token usage from a Messages.Response (Anthropic wire).
+/// input_tokens is already non-cached in this type.
+pub fn recordMessagesTokenUsage(
+    usage: anytype,
+    provider_name: []const u8,
+    model: []const u8,
+) void {
+    recordUsage(
+        usage.input_tokens,
+        usage.cache_creation_input_tokens orelse 0,
+        usage.cache_read_input_tokens orelse 0,
+        usage.output_tokens,
+        provider_name,
+        model,
+    );
+}
+
+/// Record token usage from a Chat.Response (OpenAI Chat wire).
+/// prompt_tokens is total — cache subset is in prompt_tokens_details.
+pub fn recordChatTokenUsage(
+    usage: anytype,
+    provider_name: []const u8,
+    model: []const u8,
+) void {
+    const cr: u64 = if (usage.prompt_tokens_details) |d| d.cached_tokens else 0;
+    const cw: u64 = if (usage.prompt_tokens_details) |d| d.cache_write_tokens else 0;
+    recordUsage(usage.prompt_tokens - cr - cw, cw, cr, usage.completion_tokens, provider_name, model);
+}
+
+/// Record token usage from a Responses.Response (OpenAI Responses wire).
+/// input_tokens is total — cache subset is in input_tokens_details.
+pub fn recordResponsesTokenUsage(
+    usage: anytype,
+    provider_name: []const u8,
+    model: []const u8,
+) void {
+    const cr: u64 = if (usage.input_tokens_details) |d| d.cached_tokens else 0;
+    const cw: u64 = if (usage.input_tokens_details) |d| d.cache_write_tokens else 0;
+    recordUsage(usage.input_tokens - cr - cw, cw, cr, usage.output_tokens, provider_name, model);
+}
+
+/// Record token usage from a MessagesStreamState.
+/// input_tokens is non-cached in MessagesStreamState.
+pub fn recordMessagesStreamTokenUsage(
+    state: anytype,
+    provider_name: []const u8,
+    model: []const u8,
+) void {
+    recordUsage(state.input_tokens, state.cache_write_tokens, state.cache_read_tokens, state.output_tokens, provider_name, model);
+}
+
+/// Record token usage from a ChatStreamState or ResponsesStreamState.
+/// input_tokens is total — subtract cache to get non-cached.
+pub fn recordChatStreamTokenUsage(
+    state: anytype,
+    provider_name: []const u8,
+    model: []const u8,
+) void {
+    const cr: u64 = state.cache_read_tokens;
+    const cw: u64 = state.cache_write_tokens;
+    recordUsage(state.input_tokens - cr - cw, cw, cr, state.output_tokens, provider_name, model);
 }
 
 const testing = std.testing;

@@ -200,14 +200,7 @@ fn sync(
     const transform_response_time = time.milliTimestamp() - transform_response_start;
     log.debug("[SYNC] Transform response completed in {d}ms", .{transform_response_time});
 
-    if (openai_response.usage) |usage| {
-        utils.recordTokenUsage(
-            @intCast(usage.prompt_tokens),
-            @intCast(usage.completion_tokens),
-            model,
-            provider_name,
-        );
-    }
+    if (openai_response.usage) |usage| utils.recordChatTokenUsage(usage, provider_name, model);
 
     const serialize_start = time.milliTimestamp();
     var response_buffer = std.ArrayList(u8).empty;
@@ -345,7 +338,7 @@ fn streaming(
 
     try writer.writeAll("data: [DONE]\n\n");
 
-    utils.recordTokenUsage(state.input_tokens, state.output_tokens, model, provider_name);
+    utils.recordChatStreamTokenUsage(state, provider_name, model);
 
     const process_time = time.milliTimestamp() - process_start;
     log.debug("[STREAM] Processed {d} chunks in {d}ms", .{ chunk_count, process_time });

@@ -47,6 +47,12 @@ var input_tokens: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
 /// Total output/completion tokens accumulated from LLM responses
 var output_tokens: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
 
+/// Total cache read tokens (served from cache) accumulated from LLM responses
+var cache_read_tokens: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
+
+/// Total cache write tokens (written to cache) accumulated from LLM responses
+var cache_write_tokens: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
+
 /// Total input cost in micro-dollars (1/1,000,000 of a dollar)
 var input_cost_micros: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
 
@@ -55,6 +61,35 @@ var output_cost_micros: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
 
 /// Budget period start timestamp (seconds since epoch). 0 = not set (uses server start time).
 var period_start: std.atomic.Value(i64) = std.atomic.Value(i64).init(0);
+
+// ============================================================================
+// Per-provider/model token usage map
+// ============================================================================
+
+/// Token usage breakdown for a provider+model pair.
+pub const TokenUsage = struct {
+    input: u64 = 0,
+    cache_write: u64 = 0,
+    cache_read: u64 = 0,
+    output: u64 = 0,
+};
+
+/// Per-provider usage snapshot (for reporting).
+pub const ProviderUsage = struct {
+    provider: []const u8,
+    models: []ModelUsage,
+};
+
+/// Per-model usage snapshot entry (model name + counts).
+pub const ModelUsage = struct {
+    model: []const u8,
+    usage: TokenUsage,
+};
+
+var usage_map: std.StringHashMap(std.StringHashMap(TokenUsage)) = undefined;
+var usage_map_lock: @import("sync.zig").RwLock = .{};
+var usage_map_alloc: std.mem.Allocator = undefined;
+var usage_map_initialized: bool = false;
 
 // ============================================================================
 // Public API - Counters
@@ -74,24 +109,6 @@ pub fn addNetworkRx(bytes: u64) void {
 /// Thread-safe: uses an atomic fetch-add with monotonic ordering.
 pub fn addNetworkTx(bytes: u64) void {
     _ = network_tx_bytes.fetchAdd(bytes, .monotonic);
-}
-
-/// Increment the cumulative input (prompt) token counter.
-///
-/// Called after each LLM response is received, using the `prompt_tokens` (or equivalent)
-/// value reported by the upstream provider. These counts persist across restarts via `persist()`.
-/// Thread-safe: uses an atomic fetch-add with monotonic ordering.
-pub fn addInputTokens(tokens: u64) void {
-    _ = input_tokens.fetchAdd(tokens, .monotonic);
-}
-
-/// Increment the cumulative output (completion) token counter.
-///
-/// Called after each LLM response is received, using the `completion_tokens` (or equivalent)
-/// value reported by the upstream provider. These counts persist across restarts via `persist()`.
-/// Thread-safe: uses an atomic fetch-add with monotonic ordering.
-pub fn addOutputTokens(tokens: u64) void {
-    _ = output_tokens.fetchAdd(tokens, .monotonic);
 }
 
 /// Add to the cumulative input (prompt) cost.
@@ -133,6 +150,8 @@ pub fn addOutputCost(dollars: f64) void {
 pub fn resetCosts() void {
     input_tokens.store(0, .monotonic);
     output_tokens.store(0, .monotonic);
+    cache_read_tokens.store(0, .monotonic);
+    cache_write_tokens.store(0, .monotonic);
     input_cost_micros.store(0, .monotonic);
     output_cost_micros.store(0, .monotonic);
     period_start.store(time.timestamp(), .monotonic);
@@ -146,6 +165,134 @@ pub fn resetCosts() void {
 /// Thread-safe: uses an atomic load with monotonic ordering.
 pub fn getPeriodStart() i64 {
     return period_start.load(.monotonic);
+}
+
+/// Initialize the per-provider/model usage map. Must be called once at startup.
+pub fn initUsageMap(allocator: std.mem.Allocator) void {
+    usage_map_alloc = allocator;
+    usage_map = std.StringHashMap(std.StringHashMap(TokenUsage)).init(allocator);
+    usage_map_initialized = true;
+}
+
+/// Deinitialize the usage map, freeing all keys and nested maps.
+pub fn deinitUsageMap() void {
+    if (!usage_map_initialized) return;
+    var outer = usage_map.iterator();
+    while (outer.next()) |provider_entry| {
+        var inner = provider_entry.value_ptr.iterator();
+        while (inner.next()) |model_entry| {
+            usage_map_alloc.free(model_entry.key_ptr.*);
+        }
+        provider_entry.value_ptr.deinit();
+        usage_map_alloc.free(provider_entry.key_ptr.*);
+    }
+    usage_map.deinit();
+    usage_map_initialized = false;
+}
+
+/// Record token usage for a provider+model pair. Thread-safe.
+/// Also updates the flat global atomic counters.
+pub fn recordUsage(
+    provider_name: []const u8,
+    model: []const u8,
+    input: u64,
+    cache_write: u64,
+    cache_read: u64,
+    output: u64,
+) void {
+    // Update flat atomics outside the lock — atomics are independently thread-safe.
+    _ = input_tokens.fetchAdd(input, .monotonic);
+    _ = output_tokens.fetchAdd(output, .monotonic);
+    _ = cache_read_tokens.fetchAdd(cache_read, .monotonic);
+    _ = cache_write_tokens.fetchAdd(cache_write, .monotonic);
+
+    if (!usage_map_initialized) return;
+
+    usage_map_lock.lock();
+    defer usage_map_lock.unlock();
+
+    // Get or create the inner map for this provider.
+    const provider_result = usage_map.getOrPut(provider_name) catch return;
+    if (!provider_result.found_existing) {
+        const key = usage_map_alloc.dupe(u8, provider_name) catch {
+            _ = usage_map.remove(provider_name);
+            return;
+        };
+        provider_result.key_ptr.* = key;
+        provider_result.value_ptr.* = std.StringHashMap(TokenUsage).init(usage_map_alloc);
+    }
+    const inner = provider_result.value_ptr;
+
+    // Get or create the TokenUsage entry for this model.
+    const model_result = inner.getOrPut(model) catch return;
+    if (!model_result.found_existing) {
+        const key = usage_map_alloc.dupe(u8, model) catch {
+            _ = inner.remove(model);
+            return;
+        };
+        model_result.key_ptr.* = key;
+        model_result.value_ptr.* = .{};
+    }
+    const entry = model_result.value_ptr;
+    entry.input += input;
+    entry.cache_write += cache_write;
+    entry.cache_read += cache_read;
+    entry.output += output;
+}
+
+/// Snapshot the usage map into an owned slice of ProviderUsage.
+/// Caller must free with freeUsageSnapshot.
+pub fn snapshotUsageByProvider(allocator: std.mem.Allocator) ![]ProviderUsage {
+    if (!usage_map_initialized) return &.{};
+
+    usage_map_lock.lockShared();
+    defer usage_map_lock.unlockShared();
+
+    var providers = std.ArrayList(ProviderUsage).init(allocator);
+    errdefer {
+        for (providers.items) |p| {
+            allocator.free(p.models);
+            allocator.free(p.provider);
+        }
+        providers.deinit();
+    }
+
+    var outer = usage_map.iterator();
+    while (outer.next()) |provider_entry| {
+        const provider_name = try allocator.dupe(u8, provider_entry.key_ptr.*);
+        errdefer allocator.free(provider_name);
+
+        var models = std.ArrayList(ModelUsage).init(allocator);
+        errdefer {
+            for (models.items) |m| allocator.free(m.model);
+            models.deinit();
+        }
+
+        var inner = provider_entry.value_ptr.iterator();
+        while (inner.next()) |model_entry| {
+            try models.append(.{
+                .model = try allocator.dupe(u8, model_entry.key_ptr.*),
+                .usage = model_entry.value_ptr.*,
+            });
+        }
+
+        try providers.append(.{
+            .provider = provider_name,
+            .models = try models.toOwnedSlice(),
+        });
+    }
+
+    return providers.toOwnedSlice();
+}
+
+/// Free a snapshot returned by snapshotUsageByProvider.
+pub fn freeUsageSnapshot(allocator: std.mem.Allocator, snapshot_slice: []ProviderUsage) void {
+    for (snapshot_slice) |p| {
+        for (p.models) |m| allocator.free(m.model);
+        allocator.free(p.models);
+        allocator.free(p.provider);
+    }
+    allocator.free(snapshot_slice);
 }
 
 // ============================================================================
@@ -352,6 +499,10 @@ pub const Snapshot = struct {
     input_tokens: u64,
     /// Cumulative output (completion) tokens across all LLM requests in the current budget period.
     output_tokens: u64,
+    /// Cumulative cache read tokens in the current budget period.
+    cache_read_tokens: u64,
+    /// Cumulative cache write tokens in the current budget period.
+    cache_write_tokens: u64,
     /// Cumulative input (prompt) cost in **dollars** for the current budget period.
     input_cost: f64,
     /// Cumulative output (completion) cost in **dollars** for the current budget period.
@@ -377,6 +528,8 @@ pub fn snapshot() Snapshot {
         .network_tx_bytes = network_tx_bytes.load(.monotonic),
         .input_tokens = input_tokens.load(.monotonic),
         .output_tokens = output_tokens.load(.monotonic),
+        .cache_read_tokens = cache_read_tokens.load(.monotonic),
+        .cache_write_tokens = cache_write_tokens.load(.monotonic),
         .input_cost = @as(f64, @floatFromInt(input_cost_micros.load(.monotonic))) / 1_000_000.0,
         .output_cost = @as(f64, @floatFromInt(output_cost_micros.load(.monotonic))) / 1_000_000.0,
     };
@@ -392,6 +545,8 @@ const METRICS_FILENAME = "metrics.json";
 const PersistedMetrics = struct {
     input_tokens: u64 = 0,
     output_tokens: u64 = 0,
+    cache_read_tokens: u64 = 0,
+    cache_write_tokens: u64 = 0,
     input_cost_micros: u64 = 0,
     output_cost_micros: u64 = 0,
     period_start: i64 = 0,
@@ -445,6 +600,8 @@ pub fn load() void {
     const data = parsed.value;
     input_tokens.store(data.input_tokens, .monotonic);
     output_tokens.store(data.output_tokens, .monotonic);
+    cache_read_tokens.store(data.cache_read_tokens, .monotonic);
+    cache_write_tokens.store(data.cache_write_tokens, .monotonic);
     input_cost_micros.store(data.input_cost_micros, .monotonic);
     output_cost_micros.store(data.output_cost_micros, .monotonic);
     period_start.store(data.period_start, .monotonic);
@@ -479,6 +636,8 @@ pub fn persist() void {
     const data = PersistedMetrics{
         .input_tokens = input_tokens.load(.monotonic),
         .output_tokens = output_tokens.load(.monotonic),
+        .cache_read_tokens = cache_read_tokens.load(.monotonic),
+        .cache_write_tokens = cache_write_tokens.load(.monotonic),
         .input_cost_micros = input_cost_micros.load(.monotonic),
         .output_cost_micros = output_cost_micros.load(.monotonic),
         .period_start = period_start.load(.monotonic),

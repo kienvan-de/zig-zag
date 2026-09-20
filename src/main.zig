@@ -99,6 +99,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
     // Load persisted metrics (tokens, costs, period_start) from previous session
     metrics.load();
+    metrics.initUsageMap(allocator);
+    defer metrics.deinitUsageMap();
     defer metrics.persist();
 
     // If the budget period expired while the proxy was offline, reset now so

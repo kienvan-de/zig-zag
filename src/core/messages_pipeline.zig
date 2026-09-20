@@ -200,12 +200,7 @@ fn sync(
     const transform_response_time = time.milliTimestamp() - transform_response_start;
     log.debug("[SYNC] Transform response completed in {d}ms", .{transform_response_time});
 
-    utils.recordTokenUsage(
-        @intCast(anthropic_response.usage.input_tokens),
-        @intCast(anthropic_response.usage.output_tokens),
-        model,
-        provider_name,
-    );
+    utils.recordMessagesTokenUsage(anthropic_response.usage, provider_name, model);
 
     const serialize_start = time.milliTimestamp();
     var response_buffer = std.ArrayList(u8).empty;
@@ -314,7 +309,7 @@ fn streaming(
         }
     }
 
-    utils.recordTokenUsage(stream_state.input_tokens, stream_state.output_tokens, model, provider_name);
+    utils.recordMessagesStreamTokenUsage(stream_state, provider_name, model);
 
     const process_time = time.milliTimestamp() - process_start;
     log.debug("[STREAM] Processed {d} chunks in {d}ms", .{ chunk_count, process_time });
