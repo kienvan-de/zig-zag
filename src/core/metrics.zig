@@ -14,15 +14,10 @@
 
 //! Global metrics tracking for the zig-zag proxy server.
 //!
-//! This module provides thread-safe atomic counters for tracking:
-//! - Network I/O bytes (rx/tx)
-//! - Input/output tokens from LLM responses
-//! - Input/output costs from LLM responses
-//! - Process stats (memory footprint, CPU time) from OS
-//!
-//! All counters are designed for high-frequency updates from multiple threads.
-//! Cost values are stored as micro-dollars (millionths of a dollar) for precision
-//! with atomic u64 operations.
+//! Token usage is tracked in a two-layer map (provider → model → TokenUsage),
+//! which is the single source of truth for token counts and cost calculations.
+//! Network I/O and process stats (memory, CPU) use atomic counters.
+//! All state is persisted to ~/.config/zig-zag/metrics.json on shutdown.
 
 const std = @import("std");
 const fs = @import("fs.zig");
@@ -32,7 +27,7 @@ const env = @import("env.zig");
 const log = @import("log.zig");
 
 // ============================================================================
-// Atomic Counters
+// Network I/O Counters (atomics — no per-model breakdown needed)
 // ============================================================================
 
 /// Total bytes received from clients
@@ -105,7 +100,6 @@ pub fn resetCosts() void {
     // are atomic with respect to recordUsage.
     if (usage_map_initialized) {
         usage_map_lock.lock();
-        defer usage_map_lock.unlock();
         var outer = usage_map.iterator();
         while (outer.next()) |provider_entry| {
             var inner = provider_entry.value_ptr.iterator();
@@ -113,8 +107,11 @@ pub fn resetCosts() void {
                 model_entry.value_ptr.* = .{};
             }
         }
+        period_start.store(time.timestamp(), .monotonic);
+        usage_map_lock.unlock();
+    } else {
+        period_start.store(time.timestamp(), .monotonic);
     }
-    period_start.store(time.timestamp(), .monotonic);
 }
 
 /// Return the budget period start timestamp as seconds since the Unix epoch.
@@ -151,7 +148,7 @@ pub fn deinitUsageMap() void {
 }
 
 /// Record token usage for a provider+model pair. Thread-safe.
-/// Also updates the flat global atomic counters.
+/// Updates usage_map under write lock.
 pub fn recordUsage(
     provider_name: []const u8,
     model: []const u8,
@@ -455,13 +452,9 @@ fn getProcessStats() struct { memory_bytes: u64, cpu_time_us: u64 } {
 
 /// A point-in-time capture of every tracked metric.
 ///
-/// Returned by `snapshot()` and consumed by the macOS menu-bar app (via C FFI)
-/// and by any future REST metrics endpoint. All monetary values are expressed in
-/// **dollars** (converted from the internal micro-dollar representation).
-///
-/// Because each field is read from a separate atomic counter, a `Snapshot` is
-/// *nearly* consistent — individual fields are each atomic, but the aggregate is
-/// not captured under a single lock. This is acceptable for display purposes.
+/// Returned by `snapshot()` and consumed by the macOS menu-bar app (via C FFI).
+/// Token totals are derived by iterating usage_map under a shared read lock.
+/// Network and process stats are read from atomic counters.
 pub const Snapshot = struct {
     /// Memory footprint of the process in bytes.
     /// macOS: `phys_footprint` from `TASK_VM_INFO` (matches the `top` MEM column).
@@ -592,10 +585,10 @@ pub fn load() void {
             const obj = model_entry.value_ptr.object;
 
             var usage = TokenUsage{};
-            if (obj.get("input"))       |v| { if (v == .integer) usage.input       = @intCast(v.integer); }
-            if (obj.get("cache_write")) |v| { if (v == .integer) usage.cache_write = @intCast(v.integer); }
-            if (obj.get("cache_read"))  |v| { if (v == .integer) usage.cache_read  = @intCast(v.integer); }
-            if (obj.get("output"))      |v| { if (v == .integer) usage.output      = @intCast(v.integer); }
+            if (obj.get("input"))       |v| { if (v == .integer and v.integer >= 0) usage.input       = @intCast(v.integer); }
+            if (obj.get("cache_write")) |v| { if (v == .integer and v.integer >= 0) usage.cache_write = @intCast(v.integer); }
+            if (obj.get("cache_read"))  |v| { if (v == .integer and v.integer >= 0) usage.cache_read  = @intCast(v.integer); }
+            if (obj.get("output"))      |v| { if (v == .integer and v.integer >= 0) usage.output      = @intCast(v.integer); }
 
             // Insert into usage_map (write lock not needed — called before server starts)
             const provider_result = usage_map.getOrPut(provider_name) catch continue;
@@ -644,7 +637,7 @@ pub fn persist() void {
             if (!first_provider) buf.append(usage_map_alloc, ',') catch return;
             first_provider = false;
 
-            buf.print(usage_map_alloc, "\"{s}\":{{", .{provider_entry.key_ptr.*}) catch return;
+            buf.print(usage_map_alloc, "{f}:{{", .{std.json.fmt(provider_entry.key_ptr.*, .{})}) catch return;
 
             var first_model = true;
             var inner = provider_entry.value_ptr.iterator();
@@ -653,8 +646,8 @@ pub fn persist() void {
                 first_model = false;
                 const u = model_entry.value_ptr.*;
                 buf.print(usage_map_alloc,
-                    "\"{s}\":{{\"input\":{d},\"cache_write\":{d},\"cache_read\":{d},\"output\":{d}}}",
-                    .{ model_entry.key_ptr.*, u.input, u.cache_write, u.cache_read, u.output },
+                    "{f}:{{\"input\":{d},\"cache_write\":{d},\"cache_read\":{d},\"output\":{d}}}",
+                    .{ std.json.fmt(model_entry.key_ptr.*, .{}), u.input, u.cache_write, u.cache_read, u.output },
                 ) catch return;
             }
             buf.append(usage_map_alloc, '}') catch return;
