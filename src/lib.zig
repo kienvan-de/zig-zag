@@ -24,7 +24,6 @@ const worker_pool = @import("worker_pool.zig");
 const log_impl = @import("log.zig");
 const metrics = core.metrics;
 const provider = core.provider;
-const pricing = core.pricing;
 const utils = core.utils;
 const smart_routing = core.smart_routing;
 const app_config = @import("config.zig");
@@ -145,21 +144,6 @@ fn serverThreadFn(s: *State) void {
     }
 
     // Initialize pricing engine (load cost CSVs for configured providers)
-    // Declare init/deinit BEFORE worker_pool so defer runs AFTER pool shutdown
-    var provider_names_buf: [32][]const u8 = undefined;
-    var provider_name_count: usize = 0;
-    {
-        var piter = cfg.core.providers.keyIterator();
-        while (piter.next()) |key_ptr| {
-            if (provider_name_count < provider_names_buf.len) {
-                provider_names_buf[provider_name_count] = key_ptr.*;
-                provider_name_count += 1;
-            }
-        }
-    }
-    pricing.init(allocator, provider_names_buf[0..provider_name_count]);
-    defer pricing.deinit();
-
     // 3. Initialize worker pool
     worker_pool.init(allocator, @intCast(cfg.server.io_pool_size)) catch |err| {
         log.err("Failed to init worker pool: {}", .{err});
@@ -168,9 +152,6 @@ fn serverThreadFn(s: *State) void {
         return;
     };
     defer worker_pool.deinit();
-
-    // Now schedule auto-update (pool exists)
-    pricing.scheduleAutoUpdate();
 
     // 4. Initialize logging
     var lib_log_config = cfg.log;
@@ -375,9 +356,9 @@ export fn getServerStats() CServerStats {
         .llm_provider_configured = configured,
         .input_tokens = snap.input_tokens,
         .output_tokens = snap.output_tokens,
-        .total_cost = @floatCast(snap.input_cost + snap.output_cost),
-        .input_cost = @floatCast(snap.input_cost),
-        .output_cost = @floatCast(snap.output_cost),
+        .total_cost = 0.0,
+        .input_cost = 0.0,
+        .output_cost = 0.0,
         .show_performance = stats_cfg.show_performance,
         .show_llm = stats_cfg.show_llm,
         .show_cost = stats_cfg.show_cost,

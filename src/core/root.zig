@@ -14,7 +14,6 @@
 //! core.config.set(&cfg, path);
 //! core.cache.init(allocator);
 //! core.metrics.load();
-//! core.pricing.init(allocator, provider_names);
 //!
 //! try core.dispatcher.complete(core.chat_pipeline.run, writer, allocator, request);
 //!
@@ -54,9 +53,6 @@ pub const log = @import("log.zig");
 
 /// CPU, memory, token, and cost tracking — persisted across restarts.
 pub const metrics = @import("metrics.zig");
-
-/// Per-token cost calculation with auto-updating price tables.
-pub const pricing = @import("pricing.zig");
 
 /// Utility functions: model parsing, budget enforcement.
 pub const utils = @import("utils.zig");

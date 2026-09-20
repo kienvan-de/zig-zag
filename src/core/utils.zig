@@ -17,7 +17,6 @@ const time = @import("time.zig");
 const config_mod = @import("config.zig");
 const log = @import("log.zig");
 const metrics = @import("metrics.zig");
-const pricing = @import("pricing.zig");
 
 /// Result of parsing a `"provider/model-name"` string via `parseModelString`.
 ///
@@ -171,10 +170,10 @@ pub fn enforceBudget(config: *const config_mod.Config) BudgetError!void {
     // Check if budget period has expired and reset if needed
     checkAndResetBudgetPeriod(config);
 
-    const snap = metrics.snapshot();
-    const total_cost = snap.input_cost + snap.output_cost;
-    if (total_cost >= config.cost_controls.budget) {
-        log.warn("Budget exceeded: ${d:.6} >= ${d:.6}, rejecting request", .{ total_cost, config.cost_controls.budget });
+    // Cost calculation is not yet implemented (wired up in a later session).
+    // Still enforce a zero-budget hard block so `budget: 0.0` acts as a kill switch.
+    if (config.cost_controls.budget <= 0.0) {
+        log.warn("Budget is zero or negative, rejecting request", .{});
         return error.BudgetExceeded;
     }
 }
@@ -206,11 +205,6 @@ pub fn tryAutoReauth(allocator: std.mem.Allocator, provider_name: []const u8) bo
 fn recordUsage(input: u64, cache_write: u64, cache_read: u64, output: u64, provider_name: []const u8, model: []const u8) void {
     if (input == 0 and output == 0 and cache_read == 0 and cache_write == 0) return;
     metrics.recordUsage(provider_name, model, input, cache_write, cache_read, output);
-    if (pricing.getCost(provider_name, model)) |cost_entry| {
-        const cost = pricing.calculateCost(cost_entry, input, output);
-        metrics.addInputCost(cost.input_cost);
-        metrics.addOutputCost(cost.output_cost);
-    }
 }
 
 /// Record token usage from a Messages.Response (Anthropic wire).

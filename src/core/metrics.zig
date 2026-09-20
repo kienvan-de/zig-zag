@@ -53,12 +53,6 @@ var cache_read_tokens: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
 /// Total cache write tokens (written to cache) accumulated from LLM responses
 var cache_write_tokens: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
 
-/// Total input cost in micro-dollars (1/1,000,000 of a dollar)
-var input_cost_micros: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
-
-/// Total output cost in micro-dollars (1/1,000,000 of a dollar)
-var output_cost_micros: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
-
 /// Budget period start timestamp (seconds since epoch). 0 = not set (uses server start time).
 var period_start: std.atomic.Value(i64) = std.atomic.Value(i64).init(0);
 
@@ -111,36 +105,13 @@ pub fn addNetworkTx(bytes: u64) void {
     _ = network_tx_bytes.fetchAdd(bytes, .monotonic);
 }
 
-/// Add to the cumulative input (prompt) cost.
+/// Reset **all** counters to zero, including network I/O, tokens, and `period_start`.
 ///
-/// Accepts the cost in **dollars** (e.g. `0.003`) and converts it internally to
-/// micro-dollars (millionths of a dollar) so the value can be stored in an atomic `u64`.
-/// The conversion is: `micros = dollars * 1_000_000`.
-/// Thread-safe: uses an atomic fetch-add with monotonic ordering.
-pub fn addInputCost(dollars: f64) void {
-    const micros: u64 = @intFromFloat(dollars * 1_000_000.0);
-    _ = input_cost_micros.fetchAdd(micros, .monotonic);
-}
-
-/// Add to the cumulative output (completion) cost.
-///
-/// Accepts the cost in **dollars** (e.g. `0.012`) and converts it internally to
-/// micro-dollars (millionths of a dollar) so the value can be stored in an atomic `u64`.
-/// The conversion is: `micros = dollars * 1_000_000`.
-/// Thread-safe: uses an atomic fetch-add with monotonic ordering.
-pub fn addOutputCost(dollars: f64) void {
-    const micros: u64 = @intFromFloat(dollars * 1_000_000.0);
-    _ = output_cost_micros.fetchAdd(micros, .monotonic);
-}
-
-/// Reset **all** counters to zero, including network I/O, tokens, costs, and `period_start`.
-///
-/// Reset cost **and** token counters, and set `period_start` to the current wall-clock time.
+/// Reset token counters, and set `period_start` to the current wall-clock time.
 ///
 /// Called by `utils.checkAndResetBudgetPeriod()` when the budget period configured in
 /// `cost_controls.days_duration` has expired. This zeroes:
 /// - `input_tokens` and `output_tokens`
-/// - `input_cost_micros` and `output_cost_micros`
 ///
 /// Network I/O counters are **not** affected.
 ///
@@ -152,8 +123,6 @@ pub fn resetCosts() void {
     output_tokens.store(0, .monotonic);
     cache_read_tokens.store(0, .monotonic);
     cache_write_tokens.store(0, .monotonic);
-    input_cost_micros.store(0, .monotonic);
-    output_cost_micros.store(0, .monotonic);
     period_start.store(time.timestamp(), .monotonic);
 }
 
@@ -503,10 +472,6 @@ pub const Snapshot = struct {
     cache_read_tokens: u64,
     /// Cumulative cache write tokens in the current budget period.
     cache_write_tokens: u64,
-    /// Cumulative input (prompt) cost in **dollars** for the current budget period.
-    input_cost: f64,
-    /// Cumulative output (completion) cost in **dollars** for the current budget period.
-    output_cost: f64,
 };
 
 /// Capture a point-in-time `Snapshot` of all tracked metrics, including live
@@ -514,8 +479,7 @@ pub const Snapshot = struct {
 ///
 /// Each atomic counter is loaded individually with monotonic ordering, so the
 /// snapshot is *nearly* consistent — suitable for human-readable dashboards but
-/// not for transactional accounting. Cost values are converted from internal
-/// micro-dollars back to dollars before being stored in the returned struct.
+/// not for transactional accounting.
 ///
 /// This function is called frequently by the macOS app's polling timer and is
 /// designed to be cheap (no allocations, no syscall failures propagated).
@@ -530,8 +494,6 @@ pub fn snapshot() Snapshot {
         .output_tokens = output_tokens.load(.monotonic),
         .cache_read_tokens = cache_read_tokens.load(.monotonic),
         .cache_write_tokens = cache_write_tokens.load(.monotonic),
-        .input_cost = @as(f64, @floatFromInt(input_cost_micros.load(.monotonic))) / 1_000_000.0,
-        .output_cost = @as(f64, @floatFromInt(output_cost_micros.load(.monotonic))) / 1_000_000.0,
     };
 }
 
@@ -547,8 +509,6 @@ const PersistedMetrics = struct {
     output_tokens: u64 = 0,
     cache_read_tokens: u64 = 0,
     cache_write_tokens: u64 = 0,
-    input_cost_micros: u64 = 0,
-    output_cost_micros: u64 = 0,
     period_start: i64 = 0,
 };
 
@@ -602,15 +562,11 @@ pub fn load() void {
     output_tokens.store(data.output_tokens, .monotonic);
     cache_read_tokens.store(data.cache_read_tokens, .monotonic);
     cache_write_tokens.store(data.cache_write_tokens, .monotonic);
-    input_cost_micros.store(data.input_cost_micros, .monotonic);
-    output_cost_micros.store(data.output_cost_micros, .monotonic);
     period_start.store(data.period_start, .monotonic);
 
-    log.info("Loaded persisted metrics: in_tokens={d}, out_tokens={d}, in_cost=${d:.6}, out_cost=${d:.6}, period_start={d}", .{
+    log.info("Loaded persisted metrics: in_tokens={d}, out_tokens={d}, period_start={d}", .{
         data.input_tokens,
         data.output_tokens,
-        @as(f64, @floatFromInt(data.input_cost_micros)) / 1_000_000.0,
-        @as(f64, @floatFromInt(data.output_cost_micros)) / 1_000_000.0,
         data.period_start,
     });
 }
@@ -638,8 +594,6 @@ pub fn persist() void {
         .output_tokens = output_tokens.load(.monotonic),
         .cache_read_tokens = cache_read_tokens.load(.monotonic),
         .cache_write_tokens = cache_write_tokens.load(.monotonic),
-        .input_cost_micros = input_cost_micros.load(.monotonic),
-        .output_cost_micros = output_cost_micros.load(.monotonic),
         .period_start = period_start.load(.monotonic),
     };
 

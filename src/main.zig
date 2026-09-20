@@ -25,7 +25,6 @@ const log_impl = @import("log.zig");
 const metrics = core.metrics;
 const utils = core.utils;
 const provider = core.provider;
-const pricing = core.pricing;
 const smart_routing = core.smart_routing;
 const app_config = @import("config.zig");
 const server = @import("server.zig");
@@ -70,28 +69,9 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var cfg = try app_config.AppConfig.loadFromFile(allocator, config_path);
     defer cfg.deinit();
 
-    // Initialize pricing engine (load cost CSVs for configured providers)
-    // Declare init/deinit BEFORE worker_pool so defer runs AFTER pool shutdown
-    var provider_names_buf: [32][]const u8 = undefined;
-    var provider_name_count: usize = 0;
-    {
-        var piter = cfg.core.providers.keyIterator();
-        while (piter.next()) |key_ptr| {
-            if (provider_name_count < provider_names_buf.len) {
-                provider_names_buf[provider_name_count] = key_ptr.*;
-                provider_name_count += 1;
-            }
-        }
-    }
-    pricing.init(allocator, provider_names_buf[0..provider_name_count]);
-    defer pricing.deinit();
-
     // Initialize IO worker pool (before logging so async writes work)
     try worker_pool.init(allocator, @intCast(cfg.server.io_pool_size));
     defer worker_pool.deinit();
-
-    // Now schedule auto-update (pool exists)
-    pricing.scheduleAutoUpdate();
 
     // Initialize logging (after worker pool for async writes)
     try log_impl.init(cfg.log, allocator);
