@@ -79,10 +79,10 @@ pub fn main(init: std.process.Init.Minimal) !void {
     defer log_impl.deinit();
 
     // Load persisted metrics (tokens, costs, period_start) from previous session
-    metrics.load();
     metrics.initUsageMap(allocator);
     defer metrics.deinitUsageMap();
     defer metrics.persist();
+    metrics.load();
 
     // Initialize pricing rates from config
     pricing.init(allocator);

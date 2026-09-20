@@ -41,19 +41,7 @@ var network_rx_bytes: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
 /// Total bytes sent to clients
 var network_tx_bytes: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
 
-/// Total input/prompt tokens accumulated from LLM responses
-var input_tokens: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
-
-/// Total output/completion tokens accumulated from LLM responses
-var output_tokens: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
-
-/// Total cache read tokens (served from cache) accumulated from LLM responses
-var cache_read_tokens: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
-
-/// Total cache write tokens (written to cache) accumulated from LLM responses
-var cache_write_tokens: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
-
-/// Budget period start timestamp (seconds since epoch). 0 = not set (uses server start time).
+/// Budget period start timestamp (seconds since epoch). 0 = not set.
 var period_start: std.atomic.Value(i64) = std.atomic.Value(i64).init(0);
 
 // ============================================================================
@@ -105,24 +93,27 @@ pub fn addNetworkTx(bytes: u64) void {
     _ = network_tx_bytes.fetchAdd(bytes, .monotonic);
 }
 
-/// Reset **all** counters to zero, including network I/O, tokens, and `period_start`.
-///
-/// Reset token counters, and set `period_start` to the current wall-clock time.
+/// Reset token counters and the per-model usage map for the new budget period.
 ///
 /// Called by `utils.checkAndResetBudgetPeriod()` when the budget period configured in
-/// `cost_controls.days_duration` has expired. This zeroes:
-/// - `input_tokens` and `output_tokens`
+/// `cost_controls.days_duration` has expired. Zeroes all `TokenUsage` entries in
+/// `usage_map` (values zeroed, keys kept) and advances `period_start`.
 ///
 /// Network I/O counters are **not** affected.
-///
-/// After resetting, `period_start` is updated to `time.timestamp()` (seconds since
-/// epoch) so the next budget window begins immediately. The new values are subsequently
-/// written to disk by `persist()`.
 pub fn resetCosts() void {
-    input_tokens.store(0, .monotonic);
-    output_tokens.store(0, .monotonic);
-    cache_read_tokens.store(0, .monotonic);
-    cache_write_tokens.store(0, .monotonic);
+    // Acquire the usage map write lock first so map zeroing and period_start update
+    // are atomic with respect to recordUsage.
+    if (usage_map_initialized) {
+        usage_map_lock.lock();
+        defer usage_map_lock.unlock();
+        var outer = usage_map.iterator();
+        while (outer.next()) |provider_entry| {
+            var inner = provider_entry.value_ptr.iterator();
+            while (inner.next()) |model_entry| {
+                model_entry.value_ptr.* = .{};
+            }
+        }
+    }
     period_start.store(time.timestamp(), .monotonic);
 }
 
@@ -169,12 +160,6 @@ pub fn recordUsage(
     cache_read: u64,
     output: u64,
 ) void {
-    // Update flat atomics outside the lock — atomics are independently thread-safe.
-    _ = input_tokens.fetchAdd(input, .monotonic);
-    _ = output_tokens.fetchAdd(output, .monotonic);
-    _ = cache_read_tokens.fetchAdd(cache_read, .monotonic);
-    _ = cache_write_tokens.fetchAdd(cache_write, .monotonic);
-
     if (!usage_map_initialized) return;
 
     usage_map_lock.lock();
@@ -207,6 +192,31 @@ pub fn recordUsage(
     entry.cache_write += cache_write;
     entry.cache_read += cache_read;
     entry.output += output;
+}
+
+/// Look up token usage for a single provider+model pair.
+/// Returns a copy of the TokenUsage (or null if not found). Thread-safe, no allocation.
+pub fn getModelUsage(provider_name: []const u8, model: []const u8) ?TokenUsage {
+    if (!usage_map_initialized) return null;
+    usage_map_lock.lockShared();
+    defer usage_map_lock.unlockShared();
+    const inner = usage_map.get(provider_name) orelse return null;
+    return inner.get(model);
+}
+
+/// Iterate all provider+model usage entries under a shared read lock.
+/// The callback receives (ctx, provider, model, usage) and must not block or allocate.
+pub fn iterateUsage(ctx: anytype, comptime cb: fn (@TypeOf(ctx), []const u8, []const u8, TokenUsage) void) void {
+    if (!usage_map_initialized) return;
+    usage_map_lock.lockShared();
+    defer usage_map_lock.unlockShared();
+    var outer = usage_map.iterator();
+    while (outer.next()) |provider_entry| {
+        var inner = provider_entry.value_ptr.iterator();
+        while (inner.next()) |model_entry| {
+            cb(ctx, provider_entry.key_ptr.*, model_entry.key_ptr.*, model_entry.value_ptr.*);
+        }
+    }
 }
 
 /// Snapshot the usage map into an owned slice of ProviderUsage.
@@ -464,7 +474,7 @@ pub const Snapshot = struct {
     network_rx_bytes: u64,
     /// Cumulative bytes sent to downstream clients since the process started.
     network_tx_bytes: u64,
-    /// Cumulative input (prompt) tokens across all LLM requests in the current budget period.
+/// Cumulative input (prompt) tokens across all LLM requests in the current budget period.
     input_tokens: u64,
     /// Cumulative output (completion) tokens across all LLM requests in the current budget period.
     output_tokens: u64,
@@ -474,26 +484,42 @@ pub const Snapshot = struct {
     cache_write_tokens: u64,
 };
 
-/// Capture a point-in-time `Snapshot` of all tracked metrics, including live
-/// process stats (RSS, CPU) obtained from the OS.
-///
-/// Each atomic counter is loaded individually with monotonic ordering, so the
-/// snapshot is *nearly* consistent — suitable for human-readable dashboards but
-/// not for transactional accounting.
-///
-/// This function is called frequently by the macOS app's polling timer and is
-/// designed to be cheap (no allocations, no syscall failures propagated).
+/// Capture a point-in-time `Snapshot` of all tracked metrics.
+/// Token totals are derived by iterating `usage_map` under a shared read lock.
+/// Process stats (RSS, CPU) are obtained from the OS.
 pub fn snapshot() Snapshot {
     const process_stats = getProcessStats();
+
+    var input: u64 = 0;
+    var output: u64 = 0;
+    var cache_read: u64 = 0;
+    var cache_write: u64 = 0;
+
+    if (usage_map_initialized) {
+        usage_map_lock.lockShared();
+        defer usage_map_lock.unlockShared();
+        var outer = usage_map.iterator();
+        while (outer.next()) |provider_entry| {
+            var inner = provider_entry.value_ptr.iterator();
+            while (inner.next()) |model_entry| {
+                const u = model_entry.value_ptr.*;
+                input       += u.input;
+                output      += u.output;
+                cache_read  += u.cache_read;
+                cache_write += u.cache_write;
+            }
+        }
+    }
+
     return .{
-        .memory_bytes = process_stats.memory_bytes,
-        .cpu_time_us = process_stats.cpu_time_us,
+        .memory_bytes     = process_stats.memory_bytes,
+        .cpu_time_us      = process_stats.cpu_time_us,
         .network_rx_bytes = network_rx_bytes.load(.monotonic),
         .network_tx_bytes = network_tx_bytes.load(.monotonic),
-        .input_tokens = input_tokens.load(.monotonic),
-        .output_tokens = output_tokens.load(.monotonic),
-        .cache_read_tokens = cache_read_tokens.load(.monotonic),
-        .cache_write_tokens = cache_write_tokens.load(.monotonic),
+        .input_tokens     = input,
+        .output_tokens    = output,
+        .cache_read_tokens  = cache_read,
+        .cache_write_tokens = cache_write,
     };
 }
 
@@ -503,34 +529,18 @@ pub fn snapshot() Snapshot {
 
 const METRICS_FILENAME = "metrics.json";
 
-/// JSON structure for persisted metrics
-const PersistedMetrics = struct {
-    input_tokens: u64 = 0,
-    output_tokens: u64 = 0,
-    cache_read_tokens: u64 = 0,
-    cache_write_tokens: u64 = 0,
-    period_start: i64 = 0,
-};
-
-/// Get the metrics file path: ~/.config/zig-zag/metrics.json
 fn getMetricsPath(buf: []u8) ?[]const u8 {
     const home = env.get("HOME") orelse return null;
     return std.fmt.bufPrint(buf, "{s}/.config/zig-zag/{s}", .{ home, METRICS_FILENAME }) catch null;
 }
 
-/// Load persisted metrics from `~/.config/zig-zag/metrics.json` and restore the
-/// atomic counters (tokens, costs, and `period_start`).
+/// Load persisted metrics from `~/.config/zig-zag/metrics.json`.
 ///
-/// **Must be called once at startup**, before the server accepts any requests and
-/// before `utils.checkBudgetPeriodOnStartup()` runs, so that the budget logic
-/// sees the correct accumulated totals and period timestamp.
-///
-/// If the file does not exist (first run) or cannot be parsed, all counters
-/// remain at their initial zero values — no error is propagated.
-///
-/// Network I/O counters (`network_rx_bytes`, `network_tx_bytes`) are **not**
-/// persisted and always start at zero on each process launch.
+/// Restores `usage_map` (provider → model → TokenUsage) and `period_start`.
+/// Must be called after `initUsageMap` and before `checkBudgetPeriodOnStartup`.
 pub fn load() void {
+    if (!usage_map_initialized) return;
+
     var path_buf: [fs.max_path_bytes]u8 = undefined;
     const path = getMetricsPath(&path_buf) orelse return;
 
@@ -543,67 +553,115 @@ pub fn load() void {
     };
     defer file.close();
 
-    var buf: [4096]u8 = undefined;
-    const bytes_read = file.readAll(&buf) catch |err| {
+    // Read up to 1 MiB — usage maps with many models can be large.
+    const content = file.readToEndAlloc(usage_map_alloc, 1024 * 1024) catch |err| {
         log.warn("Failed to read metrics file: {}", .{err});
         return;
     };
+    defer usage_map_alloc.free(content);
 
-    const parsed = std.json.parseFromSlice(PersistedMetrics, std.heap.page_allocator, buf[0..bytes_read], .{
-        .ignore_unknown_fields = true,
-    }) catch |err| {
+    const parsed = std.json.parseFromSlice(std.json.Value, usage_map_alloc, content, .{}) catch |err| {
         log.warn("Failed to parse metrics file: {}", .{err});
         return;
     };
     defer parsed.deinit();
 
-    const data = parsed.value;
-    input_tokens.store(data.input_tokens, .monotonic);
-    output_tokens.store(data.output_tokens, .monotonic);
-    cache_read_tokens.store(data.cache_read_tokens, .monotonic);
-    cache_write_tokens.store(data.cache_write_tokens, .monotonic);
-    period_start.store(data.period_start, .monotonic);
+    const root = parsed.value;
+    if (root != .object) return;
+
+    // Restore period_start
+    if (root.object.get("period_start")) |v| {
+        if (v == .integer) period_start.store(v.integer, .monotonic);
+    }
+
+    // Restore usage map
+    const usage_val = root.object.get("usage") orelse return;
+    if (usage_val != .object) return;
+
+    var total_input: u64 = 0;
+    var total_output: u64 = 0;
+    var provider_iter = usage_val.object.iterator();
+    while (provider_iter.next()) |provider_entry| {
+        const provider_name = provider_entry.key_ptr.*;
+        if (provider_entry.value_ptr.* != .object) continue;
+
+        var model_iter = provider_entry.value_ptr.object.iterator();
+        while (model_iter.next()) |model_entry| {
+            const model_name = model_entry.key_ptr.*;
+            if (model_entry.value_ptr.* != .object) continue;
+            const obj = model_entry.value_ptr.object;
+
+            var usage = TokenUsage{};
+            if (obj.get("input"))       |v| { if (v == .integer) usage.input       = @intCast(v.integer); }
+            if (obj.get("cache_write")) |v| { if (v == .integer) usage.cache_write = @intCast(v.integer); }
+            if (obj.get("cache_read"))  |v| { if (v == .integer) usage.cache_read  = @intCast(v.integer); }
+            if (obj.get("output"))      |v| { if (v == .integer) usage.output      = @intCast(v.integer); }
+
+            // Insert into usage_map (write lock not needed — called before server starts)
+            const provider_result = usage_map.getOrPut(provider_name) catch continue;
+            if (!provider_result.found_existing) {
+                const key = usage_map_alloc.dupe(u8, provider_name) catch continue;
+                provider_result.key_ptr.* = key;
+                provider_result.value_ptr.* = std.StringHashMap(TokenUsage).init(usage_map_alloc);
+            }
+            const inner = provider_result.value_ptr;
+            const model_result = inner.getOrPut(model_name) catch continue;
+            if (!model_result.found_existing) {
+                const key = usage_map_alloc.dupe(u8, model_name) catch continue;
+                model_result.key_ptr.* = key;
+            }
+            model_result.value_ptr.* = usage;
+            total_input  += usage.input;
+            total_output += usage.output;
+        }
+    }
 
     log.info("Loaded persisted metrics: in_tokens={d}, out_tokens={d}, period_start={d}", .{
-        data.input_tokens,
-        data.output_tokens,
-        data.period_start,
+        total_input, total_output, period_start.load(.monotonic),
     });
 }
 
-/// Persist current token counts, costs, and `period_start` to
-/// `~/.config/zig-zag/metrics.json`.
-///
-/// The write is **atomic**: data is first written to a temporary `.tmp` file and
-/// then renamed over the target path, so a crash mid-write never corrupts the
-/// existing file.
-///
-/// Called after every request that modifies cost/token counters, after a budget
-/// period reset, and on graceful shutdown. Network I/O counters are intentionally
-/// **not** persisted (they reset each process launch).
-///
-/// If any step fails (serialisation, file creation, rename), a warning is logged
-/// and the function returns silently — the next successful call will capture the
-/// latest values.
+/// Persist `usage_map` and `period_start` to `~/.config/zig-zag/metrics.json`.
+/// Format: `{"period_start": N, "usage": {"provider": {"model": {input, cache_write, cache_read, output}}}}`
+/// Atomic write: temp file + rename.
 pub fn persist() void {
     var path_buf: [fs.max_path_bytes]u8 = undefined;
     const path = getMetricsPath(&path_buf) orelse return;
 
-    const data = PersistedMetrics{
-        .input_tokens = input_tokens.load(.monotonic),
-        .output_tokens = output_tokens.load(.monotonic),
-        .cache_read_tokens = cache_read_tokens.load(.monotonic),
-        .cache_write_tokens = cache_write_tokens.load(.monotonic),
-        .period_start = period_start.load(.monotonic),
-    };
+    // Build JSON into a dynamic buffer — map size is unbounded.
+    var buf = std.ArrayList(u8).empty;
+    defer buf.deinit(usage_map_alloc);
 
-    var buf: [4096]u8 = undefined;
-    var w: std.Io.Writer = .fixed(&buf);
-    std.json.Stringify.value(data, .{ .whitespace = .indent_2 }, &w) catch |err| {
-        log.warn("Failed to serialize metrics: {}", .{err});
-        return;
-    };
-    const json_bytes = buf[0..w.end];
+    buf.print(usage_map_alloc, "{{\"period_start\":{d},\"usage\":{{", .{period_start.load(.monotonic)}) catch return;
+
+    if (usage_map_initialized) {
+        usage_map_lock.lockShared();
+        defer usage_map_lock.unlockShared();
+
+        var first_provider = true;
+        var outer = usage_map.iterator();
+        while (outer.next()) |provider_entry| {
+            if (!first_provider) buf.append(usage_map_alloc, ',') catch return;
+            first_provider = false;
+
+            buf.print(usage_map_alloc, "\"{s}\":{{", .{provider_entry.key_ptr.*}) catch return;
+
+            var first_model = true;
+            var inner = provider_entry.value_ptr.iterator();
+            while (inner.next()) |model_entry| {
+                if (!first_model) buf.append(usage_map_alloc, ',') catch return;
+                first_model = false;
+                const u = model_entry.value_ptr.*;
+                buf.print(usage_map_alloc,
+                    "\"{s}\":{{\"input\":{d},\"cache_write\":{d},\"cache_read\":{d},\"output\":{d}}}",
+                    .{ model_entry.key_ptr.*, u.input, u.cache_write, u.cache_read, u.output },
+                ) catch return;
+            }
+            buf.append(usage_map_alloc, '}') catch return;
+        }
+    }
+
+    buf.appendSlice(usage_map_alloc, "}}") catch return;
 
     // Atomic write: write to temp file then rename
     var tmp_path_buf: [fs.max_path_bytes]u8 = undefined;
@@ -613,8 +671,7 @@ pub fn persist() void {
         log.warn("Failed to create metrics temp file: {}", .{err});
         return;
     };
-
-    file.writeAll(json_bytes) catch |err| {
+    file.writeAll(buf.items) catch |err| {
         file.close();
         fs.cwd().deleteFile(tmp_path) catch {};
         log.warn("Failed to write metrics temp file: {}", .{err});
@@ -625,7 +682,6 @@ pub fn persist() void {
     fs.cwd().rename(tmp_path, path) catch |err| {
         log.warn("Failed to rename metrics temp file: {}", .{err});
         fs.cwd().deleteFile(tmp_path) catch {};
-        return;
     };
 }
 

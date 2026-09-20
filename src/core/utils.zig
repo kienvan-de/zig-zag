@@ -17,6 +17,7 @@ const time = @import("time.zig");
 const config_mod = @import("config.zig");
 const log = @import("log.zig");
 const metrics = @import("metrics.zig");
+const pricing = @import("pricing.zig");
 
 /// Result of parsing a `"provider/model-name"` string via `parseModelString`.
 ///
@@ -157,8 +158,8 @@ pub const BudgetError = @import("errors.zig").BudgetError;
 /// 1. If `cost_controls.enabled` is `false`, returns immediately (no-op).
 /// 2. Checks whether the budget period has expired and resets costs/tokens
 ///    if necessary (delegates to `checkAndResetBudgetPeriod`).
-/// 3. Compares total accumulated cost (`input_cost + output_cost`) against
-///    `cost_controls.budget`. If the limit has been reached or exceeded,
+/// 3. Calls `calculateCosts().total()` and compares against `cost_controls.budget`.
+///    If the limit has been reached or exceeded,
 ///    returns `error.BudgetExceeded` — the caller should respond with
 ///    HTTP `429 Too Many Requests`.
 ///
@@ -170,17 +171,18 @@ pub fn enforceBudget(config: *const config_mod.Config) BudgetError!void {
     // Check if budget period has expired and reset if needed
     checkAndResetBudgetPeriod(config);
 
-    // Cost calculation is not yet implemented (wired up in a later session).
-    // Still enforce a zero-budget hard block so `budget: 0.0` acts as a kill switch.
+    // Fast-path: zero budget acts as a kill switch regardless of cost
     if (config.cost_controls.budget <= 0.0) {
         log.warn("Budget is zero or negative, rejecting request", .{});
         return error.BudgetExceeded;
     }
-}
 
-// ============================================================================
-// Unit Tests
-// ============================================================================
+    const total = calculateCosts().total();
+    if (total >= config.cost_controls.budget) {
+        log.warn("Budget exceeded: ${d:.6} >= ${d:.6}, rejecting request", .{ total, config.cost_controls.budget });
+        return error.BudgetExceeded;
+    }
+}
 
 // ============================================================================
 // Dispatcher shared helpers
@@ -268,6 +270,65 @@ pub fn recordChatStreamTokenUsage(
     const cr: u64 = state.cache_read_tokens;
     const cw: u64 = state.cache_write_tokens;
     recordUsage(state.input_tokens - cr - cw, cw, cr, state.output_tokens, provider_name, model);
+}
+
+// ============================================================================
+// Cost calculation
+// ============================================================================
+
+/// Cost breakdown for a provider+model pair (or aggregate). USD values.
+pub const UnitCosts = struct {
+    input: f64 = 0.0,
+    cache_write: f64 = 0.0,
+    cache_read: f64 = 0.0,
+    output: f64 = 0.0,
+
+    pub fn total(self: UnitCosts) f64 {
+        return self.input + self.cache_write + self.cache_read + self.output;
+    }
+
+    pub fn add(self: UnitCosts, other: UnitCosts) UnitCosts {
+        return .{
+            .input       = self.input       + other.input,
+            .cache_write = self.cache_write + other.cache_write,
+            .cache_read  = self.cache_read  + other.cache_read,
+            .output      = self.output      + other.output,
+        };
+    }
+};
+
+/// Calculate cost for a single provider+model. No allocation.
+/// Returns zeroed UnitCosts if usage or rate is not found.
+pub fn calculateModelCost(provider_id: []const u8, model_id: []const u8) UnitCosts {
+    const usage = metrics.getModelUsage(provider_id, model_id) orelse return .{};
+    const rate = pricing.getRate(provider_id, model_id) orelse return .{};
+    return .{
+        .input       = @as(f64, @floatFromInt(usage.input))       * rate.input       / 1_000_000.0,
+        .cache_write = @as(f64, @floatFromInt(usage.cache_write)) * rate.cache_write / 1_000_000.0,
+        .cache_read  = @as(f64, @floatFromInt(usage.cache_read))  * rate.cache_read  / 1_000_000.0,
+        .output      = @as(f64, @floatFromInt(usage.output))      * rate.output      / 1_000_000.0,
+    };
+}
+
+/// Accumulator context for iterateUsage callback.
+const CostAccum = struct { costs: UnitCosts = .{} };
+
+fn accumulateCost(ctx: *CostAccum, provider_id: []const u8, model_id: []const u8, usage: metrics.TokenUsage) void {
+    const rate = pricing.getRate(provider_id, model_id) orelse return;
+    const entry = UnitCosts{
+        .input       = @as(f64, @floatFromInt(usage.input))       * rate.input       / 1_000_000.0,
+        .cache_write = @as(f64, @floatFromInt(usage.cache_write)) * rate.cache_write / 1_000_000.0,
+        .cache_read  = @as(f64, @floatFromInt(usage.cache_read))  * rate.cache_read  / 1_000_000.0,
+        .output      = @as(f64, @floatFromInt(usage.output))      * rate.output      / 1_000_000.0,
+    };
+    ctx.costs = ctx.costs.add(entry);
+}
+
+/// Calculate aggregate cost across all providers+models. No allocation.
+pub fn calculateCosts() UnitCosts {
+    var accum = CostAccum{};
+    metrics.iterateUsage(&accum, accumulateCost);
+    return accum.costs;
 }
 
 const testing = std.testing;

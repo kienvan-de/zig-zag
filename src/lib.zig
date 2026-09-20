@@ -227,8 +227,8 @@ export fn startServer() bool {
     core.net.ignoreSigpipe();
 
     // Load persisted metrics (tokens, costs, period_start) from previous session
-    metrics.load();
     metrics.initUsageMap(std.heap.page_allocator);
+    metrics.load();
 
     // Allocate State shell using page_allocator (stable address for GPA inside)
     const bootstrap = std.heap.page_allocator;
@@ -348,6 +348,7 @@ export fn getServerStats() CServerStats {
     // Read display config (defaults if config not loaded yet)
     const stats_cfg = if (s.cfg) |cfg| cfg.statistics else app_config.StatisticsConfig{};
     const cost_cfg = if (s.cfg) |cfg| cfg.core.cost_controls else core_config.CostControlsConfig{};
+    const costs = utils.calculateCosts();
 
     return CServerStats{
         .status = status,
@@ -362,9 +363,9 @@ export fn getServerStats() CServerStats {
         .llm_provider_configured = configured,
         .input_tokens = snap.input_tokens,
         .output_tokens = snap.output_tokens,
-        .total_cost = 0.0,
-        .input_cost = 0.0,
-        .output_cost = 0.0,
+        .total_cost = @floatCast(costs.total()),
+        .input_cost = @floatCast(costs.input + costs.cache_write + costs.cache_read),
+        .output_cost = @floatCast(costs.output),
         .show_performance = stats_cfg.show_performance,
         .show_llm = stats_cfg.show_llm,
         .show_cost = stats_cfg.show_cost,
