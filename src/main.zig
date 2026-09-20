@@ -25,6 +25,7 @@ const log_impl = @import("log.zig");
 const metrics = core.metrics;
 const utils = core.utils;
 const provider = core.provider;
+const pricing = core.pricing;
 const smart_routing = core.smart_routing;
 const app_config = @import("config.zig");
 const server = @import("server.zig");
@@ -82,6 +83,11 @@ pub fn main(init: std.process.Init.Minimal) !void {
     metrics.initUsageMap(allocator);
     defer metrics.deinitUsageMap();
     defer metrics.persist();
+
+    // Initialize pricing rates from config
+    pricing.init(allocator);
+    defer pricing.deinit();
+    pricing.loadFromConfig(&cfg.core);
 
     // If the budget period expired while the proxy was offline, reset now so
     // the macOS app shows correct stats before the first request arrives.

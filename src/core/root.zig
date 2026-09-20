@@ -54,6 +54,9 @@ pub const log = @import("log.zig");
 /// CPU, memory, token, and cost tracking — persisted across restarts.
 pub const metrics = @import("metrics.zig");
 
+/// Per-model token pricing rates loaded from config.
+pub const pricing = @import("pricing.zig");
+
 /// Utility functions: model parsing, budget enforcement.
 pub const utils = @import("utils.zig");
 

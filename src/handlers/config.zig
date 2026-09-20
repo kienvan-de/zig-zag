@@ -30,6 +30,7 @@ const core = @import("zag-core");
 const errors = core.errors;
 const config_mod = core.config;
 const smart_routing = core.smart_routing;
+const pricing = core.pricing;
 const log = core.log;
 
 const http = @import("../http.zig");
@@ -108,8 +109,19 @@ fn handlePost(allocator: std.mem.Allocator, connection: net.Connection, body: []
         defer allocator.free(error_json);
         return http.sendJsonResponse(connection, .bad_request, error_json);
     };
-    // Reload smart routing state to reflect config changes
+    // Reload smart routing and pricing rates to reflect config changes
     smart_routing.reload(body);
+    {
+        const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{ .ignore_unknown_fields = true }) catch null;
+        if (parsed) |p| {
+            defer p.deinit();
+            var tmp_cfg = config_mod.Config.parseFromJson(allocator, p) catch null;
+            if (tmp_cfg) |*c| {
+                defer c.deinit();
+                pricing.loadFromConfig(c);
+            }
+        }
+    }
     try http.sendJsonResponse(connection, .ok, "{\"ok\":true}");
 }
 

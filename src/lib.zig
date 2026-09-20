@@ -24,6 +24,7 @@ const worker_pool = @import("worker_pool.zig");
 const log_impl = @import("log.zig");
 const metrics = core.metrics;
 const provider = core.provider;
+const pricing = core.pricing;
 const utils = core.utils;
 const smart_routing = core.smart_routing;
 const app_config = @import("config.zig");
@@ -182,6 +183,10 @@ fn serverThreadFn(s: *State) void {
         }
     }
 
+    // Initialize pricing rates from config
+    pricing.init(allocator);
+    pricing.loadFromConfig(&cfg.core);
+
     // All init successful - transition to running state
     server_status.store(.running, .release);
     server_error_code.store(.none, .release);
@@ -273,6 +278,7 @@ export fn stopServer() void {
     // Persist metrics before shutdown
     metrics.persist();
     metrics.deinitUsageMap();
+    pricing.deinit();
 
     // Signal server.zig to close the listener socket.
     // This unblocks all accept() calls and lets worker threads exit.

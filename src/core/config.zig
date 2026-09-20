@@ -167,6 +167,14 @@ pub const defaults = struct {
     pub const provider_max_response_size_mb: i64 = 10;
 };
 
+/// Token rate for a single provider/model. All values are USD per million tokens.
+pub const ModelRate = struct {
+    input: f64 = 0.0,
+    cache_write: f64 = 0.0,
+    cache_read: f64 = 0.0,
+    output: f64 = 0.0,
+};
+
 /// Cost / budget controls, parsed from the `"cost_controls"` section of `config.json`.
 ///
 /// When `enabled` is `true` the proxy enforces a spending limit:
@@ -204,6 +212,8 @@ pub const Config = struct {
     /// Map of provider name → `ProviderConfig` (e.g. `"openai"` → config object).
     providers: std.StringHashMap(ProviderConfig),
     cost_controls: CostControlsConfig,
+    /// Map of `"provider/model"` → `ModelRate`. Keys are heap-allocated; owned by Config.
+    rates: std.StringHashMap(ModelRate),
     /// The root parsed JSON tree.  Kept alive so that all borrowed slices
     /// in `ProviderConfig` and other structs remain valid.
     _parsed: std.json.Parsed(std.json.Value),
@@ -244,6 +254,40 @@ pub const Config = struct {
                     if (v == .integer and v.integer >= 0) {
                         cost_controls_config.days_duration = @intCast(v.integer);
                     }
+                }
+            }
+        }
+
+        // Parse rates map (optional): "rates": { "provider/model": { "input": f, ... } }
+        var rates = std.StringHashMap(ModelRate).init(allocator);
+        errdefer {
+            var kit = rates.keyIterator();
+            while (kit.next()) |k| allocator.free(k.*);
+            rates.deinit();
+        }
+        if (root_obj.get("rates")) |rates_value| {
+            if (rates_value == .object) {
+                var rit = rates_value.object.iterator();
+                while (rit.next()) |entry| {
+                    const key = entry.key_ptr.*;
+                    if (entry.value_ptr.* != .object) continue;
+                    const obj = entry.value_ptr.*.object;
+                    var rate = ModelRate{};
+                    if (obj.get("input")) |v| {
+                        if (v == .float) rate.input = v.float else if (v == .integer) rate.input = @floatFromInt(v.integer);
+                    }
+                    if (obj.get("cache_write")) |v| {
+                        if (v == .float) rate.cache_write = v.float else if (v == .integer) rate.cache_write = @floatFromInt(v.integer);
+                    }
+                    if (obj.get("cache_read")) |v| {
+                        if (v == .float) rate.cache_read = v.float else if (v == .integer) rate.cache_read = @floatFromInt(v.integer);
+                    }
+                    if (obj.get("output")) |v| {
+                        if (v == .float) rate.output = v.float else if (v == .integer) rate.output = @floatFromInt(v.integer);
+                    }
+                    const duped_key = try allocator.dupe(u8, key);
+                    errdefer allocator.free(duped_key);
+                    try rates.put(duped_key, rate);
                 }
             }
         }
@@ -293,6 +337,7 @@ pub const Config = struct {
             .allocator = allocator,
             .providers = providers,
             .cost_controls = cost_controls_config,
+            .rates = rates,
             ._parsed = parsed,
         };
     }
@@ -322,6 +367,9 @@ pub const Config = struct {
             prov_config.deinit();
         }
         self.providers.deinit();
+        var kit = self.rates.keyIterator();
+        while (kit.next()) |k| self.allocator.free(k.*);
+        self.rates.deinit();
         self._parsed.deinit();
     }
 };

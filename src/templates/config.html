@@ -272,6 +272,8 @@ body{
   box-shadow:0 0 8px 1px var(--accent-glow);
 }
 
+/* ── Rates delete button ────────────────────────────── */
+
 /* ── Filterable model picker ────────────────────────── */
 .model-picker{position:relative;display:block;width:100%;}
 .model-picker-input{width:100%;box-sizing:border-box;}
@@ -1540,14 +1542,36 @@ function renderSettingsPanel(key) {
   var section = schema.section;
   var data = (state.dirty && state.dirty[section]) || {};
 
-  var html = '<div class="panel"><div class="panel-header"><div>' +
-    '<div class="panel-title">' + escHtml(schema.title) + '</div>' +
-    '<div class="panel-subtitle">' + escHtml(schema.subtitle) + '</div>' +
-    '</div></div><div class="panel-body">';
+  var html;
+  if (key === 'cost_controls') {
+    var isEnabled = data.enabled || false;
+    html = '<div class="panel"><div class="panel-header">' +
+      '<div><div class="panel-title">' + escHtml(schema.title) + '</div>' +
+      '<div class="panel-subtitle">' + escHtml(schema.subtitle) + '</div></div>' +
+      '<label class="toggle" style="display:flex;align-items:center;gap:6px;cursor:pointer;margin:0;">' +
+      '<input type="checkbox" id="cc-enabled" data-section="cost_controls" data-field="enabled"' + (isEnabled ? ' checked' : '') + '>' +
+      '<span class="toggle-slider"></span>' +
+      '</label>' +
+      '</div><div class="panel-body">';
+    for (var i = 0; i < schema.fields.length; i++) {
+      var f = schema.fields[i];
+      if (f.name === 'enabled') continue; // rendered in header
+      html += renderSettingsFieldHtml(section, f, data[f.name]);
+    }
+  } else {
+    html = '<div class="panel"><div class="panel-header"><div>' +
+      '<div class="panel-title">' + escHtml(schema.title) + '</div>' +
+      '<div class="panel-subtitle">' + escHtml(schema.subtitle) + '</div>' +
+      '</div></div><div class="panel-body">';
+    for (var i = 0; i < schema.fields.length; i++) {
+      var f = schema.fields[i];
+      html += renderSettingsFieldHtml(section, f, data[f.name]);
+    }
+  }
 
-  for (var i = 0; i < schema.fields.length; i++) {
-    var f = schema.fields[i];
-    html += renderSettingsFieldHtml(section, f, data[f.name]);
+  // Append rates sub-section for cost_controls
+  if (key === 'cost_controls') {
+    html += ratesSubSectionHtml();
   }
 
   html += '</div></div>';
@@ -1591,8 +1615,28 @@ function renderSettingsPanel(key) {
       if (!state.dirty[sec]) state.dirty[sec] = {};
       state.dirty[sec][fn] = cb.checked;
       markDirty();
+      // When cost_controls.enabled toggles, disable/enable rates section
+      if (sec === 'cost_controls' && fn === 'enabled') {
+        var ratesWrap = document.getElementById('rates-section-wrap');
+        if (ratesWrap) {
+          ratesWrap.querySelectorAll('input, button').forEach(function(el) {
+            el.disabled = !cb.checked;
+          });
+          ratesWrap.style.opacity = cb.checked ? '' : '0.4';
+        }
+      }
     });
   });
+
+  // Wire rates add button if cost_controls panel
+  if (key === 'cost_controls') {
+    wireRatesSection();
+    fetchModels().then(function(models) {
+      wireModelPicker('rates-new-model', models, function() {});
+      var inp = document.getElementById('rates-new-model');
+      if (inp) inp.addEventListener('focus', function() { this.value = ''; }, true);
+    });
+  }
 }
 
 /* ── Add-provider panel ─────────────────────────────── */
@@ -2064,6 +2108,103 @@ function populateModelSelect(sel, models, selected) {
     html += '<option value="' + escHtml(m) + '"' + (m === selected ? ' selected' : '') + '>' + escHtml(m) + '</option>';
   });
   sel.innerHTML = html;
+}
+
+
+/* ── Rates sub-section (embedded in Cost Controls panel) ── */
+function ratesSubSectionHtml() {
+  var rates = (state.dirty && state.dirty.rates) || {};
+  var keys = Object.keys(rates).sort();
+  var enabled = (state.dirty && state.dirty.cost_controls && state.dirty.cost_controls.enabled) || false;
+  var dis = enabled ? '' : ' disabled';
+
+  var html = '<hr class="sr-divider">';
+  html += '<div id="rates-section-wrap"' + (!enabled ? ' style="opacity:0.4"' : '') + '>';
+  html += '<div style="font-weight:500;margin-bottom:10px;font-size:13px;">Per-model Rates <span style="font-size:11px;color:var(--text-muted);font-weight:400;">(USD per million tokens)</span></div>';
+
+  // Table + add row as a unified grid: model(2fr) + 4 rate cols(1fr each) + action(56px)
+  var COL = 'grid-template-columns:2fr 1fr 1fr 1fr 1fr 56px';
+  var GRID = 'display:grid;' + COL + ';gap:0 8px;align-items:center;';
+
+  html += '<div class="form-group" id="rates-table-wrap">';
+  // Header
+  html += '<div style="' + GRID + 'padding:0 0 6px;border-bottom:1px solid rgba(255,255,255,0.08);">';
+  html += '<div style="font-size:12px;color:var(--text-muted);">Model</div>';
+  html += '<div style="font-size:12px;color:var(--text-muted);">Input</div>';
+  html += '<div style="font-size:12px;color:var(--text-muted);">Cache Write</div>';
+  html += '<div style="font-size:12px;color:var(--text-muted);">Cache Read</div>';
+  html += '<div style="font-size:12px;color:var(--text-muted);">Output</div>';
+  html += '<div></div>';
+  html += '</div>';
+  // Data rows
+  for (var i = 0; i < keys.length; i++) {
+    html += ratesRowHtml(keys[i], rates[keys[i]], dis, GRID);
+  }
+  if (keys.length === 0) {
+    html += '<div style="color:var(--text-muted);font-size:13px;padding:8px 0 4px;">No rates configured. Add one below.</div>';
+  }
+
+  // Add row — same grid columns
+  html += '<div style="' + GRID + 'margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.06);">';
+  html += '<div>';
+  html += modelPickerHtml('rates-new-model', 'Search models…', '');
+  html += '</div>';
+  var rateFields = [
+    {id:'rates-new-input',      label:'Input'},
+    {id:'rates-new-cache-write',label:'Cache Write'},
+    {id:'rates-new-cache-read', label:'Cache Read'},
+    {id:'rates-new-output',     label:'Output'},
+  ];
+  for (var j = 0; j < rateFields.length; j++) {
+    html += '<div><input type="number" id="' + rateFields[j].id + '"' + dis + ' min="0" step="0.001" placeholder="0.00" style="width:100%;"></div>';
+  }
+  html += '<div><button class="btn btn-ghost" id="rates-add-btn"' + dis + ' style="padding:4px 8px;" title="Add rate">+</button></div>';
+  html += '</div>';
+  html += '</div>'; // form-group / rates-table-wrap
+  html += '</div>'; // rates-section-wrap
+  return html;
+}
+
+function wireRatesSection() {
+  wireRatesDeleteButtons();
+  var addBtn = document.getElementById('rates-add-btn');
+  if (!addBtn) return;
+  addBtn.addEventListener('click', function() {
+    var modelInput = document.getElementById('rates-new-model');
+    var key = modelInput ? modelInput.value.trim() : '';
+    if (!key) return;
+    var input      = parseFloat(document.getElementById('rates-new-input').value)       || 0;
+    var cacheWrite = parseFloat(document.getElementById('rates-new-cache-write').value) || 0;
+    var cacheRead  = parseFloat(document.getElementById('rates-new-cache-read').value)  || 0;
+    var output     = parseFloat(document.getElementById('rates-new-output').value)      || 0;
+    if (!state.dirty.rates) state.dirty.rates = {};
+    state.dirty.rates[key] = { input: input, cache_write: cacheWrite, cache_read: cacheRead, output: output };
+    markDirty();
+    renderSettingsPanel('cost_controls');
+  });
+}
+
+function ratesRowHtml(key, rate, dis, gridStyle) {
+  var d = dis || '';
+  return '<div style="' + (gridStyle || '') + 'padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.05);" data-rates-key="' + escHtml(key) + '">' +
+    '<div style="font-family:var(--mono);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + escHtml(key) + '">' + escHtml(key) + '</div>' +
+    '<div style="font-size:13px;">' + escHtml(String(rate.input || 0)) + '</div>' +
+    '<div style="font-size:13px;">' + escHtml(String(rate.cache_write || 0)) + '</div>' +
+    '<div style="font-size:13px;">' + escHtml(String(rate.cache_read || 0)) + '</div>' +
+    '<div style="font-size:13px;">' + escHtml(String(rate.output || 0)) + '</div>' +
+    '<div><button class="btn btn-danger rates-delete-btn" data-key="' + escHtml(key) + '"' + d + ' style="padding:4px 8px;" title="Remove">✕</button></div>' +
+    '</div>';
+}
+
+function wireRatesDeleteButtons() {
+  $mainPanel.querySelectorAll('.rates-delete-btn').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var key = btn.dataset.key;
+      if (state.dirty.rates) delete state.dirty.rates[key];
+      markDirty();
+      renderSettingsPanel('cost_controls');
+    });
+  });
 }
 
 /* ── Add Smart Routing group panel ──────────────────── */
