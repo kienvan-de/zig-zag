@@ -428,6 +428,16 @@ fn initLocked(allocator: Allocator, raw_json: []const u8) void {
     }
 }
 
+/// Release all smart routing state. Must be called before the allocator passed
+/// to init() is destroyed. After this call, g_routing and g_allocator are null.
+pub fn deinit() void {
+    g_rwlock.lock();
+    defer g_rwlock.unlock();
+    if (g_routing) |*old| old.deinit();
+    g_routing = null;
+    g_allocator = null;
+}
+
 /// Acquire a read-lock on the global SmartRouting and return a RAII handle.
 /// Returns null if smart routing is not initialised or has no groups configured.
 /// The caller MUST call handle.release() (typically via defer) when done.
