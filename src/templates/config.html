@@ -1576,12 +1576,14 @@ function renderSettingsPanel(key) {
     // Chart first
     html += costStatusSubSectionHtml();
     html += '<hr class="sr-divider">';
-    // Then budget config fields
+    // Then budget config fields — disabled when cost controls is off
+    html += '<div id="cc-fields-wrap"' + (!isEnabled ? ' style="opacity:0.4"' : '') + '>';
     for (var i = 0; i < schema.fields.length; i++) {
       var f = schema.fields[i];
       if (f.name === 'enabled') continue;
       html += renderSettingsFieldHtml(section, f, data[f.name]);
     }
+    html += '</div>';
   } else {
     html = '<div class="panel"><div class="panel-header"><div>' +
       '<div class="panel-title">' + escHtml(schema.title) + '</div>' +
@@ -1639,8 +1641,13 @@ function renderSettingsPanel(key) {
       if (!state.dirty[sec]) state.dirty[sec] = {};
       state.dirty[sec][fn] = cb.checked;
       markDirty();
-      // When cost_controls.enabled toggles, disable/enable rates section
+      // When cost_controls.enabled toggles, disable/enable fields and rates section
       if (sec === 'cost_controls' && fn === 'enabled') {
+        var fieldsWrap = document.getElementById('cc-fields-wrap');
+        if (fieldsWrap) {
+          fieldsWrap.querySelectorAll('input, button, select').forEach(function(el) { el.disabled = !cb.checked; });
+          fieldsWrap.style.opacity = cb.checked ? '' : '0.4';
+        }
         var ratesWrap = document.getElementById('rates-section-wrap');
         if (ratesWrap) {
           ratesWrap.querySelectorAll('input, button').forEach(function(el) {
@@ -1654,6 +1661,12 @@ function renderSettingsPanel(key) {
 
   // Wire rates add button if cost_controls panel
   if (key === 'cost_controls') {
+    // Apply initial disabled state if not enabled
+    var isEnabledNow = (state.dirty && state.dirty.cost_controls && state.dirty.cost_controls.enabled) || false;
+    if (!isEnabledNow) {
+      var fw = document.getElementById('cc-fields-wrap');
+      if (fw) fw.querySelectorAll('input, button, select').forEach(function(el) { el.disabled = true; });
+    }
     wireRatesSection();
     fetchModels().then(function(models) {
       wireModelPicker('rates-new-model', models, function() {});
