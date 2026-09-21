@@ -224,13 +224,13 @@ pub fn snapshotUsageByProvider(allocator: std.mem.Allocator) ![]ProviderUsage {
     usage_map_lock.lockShared();
     defer usage_map_lock.unlockShared();
 
-    var providers = std.ArrayList(ProviderUsage).init(allocator);
+    var providers = std.ArrayList(ProviderUsage).empty;
     errdefer {
         for (providers.items) |p| {
             allocator.free(p.models);
             allocator.free(p.provider);
         }
-        providers.deinit();
+        providers.deinit(allocator);
     }
 
     var outer = usage_map.iterator();
@@ -238,27 +238,27 @@ pub fn snapshotUsageByProvider(allocator: std.mem.Allocator) ![]ProviderUsage {
         const provider_name = try allocator.dupe(u8, provider_entry.key_ptr.*);
         errdefer allocator.free(provider_name);
 
-        var models = std.ArrayList(ModelUsage).init(allocator);
+        var models = std.ArrayList(ModelUsage).empty;
         errdefer {
             for (models.items) |m| allocator.free(m.model);
-            models.deinit();
+            models.deinit(allocator);
         }
 
         var inner = provider_entry.value_ptr.iterator();
         while (inner.next()) |model_entry| {
-            try models.append(.{
+            try models.append(allocator, .{
                 .model = try allocator.dupe(u8, model_entry.key_ptr.*),
                 .usage = model_entry.value_ptr.*,
             });
         }
 
-        try providers.append(.{
+        try providers.append(allocator, .{
             .provider = provider_name,
-            .models = try models.toOwnedSlice(),
+            .models = try models.toOwnedSlice(allocator),
         });
     }
 
-    return providers.toOwnedSlice();
+    return providers.toOwnedSlice(allocator);
 }
 
 /// Free a snapshot returned by snapshotUsageByProvider.
@@ -523,6 +523,7 @@ pub fn snapshot() Snapshot {
 const METRICS_FILENAME = "metrics.json";
 
 fn getMetricsPath(buf: []u8) ?[]const u8 {
+    if (env.get("ZIG_ZAG_METRICS")) |p| return p;
     const home = env.get("HOME") orelse return null;
     return std.fmt.bufPrint(buf, "{s}/.config/zig-zag/{s}", .{ home, METRICS_FILENAME }) catch null;
 }

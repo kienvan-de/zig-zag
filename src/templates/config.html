@@ -274,6 +274,26 @@ body{
 
 /* ── Rates delete button ────────────────────────────── */
 
+/* ── Cost status (progress bar + column chart) ──────── */
+.cost-progress-track{
+  height:8px;
+  background:var(--surface-alt);
+  border-radius:4px;
+  overflow:hidden;
+  margin:4px 0 2px;
+}
+.cost-progress-fill{
+  height:100%;
+  border-radius:4px;
+  transition:width 0.4s ease, background 0.3s ease;
+}
+.cost-chart-wrap{
+  overflow-x:auto;
+}
+@media (prefers-color-scheme:light){
+  .cost-progress-track{ background:rgba(0,0,0,0.08); }
+}
+
 /* ── Filterable model picker ────────────────────────── */
 .model-picker{position:relative;display:block;width:100%;}
 .model-picker-input{width:100%;box-sizing:border-box;}
@@ -1553,9 +1573,13 @@ function renderSettingsPanel(key) {
       '<span class="toggle-slider"></span>' +
       '</label>' +
       '</div><div class="panel-body">';
+    // Chart first
+    html += costStatusSubSectionHtml();
+    html += '<hr class="sr-divider">';
+    // Then budget config fields
     for (var i = 0; i < schema.fields.length; i++) {
       var f = schema.fields[i];
-      if (f.name === 'enabled') continue; // rendered in header
+      if (f.name === 'enabled') continue;
       html += renderSettingsFieldHtml(section, f, data[f.name]);
     }
   } else {
@@ -1636,6 +1660,7 @@ function renderSettingsPanel(key) {
       var inp = document.getElementById('rates-new-model');
       if (inp) inp.addEventListener('focus', function() { this.value = ''; }, true);
     });
+    fetchCosts().then(function(data) { renderCostStatus(data); });
   }
 }
 
@@ -2110,6 +2135,196 @@ function populateModelSelect(sel, models, selected) {
   sel.innerHTML = html;
 }
 
+
+/* ── Cost status sub-section ─────────────────────────── */
+function costStatusSubSectionHtml() {
+  return '<div id="cost-status-wrap">' +
+    '<div id="cost-progress-section" style="margin-bottom:16px;">' +
+    '<div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text-muted);margin-bottom:4px;">' +
+    '<span id="cost-progress-label">Loading…</span>' +
+    '<span id="cost-progress-pct"></span>' +
+    '</div>' +
+    '<div class="cost-progress-track"><div class="cost-progress-fill" id="cost-progress-fill" style="width:0%;background:var(--accent);"></div></div>' +
+    '</div>' +
+    '<div style="display:flex;align-items:flex-start;">' +
+    '<canvas id="cost-chart-yaxis" style="flex-shrink:0;display:block;"></canvas>' +
+    '<div class="cost-chart-wrap" style="flex:1;min-width:0;overflow-x:auto;">' +
+    '<canvas id="cost-chart" style="display:block;min-width:100%;"></canvas>' +
+    '</div>' +
+    '<canvas id="cost-chart-legend" style="flex-shrink:0;display:block;"></canvas>' +
+    '</div>' +
+    '</div>';
+}
+
+/* ── fetchCosts + renderCostStatus ──────────────────── */
+async function fetchCosts() {
+  try {
+    var res = await fetch('/v1/stats/costs');
+    if (!res.ok) return null;
+    return await res.json();
+  } catch(e) { return null; }
+}
+
+function renderCostStatus(data) {
+  if (!data) return;
+  var budget = data.budget || 0;
+  var costs = data.costs || {};
+
+  // Flatten costs into per-model entries grouped by provider
+  var entries = [];
+  Object.keys(costs).sort().forEach(function(provider) {
+    Object.keys(costs[provider]).sort().forEach(function(model) {
+      var c = costs[provider][model];
+      var t = (c.input||0) + (c.cache_write||0) + (c.cache_read||0) + (c.output||0);
+      entries.push({ provider: provider, model: model,
+        input: c.input||0, cache_write: c.cache_write||0,
+        cache_read: c.cache_read||0, output: c.output||0, total: t });
+    });
+  });
+
+  var grandTotal = entries.reduce(function(s, e) { return s + e.total; }, 0);
+
+  // Progress bar
+  var fillEl  = document.getElementById('cost-progress-fill');
+  var labelEl = document.getElementById('cost-progress-label');
+  var pctEl   = document.getElementById('cost-progress-pct');
+  if (fillEl && labelEl && pctEl) {
+    var pct = budget > 0 ? Math.min(100, (grandTotal / budget) * 100) : 0;
+    fillEl.style.width = pct.toFixed(1) + '%';
+    fillEl.style.background = pct >= 90 ? 'var(--danger)' : pct >= 70 ? '#f0a500' : 'var(--accent)';
+    labelEl.textContent = '$' + grandTotal.toFixed(4) + (budget > 0 ? ' / $' + budget.toFixed(2) : '');
+    pctEl.textContent   = budget > 0 ? pct.toFixed(1) + '%' : '';
+  }
+
+  if (!entries.length) return;
+
+  // ── Shared geometry ───────────────────────────────────
+  var dpr = window.devicePixelRatio || 1;
+  var BAR_W = 32, BAR_GAP = 10, PROVIDER_GAP = 20;
+  var PAD_T = 28, PAD_B = 52;
+  var YAXIS_W = 52, LEGEND_W = 100;
+  var cssH = 200;
+  var chartH = cssH - PAD_T - PAD_B;
+
+  var providerGaps = 0;
+  for (var i = 1; i < entries.length; i++) {
+    if (entries[i].provider !== entries[i-1].provider) providerGaps++;
+  }
+  var contentW = entries.length * (BAR_W + BAR_GAP) - BAR_GAP + providerGaps * PROVIDER_GAP;
+
+  var maxVal = entries.reduce(function(m, e) { return Math.max(m, e.total); }, 0);
+  if (maxVal === 0) maxVal = 1;
+
+  function cssVar(n) { return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
+  var colMuted   = cssVar('--text-muted');
+  var colAccent  = cssVar('--accent');
+  var colSurface = cssVar('--surface-alt');
+  var segColors  = ['#7b8cff','#a78bfa','#34d399','#f59e0b'];
+  var segLabels  = ['Input','Cache Write','Cache Read','Output'];
+
+  function setupCanvas(id, cssW, h) {
+    var c = document.getElementById(id);
+    if (!c) return null;
+    c.width  = cssW * dpr; c.height = h * dpr;
+    c.style.width = cssW + 'px'; c.style.height = h + 'px';
+    var cx = c.getContext('2d');
+    cx.scale(dpr, dpr);
+    return cx;
+  }
+
+  // ── Y-axis canvas ─────────────────────────────────────
+  var yCtx = setupCanvas('cost-chart-yaxis', YAXIS_W, cssH);
+  if (yCtx) {
+    yCtx.fillStyle = colMuted;
+    yCtx.font = '10px sans-serif';
+    yCtx.textAlign = 'right';
+    for (var t = 0; t <= 4; t++) {
+      var val = maxVal * t / 4;
+      var y = PAD_T + chartH * (1 - t / 4);
+      yCtx.fillText('$' + val.toFixed(val < 0.01 ? 4 : 2), YAXIS_W - 4, y + 3);
+    }
+  }
+
+  // ── Legend canvas ─────────────────────────────────────
+  var legCtx = setupCanvas('cost-chart-legend', LEGEND_W, cssH);
+  if (legCtx) {
+    var legY = PAD_T + 4;
+    segLabels.forEach(function(lbl, li) {
+      legCtx.fillStyle = segColors[li];
+      legCtx.fillRect(8, legY, 10, 10);
+      legCtx.fillStyle = colMuted;
+      legCtx.font = '10px sans-serif';
+      legCtx.textAlign = 'left';
+      legCtx.fillText(lbl, 22, legY + 9);
+      legY += 18;
+    });
+  }
+
+  // ── Bars canvas (scrollable) ──────────────────────────
+  var barsW = Math.max(document.getElementById('cost-chart').parentElement.clientWidth || 400, contentW + BAR_GAP * 2);
+  var bCtx = setupCanvas('cost-chart', barsW, cssH);
+  if (!bCtx) return;
+
+  // Grid lines
+  bCtx.save();
+  bCtx.strokeStyle = colSurface;
+  bCtx.lineWidth = 0.5;
+  for (var t = 0; t <= 4; t++) {
+    var y = PAD_T + chartH * (1 - t / 4);
+    bCtx.beginPath(); bCtx.moveTo(0, y); bCtx.lineTo(contentW + BAR_GAP * 2, y); bCtx.stroke();
+  }
+  bCtx.restore();
+
+  // Bars — track positions for group backgrounds
+  var colX = BAR_GAP;
+  var groupStart = {}, groupEnd = {};
+
+  entries.forEach(function(e, i) {
+    var isFirst = (i === 0 || entries[i-1].provider !== e.provider);
+    if (isFirst) {
+      if (i > 0) colX += PROVIDER_GAP;
+      groupStart[e.provider] = colX;
+    }
+    var segs = [e.input, e.cache_write, e.cache_read, e.output];
+    var yBase = PAD_T + chartH;
+    segs.forEach(function(v, si) {
+      if (v <= 0) return;
+      var h = (v / maxVal) * chartH;
+      bCtx.fillStyle = segColors[si];
+      bCtx.beginPath();
+      if (bCtx.roundRect) bCtx.roundRect(colX, yBase - h, BAR_W, h, [2,2,0,0]);
+      else bCtx.rect(colX, yBase - h, BAR_W, h);
+      bCtx.fill();
+      yBase -= h;
+    });
+    // Model label
+    bCtx.save();
+    bCtx.translate(colX + BAR_W / 2, PAD_T + chartH + 6);
+    bCtx.rotate(-Math.PI / 4);
+    bCtx.fillStyle = colMuted;
+    bCtx.font = '10px var(--mono, monospace)';
+    bCtx.textAlign = 'right';
+    var lbl = e.model.length > 20 ? e.model.slice(-20) : e.model;
+    bCtx.fillText(lbl, 0, 0);
+    bCtx.restore();
+    groupEnd[e.provider] = colX + BAR_W;
+    colX += BAR_W + BAR_GAP;
+  });
+
+  // Provider group backgrounds + labels
+  Object.keys(groupStart).forEach(function(prov) {
+    var gx = groupStart[prov] - 4;
+    var gw = groupEnd[prov] - groupStart[prov] + 8;
+    bCtx.fillStyle = colAccent;
+    bCtx.globalAlpha = 0.1;
+    bCtx.fillRect(gx, PAD_T, gw, chartH);
+    bCtx.globalAlpha = 1;
+    bCtx.fillStyle = colMuted;
+    bCtx.font = '11px sans-serif';
+    bCtx.textAlign = 'center';
+    bCtx.fillText(prov, gx + gw / 2, PAD_T - 8);
+  });
+}
 
 /* ── Rates sub-section (embedded in Cost Controls panel) ── */
 function ratesSubSectionHtml() {

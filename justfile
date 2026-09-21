@@ -32,6 +32,10 @@ run:
 run-config config:
     ZIG_ZAG_CONFIG={{config}} zig build run
 
+# Run with dev config and dev metrics file
+run-dev:
+    ZIG_ZAG_CONFIG=.dev_config.json ZIG_ZAG_METRICS=.dev_metrics.json zig build run
+
 # === Test ===
 
 # Run all tests

@@ -331,4 +331,56 @@ pub fn calculateCosts() UnitCosts {
     return accum.costs;
 }
 
+// ============================================================================
+// Per-model cost JSON serialization
+// ============================================================================
+
+/// Context for building per-model cost JSON: {"provider":{"model":{...}}}
+/// Serialize per-model costs as JSON object: {"provider":{"model":{input,cache_write,cache_read,output}}}
+/// Caller owns the returned slice (allocated with `allocator`).
+pub fn serializeAllCosts(allocator: std.mem.Allocator) ![]u8 {
+    // Snapshot first so we have a stable, grouped, allocated copy to work from.
+    const snapshot = try metrics.snapshotUsageByProvider(allocator);
+    defer metrics.freeUsageSnapshot(allocator, snapshot);
+
+    var buf = std.ArrayList(u8).empty;
+    errdefer buf.deinit(allocator);
+
+    try buf.append(allocator, '{');
+    var provider_count: usize = 0;
+    for (snapshot) |provider_entry| {
+        // Check if this provider has any rated models before opening its object
+        var has_rates = false;
+        for (provider_entry.models) |m| {
+            if (pricing.getRate(provider_entry.provider, m.model) != null) { has_rates = true; break; }
+        }
+        if (!has_rates) continue;
+
+        if (provider_count > 0) try buf.append(allocator, ',');
+        provider_count += 1;
+        try buf.print(allocator, "{f}:{{", .{std.json.fmt(provider_entry.provider, .{})});
+        var model_count: usize = 0;
+        for (provider_entry.models) |model_entry| {
+            const rate = pricing.getRate(provider_entry.provider, model_entry.model) orelse continue;
+            const u = model_entry.usage;
+            const c = UnitCosts{
+                .input       = @as(f64, @floatFromInt(u.input))       * rate.input       / 1_000_000.0,
+                .cache_write = @as(f64, @floatFromInt(u.cache_write)) * rate.cache_write / 1_000_000.0,
+                .cache_read  = @as(f64, @floatFromInt(u.cache_read))  * rate.cache_read  / 1_000_000.0,
+                .output      = @as(f64, @floatFromInt(u.output))      * rate.output      / 1_000_000.0,
+            };
+            if (model_count > 0) try buf.append(allocator, ',');
+            try buf.print(allocator,
+                "{f}:{{\"input\":{d:.6},\"cache_write\":{d:.6},\"cache_read\":{d:.6},\"output\":{d:.6}}}",
+                .{ std.json.fmt(model_entry.model, .{}), c.input, c.cache_write, c.cache_read, c.output },
+            );
+            model_count += 1;
+        }
+        try buf.append(allocator, '}');
+    }
+    try buf.append(allocator, '}');
+
+    return buf.toOwnedSlice(allocator);
+}
+
 const testing = std.testing;

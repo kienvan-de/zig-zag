@@ -20,6 +20,7 @@ const responses_handler = @import("handlers/responses.zig");
 const models_handler = @import("handlers/models.zig");
 const template_handler = @import("handlers/template.zig");
 const config_handler = @import("handlers/config.zig");
+const stats_handler = @import("handlers/stats.zig");
 
 /// Route definition
 pub const Route = struct {
@@ -61,6 +62,10 @@ pub fn match(request_data: []const u8) ?Route {
 
     if (std.mem.eql(u8, method, "GET") and std.mem.eql(u8, path, "/v1/models")) {
         return Route{ .method = method, .path = path, .handler = models_handler.handle };
+    }
+
+    if (std.mem.eql(u8, method, "GET") and std.mem.eql(u8, path, "/v1/stats/costs")) {
+        return Route{ .method = method, .path = path, .handler = stats_handler.handle };
     }
 
     // ── Prefix matches ───────────────────────────────────────────────────────
