@@ -182,8 +182,11 @@ fn serverThreadFn(s: *State) void {
             smart_routing.init(allocator, r);
         }
     }
-    // Ensure smart routing state is freed with the GPA before this thread exits.
+    // Ensure smart routing state and I/O backend are freed with the GPA before
+    // this thread exits, so the next startServer() gets a clean slate.
     defer smart_routing.deinit();
+    defer core.time.deinit();
+    defer core_config.clear();
 
     // Initialize pricing rates from config
     pricing.init(allocator);

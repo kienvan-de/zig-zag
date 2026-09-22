@@ -68,6 +68,17 @@ pub const SSEIterator = struct {
         };
     }
 
+    /// Inert iterator for non-2xx responses — deinit-safe, never reads from socket.
+    pub fn initDone(allocator: std.mem.Allocator) SSEIterator {
+        return .{
+            .reader = undefined,
+            .done = true,
+            .delimiter = '\n',
+            .allocator = allocator,
+            .line_buffer = std.ArrayList(u8).empty,
+        };
+    }
+
     pub fn deinit(self: *SSEIterator) void {
         self.line_buffer.deinit(self.allocator);
     }
@@ -462,6 +473,12 @@ pub const HttpClient = struct {
 
         log.debug("[HTTP] postJson response: status={} body={s}", .{ response.head.status, response_body });
 
+        if (response.head.status != .ok) {
+            log.err("[HTTP] postJson non-200 | Status: {} | URL: {s}", .{ response.head.status, url });
+            log.err("[HTTP] postJson non-200 | Request body: {s}", .{request_body.items});
+            log.err("[HTTP] postJson non-200 | Response body: {s}", .{response_body});
+        }
+
         // Parse response JSON
         return std.json.parseFromSlice(
             T,
@@ -520,12 +537,21 @@ pub const HttpClient = struct {
         const redirect_buffer: [0]u8 = undefined;
         result.response = try result.request.receiveHead(&redirect_buffer);
 
-        // Log request/response details for debugging (only on error to avoid huge logs)
+        // On non-2xx: log request + response body here, before reader() below
+        // advances the state. Return an inert iterator so the provider can still
+        // inspect the status and call freeStreamingResult safely.
         if (result.response.head.status != .ok) {
             log.err("HTTP POST streaming failed | Status: {} | URL: {s}", .{ result.response.head.status, url });
-            const body = request_body.items;
-            const tail = if (body.len > 2000) body[body.len - 2000 ..] else body;
-            log.err("HTTP POST streaming failed | Request body tail: {s}", .{tail});
+            log.err("HTTP POST streaming failed | Request body: {s}", .{request_body.items});
+            var err_transfer_buf: [4096]u8 = undefined;
+            const err_reader = result.response.reader(&err_transfer_buf);
+            const err_body = err_reader.allocRemaining(self.allocator, std.Io.Limit.limited(65536)) catch null;
+            if (err_body) |b| {
+                defer self.allocator.free(b);
+                log.err("HTTP POST streaming failed | Response body: {s}", .{b});
+            }
+            result.iterator = Iterator.initDone(self.allocator);
+            return result;
         }
 
         // Get reader for streaming - reads from socket on-demand

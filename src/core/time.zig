@@ -30,6 +30,18 @@ pub fn init(allocator: std.mem.Allocator, environ: anytype) void {
     global_io_initialized = true;
 }
 
+/// Tear down the global I/O backend and reset it to a clean state.
+/// Must be called before the allocator passed to init() is destroyed
+/// (e.g. in lib.zig's serverThreadFn before the GPA is torn down).
+/// Joins any worker threads spawned by Io.Threaded so the next startServer()
+/// starts with no dangling threads or stale allocator references.
+pub fn deinit() void {
+    if (!global_io_initialized) return;
+    global_io_instance.deinit();
+    global_io_instance = std.Io.Threaded.init_single_threaded;
+    global_io_initialized = false;
+}
+
 /// Get a usable `std.Io` instance for operations that require one.
 /// If init() was not called, falls back to page_allocator.
 pub fn io() std.Io {

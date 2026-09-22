@@ -55,6 +55,16 @@ pub fn set(cfg: *const Config, path: []const u8) void {
     config_path_len = path.len;
 }
 
+/// Clear the global config singleton and stored path.
+/// Must be called before the Config pointed to by set() is destroyed
+/// (e.g. in lib.zig's serverThreadFn defer chain, before the GPA tears down).
+/// Any call to get() or getPath() after clear() and before the next set() will
+/// panic — that is intentional and preferable to a silent use-after-free.
+pub fn clear() void {
+    global_config = null;
+    config_path_len = 0;
+}
+
 /// Return the stored config file path.
 /// Panics if `set()` has not been called yet.
 pub fn getPath() []const u8 {
