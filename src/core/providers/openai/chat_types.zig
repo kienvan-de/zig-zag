@@ -10,6 +10,8 @@ const common = @import("types.zig");
 // ============================================================================
 
 /// OpenAI error details (chat completions format).
+/// Wire: {"error":{"message":"...","type":"...","param":null,"code":"..."}}
+/// Used by: OpenAI, Groq, HAI, Copilot, OpenRouter, b_ai (all OpenAI-compatible).
 pub const ErrorDetails = struct {
     message: []const u8,
     type: []const u8,

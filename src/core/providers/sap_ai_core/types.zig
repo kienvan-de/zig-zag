@@ -390,7 +390,8 @@ pub const StreamChunk = union(enum) {
 // Error Response Structures
 // ============================================================================
 
-/// SAP AI Core error details
+/// SAP AI Core error details.
+/// Wire: {"error":{"code":..., "message":"...", "request_id":"...", "location":"..."}}
 pub const ErrorDetails = struct {
     request_id: ?[]const u8 = null,
     code: ?i64 = null,

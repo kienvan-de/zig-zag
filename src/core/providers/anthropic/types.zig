@@ -22,15 +22,18 @@ const std = @import("std");
 // Error Response Structures
 // ============================================================================
 
-/// Anthropic error details
+/// Anthropic error details inner object
 pub const ErrorDetails = struct {
     type: []const u8,
     message: []const u8,
 };
 
-/// Anthropic error response wrapper
+/// Anthropic error response
+/// Wire: {"type":"error","error":{"type":"rate_limit_error","message":"..."},"request_id":"req_..."}
 pub const ErrorResponse = struct {
+    type: []const u8 = "error",
     @"error": ErrorDetails,
+    request_id: ?[]const u8 = null,
 };
 
 // ============================================================================
