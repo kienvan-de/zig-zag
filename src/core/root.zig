@@ -15,7 +15,7 @@
 //! core.cache.init(allocator);
 //! core.metrics.load();
 //!
-//! try core.dispatcher.complete(core.chat_pipeline.run, writer, allocator, request);
+//! try core.dispatcher.complete(core.chat_pipeline.run, writer, err_writer, allocator, request);
 //!
 //! // Auth management
 //! const status = core.config.checkAuthStatus(allocator, "copilot");

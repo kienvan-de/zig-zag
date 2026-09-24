@@ -236,7 +236,7 @@ pub const SapAiCoreClient = struct {
     pub fn sendRequest(
         self: *SapAiCoreClient,
         request: SapAiCore.Request,
-    ) !std.json.Parsed(SapAiCore.Response) {
+    ) !http_client.Result(SapAiCore.Response, SapAiCore.ErrorResponse) {
         return self.sendRequestOnce(request);
     }
 
@@ -244,7 +244,7 @@ pub const SapAiCoreClient = struct {
     fn sendRequestOnce(
         self: *SapAiCoreClient,
         request: SapAiCore.Request,
-    ) !std.json.Parsed(SapAiCore.Response) {
+    ) !http_client.Result(SapAiCore.Response, SapAiCore.ErrorResponse) {
         // Get access token
         const access_token = try self.getAccessToken();
         defer self.allocator.free(access_token);
@@ -265,24 +265,31 @@ pub const SapAiCoreClient = struct {
         defer request_body.deinit(self.allocator);
         try request_body.print(self.allocator, "{f}", .{std.json.fmt(request, .{})});
 
+        // Log request for debugging
+        log.debug("[SAP] [SYNC] Request payload: {s}", .{request_body.items});
+
         // Make POST request
         var response = try self.client.postForm(url, headers, request_body.items);
         defer response.deinit();
 
-        // Log request for debugging
-        log.debug("[SAP] [SYNC] Request payload: {s}", .{request_body.items});
-
-        // Check status code
-        if (response.status != .ok) {
-            log.err("[SAP] [SYNC] Request failed. Status: {} | URL: {s} | Request: {s} | Response: {s}", .{ response.status, url, request_body.items, response.body });
-            return self.handleErrorResponse(response.status);
-        }
-
-        // Log response for debugging
         log.debug("[SAP] [SYNC] Response: status={} body={s}", .{ response.status, response.body });
 
+        if (response.status != .ok) {
+            log.err("[SAP] [SYNC] Request failed. Status: {} | URL: {s} | Request: {s} | Response: {s}", .{ response.status, url, request_body.items, response.body });
+            const parsed_err = std.json.parseFromSlice(
+                SapAiCore.ErrorResponse,
+                self.allocator,
+                response.body,
+                .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+            ) catch |err| {
+                log.err("[SAP] [SYNC] Failed to parse error response: {} | body: {s}", .{ err, response.body });
+                return self.handleErrorResponse(response.status);
+            };
+            return .{ .err = .{ .status = response.status, .body = parsed_err } };
+        }
+
         // Parse response JSON
-        return std.json.parseFromSlice(
+        const parsed_ok = std.json.parseFromSlice(
             SapAiCore.Response,
             self.allocator,
             response.body,
@@ -291,22 +298,14 @@ pub const SapAiCoreClient = struct {
             log.err("[SAP] [SYNC] Failed to parse response: {} | Body: {s}", .{ err, response.body });
             return error.InvalidResponse;
         };
+        return .{ .ok = parsed_ok };
     }
 
-    const HttpError = @import("../../errors.zig").HttpError;
+    const errors_mod = @import("../../errors.zig");
 
-    fn handleErrorResponse(self: *SapAiCoreClient, status: std.http.Status) HttpError {
+    fn handleErrorResponse(self: *SapAiCoreClient, status: std.http.Status) errors_mod.UpstreamHttpError {
         _ = self;
-        log.debug("SAP AI Core response status: {} ({})", .{ @intFromEnum(status), status });
-        return switch (status) {
-            .unauthorized => error.AuthenticationError,
-            .too_many_requests => error.RateLimitError,
-            .internal_server_error, .bad_gateway, .service_unavailable, .gateway_timeout => error.ServerError,
-            else => {
-                log.err("SAP AI Core unexpected status code: {} ({})", .{ @intFromEnum(status), status });
-                return error.InvalidStatusCode;
-            },
-        };
+        return errors_mod.statusToError(status);
     }
 
     // ========================================================================
@@ -336,7 +335,7 @@ pub const SapAiCoreClient = struct {
     pub fn sendStreamingRequest(
         self: *SapAiCoreClient,
         request: SapAiCore.Request,
-    ) !*StreamingResult {
+    ) !http_client.StreamStart(SSEIterator, SapAiCore.ErrorResponse) {
         // Get access token
         const access_token = try self.getAccessToken();
         defer self.allocator.free(access_token);
@@ -359,16 +358,7 @@ pub const SapAiCoreClient = struct {
         var headers_buf: [3]std.http.Header = undefined;
         const headers = try self.buildHeaders(auth_value, &headers_buf);
 
-        // Make streaming POST request
-        const result = try self.client.postStreaming(SSEIterator, url, headers, request);
-
-        // Check status code
-        if (result.response.head.status != .ok) {
-            self.client.freeStreamingResult(SSEIterator, result);
-            return self.handleErrorResponse(result.response.head.status);
-        }
-
-        return result;
+        return self.client.postStreamingResult(SSEIterator, SapAiCore.ErrorResponse, url, headers, request);
     }
 
     /// Free a streaming result allocated by sendStreamingRequest

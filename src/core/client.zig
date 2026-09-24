@@ -170,6 +170,39 @@ pub fn StreamingResult(comptime Iterator: type) type {
 /// SSE streaming result type alias
 pub const SSEResult = StreamingResult(SSEIterator);
 
+/// Tagged union returned by postJsonResult.
+/// .ok owns a successfully parsed response; .err owns a parsed provider error body.
+/// Caller must call .deinit() on whichever branch they hold.
+pub fn Result(comptime T: type, comptime E: type) type {
+    return union(enum) {
+        ok: std.json.Parsed(T),
+        err: struct {
+            status: std.http.Status,
+            body: std.json.Parsed(E),
+        },
+
+        pub fn deinit(self: @This()) void {
+            switch (self) {
+                .ok => |v| v.deinit(),
+                .err => |v| v.body.deinit(),
+            }
+        }
+    };
+}
+
+/// Streaming start result — mirrors Result(T, E) for the streaming path.
+/// .ok owns the live StreamingResult; .err owns the parsed upstream error body
+/// captured when the initial response was non-2xx (before any streaming began).
+pub fn StreamStart(comptime Iterator: type, comptime E: type) type {
+    return union(enum) {
+        ok: *StreamingResult(Iterator),
+        err: struct {
+            status: std.http.Status,
+            body: std.json.Parsed(E),
+        },
+    };
+}
+
 /// Response from get/post requests
 pub const HttpResponse = struct {
     status: std.http.Status,
@@ -491,16 +524,95 @@ pub const HttpClient = struct {
         };
     }
 
-    /// Send a POST request with JSON body for streaming response
-    /// Returns StreamingResult with iterator of specified type
-    /// Caller must call freeStreamingResult() when done
-    pub fn postStreaming(
+    /// Like postJson but returns Result(T, E) instead of erroring on non-200.
+    /// On 200: parses body as T, returns .ok.
+    /// On non-200: parses body as E, returns .err.
+    /// Transport errors (connection failure, parse failure) are still returned as Zig errors.
+    pub fn postJsonResult(
         self: *HttpClient,
-        comptime Iterator: type,
+        comptime T: type,
+        comptime E: type,
         url: []const u8,
         extra_headers: []const std.http.Header,
         json_body: anytype,
-    ) !*StreamingResult(Iterator) {
+    ) !Result(T, E) {
+        var request_body = std.ArrayList(u8).empty;
+        defer request_body.deinit(self.allocator);
+
+        try request_body.print(self.allocator, "{f}", .{std.json.fmt(json_body, .{ .emit_null_optional_fields = false })});
+
+        const uri = try std.Uri.parse(url);
+
+        var req = try self.client.request(.POST, uri, .{
+            .extra_headers = extra_headers,
+        });
+        defer req.deinit();
+
+        if (req.connection) |conn| {
+            setSocketTimeout(conn.stream_reader.stream.socket.handle, self.timeout_ms);
+        }
+
+        req.transfer_encoding = .{ .content_length = request_body.items.len };
+        var buf: [4096]u8 = undefined;
+        var body_writer = try req.sendBodyUnflushed(&buf);
+        try body_writer.writer.writeAll(request_body.items);
+        try body_writer.end();
+        (req.connection orelse return error.UpstreamError).flush() catch |err| return err;
+
+        const redirect_buffer: [0]u8 = undefined;
+        var response = try req.receiveHead(&redirect_buffer);
+
+        var transfer_buf: [4096]u8 = undefined;
+        var decompress: std.http.Decompress = undefined;
+        const decompress_buf = try decompressBuffer(self.allocator, response.head.content_encoding);
+        defer self.allocator.free(decompress_buf);
+        const reader = response.readerDecompressing(&transfer_buf, &decompress, decompress_buf);
+
+        const response_body = try reader.allocRemaining(self.allocator, std.Io.Limit.limited(self.max_response_size));
+        defer self.allocator.free(response_body);
+
+        if (response.head.status != .ok) {
+            log.err("[HTTP] postJsonResult non-200 | Status: {} | URL: {s}", .{ response.head.status, url });
+            log.err("[HTTP] postJsonResult non-200 | Request body: {s}", .{request_body.items});
+            log.err("[HTTP] postJsonResult non-200 | Response body: {s}", .{response_body});
+            const parsed_err = std.json.parseFromSlice(
+                E,
+                self.allocator,
+                response_body,
+                .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+            ) catch |err| {
+                log.err("[HTTP] Failed to parse error response: {} | body: {s}", .{ err, response_body });
+                return error.HttpRequestFailed;
+            };
+            return .{ .err = .{ .status = response.head.status, .body = parsed_err } };
+        }
+
+        log.debug("[HTTP] postJsonResult response: status={} body={s}", .{ response.head.status, response_body });
+
+        const parsed_ok = std.json.parseFromSlice(
+            T,
+            self.allocator,
+            response_body,
+            .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+        ) catch |err| {
+            log.err("[HTTP] Failed to parse response: {} | body: {s}", .{ err, response_body });
+            return err;
+        };
+        return .{ .ok = parsed_ok };
+    }
+
+    /// Send a POST request with JSON body for streaming response.
+    /// Returns StreamStart(Iterator, E): .ok on 2xx (live stream), .err on non-2xx
+    /// (parsed upstream error body + status). Caller must free the .ok result via
+    /// freeStreamingResult() or deinit the .err body.
+    pub fn postStreamingResult(
+        self: *HttpClient,
+        comptime Iterator: type,
+        comptime E: type,
+        url: []const u8,
+        extra_headers: []const std.http.Header,
+        json_body: anytype,
+    ) !StreamStart(Iterator, E) {
         // Serialize request to JSON
         var request_body = std.ArrayList(u8).empty;
         defer request_body.deinit(self.allocator);
@@ -512,7 +624,10 @@ pub const HttpClient = struct {
         var req = try self.client.request(.POST, uri, .{
             .extra_headers = extra_headers,
         });
-        errdefer req.deinit();
+        // Own `req` until it is moved into the heap `result` below. Once moved,
+        // `result` (and its errdefer) owns teardown, so this defer is disarmed.
+        var req_moved = false;
+        defer if (!req_moved) req.deinit();
 
         // Apply socket timeout
         if (req.connection) |conn| {
@@ -527,38 +642,55 @@ pub const HttpClient = struct {
         try body_writer.end();
         (req.connection orelse return error.UpstreamError).flush() catch |err| return err;
 
-        // Allocate result on heap to ensure stable pointers for reader
+        // Allocate the result on the heap and move `req` into it BEFORE calling
+        // receiveHead. `Response.request` (set by receiveHead) and the body
+        // reader (`&request.reader.interface`) both point into the request, so
+        // receiveHead/reader MUST run against the heap-resident `result.request`
+        // — not the stack `req` — or those pointers dangle once this function
+        // returns. (Mirrors the pre-refactor postStreaming ordering.)
         const result = try self.allocator.create(StreamingResult(Iterator));
-        errdefer self.allocator.destroy(result);
-
+        var result_owned = false;
+        errdefer if (!result_owned) self.allocator.destroy(result);
         result.request = req;
+        req_moved = true; // result now owns req; disarm the req defer above.
 
-        // Wait for response headers
         const redirect_buffer: [0]u8 = undefined;
         result.response = try result.request.receiveHead(&redirect_buffer);
 
-        // On non-2xx: log request + response body here, before reader() below
-        // advances the state. Return an inert iterator so the provider can still
-        // inspect the status and call freeStreamingResult safely.
+        // On non-2xx: read + parse the error body from the heap-stable response,
+        // then tear down `result` (request + heap slot). No streaming iterator is
+        // created, so `result.deinit()` must not touch `iterator` — free the
+        // request directly and destroy the slot.
         if (result.response.head.status != .ok) {
-            log.err("HTTP POST streaming failed | Status: {} | URL: {s}", .{ result.response.head.status, url });
+            const status = result.response.head.status;
+            log.err("HTTP POST streaming failed | Status: {} | URL: {s}", .{ status, url });
             log.err("HTTP POST streaming failed | Request body: {s}", .{request_body.items});
             var err_transfer_buf: [4096]u8 = undefined;
             const err_reader = result.response.reader(&err_transfer_buf);
             const err_body = err_reader.allocRemaining(self.allocator, std.Io.Limit.limited(65536)) catch null;
+            result.request.deinit();
+            self.allocator.destroy(result);
+            result_owned = true; // errdefer disarmed; `result` is gone.
             if (err_body) |b| {
                 defer self.allocator.free(b);
                 log.err("HTTP POST streaming failed | Response body: {s}", .{b});
+                const parsed_err = std.json.parseFromSlice(
+                    E,
+                    self.allocator,
+                    b,
+                    .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+                ) catch return error.HttpRequestFailed;
+                return .{ .err = .{ .status = status, .body = parsed_err } };
             }
-            result.iterator = Iterator.initDone(self.allocator);
-            return result;
+            return error.HttpRequestFailed;
         }
 
-        // Get reader for streaming - reads from socket on-demand
+        // 2xx: the reader points into result.request.reader — stable on the heap.
+        result_owned = true; // handing `result` to the caller; disarm errdefer.
         const reader = result.response.reader(&result.transfer_buffer);
         result.iterator = Iterator.init(reader, self.delimiter, self.allocator);
 
-        return result;
+        return .{ .ok = result };
     }
 
     /// Free a streaming result allocated by postStreaming

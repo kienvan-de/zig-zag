@@ -203,10 +203,15 @@ pub const SmartRouting = struct {
     }
 
     /// Advance current_model to the next alternative.
-    /// Returns a heap-allocated copy of the new model string (caller frees),
-    /// or null if all alternatives are exhausted.
+    /// Returns a heap-allocated copy of the new model string (caller frees with
+    /// the passed `allocator`), or null if all alternatives are exhausted.
+    ///
+    /// The copy STORED into `group.current_model` is allocated with the stable
+    /// `self.allocator` (not the caller's `allocator`), because the group outlives
+    /// the request: storing a per-request-arena slice into the long-lived group
+    /// leaves a dangling pointer once the request arena is freed, which the next
+    /// request's getCurrentModel would dereference.
     pub fn rollover(self: *SmartRouting, group: *RouteGroup, allocator: Allocator) !?[]u8 {
-        _ = self;
         group.mutex.lock();
         defer group.mutex.unlock();
 
@@ -217,45 +222,47 @@ pub const SmartRouting = struct {
         // If current == alternatives[i], next is alternatives[i+1]
         if (std.mem.eql(u8, cur, group.main_model)) {
             if (group.alternatives.len == 0) return null;
-            const next = group.alternatives[0];
-            const new_cur = try allocator.dupe(u8, next);
-            const ret = allocator.dupe(u8, next) catch |e| { allocator.free(new_cur); return e; };
-            allocator.free(group.current_model);
-            group.current_model = new_cur;
-            return @as(?[]u8, ret);
+            return try self.advanceTo(group, group.alternatives[0], allocator);
         }
 
         for (group.alternatives, 0..) |alt, i| {
             if (std.mem.eql(u8, cur, alt)) {
                 const next_idx = i + 1;
                 if (next_idx >= group.alternatives.len) return null; // exhausted
-                const next = group.alternatives[next_idx];
-                const new_cur = try allocator.dupe(u8, next);
-                const ret = allocator.dupe(u8, next) catch |e| { allocator.free(new_cur); return e; };
-                allocator.free(group.current_model);
-                group.current_model = new_cur;
-                return @as(?[]u8, ret);
+                return try self.advanceTo(group, group.alternatives[next_idx], allocator);
             }
         }
 
         // current_model not found in chain (stale state after config rename) — reset to main_model
         if (group.main_model.len == 0) return null;
-        const next = group.main_model;
-        const new_cur = try allocator.dupe(u8, next);
-        const ret = allocator.dupe(u8, next) catch |e| { allocator.free(new_cur); return e; };
-        allocator.free(group.current_model);
+        return try self.advanceTo(group, group.main_model, allocator);
+    }
+
+    /// Set `group.current_model` to a stable-allocator copy of `next` and return
+    /// a caller-owned copy on `allocator`. Assumes `group.mutex` is held.
+    /// On OOM of the returned copy, the stored copy is rolled back so the group
+    /// is never left owning memory the caller can't account for.
+    fn advanceTo(self: *SmartRouting, group: *RouteGroup, next: []const u8, allocator: Allocator) !?[]u8 {
+        const new_cur = try self.allocator.dupe(u8, next);
+        const ret = allocator.dupe(u8, next) catch |e| {
+            self.allocator.free(new_cur);
+            return e;
+        };
+        self.allocator.free(group.current_model);
         group.current_model = new_cur;
         return @as(?[]u8, ret);
     }
 
     /// Reset a group's current_model back to main_model and persist to config.
+    /// The stored copy uses the stable `self.allocator` (see `rollover`); the
+    /// passed `allocator` is used only for the transient work in `writeBack`.
     pub fn resetGroup(self: *SmartRouting, group: *RouteGroup, allocator: Allocator) !void {
         {
-            // Allocate before locking so OOM never holds the mutex
-            const new_model = try allocator.dupe(u8, group.main_model);
+            // Allocate before locking so OOM never holds the mutex.
+            const new_model = try self.allocator.dupe(u8, group.main_model);
             group.mutex.lock();
             defer group.mutex.unlock();
-            allocator.free(group.current_model);
+            self.allocator.free(group.current_model);
             group.current_model = new_model;
         }
         try self.writeBack(allocator);

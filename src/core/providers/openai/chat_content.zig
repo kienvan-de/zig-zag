@@ -30,9 +30,9 @@ const log = @import("../../log.zig");
 /// Parse a raw SSE payload as an OpenAI ErrorResponse.
 /// All strings are freshly duped — caller owns via freeError.
 /// Returns null when the payload is not a recognisable error.
-pub fn tryParseError(json_part: []const u8, allocator: std.mem.Allocator) ?Chat.ErrorResponse {
+pub fn tryParseError(json_part: []const u8, allocator: std.mem.Allocator) ?common.ErrorResponse {
     const parsed = std.json.parseFromSlice(
-        Chat.ErrorResponse,
+        common.ErrorResponse,
         allocator,
         json_part,
         .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
@@ -50,7 +50,7 @@ pub fn tryParseError(json_part: []const u8, allocator: std.mem.Allocator) ?Chat.
 }
 
 /// Free an ErrorResponse returned by tryParseError.
-pub fn freeError(err: Chat.ErrorResponse, allocator: std.mem.Allocator) void {
+pub fn freeError(err: common.ErrorResponse, allocator: std.mem.Allocator) void {
     allocator.free(err.@"error".message);
     allocator.free(err.@"error".type);
     if (err.@"error".param) |v| allocator.free(v);

@@ -42,6 +42,18 @@ pub const appendsDoneMarker = true;
 // Flow: /v1/models
 // ============================================================================
 
+/// Convert an Anthropic error response to OpenAI error format (for /v1/chat/completions and /v1/responses).
+/// Delegates to content.transformErrorResponse. Borrows strings — allocates nothing.
+pub fn transformToOpenAIError(err: Messages.ErrorResponse) common.ErrorResponse {
+    return content.transformErrorResponse(err);
+}
+
+/// Convert an Anthropic error response to Anthropic error format (for /v1/messages).
+/// Pass-through — already in the right format.
+pub fn transformToMessagesError(err: Messages.ErrorResponse) Messages.ErrorResponse {
+    return err;
+}
+
 /// Map the Anthropic models listing to inbound `Model` entries, prefixing ids
 /// with the provider name.
 pub fn transformModelsResponse(

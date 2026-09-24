@@ -33,6 +33,7 @@ const smart_routing = @import("smart_routing.zig");
 const worker_pool = @import("worker_pool.zig");
 const provider_mod = @import("provider.zig");
 const openai_common = @import("providers/openai/types.zig");
+const errors_mod = @import("errors.zig");
 
 const openai = struct {
     const client = @import("providers/openai/client.zig");
@@ -64,12 +65,18 @@ const google_ai_studio = struct {
 /// Enforce budget, acquire smart-routing, and run `inner` with automatic model
 /// rollover on retryable errors. `inner` must have the signature:
 ///
-///   fn(writer: anytype, allocator, cfg, request: anytype, model: []const u8) anyerror!void
+///   fn(writer: anytype, err_writer: anytype, allocator, cfg, request: anytype, model: []const u8) anyerror!void
+///
+/// `writer` receives the success response body; `err_writer` receives the
+/// upstream error body. It is cleared before every attempt, so after the loop
+/// it holds the final attempt's error body — or is empty when the final attempt
+/// failed without producing a parsed upstream body.
 ///
 /// `request` must have a `.model: []const u8` field used for smart-routing lookup.
 pub fn complete(
     comptime inner: anytype,
     writer: anytype,
+    err_writer: anytype,
     allocator: std.mem.Allocator,
     request: anytype,
 ) !void {
@@ -89,7 +96,14 @@ pub fn complete(
     while (true) {
         const effective_model = if (current_model_buf) |buf| buf else request.model;
 
-        const dispatch_err = inner(writer, allocator, cfg, request, effective_model);
+        // Reset the upstream-error buffer before each attempt. Only the pipeline's
+        // .err branch writes into it; an attempt that fails via a plain Zig error
+        // (e.g. HttpRequestFailed) leaves it untouched, so without this reset a
+        // later attempt could surface a PREVIOUS attempt's error body with a
+        // mismatched status.
+        err_writer.clearRetainingCapacity();
+
+        const dispatch_err = inner(writer, err_writer, allocator, cfg, request, effective_model);
         if (dispatch_err) |_| {
             if (did_rollover and sr != null) {
                 sr.?.writeBack(allocator) catch |e| {
@@ -98,12 +112,13 @@ pub fn complete(
             }
             return;
         } else |err| {
-            const retryable = (err == error.RateLimitError or
-                err == error.AuthenticationError or
-                err == error.ServerError or
-                err == error.InvalidStatusCode or
-                err == error.RequestFailed or
-                err == error.UpstreamError);
+            // Retryable = transient/server upstream statuses (and 404/408) per
+            // errors.isRetryableUpstream, plus the legacy catch-all UpstreamError
+            // and HttpRequestFailed (non-2xx whose error body failed to parse —
+            // the upstream still failed, we just lost the structured body).
+            const retryable = errors_mod.isRetryableUpstream(err) or
+                err == error.UpstreamError or
+                err == error.HttpRequestFailed;
             if (retryable and sr_group != null and rollover_count < rollover_limit) {
                 log.warn("[smart_routing] Model '{s}' failed ({s}), attempting rollover ({d}/{d})...", .{ effective_model, @errorName(err), rollover_count + 1, rollover_limit });
                 const next = sr.?.rollover(sr_group.?, allocator) catch null;

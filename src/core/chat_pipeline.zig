@@ -59,6 +59,7 @@ const google_ai_studio = struct {
 /// Called by dispatcher.complete with the effective model after smart-routing.
 pub fn run(
     writer: anytype,
+    err_writer: anytype,
     allocator: std.mem.Allocator,
     cfg: *const config_mod.Config,
     request: chat_types.Request,
@@ -80,24 +81,24 @@ pub fn run(
 
     if (provider_mod.Provider.fromString(model_info.provider)) |native_provider| {
         switch (native_provider) {
-            .anthropic => try dispatchToProvider(anthropic.client.AnthropicClient, anthropic.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
+            .anthropic => try dispatchToProvider(anthropic.client.AnthropicClient, anthropic.transformer, writer, err_writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
             .openai => switch (openai.client.transformerFor(provider_config)) {
-                .responses => try dispatchToProvider(openai.client.OpenAIClient, openai.responses_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
-                .chat      => try dispatchToProvider(openai.client.OpenAIClient, openai.chat_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
+                .responses => try dispatchToProvider(openai.client.OpenAIClient, openai.responses_transformer, writer, err_writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
+                .chat      => try dispatchToProvider(openai.client.OpenAIClient, openai.chat_transformer, writer, err_writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
             },
-            .sap_ai_core => try dispatchToProvider(sap_ai_core.client.SapAiCoreClient, sap_ai_core.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
+            .sap_ai_core => try dispatchToProvider(sap_ai_core.client.SapAiCoreClient, sap_ai_core.transformer, writer, err_writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
             .hai => switch (hai.client.transformerFor(model_info.model, provider_config)) {
-                .messages  => try dispatchToProvider(hai.client.HaiClient, anthropic.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
-                .responses => try dispatchToProvider(hai.client.HaiClient, openai.responses_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
-                .gemini    => try dispatchToProvider(hai.client.HaiClient, google_ai_studio.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
-                .chat      => try dispatchToProvider(hai.client.HaiClient, openai.chat_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
+                .messages  => try dispatchToProvider(hai.client.HaiClient, anthropic.transformer, writer, err_writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
+                .responses => try dispatchToProvider(hai.client.HaiClient, openai.responses_transformer, writer, err_writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
+                .gemini    => try dispatchToProvider(hai.client.HaiClient, google_ai_studio.transformer, writer, err_writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
+                .chat      => try dispatchToProvider(hai.client.HaiClient, openai.chat_transformer, writer, err_writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
             },
             .copilot => switch (copilot.client.transformerFor(model_info.model)) {
-                .messages  => try dispatchToProvider(copilot.client.CopilotClient, anthropic.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
-                .responses => try dispatchToProvider(copilot.client.CopilotClient, openai.responses_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
-                .gemini, .chat => try dispatchToProvider(copilot.client.CopilotClient, openai.chat_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
+                .messages  => try dispatchToProvider(copilot.client.CopilotClient, anthropic.transformer, writer, err_writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
+                .responses => try dispatchToProvider(copilot.client.CopilotClient, openai.responses_transformer, writer, err_writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
+                .gemini, .chat => try dispatchToProvider(copilot.client.CopilotClient, openai.chat_transformer, writer, err_writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
             },
-            .google_ai_studio => try dispatchToProvider(google_ai_studio.client.GoogleAiStudioClient, google_ai_studio.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
+            .google_ai_studio => try dispatchToProvider(google_ai_studio.client.GoogleAiStudioClient, google_ai_studio.transformer, writer, err_writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
         }
     } else |_| {
         const compatible = provider_config.getString("compatible") orelse {
@@ -110,10 +111,10 @@ pub fn run(
         };
         switch (resolved) {
             .openai => switch (openai.client.transformerFor(provider_config)) {
-                .responses => try dispatchToProvider(openai.client.OpenAIClient, openai.responses_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
-                .chat      => try dispatchToProvider(openai.client.OpenAIClient, openai.chat_transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
+                .responses => try dispatchToProvider(openai.client.OpenAIClient, openai.responses_transformer, writer, err_writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
+                .chat      => try dispatchToProvider(openai.client.OpenAIClient, openai.chat_transformer, writer, err_writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
             },
-            .anthropic => try dispatchToProvider(anthropic.client.AnthropicClient, anthropic.transformer, writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
+            .anthropic => try dispatchToProvider(anthropic.client.AnthropicClient, anthropic.transformer, writer, err_writer, is_streaming, allocator, request, model_info.model, model_info.provider, provider_config),
             else => unreachable,
         }
     }
@@ -123,6 +124,7 @@ fn dispatchToProvider(
     comptime Client: type,
     comptime Transformer: type,
     writer: anytype,
+    err_writer: anytype,
     is_streaming: bool,
     allocator: std.mem.Allocator,
     request: chat_types.Request,
@@ -131,16 +133,16 @@ fn dispatchToProvider(
     provider_config: *const config_mod.ProviderConfig,
 ) !void {
     if (is_streaming) {
-        streaming(Client, Transformer, writer, allocator, request, model, provider_name, provider_config) catch |err| {
+        streaming(Client, Transformer, writer, err_writer, allocator, request, model, provider_name, provider_config) catch |err| {
             if (err == error.AuthRequired and utils.tryAutoReauth(allocator, provider_name)) {
-                return streaming(Client, Transformer, writer, allocator, request, model, provider_name, provider_config);
+                return streaming(Client, Transformer, writer, err_writer, allocator, request, model, provider_name, provider_config);
             }
             return err;
         };
     } else {
-        sync(Client, Transformer, writer, allocator, request, model, provider_name, provider_config) catch |err| {
+        sync(Client, Transformer, writer, err_writer, allocator, request, model, provider_name, provider_config) catch |err| {
             if (err == error.AuthRequired and utils.tryAutoReauth(allocator, provider_name)) {
-                return sync(Client, Transformer, writer, allocator, request, model, provider_name, provider_config);
+                return sync(Client, Transformer, writer, err_writer, allocator, request, model, provider_name, provider_config);
             }
             return err;
         };
@@ -151,6 +153,7 @@ fn sync(
     comptime Client: type,
     comptime Transformer: type,
     writer: anytype,
+    err_writer: anytype,
     allocator: std.mem.Allocator,
     request: chat_types.Request,
     model: []const u8,
@@ -179,17 +182,22 @@ fn sync(
     log.debug("[SYNC] Client init completed in {d}ms", .{client_init_time});
 
     const provider_request_start = time.milliTimestamp();
-    const provider_response = client.sendRequest(provider_request) catch |err| {
+    const result = client.sendRequest(provider_request) catch |err| {
         log.err("[SYNC] Provider API error: {} for model '{s}'", .{ err, request.model });
         if (err == error.AuthRequired) return error.AuthRequired;
-        if (err == error.RateLimitError) return error.RateLimitError;
-        if (err == error.AuthenticationError) return error.AuthenticationError;
-        if (err == error.ServerError) return error.ServerError;
-        return error.UpstreamError;
+        return err;
     };
-    defer provider_response.deinit();
     const provider_request_time = time.milliTimestamp() - provider_request_start;
     log.debug("[SYNC] Provider request/response completed in {d}ms", .{provider_request_time});
+
+    const provider_response = switch (result) {
+        .ok => |r| r,
+        .err => |e| {
+            defer e.body.deinit();
+            return utils.writeUpstreamError(err_writer, "[SYNC]", provider_name, Transformer.transformToOpenAIError(e.body.value), e.status);
+        },
+    };
+    defer provider_response.deinit();
 
     const transform_response_start = time.milliTimestamp();
     const openai_response = Transformer.transformChatResponse(provider_response.value, request, allocator) catch |err| {
@@ -227,6 +235,7 @@ fn streaming(
     comptime Client: type,
     comptime Transformer: type,
     writer: anytype,
+    err_writer: anytype,
     allocator: std.mem.Allocator,
     request: chat_types.Request,
     model: []const u8,
@@ -255,13 +264,19 @@ fn streaming(
     log.debug("[STREAM] Client init completed in {d}ms", .{client_init_time});
 
     const stream_connect_start = time.milliTimestamp();
-    const stream_result = client.sendStreamingRequest(provider_request) catch |err| {
+    const start_result = client.sendStreamingRequest(provider_request) catch |err| {
         log.err("[STREAM] Provider streaming error: {} for model '{s}'", .{ err, request.model });
         if (err == error.AuthRequired) return error.AuthRequired;
-        if (err == error.RateLimitError) return error.RateLimitError;
-        if (err == error.AuthenticationError) return error.AuthenticationError;
-        if (err == error.ServerError) return error.ServerError;
-        return error.UpstreamError;
+        return err;
+    };
+    // Connection-time non-2xx: no SSE headers sent yet, so return a proper HTTP
+    // error (status + body) exactly like the sync path.
+    const stream_result = switch (start_result) {
+        .ok => |r| r,
+        .err => |e| {
+            defer e.body.deinit();
+            return utils.writeUpstreamError(err_writer, "[STREAM]", provider_name, Transformer.transformToOpenAIError(e.body.value), e.status);
+        },
     };
     defer client.freeStreamingResult(stream_result);
     const stream_connect_time = time.milliTimestamp() - stream_connect_start;
@@ -290,7 +305,7 @@ fn streaming(
 
             var err_buf = std.ArrayList(u8).empty;
             defer err_buf.deinit(allocator);
-            const err_payload = chat_types.ErrorResponse{ .@"error" = .{
+            const err_payload = openai_common.ErrorResponse{ .@"error" = .{
                 .message = "Upstream connection lost while streaming response",
                 .type = "server_error",
                 .param = null,
@@ -336,7 +351,9 @@ fn streaming(
         }
     }
 
-    try writer.writeAll("data: [DONE]\n\n");
+    // Best-effort terminal marker: the stream is already complete, so a write
+    // failure here (e.g. client disconnected) should not surface as an error.
+    writer.writeAll("data: [DONE]\n\n") catch {};
 
     utils.recordChatStreamTokenUsage(state, provider_name, model);
 

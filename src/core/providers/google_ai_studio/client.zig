@@ -68,16 +68,11 @@ pub const GoogleAiStudioClient = struct {
         return headers_buf[0..1];
     }
 
-    const HttpError = @import("../../errors.zig").HttpError;
+    const errors_mod = @import("../../errors.zig");
 
-    fn handleErrorResponse(self: *GoogleAiStudioClient, status: std.http.Status) HttpError {
+    fn handleErrorResponse(self: *GoogleAiStudioClient, status: std.http.Status) errors_mod.UpstreamHttpError {
         _ = self;
-        return switch (status) {
-            .unauthorized, .forbidden => error.AuthenticationError,
-            .too_many_requests => error.RateLimitError,
-            .internal_server_error, .bad_gateway, .service_unavailable, .gateway_timeout => error.ServerError,
-            else => error.InvalidStatusCode,
-        };
+        return errors_mod.statusToError(status);
     }
 
     /// Fetch the list of available Gemini models.
@@ -138,7 +133,7 @@ pub const GoogleAiStudioClient = struct {
     pub fn sendRequest(
         self: *GoogleAiStudioClient,
         request: Google.Request,
-    ) !std.json.Parsed(Google.Response) {
+    ) !http_client.Result(Google.Response, Google.ErrorResponse) {
         var url_buffer: [1024]u8 = undefined;
         const url = try std.fmt.bufPrint(&url_buffer, "{s}/v1beta/models/{s}:generateContent?key={s}", .{
             self.api_url, request.model, self.api_key,
@@ -148,7 +143,7 @@ pub const GoogleAiStudioClient = struct {
         const headers = self.buildHeaders(&headers_buf);
 
         // Serialise only the payload (Request.jsonStringify delegates to payload).
-        return self.client.postJson(Google.Response, url, headers, request) catch |err| {
+        return self.client.postJsonResult(Google.Response, Google.ErrorResponse, url, headers, request) catch |err| {
             log.err("Failed to send Google AI Studio request: {}", .{err});
             return err;
         };
@@ -160,7 +155,7 @@ pub const GoogleAiStudioClient = struct {
     pub fn sendStreamingRequest(
         self: *GoogleAiStudioClient,
         request: Google.Request,
-    ) !*StreamingResult {
+    ) !http_client.StreamStart(SSEIterator, Google.ErrorResponse) {
         var url_buffer: [1024]u8 = undefined;
         const url = try std.fmt.bufPrint(&url_buffer, "{s}/v1beta/models/{s}:streamGenerateContent?alt=sse&key={s}", .{
             self.api_url, request.model, self.api_key,
@@ -169,14 +164,7 @@ pub const GoogleAiStudioClient = struct {
         var headers_buf: [1]std.http.Header = undefined;
         const headers = self.buildHeaders(&headers_buf);
 
-        const result = try self.client.postStreaming(SSEIterator, url, headers, request);
-
-        if (result.response.head.status != .ok) {
-            self.client.freeStreamingResult(SSEIterator, result);
-            return self.handleErrorResponse(result.response.head.status);
-        }
-
-        return result;
+        return self.client.postStreamingResult(SSEIterator, Google.ErrorResponse, url, headers, request);
     }
 
     /// Free a streaming result allocated by sendStreamingRequest.

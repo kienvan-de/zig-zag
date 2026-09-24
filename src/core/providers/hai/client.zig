@@ -421,9 +421,10 @@ pub const HaiClient = struct {
     /// Dispatches URL by request type at comptime:
     ///   - OpenAIChat.Request    → chat_completions_path, returns OpenAIChat.Response
     ///   - Anthropic.Request → messages_path,          returns Anthropic.Response
-    pub fn sendRequest(self: *HaiClient, request: anytype) !std.json.Parsed(ResponseType(@TypeOf(request))) {
+    pub fn sendRequest(self: *HaiClient, request: anytype) !http_client.Result(ResponseType(@TypeOf(request)), ErrorType(@TypeOf(request))) {
         const Req = @TypeOf(request);
         const Resp = ResponseType(Req);
+        const Err = ErrorType(Req);
         const path = self.pathForRequest(Req);
         const label = comptime requestLabel(Req);
 
@@ -440,7 +441,7 @@ pub const HaiClient = struct {
         const headers = try self.buildHeaders(access_token, &auth_buffer, &headers_buf);
 
         log.debug("[HAI] [SYNC] " ++ label ++ " - sending POST request...", .{});
-        return self.client.postJson(Resp, url, headers, request) catch |err| {
+        return self.client.postJsonResult(Resp, Err, url, headers, request) catch |err| {
             log.err("[HAI] [SYNC] " ++ label ++ " failed: {}", .{err});
             return err;
         };
@@ -448,8 +449,9 @@ pub const HaiClient = struct {
 
     /// Send a streaming request to HAI.
     /// Dispatches URL by request type at comptime (same as sendRequest).
-    pub fn sendStreamingRequest(self: *HaiClient, request: anytype) !*StreamingResult {
+    pub fn sendStreamingRequest(self: *HaiClient, request: anytype) !http_client.StreamStart(SSEIterator, ErrorType(@TypeOf(request))) {
         const Req = @TypeOf(request);
+        const Err = ErrorType(Req);
         const path = self.pathForRequest(Req);
         const label = comptime requestLabel(Req);
 
@@ -466,20 +468,10 @@ pub const HaiClient = struct {
         const headers = try self.buildHeaders(access_token, &auth_buffer, &headers_buf);
 
         log.debug("[HAI] [STREAM] " ++ label ++ " - sending POST request...", .{});
-        const result = self.client.postStreaming(SSEIterator, url, headers, request) catch |err| {
+        return self.client.postStreamingResult(SSEIterator, Err, url, headers, request) catch |err| {
             log.err("[HAI] [STREAM] " ++ label ++ " - POST request failed: {}", .{err});
             return err;
         };
-        log.debug("[HAI] [STREAM] " ++ label ++ " - response status: {}", .{result.response.head.status});
-
-        if (result.response.head.status != .ok) {
-            self.client.freeStreamingResult(SSEIterator, result);
-            log.err("[HAI] [STREAM] " ++ label ++ " failed: HTTP {}", .{result.response.head.status});
-            return error.RequestFailed;
-        }
-
-        log.debug("[HAI] [STREAM] " ++ label ++ " - stream established successfully", .{});
-        return result;
     }
 
     /// Free a streaming result allocated by sendStreamingRequest
@@ -498,6 +490,13 @@ pub const HaiClient = struct {
         if (Req == Anthropic.Request) return Anthropic.Response;
         if (Req == Google.Request) return Google.Response;
         @compileError("HaiClient: unsupported request type — expected OpenAIChat.Request, OpenAIResponses.Request, Anthropic.Request, or Google.Request");
+    }
+
+    /// Map request type to provider error type at comptime
+    fn ErrorType(comptime Req: type) type {
+        if (Req == Anthropic.Request) return Anthropic.ErrorResponse;
+        if (Req == Google.Request) return Google.ErrorResponse;
+        return common.ErrorResponse;
     }
 
     /// Pick the URL path based on request type

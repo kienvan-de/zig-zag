@@ -29,6 +29,25 @@ pub const appendsDoneMarker = true;
 // Flow: /v1/models
 // ============================================================================
 
+
+/// Convert a SAP AI Core error response to OpenAI error format (for /v1/chat/completions and /v1/responses).
+pub fn transformToOpenAIError(err: Sap.ErrorResponse) common.ErrorResponse {
+    return .{ .@"error" = .{
+        .message = err.@"error".message orelse "Upstream error",
+        .type = "server_error",
+        .param = null,
+        .code = null,
+    } };
+}
+
+/// Convert a SAP AI Core error response to Anthropic error format (for /v1/messages).
+pub fn transformToMessagesError(err: Sap.ErrorResponse) Messages.ErrorResponse {
+    return .{ .@"error" = .{
+        .type = "server_error",
+        .message = err.@"error".message orelse "Upstream error",
+    } };
+}
+
 /// Map the SAP models listing to inbound Model entries, prefixing ids with
 /// the provider name. Only models with a latest non-deprecated version AND
 /// the "orchestration" scenario are included.

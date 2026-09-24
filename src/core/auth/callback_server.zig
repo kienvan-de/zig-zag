@@ -134,7 +134,7 @@ pub fn waitForCallback(allocator: Allocator, config: CallbackConfig) !CallbackRe
     // Create server address and listen
     var server = net.TcpServer.listen("127.0.0.1", config.port, .{
         .reuse_address = true,
-    }) catch return error.ServerError;
+    }) catch return error.ListenerError;
     errdefer server.deinit();
 
     // Calculate timeout
@@ -160,7 +160,7 @@ pub fn waitForCallback(allocator: Allocator, config: CallbackConfig) !CallbackRe
             }
             log.err("Server accept error: {}", .{err});
             server.deinit();
-            return error.ServerError;
+            return error.ListenerError;
         };
 
         // Handle the connection
@@ -234,11 +234,11 @@ fn handleConnection(
     var buf: [4096]u8 = undefined;
     const n = stream.read(&buf) catch |err| {
         log.debug("Failed to read HTTP request: {}", .{err});
-        return error.ServerError;
+        return error.ListenerError;
     };
 
     if (n == 0) {
-        return error.ServerError;
+        return error.ListenerError;
     }
 
     const request_data = buf[0..n];
@@ -246,7 +246,7 @@ fn handleConnection(
     // Parse first line: "GET /path?query HTTP/1.1"
     const first_line_end = std.mem.indexOf(u8, request_data, "\r\n") orelse std.mem.indexOf(u8, request_data, "\n") orelse {
         try sendResponseRaw(stream, "400 Bad Request", "Bad Request");
-        return error.ServerError;
+        return error.ListenerError;
     };
 
     const first_line = request_data[0..first_line_end];
@@ -256,14 +256,14 @@ fn handleConnection(
     _ = parts.next(); // Skip method (GET)
     const target = parts.next() orelse {
         try sendResponseRaw(stream, "400 Bad Request", "Bad Request");
-        return error.ServerError;
+        return error.ListenerError;
     };
 
     // Check if this is the expected path
     if (!std.mem.startsWith(u8, target, config.path)) {
         // Not our callback path, send 404
         try sendResponseRaw(stream, "404 Not Found", "Not Found");
-        return error.ServerError; // Will continue waiting
+        return error.ListenerError; // Will continue waiting
     }
 
     // Parse query parameters
@@ -320,12 +320,12 @@ fn sendResponseRaw(stream: net.Connection, status: []const u8, body: []const u8)
     var response_buf: [8192]u8 = undefined;
     const response = std.fmt.bufPrint(&response_buf, "HTTP/1.1 {s}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n{s}", .{ status, body.len, body }) catch {
         log.err("Failed to format response", .{});
-        return error.ServerError;
+        return error.ListenerError;
     };
 
     _ = stream.writeAll(response) catch |err| {
         log.err("Failed to send response: {}", .{err});
-        return error.ServerError;
+        return error.ListenerError;
     };
 }
 

@@ -469,7 +469,7 @@ pub fn extractToolCalls(
 /// Borrows the message; allocates nothing.
 pub fn transformErrorResponse(
     error_response: Messages.ErrorResponse,
-) Chat.ErrorResponse {
+) common.ErrorResponse {
     const kind = error_response.@"error".type;
     const provider_side = std.mem.eql(u8, kind, "overloaded_error");
 

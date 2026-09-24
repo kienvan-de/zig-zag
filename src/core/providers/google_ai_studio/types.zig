@@ -833,15 +833,15 @@ pub const Candidate = struct {
 
 /// Google RPC error details ({"error":{"code":...,"message":...,"status":...}}).
 /// Wire: {"error":{"code":429,"message":"...","status":"RESOURCE_EXHAUSTED","details":[...]}}
-pub const GoogleErrorDetails = struct {
+pub const ErrorDetails = struct {
     code: ?i64 = null,
     message: ?[]const u8 = null,
     status: ?[]const u8 = null,
     details: ?[]const std.json.Value = null,
 };
 
-pub const GoogleErrorResponse = struct {
-    @"error": GoogleErrorDetails,
+pub const ErrorResponse = struct {
+    @"error": ErrorDetails,
 };
 
 /// Full generateContent response.

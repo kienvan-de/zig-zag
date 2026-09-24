@@ -167,7 +167,7 @@ pub const AnthropicClient = struct {
     pub fn sendRequest(
         self: *AnthropicClient,
         request: Anthropic.Request,
-    ) !std.json.Parsed(Anthropic.Response) {
+    ) !http_client.Result(Anthropic.Response, Anthropic.ErrorResponse) {
         return self.sendRequestOnce(request);
     }
 
@@ -175,7 +175,7 @@ pub const AnthropicClient = struct {
     fn sendRequestOnce(
         self: *AnthropicClient,
         request: Anthropic.Request,
-    ) !std.json.Parsed(Anthropic.Response) {
+    ) !http_client.Result(Anthropic.Response, Anthropic.ErrorResponse) {
         // Build URL
         var url_buffer: [512]u8 = undefined;
         const url = try std.fmt.bufPrint(&url_buffer, "{s}/v1/messages", .{self.api_url});
@@ -186,31 +186,26 @@ pub const AnthropicClient = struct {
         const headers = self.buildRequestHeaders(&headers_buf, request.betas, &beta_value_buf);
 
         // Make POST request with JSON body and parse response
-        return self.client.postJson(Anthropic.Response, url, headers, request) catch |err| {
+        return self.client.postJsonResult(Anthropic.Response, Anthropic.ErrorResponse, url, headers, request) catch |err| {
             log.err("Failed to send Anthropic request: {}", .{err});
             return err;
         };
     }
 
-    const HttpError = @import("../../errors.zig").HttpError;
+    const errors_mod = @import("../../errors.zig");
 
-    fn handleErrorResponse(self: *AnthropicClient, status: std.http.Status) HttpError {
+    fn handleErrorResponse(self: *AnthropicClient, status: std.http.Status) errors_mod.UpstreamHttpError {
         _ = self;
-        return switch (status) {
-            .unauthorized => error.AuthenticationError,
-            .too_many_requests => error.RateLimitError,
-            .internal_server_error, .bad_gateway, .service_unavailable, .gateway_timeout => error.ServerError,
-            else => error.InvalidStatusCode,
-        };
+        return errors_mod.statusToError(status);
     }
 
     /// Send a streaming request to Anthropic Messages API
-    /// Returns a StreamingResult with an iterator for processing events
-    /// Reads from socket on-demand - does not buffer full response
+    /// Returns a StreamStart: .ok with a live iterator, or .err with the parsed
+    /// upstream error body when the initial response is non-2xx.
     pub fn sendStreamingRequest(
         self: *AnthropicClient,
         request: Anthropic.Request,
-    ) !*StreamingResult {
+    ) !http_client.StreamStart(SSEIterator, Anthropic.ErrorResponse) {
         // Build URL
         var url_buffer: [512]u8 = undefined;
         const url = try std.fmt.bufPrint(&url_buffer, "{s}/v1/messages", .{self.api_url});
@@ -220,16 +215,7 @@ pub const AnthropicClient = struct {
         var beta_value_buf: [512]u8 = undefined;
         const headers = self.buildRequestHeaders(&headers_buf, request.betas, &beta_value_buf);
 
-        // Make streaming POST request
-        const result = try self.client.postStreaming(SSEIterator, url, headers, request);
-
-        // Check status code
-        if (result.response.head.status != .ok) {
-            self.client.freeStreamingResult(SSEIterator, result);
-            return self.handleErrorResponse(result.response.head.status);
-        }
-
-        return result;
+        return self.client.postStreamingResult(SSEIterator, Anthropic.ErrorResponse, url, headers, request);
     }
 
     /// Free a streaming result allocated by sendStreamingRequest

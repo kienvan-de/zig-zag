@@ -56,6 +56,12 @@ fn ResponseTypeFor(comptime Request: type) type {
     return OpenAIResponses.Response;
 }
 
+/// Returns the provider error type for a given request type.
+fn ErrorTypeFor(comptime Request: type) type {
+    if (Request == Anthropic.Request) return Anthropic.ErrorResponse;
+    return openai_common.ErrorResponse;
+}
+
 /// Iterator for SSE streaming responses
 pub const SSEIterator = http_client.SSEIterator;
 
@@ -654,7 +660,7 @@ pub const CopilotClient = struct {
 
     /// Send a non-streaming request. Routes to /v1/messages for Anthropic.Request,
     /// /responses for OpenAIResponses.Request.
-    pub fn sendRequest(self: *CopilotClient, request: anytype) !std.json.Parsed(ResponseTypeFor(@TypeOf(request))) {
+    pub fn sendRequest(self: *CopilotClient, request: anytype) !http_client.Result(ResponseTypeFor(@TypeOf(request)), ErrorTypeFor(@TypeOf(request))) {
         const Request = @TypeOf(request);
         log.debug("[Copilot] [SYNC] sendRequest - getting access token...", .{});
         const access_token = try self.getAccessToken();
@@ -671,7 +677,7 @@ pub const CopilotClient = struct {
         var headers_buf: [10]std.http.Header = undefined;
         const headers = try self.buildHeaders(access_token, determineInitiator(request), &auth_buf, &uuid_buf, &headers_buf);
 
-        return self.client.postJson(ResponseTypeFor(Request), url, headers, request) catch |err| {
+        return self.client.postJsonResult(ResponseTypeFor(Request), ErrorTypeFor(Request), url, headers, request) catch |err| {
             log.err("[Copilot] [SYNC] sendRequest failed: {}", .{err});
             return err;
         };
@@ -679,8 +685,9 @@ pub const CopilotClient = struct {
 
     /// Send a streaming request. Routes to /v1/messages for Anthropic.Request,
     /// /responses for OpenAIResponses.Request.
-    pub fn sendStreamingRequest(self: *CopilotClient, request: anytype) !*StreamingResult {
+    pub fn sendStreamingRequest(self: *CopilotClient, request: anytype) !http_client.StreamStart(SSEIterator, ErrorTypeFor(@TypeOf(request))) {
         const Request = @TypeOf(request);
+        const Err = ErrorTypeFor(Request);
         log.debug("[Copilot] [STREAM] sendStreamingRequest - getting access token...", .{});
         const access_token = try self.getAccessToken();
         defer self.allocator.free(access_token);
@@ -697,20 +704,10 @@ pub const CopilotClient = struct {
         const headers = try self.buildHeaders(access_token, determineInitiator(request), &auth_buf, &uuid_buf, &headers_buf);
 
         log.debug("[Copilot] [STREAM] sendStreamingRequest - sending POST request...", .{});
-        const result = self.client.postStreaming(SSEIterator, url, headers, request) catch |err| {
+        return self.client.postStreamingResult(SSEIterator, Err, url, headers, request) catch |err| {
             log.err("[Copilot] [STREAM] sendStreamingRequest - POST request failed: {}", .{err});
             return err;
         };
-        log.debug("[Copilot] [STREAM] sendStreamingRequest - response status: {}", .{result.response.head.status});
-
-        if (result.response.head.status != .ok) {
-            self.client.freeStreamingResult(SSEIterator, result);
-            log.err("[Copilot] [STREAM] sendStreamingRequest failed: HTTP {}", .{result.response.head.status});
-            return error.RequestFailed;
-        }
-
-        log.debug("[Copilot] [STREAM] sendStreamingRequest - stream established successfully", .{});
-        return result;
     }
 
     /// Free a streaming result allocated by sendStreamingRequest

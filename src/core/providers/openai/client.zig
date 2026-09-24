@@ -163,7 +163,7 @@ pub const OpenAIClient = struct {
 
     /// Send a non-streaming request. Routes to /v1/chat/completions or /v1/responses
     /// based on request type at comptime.
-    pub fn sendRequest(self: *OpenAIClient, request: anytype) !std.json.Parsed(ResponseType(@TypeOf(request))) {
+    pub fn sendRequest(self: *OpenAIClient, request: anytype) !http_client.Result(ResponseType(@TypeOf(request)), common.ErrorResponse) {
         const Req = @TypeOf(request);
         const Resp = ResponseType(Req);
         var url_buffer: [512]u8 = undefined;
@@ -171,39 +171,29 @@ pub const OpenAIClient = struct {
         var auth_buffer: [512]u8 = undefined;
         var headers_buf: [3]std.http.Header = undefined;
         const headers = try self.buildHeaders(&auth_buffer, &headers_buf);
-        return self.client.postJson(Resp, url, headers, request) catch |err| {
+        return self.client.postJsonResult(Resp, common.ErrorResponse, url, headers, request) catch |err| {
             log.err("Failed to send OpenAI request: {}", .{err});
             return err;
         };
     }
 
-    const HttpError = @import("../../errors.zig").HttpError;
+    const errors_mod = @import("../../errors.zig");
 
-    fn handleErrorResponse(self: *OpenAIClient, status: std.http.Status) HttpError {
+    fn handleErrorResponse(self: *OpenAIClient, status: std.http.Status) errors_mod.UpstreamHttpError {
         _ = self;
-        return switch (status) {
-            .unauthorized => error.AuthenticationError,
-            .too_many_requests => error.RateLimitError,
-            .internal_server_error, .bad_gateway, .service_unavailable, .gateway_timeout => error.ServerError,
-            else => error.InvalidStatusCode,
-        };
+        return errors_mod.statusToError(status);
     }
 
     /// Send a streaming request. Routes to /v1/chat/completions or /v1/responses
     /// based on request type at comptime.
-    pub fn sendStreamingRequest(self: *OpenAIClient, request: anytype) !*StreamingResult {
+    pub fn sendStreamingRequest(self: *OpenAIClient, request: anytype) !http_client.StreamStart(SSEIterator, common.ErrorResponse) {
         const Req = @TypeOf(request);
         var url_buffer: [512]u8 = undefined;
         const url = try self.urlForRequest(&url_buffer, Req);
         var auth_buffer: [512]u8 = undefined;
         var headers_buf: [3]std.http.Header = undefined;
         const headers = try self.buildHeaders(&auth_buffer, &headers_buf);
-        const result = try self.client.postStreaming(SSEIterator, url, headers, request);
-        if (result.response.head.status != .ok) {
-            self.client.freeStreamingResult(SSEIterator, result);
-            return self.handleErrorResponse(result.response.head.status);
-        }
-        return result;
+        return self.client.postStreamingResult(SSEIterator, common.ErrorResponse, url, headers, request);
     }
 
     /// Free a streaming result

@@ -190,7 +190,7 @@ pub const CurlClient = struct {
             .stderr = .pipe,
         }) catch |err| {
             log.err("Failed to spawn curl: {}", .{err});
-            return error.CurlNotFound;
+            return error.ToolNotFound;
         };
 
         // Read output

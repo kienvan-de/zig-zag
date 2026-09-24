@@ -15,6 +15,7 @@
 const std = @import("std");
 const metrics = @import("zag-core").metrics;
 const net = @import("zag-core").net;
+const errors = @import("zag-core").errors;
 
 /// Send SSE (Server-Sent Events) headers to initiate a streaming response.
 ///
@@ -122,15 +123,10 @@ pub fn sendSseDone(connection: net.Connection) !void {
 /// The response includes `Content-Type: application/json`, a computed
 /// `Content-Length`, and `Connection: close`.
 ///
-/// **Supported status codes** (mapped to human-readable reason phrases):
-///   - `200 OK`
-///   - `400 Bad Request`
-///   - `404 Not Found`
-///   - `429 Too Many Requests`
-///   - `500 Internal Server Error`
-///   - `502 Bad Gateway`
-///
-/// Any other `std.http.Status` value falls back to `500 Internal Server Error`.
+/// **Status line**: built from the status code and its reason phrase
+/// (`errors.reasonPhrase`), so every `std.http.Status` — including the full
+/// range of upstream error statuses (401/403/409/422/501/503/504/…) — is wired
+/// through faithfully rather than collapsed to 500.
 ///
 /// The internal header buffer is 512 bytes, which is sufficient for all
 /// supported status lines plus the two fixed headers and the content-length
@@ -144,20 +140,10 @@ pub fn sendJsonResponse(
     json_body: []const u8,
 ) !void {
     var buffer: [512]u8 = undefined;
-    const status_line = switch (status) {
-        .ok => "HTTP/1.1 200 OK\r\n",
-        .bad_request => "HTTP/1.1 400 Bad Request\r\n",
-        .not_found => "HTTP/1.1 404 Not Found\r\n",
-        .too_many_requests => "HTTP/1.1 429 Too Many Requests\r\n",
-        .internal_server_error => "HTTP/1.1 500 Internal Server Error\r\n",
-        .bad_gateway => "HTTP/1.1 502 Bad Gateway\r\n",
-        else => "HTTP/1.1 500 Internal Server Error\r\n",
-    };
-
     const headers = try std.fmt.bufPrint(
         &buffer,
-        "{s}Content-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n",
-        .{ status_line, json_body.len },
+        "HTTP/1.1 {d} {s}\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n",
+        .{ @intFromEnum(status), errors.reasonPhrase(status), json_body.len },
     );
 
     _ = try connection.writeAll(headers);
@@ -184,6 +170,71 @@ pub fn sendNotFound(connection: net.Connection) !void {
 /// request handling.
 pub fn sendInternalError(connection: net.Connection) !void {
     try sendJsonResponse(connection, .internal_server_error, "{\"error\":\"Internal Server Error\"}");
+}
+
+// ============================================================================
+// Error reply — map a completion error to an HTTP/SSE error response
+// ============================================================================
+//
+// Shared by the /v1/chat/completions, /v1/messages, and /v1/responses handlers,
+// which differ only in the "invalid model format" message (it embeds a
+// protocol-appropriate example model). The error→status/type/message/code
+// mapping itself lives in `errors.classifyError`; these helpers just render its
+// result to the wire, so the handlers stay thin HTTP wrappers.
+
+/// Send a completion error as a JSON HTTP response, before any response bytes
+/// have been written (non-streaming, or a streaming failure that occurred
+/// before SSE headers were committed).
+///
+/// If the pipeline already captured an upstream error body (`upstream_body`),
+/// it is sent verbatim with the classified status. Otherwise a fresh
+/// OpenAI-style error body is built from the classification.
+/// `invalid_model_message` is the full message for a malformed model string
+/// (it embeds a protocol-appropriate example, the sole per-handler difference).
+pub fn sendSyncError(
+    connection: net.Connection,
+    allocator: std.mem.Allocator,
+    err: anyerror,
+    upstream_body: []const u8,
+    invalid_model_message: []const u8,
+) !void {
+    const classified = errors.classifyError(err, invalid_model_message);
+    if (upstream_body.len > 0) {
+        try sendJsonResponse(connection, classified.status, upstream_body);
+        return;
+    }
+    const error_json = try errors.createErrorResponse(
+        allocator,
+        classified.message,
+        classified.error_type,
+        classified.code,
+    );
+    defer allocator.free(error_json);
+    try sendJsonResponse(connection, classified.status, error_json);
+}
+
+/// Send a completion error as an SSE `data:` event, after streaming has already
+/// begun (SSE headers committed, so the HTTP status is locked to 200). Best
+/// effort — a write failure here (e.g. client disconnected) is swallowed.
+pub fn sendStreamingError(
+    sse: *SseWriter,
+    allocator: std.mem.Allocator,
+    err: anyerror,
+    invalid_model_message: []const u8,
+) !void {
+    const classified = errors.classifyError(err, invalid_model_message);
+    const error_json = errors.createErrorResponse(
+        allocator,
+        classified.message,
+        classified.error_type,
+        null,
+    ) catch return;
+    defer allocator.free(error_json);
+
+    var buffer = std.ArrayList(u8).empty;
+    defer buffer.deinit(allocator);
+    buffer.print(allocator, "data: {s}\n\n", .{error_json}) catch return;
+    sse.writeAll(buffer.items) catch {};
 }
 
 // ============================================================================
@@ -255,6 +306,57 @@ pub const ChunkedWriter = struct {
     }
 };
 
+/// A writer that sends SSE response headers (200 OK) lazily on the first
+/// `writeAll`, then frames all subsequent data as HTTP chunked-encoding.
+///
+/// **Purpose:** lets the streaming pipeline defer committing the HTTP status
+/// until the first successful byte. If the upstream fails *before* any data is
+/// written (`headers_sent == false`), the handler can still send a proper HTTP
+/// error status. Once `headers_sent` is true, the status is locked to 200 and
+/// further errors must be delivered as SSE `data:` events.
+///
+/// **Lifecycle:**
+///   1. `SseWriter.init(connection)`
+///   2. Write data via `writeAll` — headers are sent automatically on the first call.
+///   3. `finish()` sends the chunked terminator (only if headers were sent).
+pub const SseWriter = struct {
+    stream: net.Connection,
+    headers_sent: bool = false,
+
+    pub fn init(stream: net.Connection) SseWriter {
+        return .{ .stream = stream };
+    }
+
+    /// Send SSE headers if not already sent. Idempotent.
+    pub fn ensureHeaders(self: *SseWriter) !void {
+        if (self.headers_sent) return;
+        try sendSseHeaders(self.stream);
+        self.headers_sent = true;
+    }
+
+    /// Write `data` as a single chunked frame, sending SSE headers first if needed.
+    pub fn writeAll(self: *SseWriter, data: []const u8) anyerror!void {
+        if (data.len == 0) return;
+        try self.ensureHeaders();
+        var size_buf: [16]u8 = undefined;
+        const size_str = std.fmt.bufPrint(&size_buf, "{x}\r\n", .{data.len}) catch unreachable;
+        try self.stream.writeAll(size_str);
+        try self.stream.writeAll(data);
+        try self.stream.writeAll("\r\n");
+        metrics.addNetworkTx(size_str.len + data.len + 2);
+    }
+
+    /// Send the zero-length terminating chunk — only if headers were sent.
+    /// A no-op when no data was ever written (headers never committed), so the
+    /// handler can send a normal HTTP error response instead.
+    pub fn finish(self: *SseWriter) !void {
+        if (!self.headers_sent) return;
+        const terminator = "0\r\n\r\n";
+        try self.stream.writeAll(terminator);
+        metrics.addNetworkTx(terminator.len);
+    }
+};
+
 // ============================================================================
 // ArrayList Writer Adapter
 // ============================================================================
@@ -268,6 +370,17 @@ pub const ArrayListWriter = struct {
 
     pub fn writeAll(self: *ArrayListWriter, data: []const u8) !void {
         try self.list.appendSlice(self.allocator, data);
+    }
+
+    /// Reset the buffer to empty, keeping capacity. Used by the error-body
+    /// channel so each pipeline attempt overwrites the previous attempt's body.
+    pub fn clearRetainingCapacity(self: *ArrayListWriter) void {
+        self.list.clearRetainingCapacity();
+    }
+
+    /// Format and append to the buffer (supplies the allocator internally).
+    pub fn print(self: *ArrayListWriter, comptime fmt: []const u8, args: anytype) !void {
+        try self.list.print(self.allocator, fmt, args);
     }
 };
 

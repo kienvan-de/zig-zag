@@ -27,6 +27,20 @@ pub const appendsDoneMarker = false;
 // Flow: /v1/models
 // ============================================================================
 
+/// Convert an OpenAI error response to OpenAI error format (for /v1/chat/completions and /v1/responses).
+/// Pass-through — already in the right format.
+pub fn transformToOpenAIError(err: common.ErrorResponse) common.ErrorResponse {
+    return err;
+}
+
+/// Convert an OpenAI error response to Anthropic error format (for /v1/messages).
+pub fn transformToMessagesError(err: common.ErrorResponse) Messages.ErrorResponse {
+    return .{ .@"error" = .{
+        .type = err.@"error".type,
+        .message = err.@"error".message,
+    } };
+}
+
 /// Map the upstream models listing to inbound Model entries, prefixing ids
 /// with the provider name.
 pub fn transformModelsResponse(

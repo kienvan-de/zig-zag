@@ -18,6 +18,7 @@ const config_mod = @import("config.zig");
 const log = @import("log.zig");
 const metrics = @import("metrics.zig");
 const pricing = @import("pricing.zig");
+const errors_mod = @import("errors.zig");
 
 /// Result of parsing a `"provider/model-name"` string via `parseModelString`.
 ///
@@ -202,6 +203,32 @@ pub fn tryAutoReauth(allocator: std.mem.Allocator, provider_name: []const u8) bo
             return false;
         },
     };
+}
+
+/// Emit a transformed upstream error to the pipeline's error buffer and return
+/// the matching UpstreamHttpError for `status`.
+///
+/// Centralizes the per-pipeline `.err`-branch contract shared by chat/messages/
+/// responses × {sync, streaming}: log the upstream message, reset the shared
+/// error buffer, serialize the transformed error into it (best-effort), and
+/// translate the upstream status to an `UpstreamHttpError`.
+///
+/// `transformed_err` is the provider-native error already converted to the
+/// client-facing shape (e.g. `transformToOpenAIError(...)`); it must have an
+/// `.@"error".message` field — the OpenAI-shape and Anthropic-shape error types
+/// differ otherwise, so `anytype` is intentional. `err_writer` is the pipeline's
+/// error buffer.
+pub fn writeUpstreamError(
+    err_writer: anytype,
+    log_tag: []const u8,
+    provider_name: []const u8,
+    transformed_err: anytype,
+    status: std.http.Status,
+) errors_mod.UpstreamHttpError {
+    log.err("{s} Upstream error from '{s}': {s}", .{ log_tag, provider_name, transformed_err.@"error".message });
+    err_writer.clearRetainingCapacity();
+    err_writer.print("{f}", .{std.json.fmt(transformed_err, .{})}) catch {};
+    return errors_mod.statusToError(status);
 }
 
 fn recordUsage(input: u64, cache_write: u64, cache_read: u64, output: u64, provider_name: []const u8, model: []const u8) void {

@@ -854,11 +854,11 @@ fn mergeOrAppend(
 }
 
 /// Try to parse a raw SSE payload as a Gemini error envelope.
-/// Returns a heap-duped Chat.ErrorResponse on success, null otherwise.
+/// Returns a heap-duped common.ErrorResponse on success, null otherwise.
 /// Caller frees via chat_content.freeError.
-pub fn tryParseGeminiError(json_part: []const u8, allocator: std.mem.Allocator) ?Chat.ErrorResponse {
+pub fn tryParseGeminiError(json_part: []const u8, allocator: std.mem.Allocator) ?common.ErrorResponse {
     const parsed = std.json.parseFromSlice(
-        Google.GoogleErrorResponse,
+        Google.ErrorResponse,
         allocator,
         json_part,
         .{ .allocate = .alloc_always, .ignore_unknown_fields = true },

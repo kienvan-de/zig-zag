@@ -59,114 +59,42 @@ pub fn handle(
     const is_streaming = request.value.stream orelse false;
 
     if (is_streaming) {
-        try http.sendSseHeaders(connection);
-        var chunked = http.ChunkedWriter.init(connection);
-        core.dispatcher.complete(core.responses_pipeline.run, &chunked, allocator, request.value) catch |err| {
-            try handleStreamingError(&chunked, allocator, err);
+        // Lazy SSE: headers sent by SseWriter on first byte, so a connection-time
+        // upstream error can still return a proper HTTP status.
+        var sse = http.SseWriter.init(connection);
+        var err_buf = std.ArrayList(u8).empty;
+        defer err_buf.deinit(allocator);
+        var err_writer = http.ArrayListWriter{ .list = &err_buf, .allocator = allocator };
+        core.dispatcher.complete(core.responses_pipeline.run, &sse, &err_writer, allocator, request.value) catch |err| {
+            if (sse.headers_sent) {
+                try http.sendStreamingError(&sse, allocator, err, MODEL_EXAMPLE);
+            } else {
+                try http.sendSyncError(connection, allocator, err, err_buf.items, MODEL_EXAMPLE);
+                return;
+            }
         };
-        chunked.finish() catch |err| {
+        // Ensure a valid 200 SSE response even if the stream produced no bytes.
+        sse.ensureHeaders() catch {};
+        sse.finish() catch |err| {
             log.err("[RESPONSES] Failed to send chunked terminator: {}", .{err});
         };
     } else {
         var buf = std.ArrayList(u8).empty;
         defer buf.deinit(allocator);
         var list_writer = http.ArrayListWriter{ .list = &buf, .allocator = allocator };
-        core.dispatcher.complete(core.responses_pipeline.run, &list_writer, allocator, request.value) catch |err| {
-            try handleSyncError(allocator, connection, err);
+        // Separate buffer for the upstream error body (overwritten per attempt).
+        var err_buf = std.ArrayList(u8).empty;
+        defer err_buf.deinit(allocator);
+        var err_writer = http.ArrayListWriter{ .list = &err_buf, .allocator = allocator };
+        core.dispatcher.complete(core.responses_pipeline.run, &list_writer, &err_writer, allocator, request.value) catch |err| {
+            try http.sendSyncError(connection, allocator, err, err_buf.items, MODEL_EXAMPLE);
             return;
         };
         try http.sendJsonResponse(connection, .ok, buf.items);
     }
 }
 
-fn handleStreamingError(chunked: *http.ChunkedWriter, allocator: std.mem.Allocator, err: anyerror) !void {
-    const error_json = errors.createErrorResponse(
-        allocator,
-        mapErrorMessage(err),
-        mapErrorType(err),
-        null,
-    ) catch return;
-    defer allocator.free(error_json);
-
-    var buffer = std.ArrayList(u8).empty;
-    defer buffer.deinit(allocator);
-    buffer.print(allocator, "data: {s}\n\n", .{error_json}) catch return;
-    chunked.writeAll(buffer.items) catch {};
-}
-
-fn handleSyncError(
-    allocator: std.mem.Allocator,
-    connection: net.Connection,
-    err: anyerror,
-) !void {
-    const error_json = try errors.createErrorResponse(
-        allocator,
-        mapErrorMessage(err),
-        mapErrorType(err),
-        mapErrorCode(err),
-    );
-    defer allocator.free(error_json);
-    try http.sendJsonResponse(connection, mapHttpStatus(err), error_json);
-}
-
-fn mapErrorMessage(err: anyerror) []const u8 {
-    return switch (err) {
-        error.BudgetExceeded => "Budget exceeded. Cost controls are enabled and the budget limit has been reached.",
-        error.AuthRequired => "Authentication required. Please authenticate this provider via POST /v1/config/{provider}/auth",
-        error.InvalidModelFormat, error.EmptyProvider, error.EmptyModel => "Invalid model format. Expected 'provider/model-name' (e.g., 'openai/gpt-4o')",
-        error.ProviderNotConfigured => "Provider not configured",
-        error.CompatibleFieldMissing => "Provider not supported and no 'compatible' field specified",
-        error.UnknownCompatibleType => "Unknown compatible provider type. Must be 'openai' or 'anthropic'",
-        error.TransformFailed => "Failed to transform request",
-        error.ClientInitFailed => "Failed to initialize provider client",
-        error.RateLimitError => "Upstream rate limit exceeded",
-        error.AuthenticationError => "Upstream authentication failed",
-        error.ServerError, error.InvalidStatusCode, error.RequestFailed => "Upstream server error",
-        error.UpstreamError => "Failed to communicate with upstream API",
-        error.TransformResponseFailed => "Failed to transform response",
-        else => "Internal server error",
-    };
-}
-
-fn mapErrorType(err: anyerror) errors.ErrorType {
-    return switch (err) {
-        error.BudgetExceeded => .rate_limit_error,
-        error.AuthRequired => .invalid_request_error,
-        error.InvalidModelFormat, error.EmptyProvider, error.EmptyModel,
-        error.ProviderNotConfigured, error.CompatibleFieldMissing,
-        error.UnknownCompatibleType, error.TransformFailed,
-        error.ClientInitFailed,
-        => .invalid_request_error,
-        error.UpstreamError, error.TransformResponseFailed, error.ServerError,
-        error.InvalidStatusCode, error.RequestFailed => .server_error,
-        error.RateLimitError => .rate_limit_error,
-        error.AuthenticationError => .authentication_error,
-        else => .server_error,
-    };
-}
-
-fn mapErrorCode(err: anyerror) ?[]const u8 {
-    return switch (err) {
-        error.BudgetExceeded => "budget_exceeded",
-        error.AuthRequired => "auth_required",
-        else => null,
-    };
-}
-
-fn mapHttpStatus(err: anyerror) std.http.Status {
-    return switch (err) {
-        error.BudgetExceeded => .too_many_requests,
-        error.AuthRequired => .unauthorized,
-        error.InvalidModelFormat, error.EmptyProvider, error.EmptyModel,
-        error.ProviderNotConfigured, error.CompatibleFieldMissing,
-        error.UnknownCompatibleType, error.TransformFailed,
-        error.ClientInitFailed,
-        => .bad_request,
-        error.UpstreamError => .bad_gateway,
-        error.ServerError, error.InvalidStatusCode, error.RequestFailed => .bad_gateway,
-        error.RateLimitError => .too_many_requests,
-        error.AuthenticationError => .unauthorized,
-        error.TransformResponseFailed => .internal_server_error,
-        else => .internal_server_error,
-    };
-}
+/// Full "invalid model format" message for this handler, embedding an example
+/// model. Passed to `http.sendSyncError`/`sendStreamingError`; the sole
+/// per-handler difference in error text.
+const MODEL_EXAMPLE = "Invalid model format. Expected 'provider/model-name' (e.g., 'openai/gpt-4o')";

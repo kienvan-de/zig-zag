@@ -38,6 +38,25 @@ pub const appendsDoneMarker = true;
 // Flow: /v1/models
 // ============================================================================
 
+
+/// Convert a Google AI Studio error response to OpenAI error format (for /v1/chat/completions and /v1/responses).
+pub fn transformToOpenAIError(err: Google.ErrorResponse) common.ErrorResponse {
+    return .{ .@"error" = .{
+        .message = err.@"error".message orelse "Upstream error",
+        .type = "server_error",
+        .param = null,
+        .code = err.@"error".status,
+    } };
+}
+
+/// Convert a Google AI Studio error response to Anthropic error format (for /v1/messages).
+pub fn transformToMessagesError(err: Google.ErrorResponse) Messages.ErrorResponse {
+    return .{ .@"error" = .{
+        .type = err.@"error".status orelse "server_error",
+        .message = err.@"error".message orelse "Upstream error",
+    } };
+}
+
 /// Map the Gemini models listing to inbound `Model` entries, prefixing ids
 /// with the provider name. Only models supporting `generateContent` are listed;
 /// the `models/` name prefix is stripped.
