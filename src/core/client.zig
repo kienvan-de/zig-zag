@@ -13,6 +13,7 @@
 // limitations under the License.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const time = @import("time.zig");
 const log = @import("log.zig");
 
@@ -28,25 +29,45 @@ fn decompressBuffer(allocator: std.mem.Allocator, encoding: std.http.ContentEnco
     };
 }
 
-/// Set socket read/write timeout
-pub fn setSocketTimeout(handle: std.posix.socket_t, timeout_ms: u64) void {
+/// Configure an outbound provider socket for dead-connection detection.
+///
+/// We deliberately do NOT use `SO_RCVTIMEO`/`SO_SNDTIMEO`: the app's Io backend
+/// is `std.Io.Threaded` (blocking, single-threaded), whose `netReadPosix` treats
+/// `EAGAIN` — which a socket read timeout produces — as an impossible errno and
+/// PANICS (`errnoBug` → abort). See the Sep-2026 SIGABRT crash.
+///
+/// Instead we enable TCP keepalive with an idle interval derived from
+/// `timeout_ms`, so a genuinely-dead peer (vanished with no FIN/RST) is detected
+/// and the read fails with `ETIMEDOUT`/`ECONNRESET` — both of which std handles
+/// gracefully (no panic). Trade-off: keepalive bounds DEAD connections, not a
+/// slow-but-alive upstream that stalls without disconnecting; that case relies on
+/// the provider's server-side duration cap.
+pub fn configureSocket(handle: std.posix.socket_t, timeout_ms: u64) void {
     if (timeout_ms == 0) return;
 
-    const timeout_sec: i64 = @intCast(timeout_ms / 1000);
-    const timeout_usec: i32 = @intCast((timeout_ms % 1000) * 1000);
-    const timeval = std.posix.timeval{
-        .sec = timeout_sec,
-        .usec = timeout_usec,
+    // Enable keepalive probes on the connection.
+    const on: c_int = 1;
+    std.posix.setsockopt(handle, std.posix.SOL.SOCKET, std.posix.SO.KEEPALIVE, std.mem.asBytes(&on)) catch |err| {
+        log.debug("Failed to enable SO_KEEPALIVE: {}", .{err});
+        return;
     };
 
-    // Set read timeout
-    std.posix.setsockopt(handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&timeval)) catch |err| {
-        log.debug("Failed to set socket read timeout: {}", .{err});
+    // Idle seconds before the first keepalive probe, tuned by timeout_ms
+    // (default provider timeout 300_000ms → 300s). Without this the OS default
+    // idle (~2h on macOS) makes keepalive useless for timely detection.
+    const idle_secs: c_int = @intCast(@max(1, timeout_ms / 1000));
+    // macOS exposes the idle interval as TCP_KEEPALIVE (not in std); Linux uses
+    // TCP_KEEPIDLE. Both live at the IPPROTO_TCP level.
+    const idle_opt: u32 = switch (builtin.os.tag) {
+        .macos, .ios, .tvos, .watchos, .visionos => 0x10, // TCP_KEEPALIVE (macOS)
+        .linux => std.posix.TCP.KEEPIDLE,
+        else => {
+            log.debug("Keepalive idle interval not configured: unsupported OS {s}", .{@tagName(builtin.os.tag)});
+            return;
+        },
     };
-
-    // Set write timeout
-    std.posix.setsockopt(handle, std.posix.SOL.SOCKET, std.posix.SO.SNDTIMEO, std.mem.asBytes(&timeval)) catch |err| {
-        log.debug("Failed to set socket write timeout: {}", .{err});
+    std.posix.setsockopt(handle, std.posix.IPPROTO.TCP, idle_opt, std.mem.asBytes(&idle_secs)) catch |err| {
+        log.debug("Failed to set keepalive idle interval: {}", .{err});
     };
 }
 
@@ -291,7 +312,7 @@ pub const HttpClient = struct {
         log.debug("HTTP GET: request created successfully", .{});
 
         if (req.connection) |conn| {
-            setSocketTimeout(conn.stream_reader.stream.socket.handle, self.timeout_ms);
+            configureSocket(conn.stream_reader.stream.socket.handle, self.timeout_ms);
         }
 
         log.debug("HTTP GET: sending request...", .{});
@@ -380,7 +401,7 @@ pub const HttpClient = struct {
 
         // Apply socket timeout
         if (req.connection) |conn| {
-            setSocketTimeout(conn.stream_reader.stream.socket.handle, self.timeout_ms);
+            configureSocket(conn.stream_reader.stream.socket.handle, self.timeout_ms);
         }
 
         // Set content length and send
@@ -476,7 +497,7 @@ pub const HttpClient = struct {
 
         // Apply socket timeout
         if (req.connection) |conn| {
-            setSocketTimeout(conn.stream_reader.stream.socket.handle, self.timeout_ms);
+            configureSocket(conn.stream_reader.stream.socket.handle, self.timeout_ms);
         }
 
         // Set content length and send
@@ -549,7 +570,7 @@ pub const HttpClient = struct {
         defer req.deinit();
 
         if (req.connection) |conn| {
-            setSocketTimeout(conn.stream_reader.stream.socket.handle, self.timeout_ms);
+            configureSocket(conn.stream_reader.stream.socket.handle, self.timeout_ms);
         }
 
         req.transfer_encoding = .{ .content_length = request_body.items.len };
@@ -631,7 +652,7 @@ pub const HttpClient = struct {
 
         // Apply socket timeout
         if (req.connection) |conn| {
-            setSocketTimeout(conn.stream_reader.stream.socket.handle, self.timeout_ms);
+            configureSocket(conn.stream_reader.stream.socket.handle, self.timeout_ms);
         }
 
         // Set content length and send
@@ -650,7 +671,14 @@ pub const HttpClient = struct {
         // returns. (Mirrors the pre-refactor postStreaming ordering.)
         const result = try self.allocator.create(StreamingResult(Iterator));
         var result_owned = false;
-        errdefer if (!result_owned) self.allocator.destroy(result);
+        // On an early error after `req` is moved into `result` (receiveHead or the
+        // error-body decompress below), tear down BOTH the request (connection) and
+        // the heap slot — deinit-ing the request too, so a failure here never leaks
+        // the connection.
+        errdefer if (!result_owned) {
+            result.request.deinit();
+            self.allocator.destroy(result);
+        };
         result.request = req;
         req_moved = true; // result now owns req; disarm the req defer above.
 
@@ -665,8 +693,15 @@ pub const HttpClient = struct {
             const status = result.response.head.status;
             log.err("HTTP POST streaming failed | Status: {} | URL: {s}", .{ status, url });
             log.err("HTTP POST streaming failed | Request body: {s}", .{request_body.items});
+            // Decompress the error body per Content-Encoding (providers such as
+            // OpenRouter gzip their error responses). Reading it raw would fail to
+            // parse and collapse a real 403/429/etc. into HttpRequestFailed with an
+            // unreadable log — mirror the decompressing read used on the other paths.
             var err_transfer_buf: [4096]u8 = undefined;
-            const err_reader = result.response.reader(&err_transfer_buf);
+            var decompress: std.http.Decompress = undefined;
+            const decompress_buf = try decompressBuffer(self.allocator, result.response.head.content_encoding);
+            defer self.allocator.free(decompress_buf);
+            const err_reader = result.response.readerDecompressing(&err_transfer_buf, &decompress, decompress_buf);
             const err_body = err_reader.allocRemaining(self.allocator, std.Io.Limit.limited(65536)) catch null;
             result.request.deinit();
             self.allocator.destroy(result);
