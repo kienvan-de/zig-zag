@@ -1235,6 +1235,7 @@ function wireHeadersEditor(key) {
   addBtn.addEventListener('click', function () {
     headersEditRows.push({ name: '', value: '' });
     list.innerHTML = headersEditRows.map(function (r, i) { return renderHeaderRowHtml(r, i); }).join('');
+    syncHeadersToState(key);
   });
 }
 
