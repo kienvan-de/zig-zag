@@ -18,6 +18,7 @@ const config_mod = @import("../../config.zig");
 const http_client = @import("../../client.zig");
 const log = @import("../../log.zig");
 const app_cache = @import("../../cache/app_cache.zig");
+const client_headers = @import("../client_headers.zig");
 
 /// Iterator for SSE streaming responses
 pub const SSEIterator = http_client.SSEIterator;
@@ -140,7 +141,9 @@ pub const GoogleAiStudioClient = struct {
         });
 
         var headers_buf: [1]std.http.Header = undefined;
-        const headers = self.buildHeaders(&headers_buf);
+        const base_headers = self.buildHeaders(&headers_buf);
+        const headers = try client_headers.compose(self.allocator, base_headers, self.config);
+        defer client_headers.free(self.allocator, headers);
 
         // Serialise only the payload (Request.jsonStringify delegates to payload).
         return self.client.postJsonResult(Google.Response, Google.ErrorResponse, url, headers, request) catch |err| {
@@ -162,7 +165,11 @@ pub const GoogleAiStudioClient = struct {
         });
 
         var headers_buf: [1]std.http.Header = undefined;
-        const headers = self.buildHeaders(&headers_buf);
+        const base_headers = self.buildHeaders(&headers_buf);
+        // Safe to free after the call: postStreamingResult serializes the headers
+        // to the socket during the send (before it returns).
+        const headers = try client_headers.compose(self.allocator, base_headers, self.config);
+        defer client_headers.free(self.allocator, headers);
 
         return self.client.postStreamingResult(SSEIterator, Google.ErrorResponse, url, headers, request);
     }

@@ -19,6 +19,7 @@ const http_client = @import("../../client.zig");
 const auth = @import("../../auth/mod.zig");
 const log = @import("../../log.zig");
 const app_cache = @import("../../cache/app_cache.zig");
+const client_headers = @import("../client_headers.zig");
 
 /// Iterator for SSE streaming responses
 pub const SSEIterator = http_client.SSEIterator;
@@ -258,7 +259,9 @@ pub const SapAiCoreClient = struct {
         const auth_value = try std.fmt.allocPrint(self.allocator, "Bearer {s}", .{access_token});
         defer self.allocator.free(auth_value);
         var headers_buf: [3]std.http.Header = undefined;
-        const headers = try self.buildHeaders(auth_value, &headers_buf);
+        const base_headers = try self.buildHeaders(auth_value, &headers_buf);
+        const headers = try client_headers.compose(self.allocator, base_headers, self.config);
+        defer client_headers.free(self.allocator, headers);
 
         // Serialize request to JSON
         var request_body = std.ArrayList(u8).empty;
@@ -356,7 +359,11 @@ pub const SapAiCoreClient = struct {
         const auth_value = try std.fmt.allocPrint(self.allocator, "Bearer {s}", .{access_token});
         defer self.allocator.free(auth_value);
         var headers_buf: [3]std.http.Header = undefined;
-        const headers = try self.buildHeaders(auth_value, &headers_buf);
+        const base_headers = try self.buildHeaders(auth_value, &headers_buf);
+        // Safe to free after the call: postStreamingResult serializes the headers
+        // to the socket during the send (before it returns).
+        const headers = try client_headers.compose(self.allocator, base_headers, self.config);
+        defer client_headers.free(self.allocator, headers);
 
         return self.client.postStreamingResult(SSEIterator, SapAiCore.ErrorResponse, url, headers, request);
     }

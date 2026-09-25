@@ -18,6 +18,7 @@ const config_mod = @import("../../config.zig");
 const http_client = @import("../../client.zig");
 const log = @import("../../log.zig");
 const app_cache = @import("../../cache/app_cache.zig");
+const client_headers = @import("../client_headers.zig");
 
 /// Iterator for SSE streaming responses
 pub const SSEIterator = http_client.SSEIterator;
@@ -183,7 +184,9 @@ pub const AnthropicClient = struct {
         // Build headers (up to 4: base 3 + optional anthropic-beta)
         var headers_buf: [4]std.http.Header = undefined;
         var beta_value_buf: [512]u8 = undefined;
-        const headers = self.buildRequestHeaders(&headers_buf, request.betas, &beta_value_buf);
+        const base_headers = self.buildRequestHeaders(&headers_buf, request.betas, &beta_value_buf);
+        const headers = try client_headers.compose(self.allocator, base_headers, self.config);
+        defer client_headers.free(self.allocator, headers);
 
         // Make POST request with JSON body and parse response
         return self.client.postJsonResult(Anthropic.Response, Anthropic.ErrorResponse, url, headers, request) catch |err| {
@@ -213,7 +216,11 @@ pub const AnthropicClient = struct {
         // Build headers (up to 4: base 3 + optional anthropic-beta)
         var headers_buf: [4]std.http.Header = undefined;
         var beta_value_buf: [512]u8 = undefined;
-        const headers = self.buildRequestHeaders(&headers_buf, request.betas, &beta_value_buf);
+        const base_headers = self.buildRequestHeaders(&headers_buf, request.betas, &beta_value_buf);
+        // Safe to free after the call: postStreamingResult serializes the headers
+        // to the socket during the send (before it returns).
+        const headers = try client_headers.compose(self.allocator, base_headers, self.config);
+        defer client_headers.free(self.allocator, headers);
 
         return self.client.postStreamingResult(SSEIterator, Anthropic.ErrorResponse, url, headers, request);
     }

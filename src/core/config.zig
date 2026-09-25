@@ -150,6 +150,36 @@ pub const ProviderConfig = struct {
         };
     }
 
+    /// Iterate the optional `"headers"` object as (name, value) string pairs.
+    ///
+    /// Returns an empty iterator when `headers` is absent or not a JSON object,
+    /// so callers work uniformly whether or not custom headers are configured.
+    /// Non-string values are skipped. Yielded slices are borrowed from the root
+    /// parsed tree (stable for the request lifetime; do not free).
+    pub fn headerIterator(self: *const ProviderConfig) CustomHeaderIterator {
+        const headers_val = self.raw.object.get("headers") orelse return .{ .it = null };
+        if (headers_val != .object) return .{ .it = null };
+        return .{ .it = headers_val.object.iterator() };
+    }
+
+    pub const CustomHeaderIterator = struct {
+        it: ?std.json.ObjectMap.Iterator,
+
+        pub const Pair = struct { name: []const u8, value: []const u8 };
+
+        /// Next (name, value) pair whose value is a JSON string; skips others.
+        pub fn next(self: *CustomHeaderIterator) ?Pair {
+            if (self.it == null) return null;
+            while (self.it.?.next()) |entry| {
+                switch (entry.value_ptr.*) {
+                    .string => |s| return .{ .name = entry.key_ptr.*, .value = s },
+                    else => continue, // non-string header value — skip
+                }
+            }
+            return null;
+        }
+    };
+
     /// Release resources owned by this provider config.
     ///
     /// Currently a no-op because all data is borrowed from the root parsed

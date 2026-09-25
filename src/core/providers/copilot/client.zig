@@ -37,6 +37,7 @@ const auth = @import("../../auth/mod.zig");
 const app_cache = @import("../../cache/app_cache.zig");
 const uri_mod = std.Uri;
 const model_router = @import("../model_router.zig");
+const client_headers = @import("../client_headers.zig");
 
 // ============================================================================
 // Comptime request routing helpers
@@ -675,7 +676,9 @@ pub const CopilotClient = struct {
         var auth_buf: [512]u8 = undefined;
         var uuid_buf: [37]u8 = undefined;
         var headers_buf: [10]std.http.Header = undefined;
-        const headers = try self.buildHeaders(access_token, determineInitiator(request), &auth_buf, &uuid_buf, &headers_buf);
+        const base_headers = try self.buildHeaders(access_token, determineInitiator(request), &auth_buf, &uuid_buf, &headers_buf);
+        const headers = try client_headers.compose(self.allocator, base_headers, self.config);
+        defer client_headers.free(self.allocator, headers);
 
         return self.client.postJsonResult(ResponseTypeFor(Request), ErrorTypeFor(Request), url, headers, request) catch |err| {
             log.err("[Copilot] [SYNC] sendRequest failed: {}", .{err});
@@ -701,7 +704,11 @@ pub const CopilotClient = struct {
         var auth_buf: [512]u8 = undefined;
         var uuid_buf: [37]u8 = undefined;
         var headers_buf: [10]std.http.Header = undefined;
-        const headers = try self.buildHeaders(access_token, determineInitiator(request), &auth_buf, &uuid_buf, &headers_buf);
+        const base_headers = try self.buildHeaders(access_token, determineInitiator(request), &auth_buf, &uuid_buf, &headers_buf);
+        // Safe to free after the call: postStreamingResult serializes the headers
+        // to the socket during the send (before it returns).
+        const headers = try client_headers.compose(self.allocator, base_headers, self.config);
+        defer client_headers.free(self.allocator, headers);
 
         log.debug("[Copilot] [STREAM] sendStreamingRequest - sending POST request...", .{});
         return self.client.postStreamingResult(SSEIterator, Err, url, headers, request) catch |err| {
