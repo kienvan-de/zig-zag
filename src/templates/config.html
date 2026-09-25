@@ -416,6 +416,59 @@ body{
   color:var(--text);
 }
 
+/* Custom headers editor (per-provider) — reuses .form-group input styling
+   (dark/light + glass come free) via the enclosing .form-group wrapper. */
+.field-hint{
+  font-size:11px;
+  color:var(--text-muted);
+  margin-top:-2px;
+}
+.headers-editor{
+  display:flex;
+  flex-direction:column;
+  gap:8px;
+}
+.headers-row{
+  display:flex;
+  gap:8px;
+  align-items:center;
+}
+.headers-row .headers-name{flex:0 0 38%}
+.headers-row .headers-value{flex:1}
+.headers-remove{
+  background:none;
+  border:none;
+  color:var(--text-muted);
+  cursor:pointer;
+  font-size:14px;
+  padding:4px 6px;
+  line-height:1;
+  border-radius:var(--radius);
+  flex-shrink:0;
+  transition:color var(--transition),background var(--transition);
+}
+.headers-remove:hover{color:var(--danger);background:rgba(240,107,107,0.1)}
+.headers-add-btn{
+  display:flex;
+  align-items:center;
+  gap:6px;
+  padding:8px 12px;
+  border-radius:var(--radius);
+  cursor:pointer;
+  color:var(--accent);
+  font-size:13px;
+  font-weight:500;
+  border:1px dashed rgba(123,140,255,0.3);
+  background:none;
+  width:100%;
+  transition:border-color var(--transition),color var(--transition),box-shadow var(--transition);
+}
+.headers-add-btn:hover{
+  border-color:var(--accent);
+  color:var(--accent-hover);
+  box-shadow:0 0 8px rgba(123,140,255,0.12);
+}
+
 .form-group textarea{
   resize:vertical;
   min-height:60px;
@@ -1086,6 +1139,105 @@ function providerLabel(key) {
   return key.replace(/_/g, ' ').toUpperCase();
 }
 
+/* ── Custom headers editor (per-provider, optional) ─────
+   `headers` is an optional object of {name: value} sent on every request to
+   that provider. Edited as an ordered array of rows (so an in-progress key
+   edit never collides with another row), converted to/from the plain object
+   only at read/sync time. Absent or empty → the `headers` key is OMITTED from
+   the saved config entirely (never saved as `{}`), so a provider with no
+   custom headers behaves exactly as before this feature existed. */
+var headersEditRows = [];
+
+function headersObjectToRows(obj) {
+  var rows = [];
+  if (obj) {
+    Object.keys(obj).forEach(function (k) {
+      rows.push({ name: k, value: obj[k] });
+    });
+  }
+  return rows;
+}
+
+function headersRowsToObject(rows) {
+  var out = {};
+  rows.forEach(function (r) {
+    var name = (r.name || '').trim();
+    if (!name) return;
+    out[name] = r.value || '';
+  });
+  return out;
+}
+
+function renderHeaderRowHtml(row, idx) {
+  return '<div class="headers-row">' +
+    '<input type="text" class="headers-name" data-header-part="name" data-header-idx="' + idx +
+      '" placeholder="Header name" value="' + escHtml(row.name) + '">' +
+    '<input type="text" class="headers-value" data-header-part="value" data-header-idx="' + idx +
+      '" placeholder="Value" value="' + escHtml(row.value) + '">' +
+    '<button type="button" class="headers-remove" data-header-idx="' + idx +
+      '" title="Remove header">✕</button>' +
+    '</div>';
+}
+
+/// Render the editor HTML for provider object `obj` and reset the row model
+/// from its current `headers` (called once per renderProviderForm pass).
+function renderHeadersEditorHtml(obj) {
+  headersEditRows = headersObjectToRows(obj.headers);
+  var html = '<div class="form-group">';
+  html += '<label>Custom Headers</label>';
+  html += '<div class="field-hint">Sent on every request to this provider (e.g. HTTP-Referer, X-Title for OpenRouter).</div>';
+  html += '<div class="headers-editor" id="headers-list">';
+  headersEditRows.forEach(function (row, idx) { html += renderHeaderRowHtml(row, idx); });
+  html += '</div>';
+  html += '<button type="button" class="headers-add-btn" id="headers-add-btn">+ Add header</button>';
+  html += '</div>';
+  return html;
+}
+
+/// Sync the in-memory row model into state.dirty.providers[key].headers,
+/// omitting the key entirely when there are no non-empty rows.
+function syncHeadersToState(key) {
+  var obj = headersRowsToObject(headersEditRows);
+  if (!state.dirty.providers[key]) state.dirty.providers[key] = {};
+  if (Object.keys(obj).length === 0) {
+    delete state.dirty.providers[key].headers;
+  } else {
+    state.dirty.providers[key].headers = obj;
+  }
+  markDirty();
+}
+
+/// Wire the headers editor for the currently-rendered provider `key`.
+/// Called once per renderProviderForm pass, after $mainPanel.innerHTML is set.
+function wireHeadersEditor(key) {
+  var list = document.getElementById('headers-list');
+  var addBtn = document.getElementById('headers-add-btn');
+  if (!list || !addBtn) return;
+
+  list.addEventListener('input', function (e) {
+    var input = e.target;
+    if (!input.dataset || input.dataset.headerPart == null) return;
+    var idx = parseInt(input.dataset.headerIdx, 10);
+    if (!headersEditRows[idx]) return;
+    headersEditRows[idx][input.dataset.headerPart] = input.value;
+    syncHeadersToState(key);
+  });
+
+  list.addEventListener('click', function (e) {
+    var btn = e.target.closest('.headers-remove');
+    if (!btn) return;
+    var idx = parseInt(btn.dataset.headerIdx, 10);
+    headersEditRows.splice(idx, 1);
+    syncHeadersToState(key);
+    list.innerHTML = headersEditRows.map(function (r, i) { return renderHeaderRowHtml(r, i); }).join('');
+  });
+
+  addBtn.addEventListener('click', function () {
+    headersEditRows.push({ name: '', value: '' });
+    list.innerHTML = headersEditRows.map(function (r, i) { return renderHeaderRowHtml(r, i); }).join('');
+  });
+}
+
 /* ── Render a single form field HTML ────────────────── */
 function renderFieldHtml(providerKey, field, value) {
   var id = 'field-' + providerKey + '-' + field.name;
@@ -1202,8 +1354,12 @@ function renderProviderForm(key) {
     }
   }
 
+  // Custom headers — common to every provider type, always last.
+  html += renderHeadersEditorHtml(obj);
+
   html += '</div></div>';
   $mainPanel.innerHTML = html;
+  wireHeadersEditor(key);
 
   // Wire up input handlers
   $mainPanel.querySelectorAll('input[data-provider], select[data-provider]').forEach(function (input) {
