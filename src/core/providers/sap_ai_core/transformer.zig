@@ -443,8 +443,8 @@ pub fn transformMessagesRequest(
                         .tool_result => |tr| {
                             const c_text: ?[]const u8 = if (tr.content) |c| switch (c) {
                                 .text => |s| s,
-                                .blocks => null,
-                            } else null;
+                                .blocks => "",
+                            } else "";
                             try tool_results.append(allocator, .{
                                 .id = tr.tool_use_id,
                                 .content = c_text,
@@ -461,7 +461,7 @@ pub fn transformMessagesRequest(
                 for (tool_results.items) |tr| {
                     try messages.append(allocator, .{
                         .role = .tool,
-                        .content = if (tr.content) |c| .{ .text = try allocator.dupe(u8, c) } else null,
+                        .content = if (tr.content) |c| .{ .text = try allocator.dupe(u8, c) } else .{ .text = try allocator.dupe(u8, "") },
                         .tool_call_id = tr.id,
                     });
                 }
@@ -472,7 +472,7 @@ pub fn transformMessagesRequest(
                         .content = if (text_parts.items.len > 0)
                             .{ .text = try std.mem.join(allocator, "", text_parts.items) }
                         else
-                            null,
+                            .{ .text = try allocator.dupe(u8, "") },
                         .tool_calls = if (tool_use_blocks.items.len > 0)
                             try tool_use_blocks.toOwnedSlice(allocator)
                         else
@@ -779,7 +779,7 @@ pub fn transformResponsesRequest(
                 if (role_val != .string) continue;
                 const role = std.meta.stringToEnum(Chat.Role, role_val.string) orelse continue;
                 const message_content: ?Chat.MessageContent = blk: {
-                    const cv = obj.get("content") orelse break :blk null;
+                    const cv = obj.get("content") orelse break :blk .{ .text = "" };
                     switch (cv) {
                         .string => |s| break :blk .{ .text = s },
                         .array => |arr| {
@@ -789,9 +789,9 @@ pub fn transformResponsesRequest(
                                 if (tv == .string and tv.string.len > 0)
                                     break :blk .{ .text = tv.string };
                             }
-                            break :blk null;
+                            break :blk .{ .text = "" };
                         },
-                        else => break :blk null,
+                        else => break :blk .{ .text = "" },
                     }
                 };
                 try messages.append(allocator, .{
@@ -821,7 +821,7 @@ pub fn transformResponsesRequest(
                 };
                 try messages.append(allocator, .{
                     .role = .assistant,
-                    .content = null,
+                    .content = .{ .text = "" },
                     .tool_calls = tcs,
                 });
             } else if (std.mem.eql(u8, item_type, "function_call_output")) {
@@ -832,7 +832,7 @@ pub fn transformResponsesRequest(
                 else null;
                 try messages.append(allocator, .{
                     .role = .tool,
-                    .content = if (output_text) |t| .{ .text = t } else null,
+                    .content = if (output_text) |t| .{ .text = t } else .{ .text = "" },
                     .tool_call_id = call_id_val.string,
                 });
             }
