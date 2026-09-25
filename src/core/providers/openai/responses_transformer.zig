@@ -255,11 +255,18 @@ pub fn transformChatResponse(
         tool_calls.deinit(allocator);
     }
 
+    var reasoning_parts: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (reasoning_parts.items) |p| allocator.free(p);
+        reasoning_parts.deinit(allocator);
+    }
+
     for (upstream_response.output) |item| {
         switch (item) {
             .message => |m| for (m.content) |c| switch (c) {
                 .output_text => |t| try text_parts.append(allocator, t.text),
-                .refusal, .other => {},
+                // refusal/other have no Chat message-content equivalent.
+                .refusal, .other => log.debug("[chat] dropping Responses output content {s}: no Chat equivalent", .{@tagName(c)}),
             },
             .function_call => |f| try tool_calls.append(allocator, .{
                 .id = try allocator.dupe(u8, f.id),
@@ -269,9 +276,14 @@ pub fn transformChatResponse(
                     .arguments = try allocator.dupe(u8, f.arguments),
                 },
             }),
-            .reasoning, .web_search_call, .file_search_call, .code_interpreter_call,
+            // Reasoning → Chat `reasoning` field (joined across items).
+            .reasoning => |r| if (try content.extractReasoningText(r, allocator)) |txt| {
+                try reasoning_parts.append(allocator, txt);
+            },
+            // No Chat equivalent — dropped, logged.
+            .web_search_call, .file_search_call, .code_interpreter_call,
             .mcp_list_tools_item, .mcp_call_item, .image_generation_call,
-            .local_shell_call, .other => {},
+            .local_shell_call, .other => log.debug("[chat] dropping Responses output item {s}: no Chat equivalent", .{@tagName(item)}),
         }
     }
 
@@ -280,6 +292,12 @@ pub fn transformChatResponse(
     else
         null;
     errdefer if (message_text) |t| allocator.free(t);
+
+    const reasoning_text: ?[]const u8 = if (reasoning_parts.items.len > 0)
+        try std.mem.join(allocator, "", reasoning_parts.items)
+    else
+        null;
+    errdefer if (reasoning_text) |t| allocator.free(t);
 
     const tc_slice: ?[]const Chat.ToolCall = if (tool_calls.items.len > 0)
         try tool_calls.toOwnedSlice(allocator)
@@ -301,6 +319,7 @@ pub fn transformChatResponse(
         .message = .{
             .role = .assistant,
             .content = message_text,
+            .reasoning = reasoning_text,
             .tool_calls = tc_slice,
         },
         .finish_reason = try allocator.dupe(u8, finish_reason),
@@ -338,6 +357,7 @@ pub fn cleanupChatResponse(inbound_response: Chat.Response, allocator: std.mem.A
     allocator.free(inbound_response.model);
     for (inbound_response.choices) |choice| {
         if (choice.message.content) |c| allocator.free(c);
+        if (choice.message.reasoning) |r| allocator.free(r);
         if (choice.message.tool_calls) |tcs| content.freeChatToolCallList(tcs, allocator);
         allocator.free(choice.finish_reason);
     }
@@ -393,6 +413,33 @@ pub fn transformChatStreamLine(
             return .{ .skip = {} };
         };
         choices[0] = .{ .index = 0, .delta = .{ .content = owned }, .finish_reason = null };
+        const chunks = allocator.alloc(Chat.StreamChunk, 1) catch {
+            allocator.free(owned);
+            allocator.free(choices);
+            return .{ .skip = {} };
+        };
+        chunks[0] = .{
+            .id = state.response_id,
+            .object = "chat.completion.chunk",
+            .created = state.created,
+            .model = state.original_model,
+            .choices = choices,
+        };
+        return .{ .events = chunks };
+    }
+
+    if (std.mem.eql(u8, event_type, "response.reasoning_text.delta") or
+        std.mem.eql(u8, event_type, "response.reasoning_summary_text.delta"))
+    {
+        // Reasoning delta → Chat delta carrying `reasoning` (not `content`).
+        const delta_v = obj.get("delta") orelse return .{ .skip = {} };
+        if (delta_v != .string or delta_v.string.len == 0) return .{ .skip = {} };
+        const owned = allocator.dupe(u8, delta_v.string) catch return .{ .skip = {} };
+        const choices = allocator.alloc(Chat.StreamChoice, 1) catch {
+            allocator.free(owned);
+            return .{ .skip = {} };
+        };
+        choices[0] = .{ .index = 0, .delta = .{ .reasoning = owned }, .finish_reason = null };
         const chunks = allocator.alloc(Chat.StreamChunk, 1) catch {
             allocator.free(owned);
             allocator.free(choices);
@@ -526,6 +573,16 @@ pub const MessagesStreamState = struct {
     cache_write_tokens: u32 = 0,
     cache_read_tokens: u32 = 0,
     sent_open: bool = false,
+    // Reasoning-block bookkeeping. When reasoning deltas arrive (before text),
+    // a `thinking` block is opened at index 0 and the text block moves to the
+    // next index. With no reasoning, text stays at index 0 (unchanged behavior).
+    open_block: enum { none, thinking, text } = .none,
+    thinking_index: u32 = 0,
+    text_index: u32 = 0,
+    next_index: u32 = 0,
+    /// terminal (message_delta + message_stop) emitted yet? Guards the post-loop
+    /// finalize against double-emitting when response.completed already fired.
+    finished: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, original_model: []const u8) MessagesStreamState {
         return .{ .allocator = allocator, .original_model = original_model };
@@ -681,7 +738,8 @@ pub fn transformMessagesResponse(
                         .text = try allocator.dupe(u8, t.text),
                     } });
                 },
-                .refusal, .other => {},
+                // No Messages content-block equivalent.
+                .refusal, .other => log.debug("[messages] dropping Responses output content {s}: no Messages equivalent", .{@tagName(c)}),
             },
             .function_call => |f| try content_blocks.append(allocator, .{ .tool_use = .{
                 .type = "tool_use",
@@ -689,9 +747,20 @@ pub fn transformMessagesResponse(
                 .name = try allocator.dupe(u8, f.name),
                 .input = try content.parseToolArguments(f.arguments, allocator),
             } }),
-            .reasoning, .web_search_call, .file_search_call, .code_interpreter_call,
+            // Reasoning → thinking block (empty signature; synthesized). Responses
+            // emits reasoning items before message items, so order places it first.
+            .reasoning => |r| if (try content.extractReasoningText(r, allocator)) |txt| {
+                errdefer allocator.free(txt);
+                try content_blocks.append(allocator, .{ .thinking = .{
+                    .type = "thinking",
+                    .thinking = txt,
+                    .signature = "",
+                } });
+            },
+            // No Messages equivalent — dropped, logged.
+            .web_search_call, .file_search_call, .code_interpreter_call,
             .mcp_list_tools_item, .mcp_call_item, .image_generation_call,
-            .local_shell_call, .other => {},
+            .local_shell_call, .other => log.debug("[messages] dropping Responses output item {s}: no Messages equivalent", .{@tagName(item)}),
         }
     }
 
@@ -807,7 +876,16 @@ pub fn transformMessagesStreamLine(
             state.finish_reason = "max_tokens";
         }
 
-        // Lazy open: a stream that produced no deltas still closes correctly.
+        finishMessagesStream(state, &events, allocator);
+        return .{ .events = events.toOwnedSlice(allocator) catch return .{ .skip = {} } };
+    }
+
+    if (std.mem.eql(u8, event_type, "response.reasoning_text.delta") or
+        std.mem.eql(u8, event_type, "response.reasoning_summary_text.delta"))
+    {
+        const delta_v = obj.get("delta") orelse return .{ .skip = {} };
+        if (delta_v != .string or delta_v.string.len == 0) return .{ .skip = {} };
+
         if (!state.sent_open) {
             events.append(allocator, .{ .message_start = .{
                 .type = "message_start",
@@ -822,30 +900,29 @@ pub fn transformMessagesStreamLine(
                     .usage = .{ .input_tokens = state.input_tokens, .output_tokens = 0 },
                 },
             }}) catch return .{ .skip = {} };
-            events.append(allocator, .{ .content_block_start = .{
-                .type = "content_block_start",
-                .index = 0,
-                .content_block = .{ .type = "text", .text = "" },
-            }}) catch return .{ .skip = {} };
             state.sent_open = true;
         }
+        // Open the thinking block on first reasoning delta (index 0).
+        if (state.open_block != .thinking) {
+            state.thinking_index = state.next_index;
+            state.next_index += 1;
+            state.open_block = .thinking;
+            events.append(allocator, .{ .content_block_start = .{
+                .type = "content_block_start",
+                .index = state.thinking_index,
+                .content_block = .{ .type = "thinking", .thinking = "" },
+            }}) catch return .{ .skip = {} };
+        }
 
-        const stop_reason = state.finish_reason orelse "end_turn";
-        events.append(allocator, .{ .content_block_stop = .{
-            .type = "content_block_stop", .index = 0,
-        }}) catch return .{ .skip = {} };
-        events.append(allocator, .{ .message_delta = .{
-            .type = "message_delta",
-            .delta = .{ .stop_reason = stop_reason, .stop_sequence = null },
-            .usage = .{
-                .output_tokens = state.output_tokens,
-                .cache_read_input_tokens = if (state.cache_read_tokens > 0) state.cache_read_tokens else null,
-                .cache_creation_input_tokens = if (state.cache_write_tokens > 0) state.cache_write_tokens else null,
-            },
-        }}) catch return .{ .skip = {} };
-        events.append(allocator, .{ .message_stop = .{ .type = "message_stop" } }) catch
+        const owned = allocator.dupe(u8, delta_v.string) catch return .{ .skip = {} };
+        events.append(allocator, .{ .content_block_delta = .{
+            .type = "content_block_delta",
+            .index = state.thinking_index,
+            .delta = .{ .type = "thinking_delta", .thinking = owned },
+        }}) catch {
+            allocator.free(owned);
             return .{ .skip = {} };
-
+        };
         return .{ .events = events.toOwnedSlice(allocator) catch return .{ .skip = {} } };
     }
 
@@ -867,19 +944,31 @@ pub fn transformMessagesStreamLine(
                     .usage = .{ .input_tokens = state.input_tokens, .output_tokens = 0 },
                 },
             }}) catch return .{ .skip = {} };
+            state.sent_open = true;
+        }
+        // Close a preceding thinking block, then open the text block (once).
+        if (state.open_block == .thinking) {
+            events.append(allocator, .{ .content_block_stop = .{
+                .type = "content_block_stop", .index = state.thinking_index,
+            }}) catch return .{ .skip = {} };
+            state.open_block = .none;
+        }
+        if (state.open_block != .text) {
+            state.text_index = state.next_index;
+            state.next_index += 1;
+            state.open_block = .text;
             events.append(allocator, .{ .content_block_start = .{
                 .type = "content_block_start",
-                .index = 0,
+                .index = state.text_index,
                 .content_block = .{ .type = "text", .text = "" },
             }}) catch return .{ .skip = {} };
-            state.sent_open = true;
         }
 
         // Dupe — delta_v.string borrows from parsed which dies after this function returns.
         const owned_text = allocator.dupe(u8, delta_v.string) catch return .{ .skip = {} };
         events.append(allocator, .{ .content_block_delta = .{
             .type = "content_block_delta",
-            .index = 0,
+            .index = state.text_index,
             .delta = .{ .type = "text_delta", .text = owned_text },
         }}) catch {
             allocator.free(owned_text);
@@ -904,8 +993,78 @@ pub fn transformMessagesStreamLine(
     return .{ .skip = {} };
 }
 
-// ============================================================================
-// Flow: /v1/responses — pass-through (upstream speaks the same wire)
+/// Emit the terminal (lazy message_start if needed, close open block,
+/// message_delta + message_stop). Idempotent via `state.finished` so the
+/// pipeline's post-loop finalize does not double-emit when response.completed
+/// already fired.
+fn finishMessagesStream(
+    state: *MessagesStreamState,
+    events: *std.ArrayList(Messages.SseEvent),
+    allocator: std.mem.Allocator,
+) void {
+    if (state.finished) return;
+    state.finished = true;
+
+    // Lazy open: a stream that produced no deltas still closes correctly.
+    if (!state.sent_open) {
+        events.append(allocator, .{ .message_start = .{
+            .type = "message_start",
+            .message = .{
+                .id = "msg_proxy",
+                .type = "message",
+                .role = "assistant",
+                .content = &.{},
+                .model = state.original_model,
+                .stop_reason = null,
+                .stop_sequence = null,
+                .usage = .{ .input_tokens = state.input_tokens, .output_tokens = 0 },
+            },
+        }}) catch return;
+        events.append(allocator, .{ .content_block_start = .{
+            .type = "content_block_start",
+            .index = 0,
+            .content_block = .{ .type = "text", .text = "" },
+        }}) catch return;
+        state.sent_open = true;
+        state.open_block = .text;
+        state.text_index = 0;
+    }
+
+    const stop_reason = state.finish_reason orelse "end_turn";
+    const close_index: u32 = switch (state.open_block) {
+        .none, .text => state.text_index,
+        .thinking => state.thinking_index,
+    };
+    events.append(allocator, .{ .content_block_stop = .{
+        .type = "content_block_stop", .index = close_index,
+    }}) catch return;
+    state.open_block = .none;
+    events.append(allocator, .{ .message_delta = .{
+        .type = "message_delta",
+        .delta = .{ .stop_reason = stop_reason, .stop_sequence = null },
+        .usage = .{
+            .output_tokens = state.output_tokens,
+            .cache_read_input_tokens = if (state.cache_read_tokens > 0) state.cache_read_tokens else null,
+            .cache_creation_input_tokens = if (state.cache_write_tokens > 0) state.cache_write_tokens else null,
+        },
+    }}) catch return;
+    events.append(allocator, .{ .message_stop = .{ .type = "message_stop" } }) catch return;
+}
+
+/// Terminal flush when the stream ends without a response.completed event
+/// (upstream closed / empty stream). Returns an owned event slice (caller frees),
+/// or null if the terminal was already emitted.
+pub fn finalizeMessagesStream(
+    state: *MessagesStreamState,
+    allocator: std.mem.Allocator,
+) ?[]Messages.SseEvent {
+    if (state.finished) return null;
+    var events: std.ArrayList(Messages.SseEvent) = .empty;
+    defer events.deinit(allocator);
+    finishMessagesStream(state, &events, allocator);
+    if (events.items.len == 0) return null;
+    return events.toOwnedSlice(allocator) catch null;
+}
 // ============================================================================
 
 pub const ResponsesStreamState = struct {

@@ -64,7 +64,10 @@ pub fn freeMessageOwnedBlocks(blocks: []const Messages.ContentBlock, allocator: 
                 allocator.free(tu.name);
                 freeParsedJsonValue(tu.input, allocator);
             },
-            .thinking, .redacted_thinking,
+            // Synthesized thinking blocks own their `thinking` text (signature is
+            // an empty string literal — not freed).
+            .thinking => |tb| allocator.free(tb.thinking),
+            .redacted_thinking,
             .server_tool_use, .tool_result,
             .web_search_tool_result, .web_fetch_tool_result,
             .code_execution_tool_result, .bash_code_execution_tool_result,
@@ -79,6 +82,39 @@ pub fn freeMessageOwnedBlocks(blocks: []const Messages.ContentBlock, allocator: 
 pub fn parseToolArguments(arguments: []const u8, allocator: std.mem.Allocator) !std.json.Value {
     return std.json.parseFromSliceLeaky(std.json.Value, allocator, arguments, .{}) catch
         .{ .object = .{} };
+}
+
+/// Extract the reasoning text from a Responses `reasoning` output item, joining
+/// the `summary[].text` entries (and falling back to `content[].text`). Returns
+/// a freshly-allocated string the caller owns, or null if there is no text.
+/// Used to surface reasoning when down-converting Responses → Chat/Messages
+/// instead of dropping the reasoning item.
+pub fn extractReasoningText(
+    item: Responses.OutputItemReasoning,
+    allocator: std.mem.Allocator,
+) !?[]const u8 {
+    var parts: std.ArrayList([]const u8) = .empty;
+    defer parts.deinit(allocator);
+
+    // summary is a JSON array of {type:"summary_text", text:"..."} objects.
+    if (item.summary) |s| if (s == .array) {
+        for (s.array.items) |entry| {
+            if (entry != .object) continue;
+            if (entry.object.get("text")) |t| {
+                if (t == .string and t.string.len > 0) try parts.append(allocator, t.string);
+            }
+        }
+    };
+    // content is a typed slice of reasoning content parts, each {text:"..."}.
+    for (item.content) |entry| {
+        if (entry != .object) continue;
+        if (entry.object.get("text")) |t| {
+            if (t == .string and t.string.len > 0) try parts.append(allocator, t.string);
+        }
+    }
+
+    if (parts.items.len == 0) return null;
+    return try std.mem.join(allocator, "", parts.items);
 }
 
 /// Free a chat tool-call list (id, name, arguments are all duped strings).

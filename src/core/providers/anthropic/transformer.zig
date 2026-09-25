@@ -488,6 +488,11 @@ pub const MessagesStreamState = struct {
     output_tokens: u32 = 0,
     cache_write_tokens: u32 = 0,
     cache_read_tokens: u32 = 0,
+    /// Whether a `message_stop` was seen from the (real Anthropic) upstream.
+    /// The pass-through forwards events verbatim; if the upstream drops the
+    /// connection without a message_stop, the post-loop finalize synthesizes a
+    /// minimal terminal so the client never sees a stream without a stop reason.
+    saw_stop: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, original_model: []const u8) MessagesStreamState {
         return .{
@@ -654,6 +659,7 @@ pub fn transformMessagesStreamLine(
             const parsed = std.json.parseFromSlice(Messages.MessageStop, allocator, json_part,
                 .{ .allocate = .alloc_always, .ignore_unknown_fields = true }) catch return .{ .skip = {} };
             defer parsed.deinit();
+            state.saw_stop = true;
             break :blk .{ .message_stop = .{
                 .type = allocator.dupe(u8, parsed.value.type) catch return .{ .skip = {} },
             }};
@@ -682,9 +688,28 @@ pub fn transformMessagesStreamLine(
     return .{ .events = events };
 }
 
-// ============================================================================
-// Flow: /v1/responses — inbound responses schema → Anthropic wire
-// ============================================================================
+/// Terminal flush for the pass-through when the upstream closed WITHOUT sending
+/// `message_stop` (dropped connection / empty stream). Returns an owned event
+/// slice (caller frees) with a minimal message_delta + message_stop, or null if
+/// a message_stop was already forwarded. Note: the pass-through does not track
+/// open block indices, so this does not emit a content_block_stop — a bare
+/// message termination is still far better for the client than a hanging stream.
+pub fn finalizeMessagesStream(
+    state: *MessagesStreamState,
+    allocator: std.mem.Allocator,
+) ?[]Messages.SseEvent {
+    if (state.saw_stop) return null;
+    var events: std.ArrayList(Messages.SseEvent) = .empty;
+    defer events.deinit(allocator);
+    events.append(allocator, .{ .message_delta = .{
+        .type = "message_delta",
+        .delta = .{ .stop_reason = "end_turn", .stop_sequence = null },
+        .usage = .{ .output_tokens = state.output_tokens },
+    }}) catch return null;
+    events.append(allocator, .{ .message_stop = .{ .type = "message_stop" } }) catch return null;
+    state.saw_stop = true;
+    return events.toOwnedSlice(allocator) catch null;
+}
 
 /// Stream state for the responses flow.
 pub const ResponsesStreamState = struct {
@@ -1133,7 +1158,12 @@ pub fn transformResponsesResponse(
     for (upstream_response.content) |block| {
         switch (block) {
             .text => |t| if (t.text.len > 0) try output_text_buf.appendSlice(allocator, t.text),
-            else => {},
+            // Only text contributes to the output_text convenience field; other
+            // block kinds are surfaced as their own output items elsewhere.
+            .tool_use, .server_tool_use, .thinking, .redacted_thinking, .tool_result,
+            .web_search_tool_result, .web_fetch_tool_result, .code_execution_tool_result,
+            .bash_code_execution_tool_result, .text_editor_code_execution_tool_result,
+            .tool_search_tool_result, .fallback => {},
         }
     }
     const output_text: ?[]const u8 = if (output_text_buf.items.len > 0)

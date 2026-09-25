@@ -617,12 +617,24 @@ pub const Delta = struct {
     refusal: ?[]const u8 = null,
     tool_calls: ?[]const DeltaToolCall = null,
     audio: ?std.json.Value = null,
+    // Reasoning-model "thinking" tokens. Providers disagree on the field name:
+    // OpenRouter/most use `reasoning`; some use `reasoning_content`. Both are
+    // captured so the transformers can surface reasoning instead of dropping it.
+    reasoning: ?[]const u8 = null,
+    reasoning_content: ?[]const u8 = null,
+
+    /// The reasoning text on this delta regardless of which field carried it.
+    pub fn reasoningText(self: @This()) ?[]const u8 {
+        return self.reasoning orelse self.reasoning_content;
+    }
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         try jw.beginObject();
         if (self.role) |r| { try jw.objectField("role"); try jw.write(@tagName(r)); }
         if (self.content) |c| { try jw.objectField("content"); try jw.write(c); }
         if (self.refusal) |r| { try jw.objectField("refusal"); try jw.write(r); }
+        if (self.reasoning) |r| { try jw.objectField("reasoning"); try jw.write(r); }
+        if (self.reasoning_content) |r| { try jw.objectField("reasoning_content"); try jw.write(r); }
         if (self.tool_calls) |tc| {
             try jw.objectField("tool_calls");
             try jw.beginArray();
@@ -695,12 +707,22 @@ pub const ResponseMessage = struct {
     tool_calls: ?[]const ToolCall = null,
     annotations: ?std.json.Value = null,
     audio: ?std.json.Value = null,
+    // Reasoning-model "thinking" text (see Delta.reasoning for the field-name note).
+    reasoning: ?[]const u8 = null,
+    reasoning_content: ?[]const u8 = null,
+
+    /// The reasoning text on this message regardless of which field carried it.
+    pub fn reasoningText(self: @This()) ?[]const u8 {
+        return self.reasoning orelse self.reasoning_content;
+    }
 
     pub fn jsonStringify(self: @This(), jw: anytype) !void {
         try jw.beginObject();
         try jw.objectField("role"); try jw.write(@tagName(self.role));
         if (self.content) |c| { try jw.objectField("content"); try jw.write(c); }
         if (self.refusal) |r| { try jw.objectField("refusal"); try jw.write(r); }
+        if (self.reasoning) |r| { try jw.objectField("reasoning"); try jw.write(r); }
+        if (self.reasoning_content) |r| { try jw.objectField("reasoning_content"); try jw.write(r); }
         if (self.tool_calls) |tc| { try jw.objectField("tool_calls"); try jw.write(tc); }
         if (self.annotations) |a| { try jw.objectField("annotations"); try jw.write(a); }
         if (self.audio) |au| { try jw.objectField("audio"); try jw.write(au); }

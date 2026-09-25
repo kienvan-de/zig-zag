@@ -301,6 +301,10 @@ fn streaming(
 
         const line = maybe_line orelse break;
 
+        // TEMP DEBUG: log every raw upstream SSE line to diagnose empty/one-chunk
+        // responses. Remove once resolved.
+        log.debug("[STREAM][raw] {s}/{s}: {s}", .{ provider_name, model, line });
+
         const result = Transformer.transformMessagesStreamLine(line, &stream_state, allocator);
         switch (result) {
             .events => |events| {
@@ -320,6 +324,26 @@ fn streaming(
                 }
             },
             .skip => {},
+        }
+    }
+
+    // The stream loop only emits the terminal (message_delta + message_stop) when
+    // the upstream sends `[DONE]` / a finish_reason. Free/empty models often just
+    // close the socket, leaving the Anthropic message unterminated — the client
+    // then reports "stream ended without a stop reason". Flush a terminal here if
+    // one wasn't already emitted (idempotent via each transformer's guard).
+    if (Transformer.finalizeMessagesStream(&stream_state, allocator)) |final_events| {
+        defer allocator.free(final_events);
+        buf.clearRetainingCapacity();
+        for (final_events) |event| {
+            anthropic_content.writeMessagesSSE(event, &buf, allocator) catch continue;
+        }
+        if (buf.items.len > 0) {
+            chunk_count += 1;
+            writer.writeAll(buf.items) catch |write_err| {
+                log.err("[STREAM] Failed to write terminal to client: {}", .{write_err});
+                had_error = true;
+            };
         }
     }
 

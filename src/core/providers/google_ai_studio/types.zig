@@ -55,6 +55,9 @@ pub const PartFunctionResponse = struct {
 };
 pub const PartThought = struct {
     thought: bool = false,
+    // The reasoning text carried alongside `thought: true` (Gemini sends both
+    // in one part). Retained so it can be surfaced as reasoning, not dropped.
+    text: []const u8 = "",
 };
 pub const PartOffset = struct {
     seconds: ?i64 = null,
@@ -90,6 +93,16 @@ pub const Part = union(enum) {
         _ = options;
         if (source != .object) return error.UnexpectedToken;
         const obj = source.object;
+
+        // `thought` must be checked BEFORE `text`: Gemini reasoning parts arrive
+        // as {"text":"...","thought":true}, so classifying on `text` first would
+        // misclassify reasoning as visible output text.
+        if (obj.get("thought")) |th| {
+            if (th == .bool and th.bool) {
+                const txt = if (obj.get("text")) |tv| (if (tv == .string) tv.string else "") else "";
+                return .{ .thought = .{ .thought = true, .text = txt } };
+            }
+        }
 
         if (obj.get("text")) |tv| {
             if (tv == .string) return .{ .text = .{ .text = tv.string } };
@@ -136,7 +149,6 @@ pub const Part = union(enum) {
                 return .{ .function_response = .{ .name = name, .response = resp } };
             }
         }
-        if (obj.get("thought")) |tv| return .{ .thought = .{ .thought = tv == .bool and tv.bool } };
         if (obj.get("videoMetadata")) |v| {
             if (v == .object) {
                 const so = v.object.get("startOffset");

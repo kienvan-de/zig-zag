@@ -253,7 +253,26 @@ pub const MessagesStreamState = struct {
     output_tokens: u32 = 0,
     cache_write_tokens: u32 = 0,
     cache_read_tokens: u32 = 0,
-    sent_open: bool = false,
+    // message_start emitted yet?
+    started: bool = false,
+    // terminal (message_delta + message_stop) emitted yet? Guards against a
+    // double terminal when a provider sends BOTH a finish_reason chunk and a
+    // separate [DONE] line (e.g. SAP AI Core).
+    finished: bool = false,
+    // Which content block is currently open, if any. Anthropic requires blocks
+    // be opened/closed in order with monotonic indices. Reasoning models stream
+    // thinking first, then the answer, so we open a `thinking` block for reasoning
+    // deltas, a `text` block for content, and a `tool_use` block per streamed tool
+    // call, closing the previous block on transition.
+    open_block: enum { none, thinking, text, tool_use } = .none,
+    next_index: u32 = 0,
+    thinking_index: u32 = 0,
+    text_index: u32 = 0,
+    // The OpenAI tool-call index of the currently-open tool_use block (OpenAI
+    // streams tool calls sequentially by index: id+name first, then argument
+    // fragments with the same index). null when no tool_use block is open.
+    tool_use_index: u32 = 0,
+    cur_tool_call: ?u32 = null,
 
     pub fn init(allocator: std.mem.Allocator, original_model: []const u8) MessagesStreamState {
         return .{ .allocator = allocator, .original_model = original_model };
@@ -335,6 +354,15 @@ pub fn transformMessagesRequest(
                     tool_results.deinit(allocator);
                 }
 
+                // Image content parts (Anthropic image block → OpenAI image_url).
+                // Owned data-URI/url strings; freed via errdefer, or handed to the
+                // message on success (freed by cleanupMessagesRequest).
+                var image_urls: std.ArrayList([]const u8) = .empty;
+                errdefer {
+                    for (image_urls.items) |u| allocator.free(u);
+                    image_urls.deinit(allocator);
+                }
+
                 for (blocks) |block| {
                     switch (block) {
                         .text => |tb| try text_parts.append(allocator, tb.text),
@@ -371,11 +399,29 @@ pub fn transformMessagesRequest(
                                 .content_owned = owned,
                             });
                         },
-                        .image, .document, .thinking, .redacted_thinking,
+                        .image => |img| {
+                            // Anthropic image → OpenAI image_url. base64 → data URI;
+                            // url → the url directly. file (file_id) has no Chat
+                            // equivalent → logged drop.
+                            switch (img.source) {
+                                .base64 => |b| {
+                                    const uri = std.fmt.allocPrint(allocator, "data:{s};base64,{s}", .{ b.media_type, b.data }) catch return error.OutOfMemory;
+                                    try image_urls.append(allocator, uri);
+                                },
+                                .url => |u| {
+                                    try image_urls.append(allocator, try allocator.dupe(u8, u.url));
+                                },
+                                .file => log.debug("[chat] dropping Messages image file source: no Chat equivalent", .{}),
+                            }
+                        },
+                        // No Chat equivalent — explicit logged drops (prior-turn
+                        // thinking, documents, server-side tool blocks, cache_control-
+                        // bearing containers, etc.).
+                        .document, .thinking, .redacted_thinking,
                         .server_tool_use, .web_search_tool_result, .web_fetch_tool_result,
                         .code_execution_tool_result, .bash_code_execution_tool_result,
                         .text_editor_code_execution_tool_result, .tool_search_tool_result,
-                        .search_result, .container_upload => {},
+                        .search_result, .container_upload => log.debug("[chat] dropping Messages block {s}: no Chat equivalent", .{@tagName(block)}),
                     }
                 }
 
@@ -394,15 +440,51 @@ pub fn transformMessagesRequest(
                     });
                 }
 
-                // Assistant message with text + tool_calls.
-                if (text_parts.items.len > 0 or tool_use_blocks.items.len > 0) {
-                    const content_text: ?Chat.MessageContent = if (text_parts.items.len > 0)
+                // Assistant/user message with text + images + tool_calls.
+                if (text_parts.items.len > 0 or image_urls.items.len > 0 or tool_use_blocks.items.len > 0) {
+                    const content_val: ?Chat.MessageContent = if (image_urls.items.len > 0) blk: {
+                        // Multimodal → parts array: one text part (joined) + image_url parts.
+                        // The image_url strings are MOVED from `image_urls` into `parts`
+                        // (same pointers). To avoid a double-free (image_urls errdefer +
+                        // message cleanup both owning them) we transfer ownership: build
+                        // parts, then clear+deinit image_urls without freeing its items.
+                        var parts: std.ArrayList(Chat.ContentPart) = .empty;
+                        errdefer {
+                            // On failure here the strings are still owned by image_urls
+                            // (below), so free only the parts we appended that DON'T alias
+                            // image_urls — i.e. the joined text part. image_url parts alias
+                            // image_urls and are freed by its errdefer.
+                            for (parts.items) |p| switch (p) {
+                                .text => |t| allocator.free(t.text),
+                                else => {},
+                            };
+                            parts.deinit(allocator);
+                        }
+                        if (text_parts.items.len > 0) {
+                            try parts.append(allocator, .{ .text = .{
+                                .type = "text",
+                                .text = try std.mem.join(allocator, "", text_parts.items),
+                            } });
+                        }
+                        for (image_urls.items) |u| {
+                            try parts.append(allocator, .{ .image_url = .{
+                                .type = "image_url",
+                                .image_url = .{ .url = u, .detail = null },
+                            } });
+                        }
+                        const slice = try parts.toOwnedSlice(allocator);
+                        // Ownership of the url strings has passed to `slice` (→ message,
+                        // freed by cleanupMessagesRequest). Release the image_urls list
+                        // WITHOUT freeing its items, and neutralize its errdefer.
+                        image_urls.clearAndFree(allocator);
+                        break :blk .{ .parts = slice };
+                    } else if (text_parts.items.len > 0)
                         .{ .text = try std.mem.join(allocator, "", text_parts.items) }
                     else
                         null;
                     try messages.append(allocator, .{
                         .role = role,
-                        .content = content_text,
+                        .content = content_val,
                         .tool_calls = if (tool_use_blocks.items.len > 0)
                             try tool_use_blocks.toOwnedSlice(allocator)
                         else
@@ -475,6 +557,7 @@ pub fn cleanupMessagesRequest(request: Chat.Request, allocator: std.mem.Allocato
 ///
 /// Chat.Response fields mapped:
 ///   choices[0].message.content → content[].text block (duped)
+///   choices[0].message.reasoning/reasoning_content → content[].thinking block (duped, empty signature)
 ///   choices[0].message.tool_calls → content[].tool_use blocks (id/name duped,
 ///     arguments leaky-parsed)
 ///   choices[0].finish_reason → stop_reason (transformStopReasonToMessages)
@@ -500,6 +583,18 @@ pub fn transformMessagesResponse(
     if (upstream.choices.len > 0) {
         const choice = upstream.choices[0];
         stop_reason = content.transformStopReasonToMessages(choice.finish_reason);
+
+        // Reasoning ("thinking") comes first, as its own block. Signature is empty
+        // (a synthesized block from a non-Anthropic model has no real signature).
+        if (choice.message.reasoningText()) |reasoning| {
+            if (reasoning.len > 0) {
+                try content_blocks.append(allocator, .{ .thinking = .{
+                    .type = "thinking",
+                    .thinking = try allocator.dupe(u8, reasoning),
+                    .signature = "",
+                } });
+            }
+        }
 
         if (choice.message.content) |text| {
             try content_blocks.append(allocator, .{ .text = .{
@@ -557,9 +652,14 @@ pub fn cleanupMessagesResponse(inbound_response: Messages.Response, allocator: s
 /// One chat wire SSE line → Messages.MessagesStreamLineResult (typed SseEvent slice).
 ///
 /// Synthesizes Anthropic SSE protocol from chat chunks:
-///   first chunk → message_start + content_block_start
-///   text delta  → content_block_delta
-///   [DONE]      → content_block_stop + message_delta + message_stop
+///   first chunk       → message_start
+///   reasoning delta   → (open thinking block if needed) content_block_delta{thinking_delta}
+///   text delta        → (close thinking, open text block if needed) content_block_delta{text_delta}
+///   [DONE]            → content_block_stop + message_delta + message_stop
+///
+/// Reasoning models stream `delta.reasoning` (empty content) before the answer;
+/// those become a separate Anthropic `thinking` block (index 0), then the answer
+/// becomes a `text` block. This keeps reasoning visible instead of dropping it.
 pub fn transformMessagesStreamLine(
     line: []const u8,
     state: *MessagesStreamState,
@@ -568,51 +668,12 @@ pub fn transformMessagesStreamLine(
     if (!std.mem.startsWith(u8, line, "data: ")) return .{ .skip = {} };
     const json_part = line["data: ".len..];
 
-    // [DONE] — close the synthesized message.
+    var events: std.ArrayList(Messages.SseEvent) = .empty;
+    defer events.deinit(allocator);
+
+    // [DONE] — close any open block and the synthesized message.
     if (std.mem.eql(u8, json_part, "[DONE]")) {
-        var events: std.ArrayList(Messages.SseEvent) = .empty;
-        defer events.deinit(allocator);
-
-        // Emit open if stream ended before we got any chunks.
-        if (!state.sent_open) {
-            events.append(allocator, .{ .message_start = .{
-                .type = "message_start",
-                .message = .{
-                    .id = "msg_proxy",
-                    .type = "message",
-                    .role = "assistant",
-                    .content = &.{},
-                    .model = state.original_model,
-                    .stop_reason = null,
-                    .stop_sequence = null,
-                    .usage = .{ .input_tokens = 0, .output_tokens = 0 },
-                },
-            }}) catch return .{ .skip = {} };
-            events.append(allocator, .{ .content_block_start = .{
-                .type = "content_block_start",
-                .index = 0,
-                .content_block = .{ .type = "text", .text = "" },
-            }}) catch return .{ .skip = {} };
-            state.sent_open = true;
-        }
-
-        const stop_reason = content.transformStopReasonToMessages(
-            state.finish_reason orelse "stop"
-        );
-        events.append(allocator, .{ .content_block_stop = .{
-            .type = "content_block_stop", .index = 0,
-        }}) catch return .{ .skip = {} };
-        events.append(allocator, .{ .message_delta = .{
-            .type = "message_delta",
-            .delta = .{ .stop_reason = stop_reason, .stop_sequence = null },
-            .usage = .{
-                .output_tokens = state.output_tokens,
-                .cache_read_input_tokens = if (state.cache_read_tokens > 0) state.cache_read_tokens else null,
-                .cache_creation_input_tokens = if (state.cache_write_tokens > 0) state.cache_write_tokens else null,
-            },
-        }}) catch return .{ .skip = {} };
-        events.append(allocator, .{ .message_stop = .{ .type = "message_stop" } }) catch
-            return .{ .skip = {} };
+        finishMessagesStream(state, &events, allocator);
         return .{ .events = events.toOwnedSlice(allocator) catch return .{ .skip = {} } };
     }
 
@@ -638,70 +699,252 @@ pub fn transformMessagesStreamLine(
     };
     defer parsed.deinit();
 
-    var events: std.ArrayList(Messages.SseEvent) = .empty;
-    defer events.deinit(allocator);
-
-    // Synthetic protocol opening, once per stream.
-    if (!state.sent_open) {
-        events.append(allocator, .{ .message_start = .{
-            .type = "message_start",
-            .message = .{
-                .id = "msg_proxy",
-                .type = "message",
-                .role = "assistant",
-                .content = &.{},
-                .model = state.original_model,
-                .stop_reason = null,
-                .stop_sequence = null,
-                .usage = .{ .input_tokens = 0, .output_tokens = 0 },
-            },
-        }}) catch return .{ .skip = {} };
-        events.append(allocator, .{ .content_block_start = .{
-            .type = "content_block_start",
-            .index = 0,
-            .content_block = .{ .type = "text", .text = "" },
-        }}) catch return .{ .skip = {} };
-        state.sent_open = true;
-    }
-
-    if (parsed.value.choices.len > 0) {
-        const choice = parsed.value.choices[0];
-
-        if (parsed.value.usage) |u| {
-            state.output_tokens = u.completion_tokens;
-            if (u.prompt_tokens_details) |d| {
-                state.cache_write_tokens = d.cache_write_tokens;
-                state.cache_read_tokens = d.cached_tokens;
-            }
-            state.input_tokens = u.prompt_tokens - state.cache_read_tokens - state.cache_write_tokens;
-        }
-
-        if (choice.finish_reason) |reason| {
-            if (reason.len > 0) {
-                // Dupe — reason borrows from parsed which dies below.
-                if (state.finish_reason) |prev| allocator.free(prev);
-                state.finish_reason = allocator.dupe(u8, reason) catch null;
-            }
-        }
-
-        if (choice.delta.content) |text| {
-            if (text.len > 0) {
-                // Dupe — text borrows from parsed which dies after this function returns.
-                const owned_text = allocator.dupe(u8, text) catch return .{ .skip = {} };
-                events.append(allocator, .{ .content_block_delta = .{
-                    .type = "content_block_delta",
-                    .index = 0,
-                    .delta = .{ .type = "text_delta", .text = owned_text },
-                }}) catch {
-                    allocator.free(owned_text);
-                    return .{ .skip = {} };
-                };
-            }
-        }
-    }
+    appendMessagesDeltaEvents(parsed.value, state, &events, allocator);
 
     if (events.items.len == 0) return .{ .skip = {} };
     return .{ .events = events.toOwnedSlice(allocator) catch return .{ .skip = {} } };
+}
+
+/// Append the Anthropic SSE events for one chat StreamChunk's delta to `events`,
+/// updating `state` (usage, finish_reason, open blocks). Handles reasoning →
+/// thinking, content → text, and streamed tool calls → tool_use blocks with
+/// lazy, strictly-sequential block indices.
+///
+/// Shared by the OpenAI chat and SAP AI Core Messages-stream transforms — SAP's
+/// wire `delta` is an OpenAIChat.StreamChunk, so both map identically. Alloc
+/// failures skip the affected event rather than erroring (best-effort streaming).
+pub fn appendMessagesDeltaEvents(
+    chunk: Chat.StreamChunk,
+    state: *MessagesStreamState,
+    events: *std.ArrayList(Messages.SseEvent),
+    allocator: std.mem.Allocator,
+) void {
+    if (chunk.choices.len == 0) return;
+    const choice = chunk.choices[0];
+
+    if (chunk.usage) |u| {
+        state.output_tokens = u.completion_tokens;
+        if (u.prompt_tokens_details) |d| {
+            state.cache_write_tokens = d.cache_write_tokens;
+            state.cache_read_tokens = d.cached_tokens;
+        }
+        state.input_tokens = u.prompt_tokens - state.cache_read_tokens - state.cache_write_tokens;
+    }
+
+    if (choice.finish_reason) |reason| {
+        if (reason.len > 0) {
+            // Dupe — reason borrows from the parse arena.
+            if (state.finish_reason) |prev| allocator.free(prev);
+            state.finish_reason = allocator.dupe(u8, reason) catch null;
+        }
+    }
+
+    // Reasoning delta → thinking block. Emit before any content on this chunk.
+    if (choice.delta.reasoningText()) |reasoning| {
+        if (reasoning.len > 0) {
+            ensureStarted(state, events, allocator);
+            switchToBlock(state, .thinking, events, allocator);
+            const owned = allocator.dupe(u8, reasoning) catch return;
+            events.append(allocator, .{ .content_block_delta = .{
+                .type = "content_block_delta",
+                .index = state.thinking_index,
+                .delta = .{ .type = "thinking_delta", .thinking = owned },
+            }}) catch allocator.free(owned);
+        }
+    }
+
+    // Content delta → text block. Closes the thinking block if it was open.
+    if (choice.delta.content) |text| {
+        if (text.len > 0) {
+            ensureStarted(state, events, allocator);
+            switchToBlock(state, .text, events, allocator);
+            const owned_text = allocator.dupe(u8, text) catch return;
+            events.append(allocator, .{ .content_block_delta = .{
+                .type = "content_block_delta",
+                .index = state.text_index,
+                .delta = .{ .type = "text_delta", .text = owned_text },
+            }}) catch allocator.free(owned_text);
+        }
+    }
+
+    // Tool-call deltas → tool_use block(s). OpenAI streams each call by a stable
+    // `index`: the first delta for an index carries id + function.name, later
+    // deltas carry function.arguments fragments. Map to an Anthropic tool_use
+    // block per call (content_block_start with id/name, then input_json_delta).
+    if (choice.delta.tool_calls) |tool_calls| {
+        for (tool_calls) |tc| {
+            // New tool call (different OpenAI index) → open its block.
+            if (state.cur_tool_call == null or state.cur_tool_call.? != tc.index) {
+                ensureStarted(state, events, allocator);
+                closeOpenBlock(state, events, allocator);
+                const idx = state.next_index;
+                state.next_index += 1;
+                state.tool_use_index = idx;
+                state.open_block = .tool_use;
+                state.cur_tool_call = tc.index;
+
+                const id_src = tc.id orelse "";
+                const name_src = if (tc.function) |f| (f.name orelse "") else "";
+                const owned_id = allocator.dupe(u8, id_src) catch return;
+                const owned_name = allocator.dupe(u8, name_src) catch {
+                    allocator.free(owned_id);
+                    return;
+                };
+                events.append(allocator, .{ .content_block_start = .{
+                    .type = "content_block_start",
+                    .index = idx,
+                    .content_block = .{ .type = "tool_use", .id = owned_id, .name = owned_name },
+                }}) catch {
+                    allocator.free(owned_id);
+                    allocator.free(owned_name);
+                    return;
+                };
+            }
+
+            // Argument fragment → input_json_delta on the open tool_use block.
+            if (tc.function) |f| if (f.arguments) |args| {
+                if (args.len > 0) {
+                    const owned_args = allocator.dupe(u8, args) catch return;
+                    events.append(allocator, .{ .content_block_delta = .{
+                        .type = "content_block_delta",
+                        .index = state.tool_use_index,
+                        .delta = .{ .type = "input_json_delta", .partial_json = owned_args },
+                    }}) catch allocator.free(owned_args);
+                }
+            };
+        }
+    }
+}
+
+/// Emit the terminal Anthropic events: close any open block, then message_delta
+/// (with the mapped stop_reason + usage) and message_stop. Shared by the chat
+/// `[DONE]` path and the SAP terminal. `state.finish_reason` holds the RAW chat
+/// finish_reason (mapped here via transformStopReasonToMessages).
+/// Emit the terminal events for a stream that ended WITHOUT a `[DONE]` marker
+/// (upstream closed the connection, or produced an empty stream). Returns an
+/// owned SseEvent slice the caller must free, or null if the terminal was
+/// already emitted (idempotent via `finishMessagesStream`'s `finished` guard).
+///
+/// The pipeline calls this once after the read loop so the client always sees a
+/// valid Anthropic message termination (message_delta + message_stop), even when
+/// the upstream never sent `[DONE]` (free models frequently just drop the socket).
+pub fn finalizeMessagesStream(
+    state: *MessagesStreamState,
+    allocator: std.mem.Allocator,
+) ?[]Messages.SseEvent {
+    if (state.finished) return null;
+    var events: std.ArrayList(Messages.SseEvent) = .empty;
+    defer events.deinit(allocator);
+    finishMessagesStream(state, &events, allocator);
+    if (events.items.len == 0) return null;
+    return events.toOwnedSlice(allocator) catch null;
+}
+
+pub fn finishMessagesStream(
+    state: *MessagesStreamState,
+    events: *std.ArrayList(Messages.SseEvent),
+    allocator: std.mem.Allocator,
+) void {
+    if (state.finished) return; // idempotent — a provider may send finish_reason AND [DONE].
+    state.finished = true;
+    ensureStarted(state, events, allocator);
+    closeOpenBlock(state, events, allocator);
+
+    const stop_reason = content.transformStopReasonToMessages(
+        state.finish_reason orelse "stop"
+    );
+    events.append(allocator, .{ .message_delta = .{
+        .type = "message_delta",
+        .delta = .{ .stop_reason = stop_reason, .stop_sequence = null },
+        .usage = .{
+            .output_tokens = state.output_tokens,
+            .cache_read_input_tokens = if (state.cache_read_tokens > 0) state.cache_read_tokens else null,
+            .cache_creation_input_tokens = if (state.cache_write_tokens > 0) state.cache_write_tokens else null,
+        },
+    }}) catch return;
+    events.append(allocator, .{ .message_stop = .{ .type = "message_stop" } }) catch return;
+}
+
+/// Emit message_start once per stream.
+fn ensureStarted(
+    state: *MessagesStreamState,
+    events: *std.ArrayList(Messages.SseEvent),
+    allocator: std.mem.Allocator,
+) void {
+    if (state.started) return;
+    events.append(allocator, .{ .message_start = .{
+        .type = "message_start",
+        .message = .{
+            .id = "msg_proxy",
+            .type = "message",
+            .role = "assistant",
+            .content = &.{},
+            .model = state.original_model,
+            .stop_reason = null,
+            .stop_sequence = null,
+            .usage = .{ .input_tokens = 0, .output_tokens = 0 },
+        },
+    }}) catch return;
+    state.started = true;
+}
+
+/// Transition to the given block kind, closing any previously-open block and
+/// opening a content_block_start for the new one with the next monotonic index.
+fn switchToBlock(
+    state: *MessagesStreamState,
+    kind: enum { thinking, text },
+    events: *std.ArrayList(Messages.SseEvent),
+    allocator: std.mem.Allocator,
+) void {
+    const already = switch (kind) {
+        .thinking => state.open_block == .thinking,
+        .text => state.open_block == .text,
+    };
+    if (already) return;
+
+    closeOpenBlock(state, events, allocator);
+
+    const idx = state.next_index;
+    state.next_index += 1;
+    switch (kind) {
+        .thinking => {
+            state.thinking_index = idx;
+            state.open_block = .thinking;
+            events.append(allocator, .{ .content_block_start = .{
+                .type = "content_block_start",
+                .index = idx,
+                .content_block = .{ .type = "thinking", .thinking = "" },
+            }}) catch {};
+        },
+        .text => {
+            state.text_index = idx;
+            state.open_block = .text;
+            events.append(allocator, .{ .content_block_start = .{
+                .type = "content_block_start",
+                .index = idx,
+                .content_block = .{ .type = "text", .text = "" },
+            }}) catch {};
+        },
+    }
+}
+
+/// Close the currently-open content block (if any) with content_block_stop.
+fn closeOpenBlock(
+    state: *MessagesStreamState,
+    events: *std.ArrayList(Messages.SseEvent),
+    allocator: std.mem.Allocator,
+) void {
+    const idx = switch (state.open_block) {
+        .none => return,
+        .thinking => state.thinking_index,
+        .text => state.text_index,
+        .tool_use => state.tool_use_index,
+    };
+    events.append(allocator, .{ .content_block_stop = .{
+        .type = "content_block_stop", .index = idx,
+    }}) catch {};
+    state.open_block = .none;
+    state.cur_tool_call = null;
 }
 
 // ============================================================================

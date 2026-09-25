@@ -117,7 +117,10 @@ pub fn freeMessageOwnedBlocks(blocks: []const Messages.ContentBlock, allocator: 
                 allocator.free(tu.name);
                 freeParsedJsonValue(tu.input, allocator);
             },
-            .thinking, .redacted_thinking,
+            // Synthesized thinking blocks own their `thinking` text (signature is
+            // an empty string literal — not freed).
+            .thinking => |tb| allocator.free(tb.thinking),
+            .redacted_thinking,
             .server_tool_use, .tool_result, .web_search_tool_result, .web_fetch_tool_result,
             .code_execution_tool_result, .bash_code_execution_tool_result,
             .text_editor_code_execution_tool_result, .tool_search_tool_result,
@@ -154,7 +157,18 @@ pub fn freeMessageOwnedText(msg: Chat.Message, allocator: std.mem.Allocator) voi
     if (msg.content) |c| {
         switch (c) {
             .text => |text| allocator.free(text),
-            .parts => {},
+            .parts => |parts| {
+                // Multimodal down-convert (Messages→Chat) owns each part's string:
+                // text part → joined text; image_url part → data URI / url.
+                for (parts) |part| switch (part) {
+                    .text => |t| allocator.free(t.text),
+                    .image_url => |iu| allocator.free(iu.image_url.url),
+                    // input_audio/file are not produced by the down-convert; if
+                    // present they were not allocated here — nothing to free.
+                    .input_audio, .file => {},
+                };
+                allocator.free(parts);
+            },
         }
     }
     if (msg.tool_calls) |tool_calls| {

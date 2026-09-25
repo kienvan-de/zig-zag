@@ -18,6 +18,7 @@ const Responses = @import("../openai/responses_types.zig");
 const Sap = @import("types.zig");
 const content = @import("content.zig");
 const time = @import("../../time.zig");
+const chat_transformer = @import("../openai/chat_transformer.zig");
 
 // ============================================================================
 // Contract
@@ -358,27 +359,11 @@ pub fn transformChatStreamLine(
 // Flow: /v1/messages — messages wire in, SAP envelope out
 // ============================================================================
 
-pub const MessagesStreamState = struct {
-    allocator: std.mem.Allocator,
-    original_model: []const u8,
-    // finish_reason is a duped mapped stop_reason ("end_turn", "max_tokens", etc.)
-    finish_reason: ?[]const u8 = null,
-    input_tokens: u32 = 0,
-    output_tokens: u32 = 0,
-    cache_read_tokens: u32 = 0,
-    cache_write_tokens: u32 = 0,
-    sent_message_start: bool = false,
-    sent_content_block_start: bool = false,
-
-    pub fn init(allocator: std.mem.Allocator, original_model: []const u8) MessagesStreamState {
-        return .{ .allocator = allocator, .original_model = original_model };
-    }
-
-    pub fn deinit(self: *MessagesStreamState) void {
-        if (self.finish_reason) |r| self.allocator.free(r);
-        self.finish_reason = null;
-    }
-};
+/// SAP's streaming `delta` is an OpenAIChat.StreamChunk, identical to the chat
+/// flow, so we reuse the chat transformer's lazy block-machine state and its
+/// `appendMessagesDeltaEvents` (reasoning → thinking, content → text, streamed
+/// tool calls → tool_use). Aliasing keeps a single implementation.
+pub const MessagesStreamState = chat_transformer.MessagesStreamState;
 
 /// Inbound messages request → SAP envelope, pinned to model.
 ///
@@ -645,6 +630,15 @@ pub fn cleanupMessagesResponse(inbound_response: Messages.Response, allocator: s
     allocator.free(inbound_response.content);
 }
 
+/// Terminal flush when the stream ends without a finish_reason/[DONE].
+/// Delegates to the shared chat transformer (SAP reuses its stream state).
+pub fn finalizeMessagesStream(
+    state: *MessagesStreamState,
+    allocator: std.mem.Allocator,
+) ?[]Messages.SseEvent {
+    return chat_transformer.finalizeMessagesStream(state, allocator);
+}
+
 /// One SAP SSE line → Messages.MessagesStreamLineResult (typed SseEvent slice).
 ///
 /// The SAP inner stream ends with `[DONE]`, which triggers the closing triple.
@@ -660,41 +654,9 @@ pub fn transformMessagesStreamLine(
     var events: std.ArrayList(Messages.SseEvent) = .empty;
     defer events.deinit(allocator);
 
+    // [DONE] — synthesize the terminal (close open block + message_delta + stop).
     if (std.mem.eql(u8, json_part, "[DONE]")) {
-        if (!state.sent_message_start or !state.sent_content_block_start) {
-            events.append(allocator, .{ .message_start = .{
-                .type = "message_start",
-                .message = .{
-                    .id = "msg_proxy",
-                    .type = "message",
-                    .role = "assistant",
-                    .content = &.{},
-                    .model = state.original_model,
-                    .stop_reason = null,
-                    .stop_sequence = null,
-                    .usage = .{ .input_tokens = state.input_tokens, .output_tokens = 0 },
-                },
-            }}) catch return .{ .skip = {} };
-            events.append(allocator, .{ .content_block_start = .{
-                .type = "content_block_start",
-                .index = 0,
-                .content_block = .{ .type = "text", .text = "" },
-            }}) catch return .{ .skip = {} };
-            state.sent_message_start = true;
-            state.sent_content_block_start = true;
-        }
-
-        const stop_reason = state.finish_reason orelse "end_turn";
-        events.append(allocator, .{ .content_block_stop = .{
-            .type = "content_block_stop", .index = 0,
-        }}) catch return .{ .skip = {} };
-        events.append(allocator, .{ .message_delta = .{
-            .type = "message_delta",
-            .delta = .{ .stop_reason = stop_reason, .stop_sequence = null },
-            .usage = .{ .output_tokens = state.output_tokens },
-        }}) catch return .{ .skip = {} };
-        events.append(allocator, .{ .message_stop = .{ .type = "message_stop" } }) catch
-            return .{ .skip = {} };
+        chat_transformer.finishMessagesStream(state, &events, allocator);
         return .{ .events = events.toOwnedSlice(allocator) catch return .{ .skip = {} } };
     }
 
@@ -706,7 +668,7 @@ pub fn transformMessagesStreamLine(
     ) catch return .{ .skip = {} };
     defer parsed.deinit();
 
-    const final_result = switch (parsed.value) {
+    const chunk = switch (parsed.value) {
         .@"error" => |err| {
             const msg = allocator.dupe(u8, err.message orelse "Unknown error from SAP AI Core") catch return .{ .skip = {} };
             const ev = allocator.alloc(Messages.SseEvent, 1) catch { allocator.free(msg); return .{ .skip = {} }; };
@@ -718,59 +680,21 @@ pub fn transformMessagesStreamLine(
         },
         .result => |r| r.final_result,
     };
-    if (final_result.id.len == 0) return .{ .skip = {} };
+    if (chunk.id.len == 0) return .{ .skip = {} };
 
-    if (!state.sent_message_start or !state.sent_content_block_start) {
-        events.append(allocator, .{ .message_start = .{
-            .type = "message_start",
-            .message = .{
-                .id = "msg_proxy",
-                .type = "message",
-                .role = "assistant",
-                .content = &.{},
-                .model = state.original_model,
-                .stop_reason = null,
-                .stop_sequence = null,
-                .usage = .{ .input_tokens = state.input_tokens, .output_tokens = 0 },
-            },
-        }}) catch return .{ .skip = {} };
-        events.append(allocator, .{ .content_block_start = .{
-            .type = "content_block_start",
-            .index = 0,
-            .content_block = .{ .type = "text", .text = "" },
-        }}) catch return .{ .skip = {} };
-        state.sent_message_start = true;
-        state.sent_content_block_start = true;
-    }
+    // Whether this chunk carries a terminal finish_reason (SAP has no [DONE]).
+    const has_finish = chunk.choices.len > 0 and
+        if (chunk.choices[0].finish_reason) |r| r.len > 0 else false;
 
-    if (final_result.choices.len > 0) {
-        const choice = final_result.choices[0];
+    // Delegate the delta body to the shared chat transformer (reasoning →
+    // thinking, content → text, streamed tool calls → tool_use). This also
+    // records usage and the raw finish_reason into `state`.
+    chat_transformer.appendMessagesDeltaEvents(chunk, state, &events, allocator);
 
-        if (final_result.usage) |u| {
-            state.input_tokens = @intCast(u.prompt_tokens);
-            state.output_tokens = @intCast(u.completion_tokens);
-        }
-
-        if (choice.finish_reason) |reason| if (reason.len > 0) {
-            if (state.finish_reason) |prev| allocator.free(prev);
-            state.finish_reason = allocator.dupe(
-                u8,
-                content.transformStopReasonToMessages(reason),
-            ) catch null;
-        };
-
-        if (choice.delta.content) |text| if (text.len > 0) {
-            // Dupe — text borrows from parsed which dies after this function returns.
-            const owned_text = allocator.dupe(u8, text) catch return .{ .skip = {} };
-            events.append(allocator, .{ .content_block_delta = .{
-                .type = "content_block_delta",
-                .index = 0,
-                .delta = .{ .type = "text_delta", .text = owned_text },
-            }}) catch {
-                allocator.free(owned_text);
-                return .{ .skip = {} };
-            };
-        };
+    // SAP signals completion via a chunk's finish_reason (not a separate [DONE]),
+    // so synthesize the terminal here once we've seen it.
+    if (has_finish) {
+        chat_transformer.finishMessagesStream(state, &events, allocator);
     }
 
     if (events.items.len == 0) return .{ .skip = {} };
@@ -1028,7 +952,10 @@ pub fn transformResponsesResponse(
                 };
                 allocator.free(m.content);
             },
-            else => {},
+            // Not produced by the SAP transform → nothing to free.
+            .reasoning, .web_search_call, .file_search_call, .code_interpreter_call,
+            .mcp_list_tools_item, .mcp_call_item, .image_generation_call,
+            .local_shell_call, .other => {},
         };
         output_items.deinit(allocator);
     }
@@ -1106,7 +1033,10 @@ pub fn transformResponsesResponse(
                 allocator.free(f.name);
                 allocator.free(f.arguments);
             },
-            else => {},
+            // Not produced by the SAP transform → nothing to free.
+            .reasoning, .web_search_call, .file_search_call, .code_interpreter_call,
+            .mcp_list_tools_item, .mcp_call_item, .image_generation_call,
+            .local_shell_call, .other => {},
         };
         allocator.free(owned_output);
     }

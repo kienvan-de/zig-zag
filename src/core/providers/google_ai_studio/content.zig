@@ -22,6 +22,7 @@ const Chat = @import("../openai/chat_types.zig"); // inbound chat schema
 const Responses = @import("../openai/responses_types.zig"); // Responses API schema
 const common = @import("../openai/types.zig"); // shared primitives
 const Google = @import("types.zig"); // Gemini wire types
+const log = @import("../../log.zig");
 
 // ============================================================================
 // Tool mapping
@@ -446,7 +447,25 @@ pub fn buildContentsFromMessages(
                             .response = .{ .object = resp_obj },
                         } });
                     },
-                    else => {}, // thinking/redacted_thinking/server_tool_use/etc: no equivalent
+                    // Anthropic image → Gemini inline_data (base64) / file_data (url).
+                    // Fields borrow the inbound parse tree (no new allocation).
+                    .image => |img| switch (img.source) {
+                        .base64 => |b| try parts.append(allocator, .{ .inline_data = .{
+                            .mime_type = b.media_type,
+                            .data = b.data,
+                        } }),
+                        .url => |u| try parts.append(allocator, .{ .file_data = .{
+                            .mime_type = "",
+                            .file_uri = u.url,
+                        } }),
+                        .file => log.debug("[gemini] dropping Messages image file source: no Gemini equivalent", .{}),
+                    },
+                    // No Gemini equivalent — explicit logged drops.
+                    .document, .thinking, .redacted_thinking, .server_tool_use,
+                    .web_search_tool_result, .web_fetch_tool_result,
+                    .code_execution_tool_result, .bash_code_execution_tool_result,
+                    .text_editor_code_execution_tool_result, .tool_search_tool_result,
+                    .search_result, .container_upload => log.debug("[gemini] dropping Messages block {s}: no Gemini equivalent", .{@tagName(block)}),
                 }
             },
         }
@@ -682,12 +701,37 @@ pub fn extractTextFromBlocks(
     for (response.candidates[0].content.parts) |part| {
         switch (part) {
             .text => |tp| if (tp.text.len > 0) try parts_text.append(allocator, tp.text),
-            else => {},
+            // thought handled by extractReasoningFromBlocks; the rest have no text.
+            .thought, .function_call, .inline_data, .file_data, .executable_code,
+            .code_execution_result, .function_response, .video_metadata => {},
         }
     }
 
     if (parts_text.items.len == 0) return allocator.dupe(u8, "");
     return std.mem.join(allocator, "", parts_text.items);
+}
+
+/// Join `thought` (reasoning) parts of the first candidate into one string.
+/// Returns null if there is no reasoning. Freshly allocated when non-null.
+pub fn extractReasoningFromBlocks(
+    response: Google.Response,
+    allocator: std.mem.Allocator,
+) !?[]const u8 {
+    if (response.candidates.len == 0) return null;
+
+    var parts_text: std.ArrayList([]const u8) = .empty;
+    defer parts_text.deinit(allocator);
+
+    for (response.candidates[0].content.parts) |part| {
+        switch (part) {
+            .thought => |tp| if (tp.text.len > 0) try parts_text.append(allocator, tp.text),
+            .text, .function_call, .inline_data, .file_data, .executable_code,
+            .code_execution_result, .function_response, .video_metadata => {},
+        }
+    }
+
+    if (parts_text.items.len == 0) return null;
+    return try std.mem.join(allocator, "", parts_text.items);
 }
 
 /// Extract function_call parts of the first candidate as Chat tool calls.
@@ -724,7 +768,9 @@ pub fn extractToolCalls(
                     },
                 });
             },
-            else => {},
+            // Not tool calls — text/thought handled elsewhere, rest have no mapping.
+            .text, .thought, .inline_data, .file_data, .executable_code,
+            .code_execution_result, .function_response, .video_metadata => {},
         }
     }
 
@@ -779,7 +825,9 @@ pub fn freeResponseOwnedArgs(part: Google.Part, allocator: std.mem.Allocator) vo
                 owned.deinit(allocator);
             }
         },
-        else => {},
+        // Borrow the inbound parse / own nothing here → nothing to free.
+        .text, .thought, .inline_data, .file_data, .executable_code,
+        .code_execution_result, .video_metadata => {},
     }
 }
 
@@ -794,7 +842,9 @@ pub fn freeMessagesOwnedArgs(part: Google.Part, allocator: std.mem.Allocator) vo
                 owned.deinit(allocator);
             }
         },
-        else => {},
+        // function_call args borrow the inbound parse; other parts own nothing here.
+        .text, .thought, .inline_data, .file_data, .executable_code,
+        .code_execution_result, .function_call, .video_metadata => {},
     }
 }
 

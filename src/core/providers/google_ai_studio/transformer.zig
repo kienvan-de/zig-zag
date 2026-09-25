@@ -185,13 +185,11 @@ pub fn transformChatRequest(
     const raw_max = request.max_tokens orelse request.max_completion_tokens;
     const max_tokens: ?u32 = if (raw_max) |m| @min(m, 65536) else null;
 
-    const response_mime_type: ?[]const u8 = if (request.response_format) |rf|
-        if (std.mem.eql(u8, rf.type, "json_object") or std.mem.eql(u8, rf.type, "json_schema"))
-            "application/json"
-        else
-            null
-    else
-        null;
+    // Structured output: response_format {json_object|json_schema} →
+    // responseMimeType="application/json" (+ responseSchema when a schema is
+    // present). safetySettings has no OpenAI inbound source → left unset.
+    const structured = try structuredOutputFromResponseFormat(request.response_format, allocator);
+    errdefer if (structured.schema) |s| content.freeGeminiSchema(s, allocator);
 
     return .{
         .model = model,
@@ -213,10 +211,40 @@ pub fn transformChatRequest(
                 .frequency_penalty = request.frequency_penalty,
                 .response_logprobs = request.logprobs,
                 .logprobs = if (request.top_logprobs) |lp| @intCast(lp) else null,
-                .response_mime_type = response_mime_type,
+                .response_mime_type = structured.mime_type,
+                .response_schema = structured.schema,
             },
         },
     };
+}
+
+/// Derive Gemini structured-output config from an OpenAI-style ResponseFormat.
+/// Handles both the Chat nested shape ({type:"json_schema", json_schema:{schema}})
+/// and the Responses/flat shape ({type:"json_schema", schema}). Returns the
+/// mime type ("application/json" for json_object/json_schema) and, when a schema
+/// object is present, a GeminiSchema (caller owns it → free with freeGeminiSchema).
+const StructuredOutput = struct { mime_type: ?[]const u8 = null, schema: ?Google.GeminiSchema = null };
+fn structuredOutputFromResponseFormat(
+    rf_opt: ?common.ResponseFormat,
+    allocator: std.mem.Allocator,
+) !StructuredOutput {
+    const rf = rf_opt orelse return .{};
+    const is_json = std.mem.eql(u8, rf.type, "json_object") or std.mem.eql(u8, rf.type, "json_schema");
+    if (!is_json) return .{};
+
+    // Locate the schema Value: flat `schema`, or nested `json_schema.schema`.
+    var schema_val: ?std.json.Value = rf.schema;
+    if (schema_val == null) {
+        if (rf.json_schema) |js| if (js == .object) {
+            if (js.object.get("schema")) |s| schema_val = s;
+        };
+    }
+
+    const schema: ?Google.GeminiSchema = if (schema_val) |sv|
+        try content.mapToGeminiSchema(sv, allocator)
+    else
+        null;
+    return .{ .mime_type = "application/json", .schema = schema };
 }
 
 /// Free what `transformChatRequest` allocated.
@@ -237,6 +265,9 @@ pub fn cleanupChatRequest(
     }
 
     if (request.payload.tools) |ts| content.cleanupTools(ts, allocator);
+    if (request.payload.generation_config) |gc| {
+        if (gc.response_schema) |s| content.freeGeminiSchema(s, allocator);
+    }
 }
 
 /// Gemini response → inbound chat response.
@@ -275,6 +306,9 @@ pub fn transformChatResponse(
     const tool_calls = try content.extractToolCalls(upstream_response, allocator);
     errdefer if (tool_calls) |calls| content.freeToolCallList(calls, allocator);
 
+    const reasoning_opt = try content.extractReasoningFromBlocks(upstream_response, allocator);
+    errdefer if (reasoning_opt) |r| allocator.free(r);
+
     const finish_reason: []const u8 = if (upstream_response.candidates.len > 0)
         content.transformStopReason(upstream_response.candidates[0].finish_reason)
     else
@@ -287,6 +321,7 @@ pub fn transformChatResponse(
         .message = .{
             .role = .assistant,
             .content = message_text_opt,
+            .reasoning = reasoning_opt,
             .tool_calls = tool_calls,
         },
         .finish_reason = finish_reason,
@@ -294,6 +329,7 @@ pub fn transformChatResponse(
     };
 
     const cached = upstream_response.usage_metadata.cached_content_token_count;
+    const thoughts = upstream_response.usage_metadata.thoughts_token_count;
 
     return .{
         .id = try std.fmt.allocPrint(allocator, "chatcmpl-{d}", .{time.timestamp()}),
@@ -307,6 +343,10 @@ pub fn transformChatResponse(
             .total_tokens = upstream_response.usage_metadata.total_token_count,
             .prompt_tokens_details = if (cached > 0) .{
                 .cached_tokens = cached,
+            } else null,
+            // Gemini thoughtsTokenCount → OpenAI reasoning_tokens.
+            .completion_tokens_details = if (thoughts > 0) .{
+                .reasoning_tokens = thoughts,
             } else null,
         },
         .system_fingerprint = null,
@@ -322,6 +362,7 @@ pub fn cleanupChatResponse(
     if (inbound_response.choices.len > 0) {
         const message = inbound_response.choices[0].message;
         if (message.content) |c| allocator.free(c);
+        if (message.reasoning) |r| allocator.free(r);
         if (message.tool_calls) |calls| content.freeToolCallList(calls, allocator);
     }
     allocator.free(inbound_response.choices);
@@ -366,10 +407,17 @@ pub fn transformChatStreamLine(
 
     var text_buf: std.ArrayList(u8) = .empty;
     defer text_buf.deinit(allocator);
+    var reasoning_buf: std.ArrayList(u8) = .empty;
+    defer reasoning_buf.deinit(allocator);
     for (candidate.content.parts) |part| {
         switch (part) {
             .text => |tp| text_buf.appendSlice(allocator, tp.text) catch return .{ .skip = {} },
-            else => {},
+            // Gemini reasoning → Chat `reasoning` delta field.
+            .thought => |tp| reasoning_buf.appendSlice(allocator, tp.text) catch return .{ .skip = {} },
+            // function_call handled in the loop below; the rest have no Chat delta.
+            .function_call => {},
+            .inline_data, .file_data, .executable_code, .code_execution_result,
+            .function_response, .video_metadata => log.debug("[chat] dropping Gemini part {s}: no Chat equivalent", .{@tagName(part)}),
         }
     }
 
@@ -396,7 +444,9 @@ pub fn transformChatStreamLine(
                 arg_bufs.append(allocator, arg_buf) catch return .{ .skip = {} };
                 fc_index += 1;
             },
-            else => {},
+            // Handled in the loop above or intentionally not a tool call.
+            .text, .thought, .inline_data, .file_data, .executable_code,
+            .code_execution_result, .function_response, .video_metadata => {},
         }
     }
 
@@ -413,6 +463,7 @@ pub fn transformChatStreamLine(
         .index = 0,
         .delta = .{
             .content = if (text_buf.items.len > 0) allocator.dupe(u8, text_buf.items) catch return .{ .skip = {} } else null,
+            .reasoning = if (reasoning_buf.items.len > 0) allocator.dupe(u8, reasoning_buf.items) catch return .{ .skip = {} } else null,
             .tool_calls = if (tool_call_buf.items.len > 0) tool_call_buf.toOwnedSlice(allocator) catch return .{ .skip = {} } else null,
         },
         .finish_reason = if (is_final) state.finish_reason else null,
@@ -447,10 +498,22 @@ pub const MessagesStreamState = struct {
     output_tokens: u32 = 0,
     cache_read_tokens: u32 = 0,
     cache_write_tokens: u32 = 0,
-    /// Whether the synthetic message_start + content_block_start were emitted.
-    sent_start: bool = false,
-    /// Index of the next content block to open (text is always 0; tool_use starts at 1+).
-    next_block_index: u32 = 0,
+    /// Whether message_start was emitted.
+    started: bool = false,
+    /// Lazy block bookkeeping (mirrors the OpenAI chat_transformer design):
+    /// no block is opened eagerly. Reasoning models stream `thought` parts first,
+    /// then text, so we open a `thinking` block before the `text` block, each with
+    /// the next monotonic index, and close the previous block on transition.
+    /// tool_use blocks get their own indices too. This keeps blocks strictly
+    /// sequential (open→delta→close, one at a time), per the Anthropic contract.
+    open_block: enum { none, thinking, text } = .none,
+    next_index: u32 = 0,
+    thinking_index: u32 = 0,
+    text_index: u32 = 0,
+    /// terminal (message_delta + message_stop) emitted yet? Guards against the
+    /// pipeline's post-loop finalize double-emitting when the stream already
+    /// ended via a finish_reason chunk.
+    finished: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, original_model: []const u8) MessagesStreamState {
         return .{
@@ -591,11 +654,15 @@ pub fn transformMessagesResponse(
     errdefer {
         for (content_blocks.items) |block| switch (block) {
             .text => |t| allocator.free(t.text),
+            .thinking => |th| allocator.free(th.thinking),
             .tool_use => |tu| {
                 allocator.free(tu.id);
                 content.freeParsedJsonValue(tu.input, allocator);
             },
-            else => {},
+            // Not produced by this transform → nothing to free.
+            .server_tool_use, .redacted_thinking, .tool_result, .web_search_tool_result,
+            .web_fetch_tool_result, .code_execution_tool_result, .bash_code_execution_tool_result,
+            .text_editor_code_execution_tool_result, .tool_search_tool_result, .fallback => {},
         };
         content_blocks.deinit(allocator);
     }
@@ -603,6 +670,19 @@ pub fn transformMessagesResponse(
     if (upstream_response.candidates.len > 0) {
         for (upstream_response.candidates[0].content.parts) |part| {
             switch (part) {
+                .thought => |tp| {
+                    // Gemini reasoning → Anthropic thinking block (empty signature;
+                    // synthesized, no real signature). Prepended naturally by order.
+                    if (tp.text.len > 0) {
+                        const owned = try allocator.dupe(u8, tp.text);
+                        errdefer allocator.free(owned);
+                        try content_blocks.append(allocator, .{ .thinking = .{
+                            .type = "thinking",
+                            .thinking = owned,
+                            .signature = "",
+                        } });
+                    }
+                },
                 .text => |tp| {
                     const owned_text = try allocator.dupe(u8, tp.text);
                     errdefer allocator.free(owned_text);
@@ -631,7 +711,11 @@ pub fn transformMessagesResponse(
                         .input = owned_args,
                     } });
                 },
-                else => {},
+                // No Anthropic Messages content-block equivalent — dropped, logged.
+                .inline_data, .file_data, .executable_code, .code_execution_result,
+                .function_response, .video_metadata => {
+                    log.debug("[messages] dropping Gemini part {s}: no Messages equivalent", .{@tagName(part)});
+                },
             }
         }
     }
@@ -673,11 +757,15 @@ pub fn cleanupMessagesResponse(
     for (inbound_response.content) |block| {
         switch (block) {
             .text => |t| allocator.free(t.text),
+            .thinking => |th| allocator.free(th.thinking),
             .tool_use => |tu| {
                 allocator.free(tu.id); // id and name point to the same allocation
                 content.freeParsedJsonValue(tu.input, allocator);
             },
-            else => {},
+            // Not produced by this transform → nothing to free.
+            .server_tool_use, .redacted_thinking, .tool_result, .web_search_tool_result,
+            .web_fetch_tool_result, .code_execution_tool_result, .bash_code_execution_tool_result,
+            .text_editor_code_execution_tool_result, .tool_search_tool_result, .fallback => {},
         }
     }
     allocator.free(inbound_response.content);
@@ -724,41 +812,34 @@ pub fn transformMessagesStreamLine(
     var events: std.ArrayList(Messages.SseEvent) = .empty;
     defer events.deinit(allocator);
 
-    if (!state.sent_start) {
-        state.sent_start = true;
-        events.append(allocator, .{ .message_start = .{
-            .type = "message_start",
-            .message = .{
-                .id = state.response_id,
-                .type = "message",
-                .role = "assistant",
-                .content = &.{},
-                .model = state.original_model,
-                .stop_reason = null,
-                .stop_sequence = null,
-                .usage = .{ .input_tokens = 0, .output_tokens = 0 },
-            },
-        }}) catch return .{ .skip = {} };
-        events.append(allocator, .{ .content_block_start = .{
-            .type = "content_block_start",
-            .index = 0,
-            .content_block = .{ .type = "text", .text = "" },
-        }}) catch return .{ .skip = {} };
-        state.next_block_index = 1;
-        events.append(allocator, .{ .ping = .{} }) catch return .{ .skip = {} };
-    }
-
     if (parsed.value.candidates.len > 0) {
         const candidate = parsed.value.candidates[0];
 
         for (candidate.content.parts) |part| {
             switch (part) {
+                // Reasoning → thinking block (opened before text, per ordering).
+                .thought => |tp| {
+                    if (tp.text.len == 0) continue;
+                    ensureStarted(state, &events, allocator);
+                    switchToBlock(state, .thinking, &events, allocator);
+                    const owned = allocator.dupe(u8, tp.text) catch continue;
+                    events.append(allocator, .{ .content_block_delta = .{
+                        .type = "content_block_delta",
+                        .index = state.thinking_index,
+                        .delta = .{ .type = "thinking_delta", .thinking = owned },
+                    }}) catch {
+                        allocator.free(owned);
+                        continue;
+                    };
+                },
                 .text => |tp| {
                     if (tp.text.len == 0) continue;
+                    ensureStarted(state, &events, allocator);
+                    switchToBlock(state, .text, &events, allocator);
                     const owned_text = allocator.dupe(u8, tp.text) catch continue;
                     events.append(allocator, .{ .content_block_delta = .{
                         .type = "content_block_delta",
-                        .index = 0,
+                        .index = state.text_index,
                         .delta = .{ .type = "text_delta", .text = owned_text },
                     }}) catch {
                         allocator.free(owned_text);
@@ -774,8 +855,12 @@ pub fn transformMessagesStreamLine(
                         continue;
                     };
 
-                    const block_idx = state.next_block_index;
-                    state.next_block_index += 1;
+                    // A tool_use block is self-contained (start+delta+stop). Close
+                    // any open thinking/text block first so blocks stay sequential.
+                    ensureStarted(state, &events, allocator);
+                    closeOpenBlock(state, &events, allocator);
+                    const block_idx = state.next_index;
+                    state.next_index += 1;
 
                     events.append(allocator, .{ .content_block_start = .{
                         .type = "content_block_start",
@@ -792,40 +877,148 @@ pub fn transformMessagesStreamLine(
                         .index = block_idx,
                     }}) catch continue;
                 },
-                else => {},
+                // No Messages streaming equivalent — dropped, logged.
+                .inline_data, .file_data, .executable_code, .code_execution_result,
+                .function_response, .video_metadata => log.debug("[messages] dropping Gemini stream part {s}: no Messages equivalent", .{@tagName(part)}),
             }
         }
 
         if (candidate.finish_reason) |reason| {
             if (reason.len > 0) {
+                ensureStarted(state, &events, allocator);
                 state.input_tokens = parsed.value.usage_metadata.prompt_token_count;
                 state.output_tokens = parsed.value.usage_metadata.candidates_token_count;
                 state.cache_read_tokens = parsed.value.usage_metadata.cached_content_token_count;
                 state.input_tokens -= state.cache_read_tokens;
-                const stop_reason = content.transformStopReasonToMessages(candidate.finish_reason);
-                state.finish_reason = stop_reason;
-
-                events.append(allocator, .{ .content_block_stop = .{
-                    .type = "content_block_stop",
-                    .index = 0,
-                }}) catch return .{ .skip = {} };
-                events.append(allocator, .{ .message_delta = .{
-                    .type = "message_delta",
-                    .delta = .{ .stop_reason = stop_reason, .stop_sequence = null },
-                    .usage = .{
-                        .output_tokens = state.output_tokens,
-                        .cache_read_input_tokens = if (state.cache_read_tokens > 0) state.cache_read_tokens else null,
-                    },
-                }}) catch return .{ .skip = {} };
-                events.append(allocator, .{ .message_stop = .{
-                    .type = "message_stop",
-                }}) catch return .{ .skip = {} };
+                state.finish_reason = content.transformStopReasonToMessages(candidate.finish_reason);
+                finishMessagesStream(state, &events, allocator);
             }
         }
     }
 
     if (events.items.len == 0) return .{ .skip = {} };
     return .{ .events = events.toOwnedSlice(allocator) catch return .{ .skip = {} } };
+}
+
+/// Emit the terminal (close open block + message_delta + message_stop).
+/// Idempotent via `state.finished` so the pipeline's post-loop finalize does not
+/// double-emit when the stream already ended via a finish_reason chunk.
+fn finishMessagesStream(
+    state: *MessagesStreamState,
+    events: *std.ArrayList(Messages.SseEvent),
+    allocator: std.mem.Allocator,
+) void {
+    if (state.finished) return;
+    state.finished = true;
+    ensureStarted(state, events, allocator);
+    closeOpenBlock(state, events, allocator);
+    events.append(allocator, .{ .message_delta = .{
+        .type = "message_delta",
+        .delta = .{ .stop_reason = state.finish_reason orelse "end_turn", .stop_sequence = null },
+        .usage = .{
+            .output_tokens = state.output_tokens,
+            .cache_read_input_tokens = if (state.cache_read_tokens > 0) state.cache_read_tokens else null,
+        },
+    }}) catch return;
+    events.append(allocator, .{ .message_stop = .{
+        .type = "message_stop",
+    }}) catch return;
+}
+
+/// Terminal flush when the stream ends without a finish_reason chunk (upstream
+/// closed the connection or produced an empty stream). Returns an owned event
+/// slice (caller frees), or null if the terminal was already emitted.
+pub fn finalizeMessagesStream(
+    state: *MessagesStreamState,
+    allocator: std.mem.Allocator,
+) ?[]Messages.SseEvent {
+    if (state.finished) return null;
+    var events: std.ArrayList(Messages.SseEvent) = .empty;
+    defer events.deinit(allocator);
+    finishMessagesStream(state, &events, allocator);
+    if (events.items.len == 0) return null;
+    return events.toOwnedSlice(allocator) catch null;
+}
+
+/// Emit message_start once per stream (Gemini→Messages).
+fn ensureStarted(
+    state: *MessagesStreamState,
+    events: *std.ArrayList(Messages.SseEvent),
+    allocator: std.mem.Allocator,
+) void {
+    if (state.started) return;
+    events.append(allocator, .{ .message_start = .{
+        .type = "message_start",
+        .message = .{
+            .id = state.response_id,
+            .type = "message",
+            .role = "assistant",
+            .content = &.{},
+            .model = state.original_model,
+            .stop_reason = null,
+            .stop_sequence = null,
+            .usage = .{ .input_tokens = 0, .output_tokens = 0 },
+        },
+    }}) catch return;
+    events.append(allocator, .{ .ping = .{} }) catch {};
+    state.started = true;
+}
+
+/// Transition to the given block kind, closing any previously-open block and
+/// opening a content_block_start for the new one with the next monotonic index.
+fn switchToBlock(
+    state: *MessagesStreamState,
+    kind: enum { thinking, text },
+    events: *std.ArrayList(Messages.SseEvent),
+    allocator: std.mem.Allocator,
+) void {
+    const already = switch (kind) {
+        .thinking => state.open_block == .thinking,
+        .text => state.open_block == .text,
+    };
+    if (already) return;
+
+    closeOpenBlock(state, events, allocator);
+
+    const idx = state.next_index;
+    state.next_index += 1;
+    switch (kind) {
+        .thinking => {
+            state.thinking_index = idx;
+            state.open_block = .thinking;
+            events.append(allocator, .{ .content_block_start = .{
+                .type = "content_block_start",
+                .index = idx,
+                .content_block = .{ .type = "thinking", .thinking = "" },
+            }}) catch {};
+        },
+        .text => {
+            state.text_index = idx;
+            state.open_block = .text;
+            events.append(allocator, .{ .content_block_start = .{
+                .type = "content_block_start",
+                .index = idx,
+                .content_block = .{ .type = "text", .text = "" },
+            }}) catch {};
+        },
+    }
+}
+
+/// Close the currently-open content block (if any) with content_block_stop.
+fn closeOpenBlock(
+    state: *MessagesStreamState,
+    events: *std.ArrayList(Messages.SseEvent),
+    allocator: std.mem.Allocator,
+) void {
+    const idx = switch (state.open_block) {
+        .none => return,
+        .thinking => state.thinking_index,
+        .text => state.text_index,
+    };
+    events.append(allocator, .{ .content_block_stop = .{
+        .type = "content_block_stop", .index = idx,
+    }}) catch {};
+    state.open_block = .none;
 }
 
 // ============================================================================
@@ -926,6 +1119,13 @@ pub fn transformResponsesRequest(
 
     const raw_max = request.max_output_tokens;
 
+    // Structured output: text.format {json_schema} → responseMimeType + responseSchema.
+    const structured = try structuredOutputFromResponseFormat(
+        if (request.text) |t| t.format else null,
+        allocator,
+    );
+    errdefer if (structured.schema) |s| content.freeGeminiSchema(s, allocator);
+
     return .{
         .model = model,
         .payload = .{
@@ -939,6 +1139,8 @@ pub fn transformResponsesRequest(
                 .temperature = request.temperature,
                 .top_p = request.top_p,
                 .max_output_tokens = if (raw_max) |m| @min(m, 65536) else null,
+                .response_mime_type = structured.mime_type,
+                .response_schema = structured.schema,
                 .thinking_config = if (request.reasoning) |r| blk: {
                     // Partial mapping: budget_tokens is directly equivalent.
                     // effort ("low"/"medium"/"high") has no Gemini equivalent — dropped.
@@ -965,6 +1167,9 @@ pub fn cleanupResponsesRequest(
     allocator.free(request.payload.contents);
     if (request.payload.system_instruction) |si| allocator.free(si.parts);
     if (request.payload.tools) |ts| content.cleanupTools(ts, allocator);
+    if (request.payload.generation_config) |gc| {
+        if (gc.response_schema) |s| content.freeGeminiSchema(s, allocator);
+    }
 }
 
 /// Gemini response → inbound responses response.
@@ -1011,52 +1216,137 @@ pub fn transformResponsesResponse(
     allocator: std.mem.Allocator,
 ) !Responses.Response {
     var output_items: std.ArrayList(Responses.OutputItem) = .empty;
-    errdefer output_items.deinit(allocator);
+    // Deep cleanup: on any error below, free the owned strings inside each item
+    // already appended (id/name/arguments/summary/message content), not just the
+    // list buffer — matching cleanupResponsesResponse.
+    errdefer {
+        for (output_items.items) |item| freeOutputItem(item, allocator);
+        output_items.deinit(allocator);
+    }
 
     var msg_content_parts: std.ArrayList(Responses.OutputContent) = .empty;
-    errdefer msg_content_parts.deinit(allocator);
+    // Owns the duped .output_text strings until they are moved into the message
+    // item via toOwnedSlice (after which this list is cleared so the errdefer is
+    // a no-op and ownership rests solely with the message item / output_items).
+    errdefer {
+        for (msg_content_parts.items) |c| switch (c) {
+            .output_text => |t| allocator.free(t.text),
+            .refusal, .other => {},
+        };
+        msg_content_parts.deinit(allocator);
+    }
 
     var text_buf: std.ArrayList(u8) = .empty;
     defer text_buf.deinit(allocator);
+
+    var reasoning_buf: std.ArrayList(u8) = .empty;
+    defer reasoning_buf.deinit(allocator);
 
     if (upstream_response.candidates.len > 0) {
         for (upstream_response.candidates[0].content.parts) |part| {
             switch (part) {
                 .text => |tp| {
                     if (tp.text.len > 0) {
+                        const owned = try allocator.dupe(u8, tp.text);
+                        errdefer allocator.free(owned);
                         try msg_content_parts.append(allocator, .{ .output_text = .{
                             .type = "output_text",
-                            .text = try allocator.dupe(u8, tp.text),
+                            .text = owned,
                         } });
                         try text_buf.appendSlice(allocator, tp.text);
                     }
                 },
+                // Gemini reasoning → collected into a Responses reasoning item below.
+                .thought => |tp| if (tp.text.len > 0) try reasoning_buf.appendSlice(allocator, tp.text),
                 .function_call => |fc| {
                     var args_buf: std.ArrayList(u8) = .empty;
                     defer args_buf.deinit(allocator);
                     try args_buf.print(allocator, "{f}", .{std.json.fmt(fc.args, .{})});
+                    // Build the three owned strings, then append. If any step fails,
+                    // free what's already allocated — none is owned by output_items
+                    // until the append succeeds.
+                    const fc_id = try std.fmt.allocPrint(allocator, "call_{s}", .{fc.name});
+                    errdefer allocator.free(fc_id);
+                    const fc_name = try allocator.dupe(u8, fc.name);
+                    errdefer allocator.free(fc_name);
+                    const fc_args = try args_buf.toOwnedSlice(allocator);
+                    errdefer allocator.free(fc_args);
                     try output_items.append(allocator, .{ .function_call = .{
-                        .id = try std.fmt.allocPrint(allocator, "call_{s}", .{fc.name}),
+                        .id = fc_id,
                         .type = "function_call",
-                        .name = try allocator.dupe(u8, fc.name),
-                        .arguments = try args_buf.toOwnedSlice(allocator),
+                        .name = fc_name,
+                        .arguments = fc_args,
                         .call_id = null,
                         .status = "completed",
                     } });
                 },
-                else => {},
+                // No Responses output-item equivalent — dropped, logged.
+                .inline_data, .file_data, .executable_code, .code_execution_result,
+                .function_response, .video_metadata => log.debug("[responses] dropping Gemini part {s}: no Responses equivalent", .{@tagName(part)}),
             }
         }
     }
 
+    // Message item (id + moved content_slice). If the insert fails, free both
+    // here — neither is owned by output_items yet, so the errdefer wouldn't cover
+    // them. content_slice's inner texts are freed via the .output_text arm.
     const content_slice = try msg_content_parts.toOwnedSlice(allocator);
-    try output_items.insert(allocator, 0, .{ .message = .{
-        .id = try std.fmt.allocPrint(allocator, "msg_{d}", .{time.timestamp()}),
-        .type = "message",
-        .role = "assistant",
-        .content = content_slice,
-        .status = "completed",
-    } });
+    {
+        const msg_id = std.fmt.allocPrint(allocator, "msg_{d}", .{time.timestamp()}) catch |e| {
+            for (content_slice) |c| switch (c) {
+                .output_text => |t| allocator.free(t.text),
+                .refusal, .other => {},
+            };
+            allocator.free(content_slice);
+            return e;
+        };
+        output_items.insert(allocator, 0, .{ .message = .{
+            .id = msg_id,
+            .type = "message",
+            .role = "assistant",
+            .content = content_slice,
+            .status = "completed",
+        } }) catch |e| {
+            allocator.free(msg_id);
+            for (content_slice) |c| switch (c) {
+                .output_text => |t| allocator.free(t.text),
+                .refusal, .other => {},
+            };
+            allocator.free(content_slice);
+            return e;
+        };
+    }
+
+    // Reasoning item goes first (before the message), mirroring native Responses.
+    if (reasoning_buf.items.len > 0) {
+        // Build the summary JSON by serialize+leaky-parse so every key and string
+        // is allocator-owned uniformly — matching freeParsedJsonValue's cleanup
+        // (which frees object keys), avoiding a literal-key free mismatch.
+        var sbuf: std.ArrayList(u8) = .empty;
+        defer sbuf.deinit(allocator);
+        try sbuf.appendSlice(allocator, "[{\"type\":\"summary_text\",\"text\":");
+        // std.json.fmt on a string yields a properly-escaped JSON string literal.
+        try sbuf.print(allocator, "{f}", .{std.json.fmt(reasoning_buf.items, .{})});
+        try sbuf.appendSlice(allocator, "}]");
+        const summary_val = try std.json.parseFromSliceLeaky(std.json.Value, allocator, sbuf.items, .{});
+        // summary_val + rs_id are not owned by output_items until the insert
+        // succeeds; free both on any failure before then (no errdefer, to avoid
+        // double-freeing summary_val alongside the explicit catch below).
+        const rs_id = std.fmt.allocPrint(allocator, "rs_{d}", .{time.timestamp()}) catch |e| {
+            content.freeParsedJsonValue(summary_val, allocator);
+            return e;
+        };
+        output_items.insert(allocator, 0, .{ .reasoning = .{
+            .id = rs_id,
+            .type = "reasoning",
+            .summary = summary_val,
+            .content = &.{},
+        } }) catch |e| {
+            allocator.free(rs_id);
+            content.freeParsedJsonValue(summary_val, allocator);
+            return e;
+        };
+    }
 
     const output_text: ?[]const u8 = if (text_buf.items.len > 0)
         try text_buf.toOwnedSlice(allocator)
@@ -1131,6 +1421,37 @@ pub fn transformResponsesResponse(
     };
 }
 
+/// Free the owned allocations inside a single Responses output item.
+/// Shared by `cleanupResponsesResponse` (success teardown) and the
+/// construction errdefer in `transformResponsesResponse` (partial teardown on
+/// mid-transform failure) so the two can never diverge.
+fn freeOutputItem(item: Responses.OutputItem, allocator: std.mem.Allocator) void {
+    switch (item) {
+        .message => |m| {
+            allocator.free(m.id);
+            for (m.content) |c| switch (c) {
+                .output_text => |t| allocator.free(t.text),
+                .refusal => {},
+                .other => {},
+            };
+            allocator.free(m.content);
+        },
+        .function_call => |f| {
+            allocator.free(f.id);
+            allocator.free(f.name);
+            allocator.free(f.arguments);
+        },
+        // Reasoning item: free id and the synthesized summary JSON tree.
+        .reasoning => |r| {
+            allocator.free(r.id);
+            if (r.summary) |s| content.freeParsedJsonValue(s, allocator);
+        },
+        .web_search_call, .file_search_call, .code_interpreter_call,
+        .mcp_list_tools_item, .mcp_call_item, .image_generation_call,
+        .local_shell_call, .other => {},
+    }
+}
+
 /// Free what `transformResponsesResponse` allocated.
 pub fn cleanupResponsesResponse(
     inbound_response: Responses.Response,
@@ -1140,27 +1461,7 @@ pub fn cleanupResponsesResponse(
     allocator.free(inbound_response.model);
     if (inbound_response.output_text) |s| allocator.free(s);
     if (inbound_response.incomplete_details) |details| content.freeParsedJsonValue(details, allocator);
-    for (inbound_response.output) |item| {
-        switch (item) {
-            .message => |m| {
-                allocator.free(m.id);
-                for (m.content) |c| switch (c) {
-                    .output_text => |t| allocator.free(t.text),
-                    .refusal => {},
-                    .other => {},
-                };
-                allocator.free(m.content);
-            },
-            .function_call => |f| {
-                allocator.free(f.id);
-                allocator.free(f.name);
-                allocator.free(f.arguments);
-            },
-            .reasoning, .web_search_call, .file_search_call, .code_interpreter_call,
-            .mcp_list_tools_item, .mcp_call_item, .image_generation_call,
-            .local_shell_call, .other => {},
-        }
-    }
+    for (inbound_response.output) |item| freeOutputItem(item, allocator);
     allocator.free(inbound_response.output);
 }
 
@@ -1301,7 +1602,25 @@ pub fn transformResponsesStreamLine(
                     }}) catch continue;
                     state.sequence_number += 1;
                 },
-                else => {},
+                // Gemini reasoning → Responses reasoning_text delta events.
+                .thought => |tp| {
+                    if (tp.text.len == 0) continue;
+                    const owned = allocator.dupe(u8, tp.text) catch continue;
+                    events.append(allocator, .{ .reasoning_text_delta = .{
+                        .sequence_number = state.sequence_number,
+                        .output_index = 0,
+                        .item_id = state.response_id,
+                        .content_index = 0,
+                        .delta = owned,
+                    }}) catch {
+                        allocator.free(owned);
+                        continue;
+                    };
+                    state.sequence_number += 1;
+                },
+                // No Responses streaming equivalent — dropped, logged.
+                .inline_data, .file_data, .executable_code, .code_execution_result,
+                .function_response, .video_metadata => log.debug("[responses] dropping Gemini stream part {s}: no Responses equivalent", .{@tagName(part)}),
             }
         }
 
