@@ -140,8 +140,8 @@ pub fn cleanupChatResponse(inbound_response: Chat.Response, allocator: std.mem.A
 }
 
 /// One chat wire SSE line → Chat.ChatStreamLineResult (typed StreamChunk slice).
-/// Pass-through — model rewritten to original_model, id/usage/finish_reason captured into state.
-/// All strings embedded in the returned chunk are freshly duped so the parse arena can be freed.
+/// SSE transport only: strips `data: `, parses, then delegates to
+/// `transformChatStreamChunk`. Errors on the wire surface as `.error`.
 pub fn transformChatStreamLine(
     line: []const u8,
     state: *ChatStreamState,
@@ -163,9 +163,23 @@ pub fn transformChatStreamLine(
     };
     defer parsed.deinit();
 
-    const v = parsed.value;
+    return transformChatStreamChunk(parsed.value, state, allocator);
+}
 
-    // Capture id into state (owned, survives the parse arena).
+/// One parsed chat StreamChunk → Chat.ChatStreamLineResult (typed StreamChunk slice).
+/// Pass-through — model rewritten to original_model, id/usage/finish_reason captured into state.
+/// All strings embedded in the returned chunk are freshly duped, so the caller may free
+/// the parse arena (or any arena the chunk borrowed from) as soon as this returns.
+///
+/// This is the chunk-level seam shared by providers whose wire is a chat chunk behind
+/// their own envelope (e.g. SAP AI Core `final_result`), so they reuse this mapping
+/// instead of re-implementing it. Called by `transformChatStreamLine` after parsing.
+pub fn transformChatStreamChunk(
+    v: Chat.StreamChunk,
+    state: *ChatStreamState,
+    allocator: std.mem.Allocator,
+) Chat.ChatStreamLineResult {
+    // Capture id into state (owned, survives the caller's arena).
     if (state.response_id.len == 0 and v.id.len > 0) {
         state.response_id = allocator.dupe(u8, v.id) catch return .{ .skip = {} };
     }
@@ -426,11 +440,17 @@ pub fn transformMessagesRequest(
                 }
 
                 // Tool results first — one tool message per result.
-                for (tool_results.items) |tr| {
+                for (tool_results.items) |*tr| {
                     // If content_owned, the string is already allocated — use directly.
                     // If borrowed (from inbound arena), dupe it so the message owns it.
                     const msg_content: ?Chat.MessageContent = if (tr.content) |c|
-                        .{ .text = if (tr.content_owned) c else try allocator.dupe(u8, c) }
+                        .{ .text = if (tr.content_owned) blk: {
+                            // Ownership MOVES to the message: disarm the scope's
+                            // `defer` below so it does not free the joined string
+                            // out from under the message (use-after-free on the wire).
+                            tr.content_owned = false;
+                            break :blk c;
+                        } else try allocator.dupe(u8, c) }
                     else
                         null;
                     try messages.append(allocator, .{
@@ -1342,13 +1362,30 @@ pub fn transformResponsesStreamLine(
     };
     defer parsed.deinit();
 
+    return transformResponsesStreamChunk(parsed.value, state, allocator);
+}
+
+/// One parsed chat StreamChunk → Responses.ResponsesStreamLineResult (typed StreamEvent slice).
+///   usage (prompt_tokens→input_tokens, completion_tokens→output_tokens).
+///   Text delta → response.output_text.delta
+///   Tool-call argument deltas → response.function_call_arguments.delta (per tc)
+///   finish_reason → captured into state for flushResponsesStream
+///
+/// This is the chunk-level seam shared by providers whose wire is a chat chunk behind
+/// their own envelope (e.g. SAP AI Core `final_result`), so they reuse this mapping
+/// instead of re-implementing it. Called by `transformResponsesStreamLine` after parsing.
+pub fn transformResponsesStreamChunk(
+    parsed_value: Chat.StreamChunk,
+    state: *ResponsesStreamState,
+    allocator: std.mem.Allocator,
+) Responses.ResponsesStreamLineResult {
     // Capture id on first sight (owned by state).
-    if (state.response_id.len == 0 and parsed.value.id.len > 0) {
-        state.response_id = allocator.dupe(u8, parsed.value.id) catch return .{ .skip = {} };
+    if (state.response_id.len == 0 and parsed_value.id.len > 0) {
+        state.response_id = allocator.dupe(u8, parsed_value.id) catch return .{ .skip = {} };
     }
 
     // Track usage (final chunk via include_usage injection).
-    if (parsed.value.usage) |u| {
+    if (parsed_value.usage) |u| {
         state.input_tokens = u.prompt_tokens;
         state.output_tokens = u.completion_tokens;
         if (u.prompt_tokens_details) |d| {
@@ -1357,11 +1394,11 @@ pub fn transformResponsesStreamLine(
         }
     }
 
-    if (parsed.value.choices.len == 0) return .{ .skip = {} };
-    const choice = parsed.value.choices[0];
+    if (parsed_value.choices.len == 0) return .{ .skip = {} };
+    const choice = parsed_value.choices[0];
     const delta = choice.delta;
 
-    // Capture finish_reason (dupe — parsed dies below).
+    // Capture finish_reason (dupe — the caller's arena may die on return).
     if (choice.finish_reason) |reason| {
         if (reason.len > 0) {
             if (state.finish_reason) |prev| allocator.free(prev);
@@ -1372,7 +1409,7 @@ pub fn transformResponsesStreamLine(
     var events: std.ArrayList(Responses.StreamEvent) = .empty;
     defer events.deinit(allocator);
 
-    // Text delta → output_text.delta (dupe — text borrows from parsed arena)
+    // Text delta → output_text.delta (dupe — text borrows from the caller's arena)
     if (delta.content) |text| {
         if (text.len > 0) {
             const owned = allocator.dupe(u8, text) catch return .{ .skip = {} };
@@ -1388,7 +1425,7 @@ pub fn transformResponsesStreamLine(
         }
     }
 
-    // Tool-call argument deltas → function_call_arguments.delta (dupe — args borrow from parsed arena)
+    // Tool-call argument deltas → function_call_arguments.delta (dupe — args borrow from the caller's arena)
     if (delta.tool_calls) |tcs| {
         for (tcs) |tc| {
             const args = if (tc.function) |f| f.arguments orelse "" else "";
