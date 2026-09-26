@@ -1,0 +1,17 @@
+{
+  "x_path": "/v1/messages",
+  "model": "sap_ai_core/anthropic--claude-4.6-sonnet",
+  "max_tokens": 512,
+  "system": [
+    { "type": "text", "text": "x-anthropic-billing-header: cc_version=2.1.267.97c; cc_entrypoint=cli;" },
+    { "type": "text", "text": "You are Claude Code, an interactive CLI agent." },
+    { "type": "text", "text": "Always finish the task the user asked for." }
+  ],
+  "messages": [
+    {
+      "role": "user",
+      "content": "Review the custom headers wiring."
+    }
+  ],
+  "stream": true
+}

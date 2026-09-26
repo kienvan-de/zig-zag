@@ -66,105 +66,13 @@ pub fn freeParams(params: std.json.Value, allocator: std.mem.Allocator) void {
 // Response deep-copy (SAP envelopes own their inner chat objects)
 // ============================================================================
 
-/// Deep-copy a chat response message (all strings freshly allocated).
-pub fn dupeResponseMessage(
-    allocator: std.mem.Allocator,
-    msg: Chat.ResponseMessage,
-) !Chat.ResponseMessage {
-    const duped_content: ?[]const u8 = if (msg.content) |c| try allocator.dupe(u8, c) else null;
-    errdefer if (duped_content) |c| allocator.free(c);
-
-    const duped_tool_calls: ?[]const Chat.ToolCall = if (msg.tool_calls) |tcs| blk: {
-        const duped = try allocator.alloc(Chat.ToolCall, tcs.len);
-        var filled: usize = 0;
-        errdefer {
-            for (duped[0..filled]) |tc| {
-                allocator.free(tc.id);
-                allocator.free(tc.type);
-                allocator.free(tc.function.name);
-                allocator.free(tc.function.arguments);
-            }
-            allocator.free(duped);
-        }
-        for (tcs, 0..) |tc, i| {
-            const entry_id = try allocator.dupe(u8, tc.id);
-            errdefer allocator.free(entry_id);
-            const entry_type = try allocator.dupe(u8, tc.type);
-            errdefer allocator.free(entry_type);
-            const entry_name = try allocator.dupe(u8, tc.function.name);
-            errdefer allocator.free(entry_name);
-            const entry_args = try allocator.dupe(u8, tc.function.arguments);
-            duped[i] = .{
-                .id = entry_id,
-                .type = entry_type,
-                .function = .{ .name = entry_name, .arguments = entry_args },
-            };
-            filled += 1;
-        }
-        break :blk duped;
-    } else null;
-
-    return .{
-        .role = msg.role,
-        .content = duped_content,
-        .tool_calls = duped_tool_calls,
-    };
-}
-
-/// Deep-copy a chat response choice.
-pub fn dupeResponseChoice(
-    allocator: std.mem.Allocator,
-    choice: Chat.ResponseChoice,
-) !Chat.ResponseChoice {
-    const msg = try dupeResponseMessage(allocator, choice.message);
-    errdefer freeResponseMessage(allocator, msg);
-    return .{
-        .index = choice.index,
-        .message = msg,
-        .finish_reason = try allocator.dupe(u8, choice.finish_reason),
-        .logprobs = null,
-    };
-}
-
-/// Free a deep-copied chat response message.
-pub fn freeResponseMessage(allocator: std.mem.Allocator, msg: Chat.ResponseMessage) void {
-    if (msg.content) |c| allocator.free(c);
-    if (msg.tool_calls) |tcs| {
-        for (tcs) |tc| {
-            allocator.free(tc.id);
-            allocator.free(tc.type);
-            allocator.free(tc.function.name);
-            allocator.free(tc.function.arguments);
-        }
-        allocator.free(tcs);
-    }
-}
-
 // ============================================================================
 // Stop-reason mapping
 // ============================================================================
 
-/// Map a chat finish_reason to the Messages-wire stop_reason vocabulary.
-pub fn transformStopReasonToMessages(finish_reason: []const u8) []const u8 {
-    if (std.mem.eql(u8, finish_reason, "stop")) return "end_turn";
-    if (std.mem.eql(u8, finish_reason, "length")) return "max_tokens";
-    if (std.mem.eql(u8, finish_reason, "tool_calls")) return "tool_use";
-    return "end_turn";
-}
-
 // ============================================================================
 // Messages face helpers (Anthropic wire ↔ chat payload)
 // ============================================================================
-
-/// Leaky-parse tool-call arguments into an owned JSON tree for a tool_use block.
-/// Unparseable arguments become an empty object.
-pub fn parseToolArguments(
-    arguments: []const u8,
-    allocator: std.mem.Allocator,
-) !std.json.Value {
-    return std.json.parseFromSliceLeaky(std.json.Value, allocator, arguments, .{}) catch
-        .{ .object = .{} };
-}
 
 /// Free a leaky-parsed JSON tree (keys + string leaves owned).
 pub fn freeParsedJsonValue(value: std.json.Value, allocator: std.mem.Allocator) void {
@@ -188,39 +96,39 @@ pub fn freeParsedJsonValue(value: std.json.Value, allocator: std.mem.Allocator) 
     }
 }
 
-/// Free a messages-flow response content-block slice.
-pub fn freeMessageOwnedBlocks(
-    blocks: []const Messages.ContentBlock,
-    allocator: std.mem.Allocator,
-) void {
-    for (blocks) |block| {
-        switch (block) {
-            .text => |tb| allocator.free(tb.text),
-            .tool_use => |tu| {
-                allocator.free(tu.id);
-                allocator.free(tu.name);
-                freeParsedJsonValue(tu.input, allocator);
-            },
-            .thinking, .redacted_thinking,
-            .server_tool_use, .tool_result,
-            .web_search_tool_result, .web_fetch_tool_result,
-            .code_execution_tool_result, .bash_code_execution_tool_result,
-            .text_editor_code_execution_tool_result, .tool_search_tool_result,
-            .fallback => {},
-        }
-    }
-}
-
-/// Free a messages-flow request message: duped text content (except system,
-/// which borrows) and tool-call argument strings.
-pub fn freeMessageOwnedText(msg: Chat.Message, allocator: std.mem.Allocator) void {
+/// Free the empty-string content replacements made by `normalizeNonNullContent`.
+///
+/// Only for callers that hold a borrowed (not chat-owned) message list and
+/// therefore need to free the replacements themselves. When the list was
+/// allocated by `chat_transformer`, its own cleanup frees every `.text` content
+/// and this must NOT be called (it would double free).
+pub fn freeNormalizedContent(msg: Chat.Message, allocator: std.mem.Allocator) void {
     if (msg.content) |c| switch (c) {
-        .text => |text| if (msg.role != .system) allocator.free(text),
+        .text => |text| if (text.len == 0) allocator.free(text),
         .parts => {},
     };
-    if (msg.tool_calls) |tcs| {
-        for (tcs) |tc| allocator.free(tc.function.arguments);
-        allocator.free(tcs);
+}
+
+/// Replace null message content with an empty string, mutating the slice in place.
+///
+/// SAP AI Core's orchestration schema rejects `content: null` — it requires an
+/// empty string instead. `chat_transformer` produces nullable `content` per the
+/// chat-completions contract (e.g. a message that is only a tool call), so every
+/// message crossing into the SAP envelope is normalized here, in place, on the
+/// very slice `chat_transformer` allocated. That keeps a single owner: the
+/// delegated `Chat.Request`, freed by `chat_transformer.cleanupMessagesRequest`.
+///
+/// Each replacement is an owned empty string allocated with the same allocator,
+/// so `chat_content.freeMessageOwnedText` (which frees every `.text` content)
+/// frees it exactly once alongside the rest — no separate bookkeeping needed.
+pub fn normalizeNonNullContent(
+    messages: []Chat.Message,
+    allocator: std.mem.Allocator,
+) !void {
+    for (messages) |*msg| {
+        if (msg.content == null) {
+            msg.content = .{ .text = try allocator.dupe(u8, "") };
+        }
     }
 }
 

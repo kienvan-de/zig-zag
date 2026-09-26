@@ -1,0 +1,9 @@
+data: {"request_id": "case23-req-001", "intermediate_results": {"templating": []}, "final_result": {"id": "", "object": "", "created": 0, "model": "", "choices": [{"index": 0, "delta": {"content": ""}}]}}
+
+data: {"request_id": "case23-req-001", "intermediate_results": {"llm": {"id": "chatcmpl-case23-001", "object": "chat.completion.chunk", "created": 1710000023, "model": "anthropic--claude-4.6-sonnet", "choices": [{"index": 0, "delta": {"role": "assistant", "content": "It is"}, "finish_reason": null}]}}, "final_result": {"id": "chatcmpl-case23-001", "object": "chat.completion.chunk", "created": 1710000023, "model": "anthropic--claude-4.6-sonnet", "choices": [{"index": 0, "delta": {"role": "assistant", "content": "It is"}, "finish_reason": null}]}}
+
+data: {"request_id": "case23-req-001", "intermediate_results": {"llm": {"id": "chatcmpl-case23-001", "object": "chat.completion.chunk", "created": 1710000023, "model": "anthropic--claude-4.6-sonnet", "choices": [{"index": 0, "delta": {"content": " 18C and sunny."}, "finish_reason": null}]}}, "final_result": {"id": "chatcmpl-case23-001", "object": "chat.completion.chunk", "created": 1710000023, "model": "anthropic--claude-4.6-sonnet", "choices": [{"index": 0, "delta": {"content": " 18C and sunny."}, "finish_reason": null}]}}
+
+data: {"request_id": "case23-req-001", "intermediate_results": {"llm": {"id": "chatcmpl-case23-001", "object": "chat.completion.chunk", "created": 1710000023, "model": "anthropic--claude-4.6-sonnet", "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}], "usage": {"completion_tokens": 6, "prompt_tokens": 60, "total_tokens": 66}}}, "final_result": {"id": "chatcmpl-case23-001", "object": "chat.completion.chunk", "created": 1710000023, "model": "anthropic--claude-4.6-sonnet", "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}], "usage": {"completion_tokens": 6, "prompt_tokens": 60, "total_tokens": 66}}}
+
+data: [DONE]

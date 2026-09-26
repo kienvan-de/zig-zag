@@ -1,0 +1,9 @@
+data: {"request_id": "case22-req-001", "intermediate_results": {"templating": []}, "final_result": {"id": "", "object": "", "created": 0, "model": "", "choices": [{"index": 0, "delta": {"content": ""}}]}}
+
+data: {"request_id": "case22-req-001", "intermediate_results": {"llm": {"id": "chatcmpl-case22-001", "object": "chat.completion.chunk", "created": 1710000022, "model": "anthropic--claude-4.6-sonnet", "choices": [{"index": 0, "delta": {"role": "assistant", "content": "Wiring looks"}, "finish_reason": null}]}}, "final_result": {"id": "chatcmpl-case22-001", "object": "chat.completion.chunk", "created": 1710000022, "model": "anthropic--claude-4.6-sonnet", "choices": [{"index": 0, "delta": {"role": "assistant", "content": "Wiring looks"}, "finish_reason": null}]}}
+
+data: {"request_id": "case22-req-001", "intermediate_results": {"llm": {"id": "chatcmpl-case22-001", "object": "chat.completion.chunk", "created": 1710000022, "model": "anthropic--claude-4.6-sonnet", "choices": [{"index": 0, "delta": {"content": " complete."}, "finish_reason": null}]}}, "final_result": {"id": "chatcmpl-case22-001", "object": "chat.completion.chunk", "created": 1710000022, "model": "anthropic--claude-4.6-sonnet", "choices": [{"index": 0, "delta": {"content": " complete."}, "finish_reason": null}]}}
+
+data: {"request_id": "case22-req-001", "intermediate_results": {"llm": {"id": "chatcmpl-case22-001", "object": "chat.completion.chunk", "created": 1710000022, "model": "anthropic--claude-4.6-sonnet", "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}], "usage": {"completion_tokens": 4, "prompt_tokens": 40, "total_tokens": 44}}}, "final_result": {"id": "chatcmpl-case22-001", "object": "chat.completion.chunk", "created": 1710000022, "model": "anthropic--claude-4.6-sonnet", "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}], "usage": {"completion_tokens": 4, "prompt_tokens": 40, "total_tokens": 44}}}
+
+data: [DONE]

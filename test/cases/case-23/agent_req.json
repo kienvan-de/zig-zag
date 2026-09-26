@@ -1,0 +1,49 @@
+{
+  "x_path": "/v1/messages",
+  "model": "sap_ai_core/anthropic--claude-4.6-sonnet",
+  "max_tokens": 1024,
+  "messages": [
+    {
+      "role": "user",
+      "content": "What is the weather in Berlin?"
+    },
+    {
+      "role": "assistant",
+      "content": [
+        { "type": "text", "text": "Let me check." },
+        {
+          "type": "tool_use",
+          "id": "toolu_case23_001",
+          "name": "get_weather",
+          "input": { "location": "Berlin" }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "toolu_case23_001",
+          "content": [
+            { "type": "text", "text": "18C and sunny." },
+            { "type": "text", "text": " Wind 5 km/h." }
+          ]
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "name": "get_weather",
+      "description": "Get the weather for a location.",
+      "input_schema": {
+        "type": "object",
+        "properties": { "location": { "type": "string" } },
+        "required": ["location"]
+      }
+    }
+  ],
+  "tool_choice": { "type": "any" },
+  "stream": true
+}
