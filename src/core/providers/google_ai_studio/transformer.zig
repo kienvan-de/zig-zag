@@ -27,6 +27,7 @@ const Responses = @import("../openai/responses_types.zig");
 const common = @import("../openai/types.zig");
 const Google = @import("types.zig");
 const content = @import("content.zig");
+const sig_cache = @import("signature_cache.zig");
 const chat_content = @import("../openai/chat_content.zig");
 const log = @import("../../log.zig");
 const time = @import("../../time.zig");
@@ -692,9 +693,20 @@ pub fn transformMessagesResponse(
                     } });
                 },
                 .function_call => |fc| {
-                    // Gemini has no tool-call ids — name used as id.
-                    const owned_name = try allocator.dupe(u8, fc.name);
-                    errdefer allocator.free(owned_name);
+                    const fn_name = try allocator.dupe(u8, fc.name);
+                    errdefer allocator.free(fn_name);
+                    // Generate a new proxy id: name~token; store signature in bounded cache.
+                    const proxy_id = sig_cache.generateId(allocator, fc.name) catch {
+                        allocator.free(fn_name);
+                        continue;
+                    };
+                    errdefer allocator.free(proxy_id);
+                    // Store the opaque thoughtSignature (if present) keyed by full proxy id.
+                    if (fc.thought_signature) |sig| {
+                        sig_cache.put(proxy_id, sig) catch |err| {
+                            log.debug("[sig_cache] put failed for '{s}': {}", .{proxy_id, err});
+                        };
+                    }
                     // Deep-copy fc.args: serialize then re-parse onto allocator so the
                     // returned response does not borrow from the upstream parse arena.
                     var args_buf: std.ArrayList(u8) = .empty;
@@ -706,8 +718,8 @@ pub fn transformMessagesResponse(
                     errdefer content.freeParsedJsonValue(owned_args, allocator);
                     try content_blocks.append(allocator, .{ .tool_use = .{
                         .type = "tool_use",
-                        .id = owned_name,
-                        .name = owned_name,
+                        .id = proxy_id,
+                        .name = fn_name,
                         .input = owned_args,
                     } });
                 },
@@ -854,6 +866,15 @@ pub fn transformMessagesStreamLine(
                         allocator.free(owned_args);
                         continue;
                     };
+                    // Generate a proxy id (name~token) and cache the real thoughtSignature
+                    // under it, mirroring the non-streaming path — otherwise the replayed
+                    // tool_use id has no way to recover its signature on the next turn.
+                    const proxy_id = sig_cache.generateId(allocator, fc.name) catch owned_name;
+                    if (fc.thought_signature) |sig| {
+                        sig_cache.put(proxy_id, sig) catch |err| {
+                            log.debug("[sig_cache] put failed for '{s}': {}", .{proxy_id, err});
+                        };
+                    }
 
                     // A tool_use block is self-contained (start+delta+stop). Close
                     // any open thinking/text block first so blocks stay sequential.
@@ -865,7 +886,7 @@ pub fn transformMessagesStreamLine(
                     events.append(allocator, .{ .content_block_start = .{
                         .type = "content_block_start",
                         .index = block_idx,
-                        .content_block = .{ .type = "tool_use", .id = owned_name, .name = owned_name },
+                        .content_block = .{ .type = "tool_use", .id = proxy_id, .name = owned_name },
                     }}) catch continue;
                     events.append(allocator, .{ .content_block_delta = .{
                         .type = "content_block_delta",

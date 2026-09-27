@@ -1,0 +1,3 @@
+data: {"candidates":[{"content":{"role":"model","parts":[{"text":"It is 18C"}]},"index":0}],"usageMetadata":{"promptTokenCount":120,"candidatesTokenCount":6,"totalTokenCount":126}}
+
+data: {"candidates":[{"content":{"role":"model","parts":[{"text":" and sunny in Berlin."}]},"index":0,"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":120,"candidatesTokenCount":12,"totalTokenCount":132}}

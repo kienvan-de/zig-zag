@@ -19,6 +19,7 @@ const http_client = @import("../../client.zig");
 const log = @import("../../log.zig");
 const app_cache = @import("../../cache/app_cache.zig");
 const client_headers = @import("../client_headers.zig");
+const sig_cache = @import("signature_cache.zig");
 
 /// Iterator for SSE streaming responses
 pub const SSEIterator = http_client.SSEIterator;
@@ -40,6 +41,9 @@ pub const GoogleAiStudioClient = struct {
             log.err("Google AI Studio provider config missing 'api_key' field", .{});
             return error.MissingApiKey;
         };
+        // Global, process-lifetime cache — must not be seeded with this
+        // request's allocator (see signature_cache.zig doc comment for why).
+        sig_cache.init();
 
         const api_url = provider_config.getString("api_url") orelse DEFAULT_API_URL;
         const timeout_ms = provider_config.getInt("timeout_ms") orelse config_mod.defaults.provider_timeout_ms;

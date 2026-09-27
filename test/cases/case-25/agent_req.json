@@ -1,0 +1,23 @@
+{
+  "x_path": "/v1/messages",
+  "model": "google_ai_studio/gemini-3-pro",
+  "max_tokens": 1024,
+  "messages": [
+    {
+      "role": "user",
+      "content": "What is the weather in Berlin?"
+    }
+  ],
+  "tools": [
+    {
+      "name": "get_weather",
+      "description": "Get the weather for a location.",
+      "input_schema": {
+        "type": "object",
+        "properties": { "location": { "type": "string" } },
+        "required": ["location"]
+      }
+    }
+  ],
+  "stream": true
+}

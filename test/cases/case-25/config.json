@@ -1,0 +1,9 @@
+{
+  "providers": {
+    "google_ai_studio": {
+      "api_key": "test-google-key",
+      "api_url": "http://localhost:8001"
+    }
+  },
+  "server": { "host": "127.0.0.1", "port": 8080 }
+}

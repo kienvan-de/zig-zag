@@ -48,6 +48,7 @@ pub const PartCodeExecutionResult = struct {
 pub const PartFunctionCall = struct {
     name: []const u8,
     args: std.json.Value,
+    thought_signature: ?[]const u8 = null,
 };
 pub const PartFunctionResponse = struct {
     name: []const u8,
@@ -139,7 +140,9 @@ pub const Part = union(enum) {
             if (fc == .object) {
                 const name = if (fc.object.get("name")) |n| (if (n == .string) n.string else "") else "";
                 const args = fc.object.get("args") orelse .null;
-                return .{ .function_call = .{ .name = name, .args = args } };
+                // thoughtSignature is a sibling of functionCall on the Part object.
+                const sig = if (obj.get("thoughtSignature")) |v| (if (v == .string) v.string else null) else null;
+                return .{ .function_call = .{ .name = name, .args = args, .thought_signature = sig } };
             }
         }
         if (obj.get("functionResponse")) |fr| {
@@ -226,6 +229,13 @@ pub const Part = union(enum) {
                 try jw.objectField("args");
                 try jw.write(v.args);
                 try jw.endObject();
+                // thoughtSignature is a sibling of functionCall on the Part object,
+                // not a field inside functionCall — Google rejects it as an unknown
+                // field of function_call otherwise.
+                if (v.thought_signature) |sig| {
+                    try jw.objectField("thoughtSignature");
+                    try jw.write(sig);
+                }
                 try jw.endObject();
             },
             .function_response => |v| {

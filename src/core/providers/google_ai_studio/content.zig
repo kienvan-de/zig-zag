@@ -22,7 +22,10 @@ const Chat = @import("../openai/chat_types.zig"); // inbound chat schema
 const Responses = @import("../openai/responses_types.zig"); // Responses API schema
 const common = @import("../openai/types.zig"); // shared primitives
 const Google = @import("types.zig"); // Gemini wire types
+const sig_cache = @import("signature_cache.zig");
 const log = @import("../../log.zig");
+
+const missing_thought_signature = "skip_thought_signature_validator";
 
 // ============================================================================
 // Tool mapping
@@ -339,9 +342,14 @@ pub fn buildContents(
                     const args_val = std.json.parseFromSliceLeaky(
                         std.json.Value, allocator, tc.function.arguments, .{},
                     ) catch .null;
+                    const proxy_id: []const u8 = if (tc.id.len > 0) tc.id else tc.function.name;
+                    const fn_name = sig_cache.splitNameFromId(proxy_id);
+                    const signature = try resolveThoughtSignature(proxy_id, allocator);
+                    errdefer allocator.free(signature);
                     try parts.append(allocator, .{ .function_call = .{
-                        .name = tc.function.name,
+                        .name = fn_name,
                         .args = args_val,
+                        .thought_signature = signature,
                     } });
                 };
 
@@ -354,7 +362,8 @@ pub fn buildContents(
                 var parts: std.ArrayList(Google.Part) = .empty;
                 errdefer parts.deinit(allocator);
 
-                const func_name = msg.tool_call_id orelse "unknown_function";
+                const func_name_raw = msg.tool_call_id orelse "unknown_function";
+                const fn_name_resp = sig_cache.splitNameFromId(func_name_raw);
                 const content_text: []const u8 = if (msg.content) |c| switch (c) {
                     .text => |t| t,
                     .parts => |ps| if (ps.len > 0 and ps[0] == .text) ps[0].text.text else "",
@@ -365,7 +374,9 @@ pub fn buildContents(
                 try resp_obj.put(allocator, "output", .{ .string = content_text });
 
                 try parts.append(allocator, .{ .function_response = .{
-                    .name = func_name,
+                    // splitNameFromId returns a sub-slice, not a copy — borrows the
+                    // inbound parse tree just like the pre-signature-cache code did.
+                    .name = fn_name_resp,
                     .response = .{ .object = resp_obj },
                 } });
 
@@ -428,10 +439,14 @@ pub fn buildContentsFromMessages(
                 switch (block) {
                     .text => |tb| try parts.append(allocator, .{ .text = .{ .text = tb.text } }),
                     .tool_use => |tu| {
-                        // args borrows the inbound parse's tree.
+                        const proxy_id: []const u8 = if (tu.id.len > 0) tu.id else tu.name;
+                        const signature = try resolveThoughtSignature(proxy_id, allocator);
+                        errdefer allocator.free(signature);
+                        // args and name borrow the inbound parse tree.
                         try parts.append(allocator, .{ .function_call = .{
                             .name = tu.name,
                             .args = tu.input,
+                            .thought_signature = signature,
                         } });
                     },
                     .tool_result => |tr| {
@@ -441,9 +456,12 @@ pub fn buildContentsFromMessages(
                         } else "";
                         var resp_obj: std.json.ObjectMap = .{};
                         errdefer resp_obj.deinit(allocator);
+                        const resp_name_raw: []const u8 = tr.tool_use_id;
+                        const resp_name = sig_cache.splitNameFromId(resp_name_raw);
                         try resp_obj.put(allocator, "output", .{ .string = output_text });
                         try parts.append(allocator, .{ .function_response = .{
-                            .name = tr.tool_use_id,
+                            // Sub-slice of tr.tool_use_id — borrows the inbound parse tree.
+                            .name = resp_name,
                             .response = .{ .object = resp_obj },
                         } });
                     },
@@ -604,9 +622,13 @@ pub fn buildContentsFromResponsesInput(
                 errdefer resp_obj.deinit(allocator);
                 try resp_obj.put(allocator, "output", .{ .string = output_str });
 
+                const resp_name_raw: []const u8 = call_id_val.string;
+                const resp_name = sig_cache.splitNameFromId(resp_name_raw);
+
                 var parts = try allocator.alloc(Google.Part, 1);
                 parts[0] = .{ .function_response = .{
-                    .name = call_id_val.string,
+                    // Sub-slice of call_id_val.string — borrows the inbound parse tree.
+                    .name = resp_name,
                     .response = .{ .object = resp_obj },
                 } };
                 try mergeOrAppend(&contents, "user", parts, allocator);
@@ -759,8 +781,16 @@ pub fn extractToolCalls(
                 defer args_buf.deinit(allocator);
                 try args_buf.print(allocator, "{f}", .{std.json.fmt(fc.args, .{})});
 
+                const proxy_id = sig_cache.generateId(allocator, fc.name) catch continue;
+                // Store the opaque thoughtSignature (if present) keyed by full proxy id.
+                if (fc.thought_signature) |sig| {
+                    sig_cache.put(proxy_id, sig) catch |err| {
+                        log.debug("[sig_cache] put failed for '{s}': {}", .{proxy_id, err});
+                    };
+                }
+
                 try tool_calls.append(allocator, .{
-                    .id = try std.fmt.allocPrint(allocator, "call_{s}", .{fc.name}),
+                    .id = proxy_id,
                     .type = "function",
                     .function = .{
                         .name = fc.name,
@@ -814,11 +844,14 @@ pub fn freeParsedJsonValue(value: std.json.Value, allocator: std.mem.Allocator) 
 }
 
 /// Free request-owned memory from chat-flow parts:
-///   function_call → leaky-parsed args tree
+///   function_call → leaky-parsed args tree + resolved thoughtSignature (owned; see resolveThoughtSignature)
 ///   function_response → hand-built ObjectMap storage
 pub fn freeResponseOwnedArgs(part: Google.Part, allocator: std.mem.Allocator) void {
     switch (part) {
-        .function_call => |fc| freeParsedJsonValue(fc.args, allocator),
+        .function_call => |fc| {
+            freeParsedJsonValue(fc.args, allocator);
+            if (fc.thought_signature) |sig| allocator.free(sig);
+        },
         .function_response => |fr| {
             if (fr.response == .object) {
                 var owned = fr.response.object;
@@ -832,7 +865,8 @@ pub fn freeResponseOwnedArgs(part: Google.Part, allocator: std.mem.Allocator) vo
 }
 
 /// Free request-owned memory from messages-flow parts:
-///   function_call → args BORROW the inbound parse, not freed here
+///   function_call → args/name BORROW the inbound parse, not freed here;
+///                   thoughtSignature is owned (see resolveThoughtSignature) and freed here
 ///   function_response → hand-built ObjectMap storage
 pub fn freeMessagesOwnedArgs(part: Google.Part, allocator: std.mem.Allocator) void {
     switch (part) {
@@ -842,9 +876,12 @@ pub fn freeMessagesOwnedArgs(part: Google.Part, allocator: std.mem.Allocator) vo
                 owned.deinit(allocator);
             }
         },
-        // function_call args borrow the inbound parse; other parts own nothing here.
+        .function_call => |fc| {
+            if (fc.thought_signature) |sig| allocator.free(sig);
+        },
+        // Other parts borrow the inbound parse / own nothing here.
         .text, .thought, .inline_data, .file_data, .executable_code,
-        .code_execution_result, .function_call, .video_metadata => {},
+        .code_execution_result, .video_metadata => {},
     }
 }
 
@@ -858,6 +895,14 @@ pub fn freeResponsesOwnedArgs(part: Google.Part, allocator: std.mem.Allocator) v
 // ============================================================================
 // Internal helpers
 // ============================================================================
+
+/// Preserve a cached Gemini signature when available. For manually reconstructed
+/// function-call history, Google documents this literal as a validation bypass.
+fn resolveThoughtSignature(id: []const u8, allocator: std.mem.Allocator) ![]const u8 {
+    if (sig_cache.get(id, allocator)) |signature| return signature;
+    log.debug("[sig_cache] miss for '{s}'; using validation-bypass signature", .{id});
+    return allocator.dupe(u8, missing_thought_signature);
+}
 
 /// Append an image URL as a Gemini Part.
 /// data: URI → inline_data (base64); https:// or other URL → file_data.
