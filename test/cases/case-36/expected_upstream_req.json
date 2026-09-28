@@ -1,0 +1,1725 @@
+{
+  "model": "gpt5.2",
+  "messages": [
+    {
+      "role": "user",
+      "content": "kick off the batch"
+    },
+    {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [
+        {
+          "id": "toolu_000",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":0}"
+          }
+        },
+        {
+          "id": "toolu_001",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":1}"
+          }
+        },
+        {
+          "id": "toolu_002",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":2}"
+          }
+        },
+        {
+          "id": "toolu_003",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":3}"
+          }
+        },
+        {
+          "id": "toolu_004",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":4}"
+          }
+        },
+        {
+          "id": "toolu_005",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":5}"
+          }
+        },
+        {
+          "id": "toolu_006",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":6}"
+          }
+        },
+        {
+          "id": "toolu_007",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":7}"
+          }
+        },
+        {
+          "id": "toolu_008",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":8}"
+          }
+        },
+        {
+          "id": "toolu_009",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":9}"
+          }
+        },
+        {
+          "id": "toolu_010",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":10}"
+          }
+        },
+        {
+          "id": "toolu_011",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":11}"
+          }
+        },
+        {
+          "id": "toolu_012",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":12}"
+          }
+        },
+        {
+          "id": "toolu_013",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":13}"
+          }
+        },
+        {
+          "id": "toolu_014",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":14}"
+          }
+        },
+        {
+          "id": "toolu_015",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":15}"
+          }
+        },
+        {
+          "id": "toolu_016",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":16}"
+          }
+        },
+        {
+          "id": "toolu_017",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":17}"
+          }
+        },
+        {
+          "id": "toolu_018",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":18}"
+          }
+        },
+        {
+          "id": "toolu_019",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":19}"
+          }
+        },
+        {
+          "id": "toolu_020",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":20}"
+          }
+        },
+        {
+          "id": "toolu_021",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":21}"
+          }
+        },
+        {
+          "id": "toolu_022",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":22}"
+          }
+        },
+        {
+          "id": "toolu_023",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":23}"
+          }
+        },
+        {
+          "id": "toolu_024",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":24}"
+          }
+        },
+        {
+          "id": "toolu_025",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":25}"
+          }
+        },
+        {
+          "id": "toolu_026",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":26}"
+          }
+        },
+        {
+          "id": "toolu_027",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":27}"
+          }
+        },
+        {
+          "id": "toolu_028",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":28}"
+          }
+        },
+        {
+          "id": "toolu_029",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":29}"
+          }
+        },
+        {
+          "id": "toolu_030",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":30}"
+          }
+        },
+        {
+          "id": "toolu_031",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":31}"
+          }
+        },
+        {
+          "id": "toolu_032",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":32}"
+          }
+        },
+        {
+          "id": "toolu_033",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":33}"
+          }
+        },
+        {
+          "id": "toolu_034",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":34}"
+          }
+        },
+        {
+          "id": "toolu_035",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":35}"
+          }
+        },
+        {
+          "id": "toolu_036",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":36}"
+          }
+        },
+        {
+          "id": "toolu_037",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":37}"
+          }
+        },
+        {
+          "id": "toolu_038",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":38}"
+          }
+        },
+        {
+          "id": "toolu_039",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":39}"
+          }
+        },
+        {
+          "id": "toolu_040",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":40}"
+          }
+        },
+        {
+          "id": "toolu_041",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":41}"
+          }
+        },
+        {
+          "id": "toolu_042",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":42}"
+          }
+        },
+        {
+          "id": "toolu_043",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":43}"
+          }
+        },
+        {
+          "id": "toolu_044",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":44}"
+          }
+        },
+        {
+          "id": "toolu_045",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":45}"
+          }
+        },
+        {
+          "id": "toolu_046",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":46}"
+          }
+        },
+        {
+          "id": "toolu_047",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":47}"
+          }
+        },
+        {
+          "id": "toolu_048",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":48}"
+          }
+        },
+        {
+          "id": "toolu_049",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":49}"
+          }
+        },
+        {
+          "id": "toolu_050",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":50}"
+          }
+        },
+        {
+          "id": "toolu_051",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":51}"
+          }
+        },
+        {
+          "id": "toolu_052",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":52}"
+          }
+        },
+        {
+          "id": "toolu_053",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":53}"
+          }
+        },
+        {
+          "id": "toolu_054",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":54}"
+          }
+        },
+        {
+          "id": "toolu_055",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":55}"
+          }
+        },
+        {
+          "id": "toolu_056",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":56}"
+          }
+        },
+        {
+          "id": "toolu_057",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":57}"
+          }
+        },
+        {
+          "id": "toolu_058",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":58}"
+          }
+        },
+        {
+          "id": "toolu_059",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":59}"
+          }
+        },
+        {
+          "id": "toolu_060",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":60}"
+          }
+        },
+        {
+          "id": "toolu_061",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":61}"
+          }
+        },
+        {
+          "id": "toolu_062",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":62}"
+          }
+        },
+        {
+          "id": "toolu_063",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":63}"
+          }
+        },
+        {
+          "id": "toolu_064",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":64}"
+          }
+        },
+        {
+          "id": "toolu_065",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":65}"
+          }
+        },
+        {
+          "id": "toolu_066",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":66}"
+          }
+        },
+        {
+          "id": "toolu_067",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":67}"
+          }
+        },
+        {
+          "id": "toolu_068",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":68}"
+          }
+        },
+        {
+          "id": "toolu_069",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":69}"
+          }
+        },
+        {
+          "id": "toolu_070",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":70}"
+          }
+        },
+        {
+          "id": "toolu_071",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":71}"
+          }
+        },
+        {
+          "id": "toolu_072",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":72}"
+          }
+        },
+        {
+          "id": "toolu_073",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":73}"
+          }
+        },
+        {
+          "id": "toolu_074",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":74}"
+          }
+        },
+        {
+          "id": "toolu_075",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":75}"
+          }
+        },
+        {
+          "id": "toolu_076",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":76}"
+          }
+        },
+        {
+          "id": "toolu_077",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":77}"
+          }
+        },
+        {
+          "id": "toolu_078",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":78}"
+          }
+        },
+        {
+          "id": "toolu_079",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":79}"
+          }
+        },
+        {
+          "id": "toolu_080",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":80}"
+          }
+        },
+        {
+          "id": "toolu_081",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":81}"
+          }
+        },
+        {
+          "id": "toolu_082",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":82}"
+          }
+        },
+        {
+          "id": "toolu_083",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":83}"
+          }
+        },
+        {
+          "id": "toolu_084",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":84}"
+          }
+        },
+        {
+          "id": "toolu_085",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":85}"
+          }
+        },
+        {
+          "id": "toolu_086",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":86}"
+          }
+        },
+        {
+          "id": "toolu_087",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":87}"
+          }
+        },
+        {
+          "id": "toolu_088",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":88}"
+          }
+        },
+        {
+          "id": "toolu_089",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":89}"
+          }
+        },
+        {
+          "id": "toolu_090",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":90}"
+          }
+        },
+        {
+          "id": "toolu_091",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":91}"
+          }
+        },
+        {
+          "id": "toolu_092",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":92}"
+          }
+        },
+        {
+          "id": "toolu_093",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":93}"
+          }
+        },
+        {
+          "id": "toolu_094",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":94}"
+          }
+        },
+        {
+          "id": "toolu_095",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":95}"
+          }
+        },
+        {
+          "id": "toolu_096",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":96}"
+          }
+        },
+        {
+          "id": "toolu_097",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":97}"
+          }
+        },
+        {
+          "id": "toolu_098",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":98}"
+          }
+        },
+        {
+          "id": "toolu_099",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":99}"
+          }
+        },
+        {
+          "id": "toolu_100",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":100}"
+          }
+        },
+        {
+          "id": "toolu_101",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":101}"
+          }
+        },
+        {
+          "id": "toolu_102",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":102}"
+          }
+        },
+        {
+          "id": "toolu_103",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":103}"
+          }
+        },
+        {
+          "id": "toolu_104",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":104}"
+          }
+        },
+        {
+          "id": "toolu_105",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":105}"
+          }
+        },
+        {
+          "id": "toolu_106",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":106}"
+          }
+        },
+        {
+          "id": "toolu_107",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":107}"
+          }
+        },
+        {
+          "id": "toolu_108",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":108}"
+          }
+        },
+        {
+          "id": "toolu_109",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":109}"
+          }
+        },
+        {
+          "id": "toolu_110",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":110}"
+          }
+        },
+        {
+          "id": "toolu_111",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":111}"
+          }
+        },
+        {
+          "id": "toolu_112",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":112}"
+          }
+        },
+        {
+          "id": "toolu_113",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":113}"
+          }
+        },
+        {
+          "id": "toolu_114",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":114}"
+          }
+        },
+        {
+          "id": "toolu_115",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":115}"
+          }
+        },
+        {
+          "id": "toolu_116",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":116}"
+          }
+        },
+        {
+          "id": "toolu_117",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":117}"
+          }
+        },
+        {
+          "id": "toolu_118",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":118}"
+          }
+        },
+        {
+          "id": "toolu_119",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":119}"
+          }
+        },
+        {
+          "id": "toolu_120",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":120}"
+          }
+        },
+        {
+          "id": "toolu_121",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":121}"
+          }
+        },
+        {
+          "id": "toolu_122",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":122}"
+          }
+        },
+        {
+          "id": "toolu_123",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":123}"
+          }
+        },
+        {
+          "id": "toolu_124",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":124}"
+          }
+        },
+        {
+          "id": "toolu_125",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":125}"
+          }
+        },
+        {
+          "id": "toolu_126",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":126}"
+          }
+        },
+        {
+          "id": "toolu_127",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":127}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "content": "r0",
+      "tool_call_id": "toolu_000"
+    },
+    {
+      "role": "tool",
+      "content": "r1",
+      "tool_call_id": "toolu_001"
+    },
+    {
+      "role": "tool",
+      "content": "r2",
+      "tool_call_id": "toolu_002"
+    },
+    {
+      "role": "tool",
+      "content": "r3",
+      "tool_call_id": "toolu_003"
+    },
+    {
+      "role": "tool",
+      "content": "r4",
+      "tool_call_id": "toolu_004"
+    },
+    {
+      "role": "tool",
+      "content": "r5",
+      "tool_call_id": "toolu_005"
+    },
+    {
+      "role": "tool",
+      "content": "r6",
+      "tool_call_id": "toolu_006"
+    },
+    {
+      "role": "tool",
+      "content": "r7",
+      "tool_call_id": "toolu_007"
+    },
+    {
+      "role": "tool",
+      "content": "r8",
+      "tool_call_id": "toolu_008"
+    },
+    {
+      "role": "tool",
+      "content": "r9",
+      "tool_call_id": "toolu_009"
+    },
+    {
+      "role": "tool",
+      "content": "r10",
+      "tool_call_id": "toolu_010"
+    },
+    {
+      "role": "tool",
+      "content": "r11",
+      "tool_call_id": "toolu_011"
+    },
+    {
+      "role": "tool",
+      "content": "r12",
+      "tool_call_id": "toolu_012"
+    },
+    {
+      "role": "tool",
+      "content": "r13",
+      "tool_call_id": "toolu_013"
+    },
+    {
+      "role": "tool",
+      "content": "r14",
+      "tool_call_id": "toolu_014"
+    },
+    {
+      "role": "tool",
+      "content": "r15",
+      "tool_call_id": "toolu_015"
+    },
+    {
+      "role": "tool",
+      "content": "r16",
+      "tool_call_id": "toolu_016"
+    },
+    {
+      "role": "tool",
+      "content": "r17",
+      "tool_call_id": "toolu_017"
+    },
+    {
+      "role": "tool",
+      "content": "r18",
+      "tool_call_id": "toolu_018"
+    },
+    {
+      "role": "tool",
+      "content": "r19",
+      "tool_call_id": "toolu_019"
+    },
+    {
+      "role": "tool",
+      "content": "r20",
+      "tool_call_id": "toolu_020"
+    },
+    {
+      "role": "tool",
+      "content": "r21",
+      "tool_call_id": "toolu_021"
+    },
+    {
+      "role": "tool",
+      "content": "r22",
+      "tool_call_id": "toolu_022"
+    },
+    {
+      "role": "tool",
+      "content": "r23",
+      "tool_call_id": "toolu_023"
+    },
+    {
+      "role": "tool",
+      "content": "r24",
+      "tool_call_id": "toolu_024"
+    },
+    {
+      "role": "tool",
+      "content": "r25",
+      "tool_call_id": "toolu_025"
+    },
+    {
+      "role": "tool",
+      "content": "r26",
+      "tool_call_id": "toolu_026"
+    },
+    {
+      "role": "tool",
+      "content": "r27",
+      "tool_call_id": "toolu_027"
+    },
+    {
+      "role": "tool",
+      "content": "r28",
+      "tool_call_id": "toolu_028"
+    },
+    {
+      "role": "tool",
+      "content": "r29",
+      "tool_call_id": "toolu_029"
+    },
+    {
+      "role": "tool",
+      "content": "r30",
+      "tool_call_id": "toolu_030"
+    },
+    {
+      "role": "tool",
+      "content": "r31",
+      "tool_call_id": "toolu_031"
+    },
+    {
+      "role": "tool",
+      "content": "r32",
+      "tool_call_id": "toolu_032"
+    },
+    {
+      "role": "tool",
+      "content": "r33",
+      "tool_call_id": "toolu_033"
+    },
+    {
+      "role": "tool",
+      "content": "r34",
+      "tool_call_id": "toolu_034"
+    },
+    {
+      "role": "tool",
+      "content": "r35",
+      "tool_call_id": "toolu_035"
+    },
+    {
+      "role": "tool",
+      "content": "r36",
+      "tool_call_id": "toolu_036"
+    },
+    {
+      "role": "tool",
+      "content": "r37",
+      "tool_call_id": "toolu_037"
+    },
+    {
+      "role": "tool",
+      "content": "r38",
+      "tool_call_id": "toolu_038"
+    },
+    {
+      "role": "tool",
+      "content": "r39",
+      "tool_call_id": "toolu_039"
+    },
+    {
+      "role": "tool",
+      "content": "r40",
+      "tool_call_id": "toolu_040"
+    },
+    {
+      "role": "tool",
+      "content": "r41",
+      "tool_call_id": "toolu_041"
+    },
+    {
+      "role": "tool",
+      "content": "r42",
+      "tool_call_id": "toolu_042"
+    },
+    {
+      "role": "tool",
+      "content": "r43",
+      "tool_call_id": "toolu_043"
+    },
+    {
+      "role": "tool",
+      "content": "r44",
+      "tool_call_id": "toolu_044"
+    },
+    {
+      "role": "tool",
+      "content": "r45",
+      "tool_call_id": "toolu_045"
+    },
+    {
+      "role": "tool",
+      "content": "r46",
+      "tool_call_id": "toolu_046"
+    },
+    {
+      "role": "tool",
+      "content": "r47",
+      "tool_call_id": "toolu_047"
+    },
+    {
+      "role": "tool",
+      "content": "r48",
+      "tool_call_id": "toolu_048"
+    },
+    {
+      "role": "tool",
+      "content": "r49",
+      "tool_call_id": "toolu_049"
+    },
+    {
+      "role": "tool",
+      "content": "r50",
+      "tool_call_id": "toolu_050"
+    },
+    {
+      "role": "tool",
+      "content": "r51",
+      "tool_call_id": "toolu_051"
+    },
+    {
+      "role": "tool",
+      "content": "r52",
+      "tool_call_id": "toolu_052"
+    },
+    {
+      "role": "tool",
+      "content": "r53",
+      "tool_call_id": "toolu_053"
+    },
+    {
+      "role": "tool",
+      "content": "r54",
+      "tool_call_id": "toolu_054"
+    },
+    {
+      "role": "tool",
+      "content": "r55",
+      "tool_call_id": "toolu_055"
+    },
+    {
+      "role": "tool",
+      "content": "r56",
+      "tool_call_id": "toolu_056"
+    },
+    {
+      "role": "tool",
+      "content": "r57",
+      "tool_call_id": "toolu_057"
+    },
+    {
+      "role": "tool",
+      "content": "r58",
+      "tool_call_id": "toolu_058"
+    },
+    {
+      "role": "tool",
+      "content": "r59",
+      "tool_call_id": "toolu_059"
+    },
+    {
+      "role": "tool",
+      "content": "r60",
+      "tool_call_id": "toolu_060"
+    },
+    {
+      "role": "tool",
+      "content": "r61",
+      "tool_call_id": "toolu_061"
+    },
+    {
+      "role": "tool",
+      "content": "r62",
+      "tool_call_id": "toolu_062"
+    },
+    {
+      "role": "tool",
+      "content": "r63",
+      "tool_call_id": "toolu_063"
+    },
+    {
+      "role": "tool",
+      "content": "r64",
+      "tool_call_id": "toolu_064"
+    },
+    {
+      "role": "tool",
+      "content": "r65",
+      "tool_call_id": "toolu_065"
+    },
+    {
+      "role": "tool",
+      "content": "r66",
+      "tool_call_id": "toolu_066"
+    },
+    {
+      "role": "tool",
+      "content": "r67",
+      "tool_call_id": "toolu_067"
+    },
+    {
+      "role": "tool",
+      "content": "r68",
+      "tool_call_id": "toolu_068"
+    },
+    {
+      "role": "tool",
+      "content": "r69",
+      "tool_call_id": "toolu_069"
+    },
+    {
+      "role": "tool",
+      "content": "r70",
+      "tool_call_id": "toolu_070"
+    },
+    {
+      "role": "tool",
+      "content": "r71",
+      "tool_call_id": "toolu_071"
+    },
+    {
+      "role": "tool",
+      "content": "r72",
+      "tool_call_id": "toolu_072"
+    },
+    {
+      "role": "tool",
+      "content": "r73",
+      "tool_call_id": "toolu_073"
+    },
+    {
+      "role": "tool",
+      "content": "r74",
+      "tool_call_id": "toolu_074"
+    },
+    {
+      "role": "tool",
+      "content": "r75",
+      "tool_call_id": "toolu_075"
+    },
+    {
+      "role": "tool",
+      "content": "r76",
+      "tool_call_id": "toolu_076"
+    },
+    {
+      "role": "tool",
+      "content": "r77",
+      "tool_call_id": "toolu_077"
+    },
+    {
+      "role": "tool",
+      "content": "r78",
+      "tool_call_id": "toolu_078"
+    },
+    {
+      "role": "tool",
+      "content": "r79",
+      "tool_call_id": "toolu_079"
+    },
+    {
+      "role": "tool",
+      "content": "r80",
+      "tool_call_id": "toolu_080"
+    },
+    {
+      "role": "tool",
+      "content": "r81",
+      "tool_call_id": "toolu_081"
+    },
+    {
+      "role": "tool",
+      "content": "r82",
+      "tool_call_id": "toolu_082"
+    },
+    {
+      "role": "tool",
+      "content": "r83",
+      "tool_call_id": "toolu_083"
+    },
+    {
+      "role": "tool",
+      "content": "r84",
+      "tool_call_id": "toolu_084"
+    },
+    {
+      "role": "tool",
+      "content": "r85",
+      "tool_call_id": "toolu_085"
+    },
+    {
+      "role": "tool",
+      "content": "r86",
+      "tool_call_id": "toolu_086"
+    },
+    {
+      "role": "tool",
+      "content": "r87",
+      "tool_call_id": "toolu_087"
+    },
+    {
+      "role": "tool",
+      "content": "r88",
+      "tool_call_id": "toolu_088"
+    },
+    {
+      "role": "tool",
+      "content": "r89",
+      "tool_call_id": "toolu_089"
+    },
+    {
+      "role": "tool",
+      "content": "r90",
+      "tool_call_id": "toolu_090"
+    },
+    {
+      "role": "tool",
+      "content": "r91",
+      "tool_call_id": "toolu_091"
+    },
+    {
+      "role": "tool",
+      "content": "r92",
+      "tool_call_id": "toolu_092"
+    },
+    {
+      "role": "tool",
+      "content": "r93",
+      "tool_call_id": "toolu_093"
+    },
+    {
+      "role": "tool",
+      "content": "r94",
+      "tool_call_id": "toolu_094"
+    },
+    {
+      "role": "tool",
+      "content": "r95",
+      "tool_call_id": "toolu_095"
+    },
+    {
+      "role": "tool",
+      "content": "r96",
+      "tool_call_id": "toolu_096"
+    },
+    {
+      "role": "tool",
+      "content": "r97",
+      "tool_call_id": "toolu_097"
+    },
+    {
+      "role": "tool",
+      "content": "r98",
+      "tool_call_id": "toolu_098"
+    },
+    {
+      "role": "tool",
+      "content": "r99",
+      "tool_call_id": "toolu_099"
+    },
+    {
+      "role": "tool",
+      "content": "r100",
+      "tool_call_id": "toolu_100"
+    },
+    {
+      "role": "tool",
+      "content": "r101",
+      "tool_call_id": "toolu_101"
+    },
+    {
+      "role": "tool",
+      "content": "r102",
+      "tool_call_id": "toolu_102"
+    },
+    {
+      "role": "tool",
+      "content": "r103",
+      "tool_call_id": "toolu_103"
+    },
+    {
+      "role": "tool",
+      "content": "r104",
+      "tool_call_id": "toolu_104"
+    },
+    {
+      "role": "tool",
+      "content": "r105",
+      "tool_call_id": "toolu_105"
+    },
+    {
+      "role": "tool",
+      "content": "r106",
+      "tool_call_id": "toolu_106"
+    },
+    {
+      "role": "tool",
+      "content": "r107",
+      "tool_call_id": "toolu_107"
+    },
+    {
+      "role": "tool",
+      "content": "r108",
+      "tool_call_id": "toolu_108"
+    },
+    {
+      "role": "tool",
+      "content": "r109",
+      "tool_call_id": "toolu_109"
+    },
+    {
+      "role": "tool",
+      "content": "r110",
+      "tool_call_id": "toolu_110"
+    },
+    {
+      "role": "tool",
+      "content": "r111",
+      "tool_call_id": "toolu_111"
+    },
+    {
+      "role": "tool",
+      "content": "r112",
+      "tool_call_id": "toolu_112"
+    },
+    {
+      "role": "tool",
+      "content": "r113",
+      "tool_call_id": "toolu_113"
+    },
+    {
+      "role": "tool",
+      "content": "r114",
+      "tool_call_id": "toolu_114"
+    },
+    {
+      "role": "tool",
+      "content": "r115",
+      "tool_call_id": "toolu_115"
+    },
+    {
+      "role": "tool",
+      "content": "r116",
+      "tool_call_id": "toolu_116"
+    },
+    {
+      "role": "tool",
+      "content": "r117",
+      "tool_call_id": "toolu_117"
+    },
+    {
+      "role": "tool",
+      "content": "r118",
+      "tool_call_id": "toolu_118"
+    },
+    {
+      "role": "tool",
+      "content": "r119",
+      "tool_call_id": "toolu_119"
+    },
+    {
+      "role": "tool",
+      "content": "r120",
+      "tool_call_id": "toolu_120"
+    },
+    {
+      "role": "tool",
+      "content": "r121",
+      "tool_call_id": "toolu_121"
+    },
+    {
+      "role": "tool",
+      "content": "r122",
+      "tool_call_id": "toolu_122"
+    },
+    {
+      "role": "tool",
+      "content": "r123",
+      "tool_call_id": "toolu_123"
+    },
+    {
+      "role": "tool",
+      "content": "r124",
+      "tool_call_id": "toolu_124"
+    },
+    {
+      "role": "tool",
+      "content": "r125",
+      "tool_call_id": "toolu_125"
+    },
+    {
+      "role": "tool",
+      "content": "r126",
+      "tool_call_id": "toolu_126"
+    },
+    {
+      "role": "tool",
+      "content": "r127",
+      "tool_call_id": "toolu_127"
+    },
+    {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [
+        {
+          "id": "toolu_128",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":128}"
+          }
+        },
+        {
+          "id": "toolu_129",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":129}"
+          }
+        },
+        {
+          "id": "toolu_130",
+          "type": "function",
+          "function": {
+            "name": "do_thing",
+            "arguments": "{\"i\":130}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "content": "r128",
+      "tool_call_id": "toolu_128"
+    },
+    {
+      "role": "tool",
+      "content": "r129",
+      "tool_call_id": "toolu_129"
+    },
+    {
+      "role": "tool",
+      "content": "r130",
+      "tool_call_id": "toolu_130"
+    }
+  ],
+  "max_tokens": 1024
+}

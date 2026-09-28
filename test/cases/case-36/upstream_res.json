@@ -1,0 +1,21 @@
+{
+  "id": "chatcmpl-case-36",
+  "object": "chat.completion",
+  "created": 1710000000,
+  "model": "gpt5.2",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "done"
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 10,
+    "completion_tokens": 2,
+    "total_tokens": 12
+  }
+}

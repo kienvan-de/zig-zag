@@ -94,11 +94,22 @@ pub const MockUpstream = struct {
         defer arena.deinit();
         const request_allocator = arena.allocator();
 
-        var read_buffer: [16384]u8 = undefined;
-        const bytes_read = try connection.read(&read_buffer);
-        if (bytes_read == 0) return;
+        // Read the full request. A single fixed read truncates large bodies
+        // (e.g. conversations with many tool_calls), so accumulate into a
+        // growable buffer and keep reading until the Content-Length body is
+        // complete (or the peer closes).
+        var request_buf: std.ArrayList(u8) = .empty;
+        defer request_buf.deinit(request_allocator);
+        var chunk: [16384]u8 = undefined;
+        while (true) {
+            const n = try connection.read(&chunk);
+            if (n == 0) break;
+            try request_buf.appendSlice(request_allocator, chunk[0..n]);
+            if (bodyComplete(request_buf.items)) break;
+        }
+        if (request_buf.items.len == 0) return;
 
-        const request_data = read_buffer[0..bytes_read];
+        const request_data = request_buf.items;
 
         // Parse HTTP request
         const parsed = try parseHttpRequest(request_allocator, request_data);
@@ -336,6 +347,31 @@ const Header = struct {
     name: []const u8,
     value: []const u8,
 };
+
+/// True once `data` contains the full HTTP message: headers plus a body of at
+/// least the Content-Length (if any). Used to stop reading from the socket.
+fn bodyComplete(data: []const u8) bool {
+    const header_end = std.mem.indexOf(u8, data, "\r\n\r\n") orelse return false;
+    const body_start = header_end + 4;
+    const headers = data[0..header_end];
+
+    // Find Content-Length (case-insensitive header name).
+    var content_length: ?usize = null;
+    var lines = std.mem.splitSequence(u8, headers, "\r\n");
+    _ = lines.next(); // request line
+    while (lines.next()) |line| {
+        const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+        const name = std.mem.trim(u8, line[0..colon], &std.ascii.whitespace);
+        if (std.ascii.eqlIgnoreCase(name, "content-length")) {
+            const value = std.mem.trim(u8, line[colon + 1 ..], &std.ascii.whitespace);
+            content_length = std.fmt.parseInt(usize, value, 10) catch null;
+            break;
+        }
+    }
+
+    const have_body = data.len - body_start;
+    return have_body >= (content_length orelse 0);
+}
 
 fn parseHttpRequest(allocator: std.mem.Allocator, data: []const u8) !ParsedRequest {
     // Find end of headers

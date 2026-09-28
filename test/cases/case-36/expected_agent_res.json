@@ -1,0 +1,18 @@
+{
+  "id": "chatcmpl-case-36",
+  "type": "message",
+  "role": "assistant",
+  "content": [
+    {
+      "type": "text",
+      "text": "done"
+    }
+  ],
+  "model": "openai/gpt5.2",
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "usage": {
+    "input_tokens": 10,
+    "output_tokens": 2
+  }
+}

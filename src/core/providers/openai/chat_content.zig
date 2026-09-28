@@ -21,6 +21,7 @@ const std = @import("std");
 const common = @import("types.zig");
 const Messages = @import("../anthropic/types.zig");
 const Chat = @import("chat_types.zig");
+const constraints = @import("../constraints.zig");
 const log = @import("../../log.zig");
 
 // ============================================================================
@@ -191,4 +192,248 @@ pub fn writeChatSSE(
     allocator: std.mem.Allocator,
 ) !void {
     try buf.print(allocator, "data: {f}\n\n", .{std.json.fmt(chunk, .{})});
+}
+
+// ============================================================================
+// Tool-name constraint helpers (normalize on request, reverse on response)
+// ============================================================================
+//
+// OpenAI-family backends (SAP AI Core et al.) cap tool-name length/charset at
+// CHAT_MAX_LEN. These helpers normalize outgoing tool names and reverse the
+// mapping on the response, plus split assistant turns that exceed the
+// per-message tool_calls cap. They own their allocations; the transformer's
+// cleanup* wrappers call the matching free* helper. Kept here (not in the
+// transformer) so chat_transformer.zig stays a thin dispatch/serialization layer.
+
+/// True when any tool name in the request (definitions or prior-turn tool_calls)
+/// exceeds CHAT_MAX_LEN or uses an invalid charset.
+pub fn chatRequestNeedsToolNameNormalization(request: Chat.Request) bool {
+    if (request.tools) |ts| for (ts) |t| {
+        if (constraints.toolNameNeedsNormalize(t.function.name, constraints.CHAT_MAX_LEN)) return true;
+    };
+    for (request.messages) |m| if (m.tool_calls) |tcs| for (tcs) |tc| {
+        if (constraints.toolNameNeedsNormalize(tc.function.name, constraints.CHAT_MAX_LEN)) return true;
+    };
+    return false;
+}
+
+/// Allocate a tools slice with normalized function names (owned). Freed by
+/// freeNormalizedTools.
+pub fn dupeNormalizedTools(tools: ?[]const Chat.Tool, allocator: std.mem.Allocator) !?[]const Chat.Tool {
+    const src = tools orelse return null;
+    const out = try allocator.alloc(Chat.Tool, src.len);
+    var built: usize = 0;
+    errdefer {
+        for (out[0..built]) |t| allocator.free(t.function.name);
+        allocator.free(out);
+    }
+    for (src, 0..) |t, i| {
+        out[i] = t;
+        out[i].function.name = try constraints.normalizeToolName(allocator, t.function.name, constraints.CHAT_MAX_LEN);
+        built += 1;
+    }
+    return out;
+}
+
+/// Allocate a messages slice whose tool_calls have normalized names (owned).
+/// Freed by freeNormalizedMessages.
+pub fn dupeNormalizedMessages(messages: []const Chat.Message, allocator: std.mem.Allocator) ![]const Chat.Message {
+    const out = try allocator.alloc(Chat.Message, messages.len);
+    var built_msgs: usize = 0;
+    errdefer {
+        for (out[0..built_msgs]) |m| if (m.tool_calls) |tcs| {
+            for (tcs) |tc| allocator.free(tc.function.name);
+            allocator.free(tcs);
+        };
+        allocator.free(out);
+    }
+    for (messages, 0..) |m, i| {
+        out[i] = m;
+        if (m.tool_calls) |tcs| {
+            const new_tcs = try allocator.alloc(Chat.ToolCall, tcs.len);
+            var built: usize = 0;
+            errdefer {
+                for (new_tcs[0..built]) |tc| allocator.free(tc.function.name);
+                allocator.free(new_tcs);
+            }
+            for (tcs, 0..) |tc, j| {
+                new_tcs[j] = tc;
+                new_tcs[j].function.name = try constraints.normalizeToolName(allocator, tc.function.name, constraints.CHAT_MAX_LEN);
+                built += 1;
+            }
+            out[i].tool_calls = new_tcs;
+        }
+        built_msgs += 1;
+    }
+    return out;
+}
+
+fn freeNormalizedTools(tools: ?[]const Chat.Tool, allocator: std.mem.Allocator) void {
+    const ts = tools orelse return;
+    for (ts) |t| allocator.free(t.function.name);
+    allocator.free(ts);
+}
+
+/// Free the normalized tools + messages allocated for a request by
+/// dupeNormalizedTools / dupeNormalizedMessages.
+pub fn freeNormalizedChatRequest(request: Chat.Request, allocator: std.mem.Allocator) void {
+    freeNormalizedTools(request.tools, allocator);
+    for (request.messages) |m| if (m.tool_calls) |tcs| {
+        for (tcs) |tc| allocator.free(tc.function.name);
+        allocator.free(tcs);
+    };
+    allocator.free(request.messages);
+}
+
+/// Reverse tool-name normalization on a chat response: rewrite tool_call names
+/// back to the caller's originals (recovered from `original_req`). Returns the
+/// input choices unchanged (aliased) when there is nothing to reverse; otherwise
+/// returns a new owned slice to be freed by freeReversedChatResponseChoices.
+/// `owned` is set true when a new slice was allocated.
+pub fn reverseChatToolNames(
+    choices: []const Chat.ResponseChoice,
+    original_req: Chat.Request,
+    allocator: std.mem.Allocator,
+    owned: *bool,
+) ![]const Chat.ResponseChoice {
+    owned.* = false;
+    const req_tools = original_req.tools orelse return choices;
+    var originals = try allocator.alloc([]const u8, req_tools.len);
+    defer allocator.free(originals);
+    var any_normalized = false;
+    for (req_tools, 0..) |t, i| {
+        originals[i] = t.function.name;
+        if (constraints.toolNameNeedsNormalize(t.function.name, constraints.CHAT_MAX_LEN)) any_normalized = true;
+    }
+    if (!any_normalized) return choices;
+
+    var has_tool_calls = false;
+    for (choices) |c| if (c.message.tool_calls != null) { has_tool_calls = true; break; };
+    if (!has_tool_calls) return choices;
+
+    const out = try allocator.alloc(Chat.ResponseChoice, choices.len);
+    var built_choices: usize = 0;
+    errdefer {
+        for (out[0..built_choices]) |c| if (c.message.tool_calls) |tcs| {
+            for (tcs) |tc| allocator.free(tc.function.name);
+            allocator.free(tcs);
+        };
+        allocator.free(out);
+    }
+    for (choices, 0..) |c, i| {
+        out[i] = c;
+        if (c.message.tool_calls) |tcs| {
+            const new_tcs = try allocator.alloc(Chat.ToolCall, tcs.len);
+            var built: usize = 0;
+            errdefer {
+                for (new_tcs[0..built]) |tc| allocator.free(tc.function.name);
+                allocator.free(new_tcs);
+            }
+            for (tcs, 0..) |tc, j| {
+                new_tcs[j] = tc;
+                const orig = constraints.recoverToolName(allocator, tc.function.name, originals, constraints.CHAT_MAX_LEN);
+                new_tcs[j].function.name = try allocator.dupe(u8, orig);
+                built += 1;
+            }
+            out[i].message.tool_calls = new_tcs;
+        }
+        built_choices += 1;
+    }
+    owned.* = true;
+    return out;
+}
+
+/// Free the reversed choices slice allocated by reverseChatToolNames.
+pub fn freeReversedChatResponseChoices(choices: []const Chat.ResponseChoice, allocator: std.mem.Allocator) void {
+    for (choices) |c| if (c.message.tool_calls) |tcs| {
+        for (tcs) |tc| allocator.free(tc.function.name);
+        allocator.free(tcs);
+    };
+    allocator.free(choices);
+}
+
+/// Split any assistant message whose `tool_calls` exceed
+/// `constraints.CHAT_MAX_TOOL_CALLS_PER_MESSAGE` into multiple assistant
+/// messages, interleaving each chunk with the `tool` result messages that answer
+/// it. Preserves ordering and the assistant→tool adjacency Chat requires.
+///
+/// Takes ownership of `input`. Returns `input` unchanged when nothing needs
+/// splitting; otherwise returns a new owned slice and frees `input`'s backing
+/// array. Message payloads alias into the result unchanged; each assistant
+/// chunk's tool_calls slice is a freshly-allocated array whose ToolCall elements
+/// alias the originals (name/arguments not re-duped). Each ToolCall's strings
+/// remain owned by exactly one message, so freeMessageOwnedText frees them once.
+pub fn splitOversizedToolCallTurns(
+    input: []Chat.Message,
+    allocator: std.mem.Allocator,
+) ![]Chat.Message {
+    const cap = constraints.CHAT_MAX_TOOL_CALLS_PER_MESSAGE;
+
+    var needs = false;
+    for (input) |m| {
+        if (m.tool_calls) |tcs| if (tcs.len > cap) { needs = true; break; };
+    }
+    if (!needs) return input;
+
+    var out: std.ArrayList(Chat.Message) = .empty;
+    errdefer out.deinit(allocator);
+
+    var i: usize = 0;
+    while (i < input.len) : (i += 1) {
+        const msg = input[i];
+        const tcs = msg.tool_calls orelse {
+            try out.append(allocator, msg);
+            continue;
+        };
+        if (tcs.len <= cap) {
+            try out.append(allocator, msg);
+            continue;
+        }
+
+        // Contiguous run of `tool` result messages answering this assistant.
+        var results_end = i + 1;
+        while (results_end < input.len and input[results_end].role == .tool) results_end += 1;
+        const results = input[i + 1 .. results_end];
+
+        var placed = try allocator.alloc(bool, results.len);
+        defer allocator.free(placed);
+        @memset(placed, false);
+
+        // Emit chunks: assistant(chunk) then the tool results answering it.
+        var offset: usize = 0;
+        var first = true;
+        while (offset < tcs.len) {
+            const end = @min(offset + cap, tcs.len);
+            const chunk = try allocator.alloc(Chat.ToolCall, end - offset);
+            @memcpy(chunk, tcs[offset..end]);
+            try out.append(allocator, .{
+                .role = msg.role,
+                .content = if (first) msg.content else null,
+                .tool_calls = chunk,
+            });
+            first = false;
+            for (results, 0..) |res, ri| {
+                if (placed[ri]) continue;
+                const rid = res.tool_call_id orelse continue;
+                for (chunk) |tc| {
+                    if (std.mem.eql(u8, tc.id, rid)) {
+                        try out.append(allocator, res);
+                        placed[ri] = true;
+                        break;
+                    }
+                }
+            }
+            offset = end;
+        }
+        // Orphan / non-matching results kept in original order (never dropped).
+        for (results, 0..) |res, ri| {
+            if (!placed[ri]) try out.append(allocator, res);
+        }
+
+        allocator.free(tcs); // element strings live on via the chunks
+        i = results_end - 1;
+    }
+
+    allocator.free(input);
+    return out.toOwnedSlice(allocator);
 }

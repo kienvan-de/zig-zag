@@ -51,6 +51,13 @@ pub const CHAT_MAX_LEN: usize = 64;
 /// OpenAI Responses tool-name cap (schema-enforced).
 pub const RESPONSES_MAX_LEN: usize = 128;
 
+/// Maximum `tool_calls` allowed in a single Chat assistant message. Not part of
+/// the OpenAI Chat schema, but enforced by SAP AI Core (and harmless elsewhere:
+/// Chat allows sequential assistant messages). An Anthropic assistant turn with
+/// more `tool_use` blocks than this is split across multiple Chat assistant
+/// messages on the request path — see chat_transformer.transformMessagesRequest.
+pub const CHAT_MAX_TOOL_CALLS_PER_MESSAGE: usize = 128;
+
 /// Number of base36 hash chars appended after the `_` separator.
 const HASH_WIDTH: usize = 6;
 
