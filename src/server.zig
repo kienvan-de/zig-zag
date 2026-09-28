@@ -188,17 +188,14 @@ fn handleConnection(allocator: std.mem.Allocator, connection: net.Connection, se
     const max_body_size: usize = @intCast(server_cfg.max_body_size);
     const read_timeout_ms: i64 = server_cfg.read_timeout_ms;
 
-    // Set read timeout on the socket using SO_RCVTIMEO
+    // Set read timeout on the socket (SO_RCVTIMEO). Best-effort: a client may
+    // have closed the connection between accept() and here, invalidating the
+    // fd. Connection.setReadTimeout handles every errno (no panic) so a single
+    // dropped connection can never abort the whole proxy.
     if (read_timeout_ms > 0) {
-        const timeout_sec: i64 = @divTrunc(read_timeout_ms, 1000);
-        const timeout_usec: i32 = @intCast(@rem(read_timeout_ms, 1000) * 1000);
-        const timeval = std.posix.timeval{
-            .sec = timeout_sec,
-            .usec = timeout_usec,
-        };
-        std.posix.setsockopt(connection.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&timeval)) catch |err| {
-            log.warn("Failed to set read timeout: {}", .{err});
-        };
+        if (!connection.setReadTimeout(read_timeout_ms)) {
+            log.debug("Failed to set read timeout (connection likely already closed)", .{});
+        }
     }
 
     // Read the full request into a dynamically grown buffer so large bodies

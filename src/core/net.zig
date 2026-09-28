@@ -35,6 +35,30 @@ pub const Connection = struct {
         }
     }
 
+    /// Set the receive timeout (SO_RCVTIMEO) in milliseconds. Best-effort:
+    /// returns false on any failure instead of panicking.
+    ///
+    /// Uses the raw libc setsockopt rather than std.posix.setsockopt, which
+    /// treats EBADF/ENOTSOCK/EINVAL/EFAULT as `unreachable` and panics. Those
+    /// errnos are a real race here: a client can close the connection between
+    /// accept() and this call, invalidating the fd. We must not crash the whole
+    /// proxy for a single dropped connection, so we handle every errno.
+    pub fn setReadTimeout(self: Connection, timeout_ms: i64) bool {
+        if (timeout_ms <= 0) return true;
+        const tv = std.posix.timeval{
+            .sec = @intCast(@divTrunc(timeout_ms, 1000)),
+            .usec = @intCast(@rem(timeout_ms, 1000) * 1000),
+        };
+        const rc = std.c.setsockopt(
+            self.handle,
+            std.posix.SOL.SOCKET,
+            std.posix.SO.RCVTIMEO,
+            @ptrCast(&tv),
+            @sizeOf(std.posix.timeval),
+        );
+        return rc == 0;
+    }
+
     /// Close the connection socket.
     pub fn close(self: Connection) void {
         _ = std.c.close(self.handle);

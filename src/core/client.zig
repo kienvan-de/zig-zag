@@ -45,12 +45,14 @@ fn decompressBuffer(allocator: std.mem.Allocator, encoding: std.http.ContentEnco
 pub fn configureSocket(handle: std.posix.socket_t, timeout_ms: u64) void {
     if (timeout_ms == 0) return;
 
-    // Enable keepalive probes on the connection.
+    // Enable keepalive probes on the connection. Use raw libc setsockopt: the
+    // std wrapper panics (`unreachable`) on EBADF/ENOTSOCK/EINVAL/EFAULT, which
+    // are possible if the fd raced closed. Best-effort, non-fatal on failure.
     const on: c_int = 1;
-    std.posix.setsockopt(handle, std.posix.SOL.SOCKET, std.posix.SO.KEEPALIVE, std.mem.asBytes(&on)) catch |err| {
-        log.debug("Failed to enable SO_KEEPALIVE: {}", .{err});
+    if (std.c.setsockopt(handle, std.posix.SOL.SOCKET, std.posix.SO.KEEPALIVE, @ptrCast(&on), @sizeOf(c_int)) != 0) {
+        log.debug("Failed to enable SO_KEEPALIVE", .{});
         return;
-    };
+    }
 
     // Idle seconds before the first keepalive probe, tuned by timeout_ms
     // (default provider timeout 300_000ms → 300s). Without this the OS default
@@ -66,9 +68,9 @@ pub fn configureSocket(handle: std.posix.socket_t, timeout_ms: u64) void {
             return;
         },
     };
-    std.posix.setsockopt(handle, std.posix.IPPROTO.TCP, idle_opt, std.mem.asBytes(&idle_secs)) catch |err| {
-        log.debug("Failed to set keepalive idle interval: {}", .{err});
-    };
+    if (std.c.setsockopt(handle, std.posix.IPPROTO.TCP, idle_opt, @ptrCast(&idle_secs), @sizeOf(c_int)) != 0) {
+        log.debug("Failed to set keepalive idle interval", .{});
+    }
 }
 
 /// Iterator for SSE streaming responses - reads from socket on-demand
