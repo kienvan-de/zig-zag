@@ -330,10 +330,6 @@ fn streaming(
 
         const line = maybe_line orelse break;
 
-        // TEMP DEBUG: log every raw upstream SSE line to diagnose empty/one-chunk
-        // responses. Remove once resolved.
-        log.debug("[STREAM][raw] {s}/{s}: {s}", .{ provider_name, model, line });
-
         const result = Transformer.transformMessagesStreamLine(line, &stream_state, allocator);
         switch (result) {
             .events => |events| {
