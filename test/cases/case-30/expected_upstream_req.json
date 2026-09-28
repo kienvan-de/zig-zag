@@ -1,0 +1,23 @@
+{
+  "model": "claude-3-5-sonnet-latest",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Search the repos please"
+    }
+  ],
+  "max_tokens": 1024,
+  "tools": [
+    {
+      "name": "mcp__github_enterprise__search_repositories_and_return_all_matching_results_verbose",
+      "description": "Search GitHub repositories",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "query": { "type": "string" }
+        },
+        "required": ["query"]
+      }
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "model": "openai/gpt5.2",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Search the repos please"
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "mcp.github.enterprise:search repositories/and.return matching results verbose long",
+        "description": "Search GitHub repositories",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "query": { "type": "string" }
+          },
+          "required": ["query"]
+        }
+      }
+    }
+  ]
+}

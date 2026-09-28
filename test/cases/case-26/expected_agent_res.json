@@ -1,0 +1,22 @@
+{
+  "id": "chatcmpl-case-26",
+  "type": "message",
+  "role": "assistant",
+  "content": [
+    {
+      "type": "tool_use",
+      "id": "call_abc123",
+      "name": "mcp__github_enterprise__search_repositories_and_return_all_matching_results_verbose",
+      "input": {
+        "query": "zig"
+      }
+    }
+  ],
+  "model": "openai/gpt5.2",
+  "stop_reason": "tool_use",
+  "stop_sequence": null,
+  "usage": {
+    "input_tokens": 12,
+    "output_tokens": 8
+  }
+}

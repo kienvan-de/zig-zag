@@ -1,0 +1,26 @@
+{
+  "model": "gpt5.2",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Search the repos please"
+    }
+  ],
+  "max_tokens": 1024,
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "mcp__github_enterprise__search_repositories_and_return_al_6tx6b2",
+        "description": "Search GitHub repositories",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "query": { "type": "string" }
+          },
+          "required": ["query"]
+        }
+      }
+    }
+  ]
+}

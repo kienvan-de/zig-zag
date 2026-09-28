@@ -1,0 +1,5 @@
+data: {"id":"chatcmpl-case-27","object":"chat.completion.chunk","created":1710000002,"model":"gpt5.2","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}
+data: {"id":"chatcmpl-case-27","object":"chat.completion.chunk","created":1710000002,"model":"gpt5.2","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_abc123","type":"function","function":{"name":"mcp__github_enterprise__search_repositories_and_return_al_6tx6b2","arguments":""}}]},"finish_reason":null}]}
+data: {"id":"chatcmpl-case-27","object":"chat.completion.chunk","created":1710000002,"model":"gpt5.2","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"query\":\"zig\"}"}}]},"finish_reason":null}]}
+data: {"id":"chatcmpl-case-27","object":"chat.completion.chunk","created":1710000002,"model":"gpt5.2","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":12,"completion_tokens":8,"total_tokens":20}}
+data: [DONE]

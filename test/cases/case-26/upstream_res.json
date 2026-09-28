@@ -1,0 +1,31 @@
+{
+  "id": "chatcmpl-case-26",
+  "object": "chat.completion",
+  "created": 1710000000,
+  "model": "gpt5.2",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [
+          {
+            "id": "call_abc123",
+            "type": "function",
+            "function": {
+              "name": "mcp__github_enterprise__search_repositories_and_return_al_6tx6b2",
+              "arguments": "{\"query\":\"zig\"}"
+            }
+          }
+        ]
+      },
+      "finish_reason": "tool_calls"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 12,
+    "completion_tokens": 8,
+    "total_tokens": 20
+  }
+}

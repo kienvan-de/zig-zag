@@ -29,6 +29,7 @@ const Messages = @import("../anthropic/types.zig");
 const Responses = @import("responses_types.zig");
 const common = @import("types.zig");
 const content = @import("chat_content.zig");
+const constraints = @import("../constraints.zig");
 const log = @import("../../log.zig");
 const time = @import("../../time.zig");
 
@@ -109,17 +110,105 @@ pub fn transformChatRequest(
     model: []const u8,
     allocator: std.mem.Allocator,
 ) !Chat.Request {
-    _ = allocator;
     var result = request;
     result.model = model;
     if (request.stream orelse false) result.stream_options = .{ .include_usage = true };
+
+    // Normalize tool names to the Chat cap (64). To keep ownership unambiguous
+    // for cleanupChatRequest, we allocate new tools / tool_calls slices ONLY
+    // when at least one name is non-compliant, and record that we did so with
+    // sentinel fields. When nothing needs normalizing the request stays a pure
+    // borrow (owned_tools/owned_messages stay false) and cleanup is a no-op.
+    if (chatRequestNeedsNormalization(request)) {
+        result.tools = try dupeNormalizedTools(request.tools, allocator);
+        errdefer freeOwnedTools(result.tools, allocator);
+        result.messages = try dupeNormalizedMessages(request.messages, allocator);
+        owned_normalized = true;
+    }
     return result;
 }
 
-/// No-op: transformChatRequest allocates nothing (pure borrow).
+/// Set by transformChatRequest when it allocated normalized tools/messages, so
+/// cleanupChatRequest knows whether to free. The transform+cleanup pair always
+/// runs on the same thread within one request, back-to-back via the pipeline's
+/// `defer`, so a threadlocal flag is safe and avoids widening the Chat.Request
+/// type or the transformer signature.
+threadlocal var owned_normalized: bool = false;
+
+fn chatRequestNeedsNormalization(request: Chat.Request) bool {
+    if (request.tools) |ts| for (ts) |t| {
+        if (constraints.toolNameNeedsNormalize(t.function.name, constraints.CHAT_MAX_LEN)) return true;
+    };
+    for (request.messages) |m| if (m.tool_calls) |tcs| for (tcs) |tc| {
+        if (constraints.toolNameNeedsNormalize(tc.function.name, constraints.CHAT_MAX_LEN)) return true;
+    };
+    return false;
+}
+
+fn dupeNormalizedTools(tools: ?[]const Chat.Tool, allocator: std.mem.Allocator) !?[]const Chat.Tool {
+    const src = tools orelse return null;
+    const out = try allocator.alloc(Chat.Tool, src.len);
+    var built: usize = 0;
+    errdefer {
+        for (out[0..built]) |t| allocator.free(t.function.name);
+        allocator.free(out);
+    }
+    for (src, 0..) |t, i| {
+        out[i] = t;
+        out[i].function.name = try constraints.normalizeToolName(allocator, t.function.name, constraints.CHAT_MAX_LEN);
+        built += 1;
+    }
+    return out;
+}
+
+fn dupeNormalizedMessages(messages: []const Chat.Message, allocator: std.mem.Allocator) ![]const Chat.Message {
+    const out = try allocator.alloc(Chat.Message, messages.len);
+    var built_msgs: usize = 0;
+    errdefer {
+        for (out[0..built_msgs]) |m| if (m.tool_calls) |tcs| {
+            for (tcs) |tc| allocator.free(tc.function.name);
+            allocator.free(tcs);
+        };
+        allocator.free(out);
+    }
+    for (messages, 0..) |m, i| {
+        out[i] = m;
+        if (m.tool_calls) |tcs| {
+            const new_tcs = try allocator.alloc(Chat.ToolCall, tcs.len);
+            var built: usize = 0;
+            errdefer {
+                for (new_tcs[0..built]) |tc| allocator.free(tc.function.name);
+                allocator.free(new_tcs);
+            }
+            for (tcs, 0..) |tc, j| {
+                new_tcs[j] = tc;
+                new_tcs[j].function.name = try constraints.normalizeToolName(allocator, tc.function.name, constraints.CHAT_MAX_LEN);
+                built += 1;
+            }
+            out[i].tool_calls = new_tcs;
+        }
+        built_msgs += 1;
+    }
+    return out;
+}
+
+fn freeOwnedTools(tools: ?[]const Chat.Tool, allocator: std.mem.Allocator) void {
+    const ts = tools orelse return;
+    for (ts) |t| allocator.free(t.function.name);
+    allocator.free(ts);
+}
+
+/// Free what transformChatRequest allocated. No-op when the request was a pure
+/// borrow (no name needed normalizing).
 pub fn cleanupChatRequest(request: Chat.Request, allocator: std.mem.Allocator) void {
-    _ = request;
-    _ = allocator;
+    if (!owned_normalized) return;
+    owned_normalized = false;
+    freeOwnedTools(request.tools, allocator);
+    for (request.messages) |m| if (m.tool_calls) |tcs| {
+        for (tcs) |tc| allocator.free(tc.function.name);
+        allocator.free(tcs);
+    };
+    allocator.free(request.messages);
 }
 
 /// Chat wire response → inbound chat response.
@@ -131,12 +220,83 @@ pub fn transformChatResponse(
 ) !Chat.Response {
     var result = upstream;
     result.model = try allocator.dupe(u8, original_req.model);
+    // Reverse tool-name normalization: rewrite any tool_call name back to the
+    // original name the caller sent. Owned names are freed in cleanupChatResponse.
+    const reversed = try reverseChatToolNames(upstream.choices, original_req, allocator);
+    owned_response_choices = reversed.ptr != upstream.choices.ptr;
+    result.choices = reversed;
     return result;
 }
 
-/// Free what transformChatResponse allocated: the model string.
+/// If the request declared tools whose names were normalized, rewrite the
+/// response's tool_call names back to the caller's originals. Returns the input
+/// choices unchanged (aliased) when there is nothing to reverse. Allocated
+/// names/slices are freed by cleanupChatResponse.
+fn reverseChatToolNames(
+    choices: []const Chat.ResponseChoice,
+    original_req: Chat.Request,
+    allocator: std.mem.Allocator,
+) ![]const Chat.ResponseChoice {
+    const req_tools = original_req.tools orelse return choices;
+    // Collect original tool names once.
+    var originals = try allocator.alloc([]const u8, req_tools.len);
+    defer allocator.free(originals);
+    var any_normalized = false;
+    for (req_tools, 0..) |t, i| {
+        originals[i] = t.function.name;
+        if (constraints.toolNameNeedsNormalize(t.function.name, constraints.CHAT_MAX_LEN)) any_normalized = true;
+    }
+    if (!any_normalized) return choices;
+
+    var has_tool_calls = false;
+    for (choices) |c| if (c.message.tool_calls != null) { has_tool_calls = true; break; };
+    if (!has_tool_calls) return choices;
+
+    const out = try allocator.alloc(Chat.ResponseChoice, choices.len);
+    var built_choices: usize = 0;
+    errdefer {
+        for (out[0..built_choices]) |c| if (c.message.tool_calls) |tcs| {
+            for (tcs) |tc| allocator.free(tc.function.name);
+            allocator.free(tcs);
+        };
+        allocator.free(out);
+    }
+    for (choices, 0..) |c, i| {
+        out[i] = c;
+        if (c.message.tool_calls) |tcs| {
+            const new_tcs = try allocator.alloc(Chat.ToolCall, tcs.len);
+            var built: usize = 0;
+            errdefer {
+                for (new_tcs[0..built]) |tc| allocator.free(tc.function.name);
+                allocator.free(new_tcs);
+            }
+            for (tcs, 0..) |tc, j| {
+                new_tcs[j] = tc;
+                const orig = constraints.recoverToolName(allocator, tc.function.name, originals, constraints.CHAT_MAX_LEN);
+                new_tcs[j].function.name = try allocator.dupe(u8, orig);
+                built += 1;
+            }
+            out[i].message.tool_calls = new_tcs;
+        }
+        built_choices += 1;
+    }
+    return out;
+}
+
+/// Set by transformChatResponse when it allocated reversed tool_call slices.
+threadlocal var owned_response_choices: bool = false;
+
+/// Free what transformChatResponse allocated: the model string, and any
+/// reversed tool_call slices.
 pub fn cleanupChatResponse(inbound_response: Chat.Response, allocator: std.mem.Allocator) void {
     allocator.free(inbound_response.model);
+    if (!owned_response_choices) return;
+    owned_response_choices = false;
+    for (inbound_response.choices) |c| if (c.message.tool_calls) |tcs| {
+        for (tcs) |tc| allocator.free(tc.function.name);
+        allocator.free(tcs);
+    };
+    allocator.free(inbound_response.choices);
 }
 
 /// One chat wire SSE line → Chat.ChatStreamLineResult (typed StreamChunk slice).
@@ -261,6 +421,9 @@ pub fn transformChatStreamChunk(
 pub const MessagesStreamState = struct {
     allocator: std.mem.Allocator,
     original_model: []const u8,
+    // Original (pre-normalization) tool names from the request, borrowed. Used
+    // to reverse tool-name normalization when emitting content_block_start.
+    original_tool_names: []const []const u8 = &.{},
     response_id: []const u8 = "",
     finish_reason: ?[]const u8 = null,
     input_tokens: u32 = 0,
@@ -356,7 +519,10 @@ pub fn transformMessagesRequest(
 
                 var tool_use_blocks: std.ArrayList(Chat.ToolCall) = .empty;
                 errdefer {
-                    for (tool_use_blocks.items) |tc| allocator.free(tc.function.arguments);
+                    for (tool_use_blocks.items) |tc| {
+                        allocator.free(tc.function.name);
+                        allocator.free(tc.function.arguments);
+                    }
                     tool_use_blocks.deinit(allocator);
                 }
 
@@ -384,11 +550,14 @@ pub fn transformMessagesRequest(
                             var args_list: std.ArrayList(u8) = .empty;
                             defer args_list.deinit(allocator);
                             try args_list.print(allocator, "{f}", .{std.json.fmt(tu.input, .{})});
+                            // Normalize prior-turn tool_use names to match the
+                            // (normalized) tool definitions. Owned; freed by
+                            // freeMessageOwnedText via cleanupMessagesRequest.
                             try tool_use_blocks.append(allocator, .{
                                 .id = tu.id,
                                 .type = "function",
                                 .function = .{
-                                    .name = tu.name,
+                                    .name = try constraints.normalizeToolName(allocator, tu.name, constraints.CHAT_MAX_LEN),
                                     .arguments = try allocator.dupe(u8, args_list.items),
                                 },
                             });
@@ -515,22 +684,33 @@ pub fn transformMessagesRequest(
         }
     }
 
+    // Tool names are normalized to the Chat cap (64) so backends like SAP AI
+    // Core that enforce the limit do not reject long MCP names. Normalized names
+    // are owned by the tool array and freed in cleanupMessagesRequest.
     const tools: ?[]Chat.Tool = if (request.tools) |anthro_tools| blk: {
         const oai_tools = try allocator.alloc(Chat.Tool, anthro_tools.len);
+        errdefer allocator.free(oai_tools);
+        var built: usize = 0;
+        errdefer for (oai_tools[0..built]) |t| allocator.free(t.function.name);
         for (anthro_tools, 0..) |at, i| {
+            const raw = at.name orelse "";
             oai_tools[i] = .{
                 .type = "function",
                 .function = .{
-                    .name = at.name orelse "",
+                    .name = try constraints.normalizeToolName(allocator, raw, constraints.CHAT_MAX_LEN),
                     .description = at.description,
                     .parameters = at.input_schema,
                     .strict = null,
                 },
             };
+            built += 1;
         }
         break :blk oai_tools;
     } else null;
-    errdefer if (tools) |ts| allocator.free(ts);
+    errdefer if (tools) |ts| {
+        for (ts) |t| allocator.free(t.function.name);
+        allocator.free(ts);
+    };
 
     const tool_choice: ?std.json.Value = if (request.tool_choice) |tc| switch (tc) {
         .auto => .{ .string = "auto" },
@@ -569,7 +749,10 @@ pub fn transformMessagesRequest(
 pub fn cleanupMessagesRequest(request: Chat.Request, allocator: std.mem.Allocator) void {
     for (request.messages) |msg| content.freeMessageOwnedText(msg, allocator);
     allocator.free(request.messages);
-    if (request.tools) |ts| allocator.free(ts);
+    if (request.tools) |ts| {
+        for (ts) |t| allocator.free(t.function.name);
+        allocator.free(ts);
+    }
     if (request.tool_choice) |tc| content.freeBuiltToolChoice(tc, allocator);
 }
 
@@ -624,10 +807,17 @@ pub fn transformMessagesResponse(
         }
 
         if (choice.message.tool_calls) |tool_calls| for (tool_calls) |tc| {
+            // Reverse tool-name normalization back to the caller's original.
+            const orig = if (original_req.tools) |rt| blk: {
+                var names = allocator.alloc([]const u8, rt.len) catch break :blk tc.function.name;
+                defer allocator.free(names);
+                for (rt, 0..) |t, i| names[i] = t.name orelse "";
+                break :blk constraints.recoverToolName(allocator, tc.function.name, names, constraints.CHAT_MAX_LEN);
+            } else tc.function.name;
             try content_blocks.append(allocator, .{ .tool_use = .{
                 .type = "tool_use",
                 .id = try allocator.dupe(u8, tc.id),
-                .name = try allocator.dupe(u8, tc.function.name),
+                .name = try allocator.dupe(u8, orig),
                 .input = try content.parseToolArguments(tc.function.arguments, allocator),
             } });
         };
@@ -805,8 +995,10 @@ pub fn appendMessagesDeltaEvents(
 
                 const id_src = tc.id orelse "";
                 const name_src = if (tc.function) |f| (f.name orelse "") else "";
+                // Reverse tool-name normalization back to the caller's original.
+                const orig_name = constraints.recoverToolName(allocator, name_src, state.original_tool_names, constraints.CHAT_MAX_LEN);
                 const owned_id = allocator.dupe(u8, id_src) catch return;
-                const owned_name = allocator.dupe(u8, name_src) catch {
+                const owned_name = allocator.dupe(u8, orig_name) catch {
                     allocator.free(owned_id);
                     return;
                 };
@@ -1093,7 +1285,7 @@ pub fn transformResponsesRequest(
                     .id = try allocator.dupe(u8, id_val.string),
                     .type = "function",
                     .function = .{
-                        .name = try allocator.dupe(u8, name_val.string),
+                        .name = try constraints.normalizeToolName(allocator, name_val.string, constraints.CHAT_MAX_LEN),
                         .arguments = try allocator.dupe(u8, args_str),
                     },
                 };
@@ -1120,11 +1312,21 @@ pub fn transformResponsesRequest(
         },
     }
 
+    // Responses tools are translated to Chat function tools with names
+    // normalized to the Chat cap (64). The normalized name is owned and freed in
+    // cleanupResponsesRequest.
     const chat_tools: ?[]const Chat.Tool = if (request.tools) |rt| blk: {
         var list: std.ArrayList(Chat.Tool) = .empty;
-        errdefer list.deinit(allocator);
+        errdefer {
+            for (list.items) |t| allocator.free(t.function.name);
+            list.deinit(allocator);
+        }
         for (rt) |t| switch (t) {
-            .function => |f| try list.append(allocator, .{ .type = "function", .function = f.function }),
+            .function => |f| {
+                var fn_tool = f.function;
+                fn_tool.name = try constraints.normalizeToolName(allocator, f.function.name, constraints.CHAT_MAX_LEN);
+                try list.append(allocator, .{ .type = "function", .function = fn_tool });
+            },
             .web_search_preview, .file_search, .code_interpreter_tool, .mcp_tool, .other => {},
         };
         if (list.items.len == 0) {
@@ -1180,7 +1382,10 @@ pub fn cleanupResponsesRequest(request: Chat.Request, allocator: std.mem.Allocat
         }
     }
     allocator.free(request.messages);
-    if (request.tools) |t| allocator.free(t);
+    if (request.tools) |t| {
+        for (t) |tool| allocator.free(tool.function.name);
+        allocator.free(t);
+    }
 }
 
 /// Chat wire response → inbound responses response.
@@ -1236,10 +1441,20 @@ pub fn transformResponsesResponse(
         } });
 
         if (message.tool_calls) |tool_calls| for (tool_calls) |tc| {
+            // Reverse tool-name normalization back to the caller's original.
+            const orig = if (original_req.tools) |rt| blk: {
+                var names = allocator.alloc([]const u8, rt.len) catch break :blk tc.function.name;
+                defer allocator.free(names);
+                for (rt, 0..) |t, i| names[i] = switch (t) {
+                    .function => |f| f.function.name,
+                    else => "",
+                };
+                break :blk constraints.recoverToolName(allocator, tc.function.name, names, constraints.CHAT_MAX_LEN);
+            } else tc.function.name;
             try output_items.append(allocator, .{ .function_call = .{
                 .id = try allocator.dupe(u8, tc.id),
                 .type = "function_call",
-                .name = try allocator.dupe(u8, tc.function.name),
+                .name = try allocator.dupe(u8, orig),
                 .arguments = try allocator.dupe(u8, tc.function.arguments),
                 .status = "completed",
             } });

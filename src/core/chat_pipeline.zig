@@ -30,6 +30,8 @@ const utils = @import("utils.zig");
 const chat_types = @import("providers/openai/chat_types.zig");
 const openai_common = @import("providers/openai/types.zig");
 const chat_content = @import("providers/openai/chat_content.zig");
+const chat_validator = @import("providers/openai/chat_validator.zig");
+const errors_mod = @import("errors.zig");
 
 const openai = struct {
     const client = @import("providers/openai/client.zig");
@@ -65,6 +67,17 @@ pub fn run(
     request: chat_types.Request,
     model_str: []const u8,
 ) !void {
+    // Validate the inbound request before any provider work. On failure, write
+    // the OpenAI-shaped error body into err_writer and return BadRequest — the
+    // handler surfaces err_writer verbatim with the classified 400 status.
+    if (chat_validator.validate(request)) |msg| {
+        log.warn("[CHAT] Request validation failed: {s}", .{msg});
+        const body = try errors_mod.createErrorResponse(allocator, msg, .invalid_request_error, null);
+        defer allocator.free(body);
+        try err_writer.writeAll(body);
+        return error.BadRequest;
+    }
+
     const model_info = utils.parseModelString(model_str, allocator) catch |err| {
         log.err("Model parsing error: {} for model '{s}'", .{ err, model_str });
         return error.InvalidModelFormat;

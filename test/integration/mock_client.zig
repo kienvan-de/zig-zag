@@ -148,6 +148,11 @@ pub const MockClient = struct {
         {
             return "/v1/messages";
         }
+        if (std.mem.indexOf(u8, request_body, "\"x_path\":\"/v1/responses\"") != null or
+            std.mem.indexOf(u8, request_body, "\"x_path\": \"/v1/responses\"") != null)
+        {
+            return "/v1/responses";
+        }
         return "/v1/chat/completions";
     }
 

@@ -1,0 +1,25 @@
+{
+  "model": "gpt5.2",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Search the repos please"
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "mcp_github_enterprise_search_repositories_and_return_matc_f8l3t4",
+        "description": "Search GitHub repositories",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "query": { "type": "string" }
+          },
+          "required": ["query"]
+        }
+      }
+    }
+  ]
+}

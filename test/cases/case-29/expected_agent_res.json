@@ -1,0 +1,30 @@
+{
+  "id": "chatcmpl-case-29",
+  "object": "chat.completion",
+  "created": 1710000000,
+  "model": "openai/gpt5.2",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "id": "call_xyz789",
+            "type": "function",
+            "function": {
+              "name": "mcp.github.enterprise:search repositories/and.return matching results verbose long",
+              "arguments": "{\"query\":\"zig\"}"
+            }
+          }
+        ]
+      },
+      "finish_reason": "tool_calls"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 10,
+    "completion_tokens": 6,
+    "total_tokens": 16
+  }
+}

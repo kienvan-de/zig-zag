@@ -1,0 +1,10 @@
+{
+  "model": "openai/gpt5.2",
+  "temperature": 5,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Hello"
+    }
+  ]
+}

@@ -172,7 +172,10 @@ pub fn freeMessageOwnedText(msg: Chat.Message, allocator: std.mem.Allocator) voi
         }
     }
     if (msg.tool_calls) |tool_calls| {
-        for (tool_calls) |tc| allocator.free(tc.function.arguments);
+        for (tool_calls) |tc| {
+            allocator.free(tc.function.name);
+            allocator.free(tc.function.arguments);
+        }
         allocator.free(tool_calls);
     }
 }

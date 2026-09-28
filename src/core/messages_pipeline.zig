@@ -29,6 +29,7 @@ const provider_mod = @import("provider.zig");
 const utils = @import("utils.zig");
 const messages_types = @import("providers/anthropic/types.zig");
 const anthropic_content = @import("providers/anthropic/content.zig");
+const messages_validator = @import("providers/anthropic/validator.zig");
 
 const openai = struct {
     const client = @import("providers/openai/client.zig");
@@ -65,6 +66,19 @@ pub fn run(
     request: messages_types.Request,
     model_str: []const u8,
 ) !void {
+    // Validate the inbound request before any provider work. Messages errors use
+    // the Anthropic error envelope; write it into err_writer and return
+    // BadRequest so the handler surfaces it verbatim with a 400 status.
+    if (messages_validator.validate(request)) |msg| {
+        log.warn("[MESSAGES] Request validation failed: {s}", .{msg});
+        const err_body = messages_types.ErrorResponse{ .@"error" = .{
+            .type = "invalid_request_error",
+            .message = msg,
+        } };
+        try err_writer.print("{f}", .{std.json.fmt(err_body, .{ .emit_null_optional_fields = false })});
+        return error.BadRequest;
+    }
+
     const model_info = utils.parseModelString(model_str, allocator) catch |err| {
         log.err("Model parsing error: {} for model '{s}'", .{ err, model_str });
         return error.InvalidModelFormat;
@@ -283,6 +297,21 @@ fn streaming(
 
     var stream_state = Transformer.MessagesStreamState.init(allocator, request.model);
     defer stream_state.deinit();
+
+    // For OpenAI-family transformers that normalize tool names, provide the
+    // original names so the stream can reverse the mapping in content_block_start.
+    var tool_names_buf: ?[][]const u8 = null;
+    defer if (tool_names_buf) |b| allocator.free(b);
+    if (@hasField(@TypeOf(stream_state), "original_tool_names")) {
+        if (request.tools) |ts| {
+            const names = allocator.alloc([]const u8, ts.len) catch null;
+            if (names) |n| {
+                for (ts, 0..) |t, i| n[i] = t.name orelse "";
+                tool_names_buf = n;
+                stream_state.original_tool_names = n;
+            }
+        }
+    }
 
     var buf = std.ArrayList(u8).empty;
     defer buf.deinit(allocator);

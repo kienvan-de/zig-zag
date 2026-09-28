@@ -1,0 +1,24 @@
+{
+  "x_path": "/v1/messages",
+  "model": "anthropic/claude-3-5-sonnet-latest",
+  "max_tokens": 1024,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Search the repos please"
+    }
+  ],
+  "tools": [
+    {
+      "name": "mcp__github_enterprise__search_repositories_and_return_all_matching_results_verbose",
+      "description": "Search GitHub repositories",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "query": { "type": "string" }
+        },
+        "required": ["query"]
+      }
+    }
+  ]
+}

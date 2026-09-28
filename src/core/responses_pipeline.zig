@@ -29,6 +29,8 @@ const utils = @import("utils.zig");
 const responses_types = @import("providers/openai/responses_types.zig");
 const responses_content = @import("providers/openai/responses_content.zig");
 const openai_common = @import("providers/openai/types.zig");
+const responses_validator = @import("providers/openai/responses_validator.zig");
+const errors_mod = @import("errors.zig");
 
 const openai = struct {
     const client = @import("providers/openai/client.zig");
@@ -64,6 +66,15 @@ pub fn run(
     request: responses_types.Request,
     model_str: []const u8,
 ) !void {
+    // Validate the inbound request before any provider work (OpenAI error shape).
+    if (responses_validator.validate(request)) |msg| {
+        log.warn("[RESPONSES] Request validation failed: {s}", .{msg});
+        const body = try errors_mod.createErrorResponse(allocator, msg, .invalid_request_error, null);
+        defer allocator.free(body);
+        try err_writer.writeAll(body);
+        return error.BadRequest;
+    }
+
     const model_info = utils.parseModelString(model_str, allocator) catch |err| {
         log.err("Model parsing error: {} for model '{s}'", .{ err, model_str });
         return error.InvalidModelFormat;

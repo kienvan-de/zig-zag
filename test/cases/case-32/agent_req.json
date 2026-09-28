@@ -1,0 +1,12 @@
+{
+  "x_path": "/v1/messages",
+  "model": "anthropic/claude-3-5-sonnet-latest",
+  "max_tokens": 1024,
+  "temperature": 1.5,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Hello"
+    }
+  ]
+}
