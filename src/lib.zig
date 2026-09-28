@@ -43,6 +43,14 @@ const State = struct {
     thread: std.Thread,
     port: u16,
     start_timestamp: i64,
+
+    /// Debug builds use DebugAllocator (leak detection). Release builds use the
+    /// thread-safe smp_allocator, which returns freed memory to the OS —
+    /// DebugAllocator retains freed pages (never shrinks RSS), pinning the
+    /// process at its peak footprint after a single large request.
+    fn allocator(self: *State) std.mem.Allocator {
+        return if (builtin.mode == .Debug) self.gpa.allocator() else std.heap.smp_allocator;
+    }
 };
 
 var state: ?*State = null;
@@ -106,7 +114,7 @@ pub const CServerStats = extern struct {
 // ============================================================================
 
 fn serverThreadFn(s: *State) void {
-    const allocator = s.gpa.allocator();
+    const allocator = s.allocator();
 
     // Initialize subsystems in dependency order (same as main.zig).
     // All initialization happens in this thread to avoid blocking UI.
@@ -255,7 +263,7 @@ export fn startServer() bool {
 
     // Spawn server thread - all initialization happens there (non-blocking)
     s.thread = std.Thread.spawn(.{}, serverThreadFn, .{s}) catch {
-        _ = s.gpa.deinit();
+        if (builtin.mode == .Debug) _ = s.gpa.deinit();
         bootstrap.destroy(s);
         server_status.store(.err, .release);
         server_error_code.store(.thread_spawn_failed, .release);
@@ -292,8 +300,9 @@ export fn stopServer() void {
     // Wait for the server thread to finish all cleanup.
     s.thread.join();
 
-    // Config is cleaned up in serverThreadFn via defer, so just clean up GPA and State
-    _ = s.gpa.deinit();
+    // Config is cleaned up in serverThreadFn via defer, so just clean up GPA and State.
+    // In release builds the allocator is smp_allocator (no per-instance state to deinit).
+    if (builtin.mode == .Debug) _ = s.gpa.deinit();
 
     // Free the State shell using the same allocator we used to create it.
     std.heap.page_allocator.destroy(s);

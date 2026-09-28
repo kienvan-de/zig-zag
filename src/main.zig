@@ -48,9 +48,18 @@ pub fn main(init: std.process.Init.Minimal) !void {
     // instead of terminating the process.
     core.net.ignoreSigpipe();
 
+    // Debug builds use DebugAllocator for leak detection. Release builds use the
+    // thread-safe smp_allocator, which returns freed memory to the OS —
+    // DebugAllocator retains freed pages in free-lists (never shrinks RSS), so a
+    // single large request would pin the process at its peak footprint.
     var gpa: std.heap.DebugAllocator(.{}) = .init;
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    defer if (builtin.mode == .Debug) {
+        _ = gpa.deinit();
+    };
+    const allocator = if (builtin.mode == .Debug)
+        gpa.allocator()
+    else
+        std.heap.smp_allocator;
 
     // Initialize Threaded I/O backend first (uses page_allocator internally)
     core.time.init(allocator, init.environ);
