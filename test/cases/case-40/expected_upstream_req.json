@@ -1,0 +1,11 @@
+{
+  "model": "gpt-5",
+  "input": [
+    {
+      "role": "user",
+      "content": "Search GitHub."
+    }
+  ],
+  "stream": false,
+  "max_output_tokens": 1024
+}

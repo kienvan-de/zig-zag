@@ -1,0 +1,22 @@
+{
+  "id": "resp_case40",
+  "object": "response",
+  "created_at": 1710000040,
+  "model": "gpt-5",
+  "status": "completed",
+  "output": [
+    {
+      "id": "fc_item_40",
+      "type": "function_call",
+      "name": "search",
+      "arguments": "{\"q\":\"zig\"}",
+      "call_id": "call_40",
+      "status": "completed"
+    }
+  ],
+  "usage": {
+    "input_tokens": 6,
+    "output_tokens": 2,
+    "total_tokens": 8
+  }
+}

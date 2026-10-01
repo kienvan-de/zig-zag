@@ -31,6 +31,7 @@ const sig_cache = @import("signature_cache.zig");
 const chat_content = @import("../openai/chat_content.zig");
 const log = @import("../../log.zig");
 const time = @import("../../time.zig");
+const utils = @import("../../utils.zig");
 
 /// The Responses flow synthesizes its own terminal events; the pipeline appends the `[DONE]` sentinel afterwards.
 pub const appendsDoneMarker = true;
@@ -520,12 +521,12 @@ pub const MessagesStreamState = struct {
         return .{
             .allocator = allocator,
             .original_model = original_model,
-            .response_id = "msg_google", // static literal; Gemini wire has no ids
         };
     }
 
     pub fn deinit(self: *MessagesStreamState) void {
-        _ = self;
+        if (self.response_id.len > 0) self.allocator.free(self.response_id);
+        self.response_id = "";
     }
 };
 
@@ -630,7 +631,7 @@ pub fn cleanupMessagesRequest(
 /// Gemini response → inbound messages response (Anthropic Messages wire).
 ///
 /// Field mapping (Google.Response → Messages.Response):
-///   synthesized "msg_{ts}"                      → id
+///   response_id or generated msg_ fallback       → id
 ///   "message"                                   → type
 ///   "assistant"                                 → role
 ///   candidates[0] text parts                    → content[].text blocks
@@ -642,7 +643,7 @@ pub fn cleanupMessagesRequest(
 ///   "google_ai_studio/gemini"                   → model (no upstream model field)
 ///   (not mapped) candidates[1..], safety_ratings, citation_metadata,
 ///                grounding_metadata, logprobs_result, prompt_feedback,
-///                model_version, response_id, model_status, stop_sequence,
+///                model_version, model_status, stop_sequence,
 ///                thoughts_token_count (no Messages.Response equivalent),
 ///                tool_use_prompt_token_count (no Messages.Response equivalent)
 pub fn transformMessagesResponse(
@@ -738,15 +739,29 @@ pub fn transformMessagesResponse(
         try content_blocks.append(allocator, .{ .text = .{ .type = "text", .text = owned_text } });
     }
 
-    const stop_reason: []const u8 = if (upstream_response.candidates.len > 0)
+    const has_function_calls = if (upstream_response.candidates.len > 0) blk: {
+        for (upstream_response.candidates[0].content.parts) |part| {
+            if (part == .function_call) break :blk true;
+        }
+        break :blk false;
+    } else false;
+
+    const stop_reason: []const u8 = if (has_function_calls)
+        "tool_use"
+    else if (upstream_response.candidates.len > 0)
         content.transformStopReasonToMessages(upstream_response.candidates[0].finish_reason)
     else
         "end_turn";
 
     const cached = upstream_response.usage_metadata.cached_content_token_count;
+    const response_id = if (upstream_response.response_id) |id|
+        if (id.len > 0) try allocator.dupe(u8, id) else try utils.generateMessagesResponseId(allocator)
+    else
+        try utils.generateMessagesResponseId(allocator);
+    errdefer allocator.free(response_id);
 
     return .{
-        .id = try std.fmt.allocPrint(allocator, "msg_{d}", .{time.timestamp()}),
+        .id = response_id,
         .type = "message",
         .role = "assistant",
         .content = try content_blocks.toOwnedSlice(allocator),
@@ -820,6 +835,12 @@ pub fn transformMessagesStreamLine(
         return .{ .skip = {} };
     };
     defer parsed.deinit();
+
+    if (state.response_id.len == 0) {
+        if (parsed.value.response_id) |id| {
+            if (id.len > 0) state.response_id = allocator.dupe(u8, id) catch return .{ .skip = {} };
+        }
+    }
 
     var events: std.ArrayList(Messages.SseEvent) = .empty;
     defer events.deinit(allocator);
@@ -911,7 +932,15 @@ pub fn transformMessagesStreamLine(
                 state.output_tokens = parsed.value.usage_metadata.candidates_token_count;
                 state.cache_read_tokens = parsed.value.usage_metadata.cached_content_token_count;
                 state.input_tokens -= state.cache_read_tokens;
-                state.finish_reason = content.transformStopReasonToMessages(candidate.finish_reason);
+                // G-742: force tool_use when function_call parts are present,
+                // even if Gemini signals a normal STOP finish reason.
+                const has_fn_calls = for (candidate.content.parts) |part| {
+                    if (part == .function_call) break true;
+                } else false;
+                state.finish_reason = if (has_fn_calls)
+                    "tool_use"
+                else
+                    content.transformStopReasonToMessages(candidate.finish_reason);
                 finishMessagesStream(state, &events, allocator);
             }
         }
@@ -968,6 +997,9 @@ fn ensureStarted(
     allocator: std.mem.Allocator,
 ) void {
     if (state.started) return;
+    if (state.response_id.len == 0) {
+        state.response_id = utils.generateMessagesResponseId(allocator) catch return;
+    }
     events.append(allocator, .{ .message_start = .{
         .type = "message_start",
         .message = .{

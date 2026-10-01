@@ -1,0 +1,1 @@
+{"id": "resp_case39", "type": "message", "role": "assistant", "content": [{"type": "tool_use", "id": "call_assoc_39", "name": "check_status", "input": {"target": "prod"}}], "model": "openai/gpt-5", "stop_reason": "tool_use", "stop_sequence": null, "usage": {"input_tokens": 8, "output_tokens": 3}}

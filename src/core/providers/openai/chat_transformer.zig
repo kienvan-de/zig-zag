@@ -32,6 +32,7 @@ const content = @import("chat_content.zig");
 const constraints = @import("../constraints.zig");
 const log = @import("../../log.zig");
 const time = @import("../../time.zig");
+const utils = @import("../../utils.zig");
 
 // ============================================================================
 // Contract
@@ -323,6 +324,8 @@ pub const MessagesStreamState = struct {
     }
 
     pub fn deinit(self: *MessagesStreamState) void {
+        if (self.response_id.len > 0) self.allocator.free(self.response_id);
+        self.response_id = "";
         if (self.finish_reason) |r| self.allocator.free(r);
         self.finish_reason = null;
     }
@@ -601,7 +604,8 @@ pub fn transformMessagesRequest(
     // next assistant message" rule stays satisfied. No-op (returns the slice
     // unchanged) when no assistant exceeds the cap.
     const built_messages = try messages.toOwnedSlice(allocator);
-    const final_messages = try content.splitOversizedToolCallTurns(built_messages, allocator);
+    const reordered = try content.hoistToolResultsAcrossUserText(built_messages, allocator);
+    const final_messages = try content.splitOversizedToolCallTurns(reordered, allocator);
 
     return .{
         .model = model,
@@ -706,8 +710,14 @@ pub fn transformMessagesResponse(
         } });
     }
 
+    const response_id = if (upstream.id.len > 0)
+        try allocator.dupe(u8, upstream.id)
+    else
+        try utils.generateMessagesResponseId(allocator);
+    errdefer allocator.free(response_id);
+
     return .{
-        .id = try allocator.dupe(u8, upstream.id),
+        .id = response_id,
         .type = "message",
         .role = "assistant",
         .content = try content_blocks.toOwnedSlice(allocator),
@@ -805,6 +815,9 @@ pub fn appendMessagesDeltaEvents(
     events: *std.ArrayList(Messages.SseEvent),
     allocator: std.mem.Allocator,
 ) void {
+    if (state.response_id.len == 0 and chunk.id.len > 0) {
+        state.response_id = allocator.dupe(u8, chunk.id) catch return;
+    }
     if (chunk.choices.len == 0) return;
     const choice = chunk.choices[0];
 
@@ -960,10 +973,13 @@ fn ensureStarted(
     allocator: std.mem.Allocator,
 ) void {
     if (state.started) return;
+    if (state.response_id.len == 0) {
+        state.response_id = utils.generateMessagesResponseId(allocator) catch return;
+    }
     events.append(allocator, .{ .message_start = .{
         .type = "message_start",
         .message = .{
-            .id = "msg_proxy",
+            .id = state.response_id,
             .type = "message",
             .role = "assistant",
             .content = &.{},

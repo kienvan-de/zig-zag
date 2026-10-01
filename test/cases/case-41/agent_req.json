@@ -1,0 +1,29 @@
+{
+  "x_path": "/v1/messages",
+  "model": "openai/gpt-5",
+  "max_tokens": 1024,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Run the check."
+    }
+  ],
+  "tools": [
+    {
+      "name": "do_check",
+      "description": "Run a check",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      }
+    }
+  ],
+  "stream": true
+}

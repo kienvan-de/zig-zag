@@ -1,0 +1,36 @@
+{
+  "x_path": "/v1/messages",
+  "model": "openai/gpt-5",
+  "max_tokens": 1024,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Check the deployment."
+    }
+  ],
+  "tools": [
+    {
+      "name": "check_deployment",
+      "description": "Check deployment state",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "strict": true
+    }
+  ],
+  "tool_choice": {
+    "type": "tool",
+    "name": "check_deployment",
+    "disable_parallel_tool_use": true
+  },
+  "stream": false
+}

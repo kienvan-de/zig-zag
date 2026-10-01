@@ -128,6 +128,52 @@ fn jsonEqual(allocator: std.mem.Allocator, left: []const u8, right: []const u8) 
     return valueEqual(left_parsed.value, right_parsed.value);
 }
 
+const random_message_id_placeholder = "__RANDOM_MESSAGE_ID_24__";
+
+fn validRandomMessageId(value: std.json.Value) bool {
+    if (value != .string) return false;
+    const id = value.string;
+    if (id.len != 28 or !std.mem.startsWith(u8, id, "msg_")) return false;
+    for (id[4..]) |c| {
+        if (!std.ascii.isDigit(c) and !(c >= 'a' and c <= 'f')) return false;
+    }
+    return true;
+}
+
+fn sseJsonEqual(allocator: std.mem.Allocator, left: []const u8, right: []const u8) !bool {
+    var left_parsed = try std.json.parseFromSlice(std.json.Value, allocator, left, .{});
+    defer left_parsed.deinit();
+    var right_parsed = try std.json.parseFromSlice(std.json.Value, allocator, right, .{});
+    defer right_parsed.deinit();
+
+    if (right_parsed.value == .object) {
+        const expected_type = right_parsed.value.object.get("type");
+        const expected_message = right_parsed.value.object.getPtr("message");
+        if (expected_type != null and expected_type.? == .string and
+            std.mem.eql(u8, expected_type.?.string, "message_start") and
+            expected_message != null and expected_message.?.* == .object)
+        {
+            const expected_id = expected_message.?.object.get("id");
+            if (expected_id != null and expected_id.? == .string and
+                std.mem.eql(u8, expected_id.?.string, random_message_id_placeholder))
+            {
+                if (left_parsed.value != .object) return false;
+                const actual_message = left_parsed.value.object.getPtr("message") orelse return false;
+                if (actual_message.* != .object) return false;
+                const actual_id = actual_message.object.getPtr("id") orelse return false;
+                if (!validRandomMessageId(actual_id.*)) return false;
+                // Replace the actual arena-owned string with the placeholder so
+                // valueEqual can do an exact structural comparison.
+                // Note: actual_id.string is owned by left_parsed's arena and must
+                // NOT be freed individually — left_parsed.deinit() handles it.
+                actual_id.* = expected_id.?;
+            }
+        }
+    }
+
+    return valueEqual(left_parsed.value, right_parsed.value);
+}
+
 /// Compare SSE streaming responses line by line
 /// Each "data: {...}" line is parsed as JSON and compared
 fn sseEqual(allocator: std.mem.Allocator, left: []const u8, right: []const u8) !bool {
@@ -155,7 +201,7 @@ fn sseEqual(allocator: std.mem.Allocator, left: []const u8, right: []const u8) !
         }
 
         // Compare JSON content
-        const equal = jsonEqual(allocator, left_data, right_data) catch return false;
+        const equal = sseJsonEqual(allocator, left_data, right_data) catch return false;
         if (!equal) return false;
     }
 }

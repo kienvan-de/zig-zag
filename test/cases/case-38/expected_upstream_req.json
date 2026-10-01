@@ -1,0 +1,36 @@
+{
+  "model": "gpt-5",
+  "input": [
+    {
+      "role": "user",
+      "content": "Check the deployment."
+    }
+  ],
+  "stream": false,
+  "tools": [
+    {
+      "type": "function",
+      "name": "check_deployment",
+      "description": "Check deployment state",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "strict": true
+    }
+  ],
+  "tool_choice": {
+    "type": "function",
+    "name": "check_deployment"
+  },
+  "parallel_tool_calls": false,
+  "max_output_tokens": 1024
+}

@@ -352,6 +352,62 @@ pub fn freeReversedChatResponseChoices(choices: []const Chat.ResponseChoice, all
     allocator.free(choices);
 }
 
+/// Move `.tool` messages that immediately follow a `.user` text message
+/// (with no intervening `.assistant`) to before that user message, so that
+/// tool results remain directly adjacent to the preceding assistant turn.
+///
+/// This corrects the case where two consecutive Anthropic user messages
+/// carry tool results in the second and user text in the first: the emitted
+/// order would be [..., user-text, tool, tool] but Chat requires
+/// [..., tool, tool, user-text].
+///
+/// Takes ownership of `input`. Returns `input` unchanged when nothing needs
+/// reordering; otherwise returns a new owned slice and frees `input`'s
+/// backing array. Message payloads alias the originals.
+pub fn hoistToolResultsAcrossUserText(
+    input: []Chat.Message,
+    allocator: std.mem.Allocator,
+) ![]Chat.Message {
+    // Quick scan: is there any user message followed by a tool message?
+    var needs = false;
+    var i: usize = 0;
+    while (i + 1 < input.len) : (i += 1) {
+        if (input[i].role == .user and input[i + 1].role == .tool) {
+            needs = true;
+            break;
+        }
+    }
+    if (!needs) return input;
+
+    var out: std.ArrayList(Chat.Message) = .empty;
+    errdefer out.deinit(allocator);
+
+    var idx: usize = 0;
+    while (idx < input.len) : (idx += 1) {
+        const msg = input[idx];
+        // When we see a user-text message followed by tool messages, buffer
+        // the user message and emit the following tool run first.
+        if (msg.role == .user and msg.tool_calls == null) {
+            // Look ahead for a contiguous run of tool messages.
+            var end = idx + 1;
+            while (end < input.len and input[end].role == .tool) end += 1;
+            if (end > idx + 1) {
+                // Emit tool messages before the user message.
+                for (input[idx + 1 .. end]) |tool_msg| {
+                    try out.append(allocator, tool_msg);
+                }
+                try out.append(allocator, msg);
+                idx = end - 1; // loop increment brings it to end
+                continue;
+            }
+        }
+        try out.append(allocator, msg);
+    }
+
+    allocator.free(input);
+    return out.toOwnedSlice(allocator);
+}
+
 /// Split any assistant message whose `tool_calls` exceed
 /// `constraints.CHAT_MAX_TOOL_CALLS_PER_MESSAGE` into multiple assistant
 /// messages, interleaving each chunk with the `tool` result messages that answer
@@ -394,6 +450,16 @@ pub fn splitOversizedToolCallTurns(
         var results_end = i + 1;
         while (results_end < input.len and input[results_end].role == .tool) results_end += 1;
         const results = input[i + 1 .. results_end];
+
+        // C-409: Only split if there are results to interleave. If there are no
+        // results the chunks would be adjacent assistant messages with nothing
+        // between them, which violates Chat/SAP's adjacency requirement.
+        // Emit the oversized assistant as-is rather than producing an invalid
+        // message sequence.
+        if (results.len == 0) {
+            try out.append(allocator, msg);
+            continue;
+        }
 
         var placed = try allocator.alloc(bool, results.len);
         defer allocator.free(placed);

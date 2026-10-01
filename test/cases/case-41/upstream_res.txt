@@ -1,0 +1,9 @@
+data: {"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":{"id":"fc_item_41","type":"function_call","name":"do_check","call_id":"call_check_41","arguments":""}}
+
+data: {"type":"response.function_call_arguments.delta","sequence_number":2,"output_index":0,"item_id":"fc_item_41","call_id":"call_check_41","delta":"{\"name\":"}
+
+data: {"type":"response.function_call_arguments.delta","sequence_number":3,"output_index":0,"item_id":"fc_item_41","call_id":"call_check_41","delta":"\"prod\"}"}
+
+data: {"type":"response.function_call_arguments.done","sequence_number":4,"output_index":0,"item_id":"fc_item_41","call_id":"call_check_41","arguments":"{\"name\":\"prod\"}"}
+
+data: {"type":"response.completed","sequence_number":5,"response":{"id":"resp_41","status":"completed","output":[{"id":"fc_item_41","type":"function_call","name":"do_check","call_id":"call_check_41","arguments":"{\"name\":\"prod\"}","status":"completed"}],"usage":{"input_tokens":8,"output_tokens":4,"total_tokens":12}}}

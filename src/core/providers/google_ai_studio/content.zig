@@ -450,17 +450,65 @@ pub fn buildContentsFromMessages(
                         } });
                     },
                     .tool_result => |tr| {
+                        // G-455: join ALL text blocks, not just the first.
                         const output_text: []const u8 = if (tr.content) |c| switch (c) {
                             .text => |t| t,
-                            .blocks => |blks| if (blks.len > 0) blks[0].text else "",
+                            .blocks => |blks| blk: {
+                                if (blks.len == 0) break :blk "";
+                                if (blks.len == 1) break :blk blks[0].text;
+                                var parts_buf: std.ArrayList([]const u8) = .empty;
+                                defer parts_buf.deinit(allocator);
+                                for (blks) |b| try parts_buf.append(allocator, b.text);
+                                const joined = try std.mem.join(allocator, "", parts_buf.items);
+                                // joined is allocated; we need it to outlive this block.
+                                // Store it in a temporary so it gets freed via the deferred errdefer.
+                                break :blk joined;
+                            },
                         } else "";
+                        // Ownership: joined multi-block strings are only alive within this scope.
+                        // We pass output_text into resp_obj as a borrowed .string (the parse
+                        // arena or the joined buffer). freeMessagesOwnedArgs frees only args
+                        // objects; the joined buffer must be freed here after resp_obj consumes it.
+                        const output_text_owned = if (tr.content) |c| (c == .blocks and if (c == .blocks) c.blocks.len > 1 else false) else false;
+                        defer if (output_text_owned) allocator.free(output_text);
                         var resp_obj: std.json.ObjectMap = .{};
                         errdefer resp_obj.deinit(allocator);
-                        const resp_name_raw: []const u8 = tr.tool_use_id;
-                        const resp_name = sig_cache.splitNameFromId(resp_name_raw);
+                        // G-459: associate the result with the preceding tool_use's name.
+                        // The proxy may have generated a "<name>~<token>" id, or the client
+                        // may have returned the original Anthropic tool_use_id directly.
+                        // Walk backwards through already-processed messages to find the name.
+                        const resp_name: []const u8 = blk: {
+                            // First try: sig_cache for proxy-generated IDs
+                            const maybe_name = sig_cache.splitNameFromId(tr.tool_use_id);
+                            if (!std.mem.eql(u8, maybe_name, tr.tool_use_id)) {
+                                // Proxy-generated id — name extracted by splitNameFromId
+                                break :blk maybe_name;
+                            }
+                            // Second try: scan preceding messages for tool_use with matching id
+                            var mi: usize = messages.len;
+                            outer: while (mi > 0) {
+                                mi -= 1;
+                                const prev = messages[mi];
+                                if (prev.content != .blocks) continue;
+                                for (prev.content.blocks) |b| {
+                                    if (b != .tool_use) continue;
+                                    if (std.mem.eql(u8, b.tool_use.id, tr.tool_use_id)) {
+                                        break :outer;
+                                    }
+                                }
+                            }
+                            if (mi < messages.len and messages[mi].content == .blocks) {
+                                for (messages[mi].content.blocks) |b| {
+                                    if (b == .tool_use and std.mem.eql(u8, b.tool_use.id, tr.tool_use_id)) {
+                                        break :blk b.tool_use.name;
+                                    }
+                                }
+                            }
+                            // Final fallback: use the id itself (preserves prior behaviour)
+                            break :blk tr.tool_use_id;
+                        };
                         try resp_obj.put(allocator, "output", .{ .string = output_text });
                         try parts.append(allocator, .{ .function_response = .{
-                            // Sub-slice of tr.tool_use_id — borrows the inbound parse tree.
                             .name = resp_name,
                             .response = .{ .object = resp_obj },
                         } });

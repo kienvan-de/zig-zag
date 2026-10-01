@@ -28,6 +28,89 @@ pub fn freeInputItem(value: std.json.Value, allocator: std.mem.Allocator) void {
     freeParsedJsonValue(value, allocator);
 }
 
+fn putOwnedString(
+    object: *std.json.ObjectMap,
+    key: []const u8,
+    value: []const u8,
+    allocator: std.mem.Allocator,
+) !void {
+    const owned_key = try allocator.dupe(u8, key);
+    errdefer allocator.free(owned_key);
+    const owned_value = try allocator.dupe(u8, value);
+    errdefer allocator.free(owned_value);
+    try object.put(allocator, owned_key, .{ .string = owned_value });
+}
+
+pub fn messagesTextInputItem(
+    role: []const u8,
+    text: []const u8,
+    allocator: std.mem.Allocator,
+) !std.json.Value {
+    var object: std.json.ObjectMap = .{};
+    errdefer freeParsedJsonValue(.{ .object = object }, allocator);
+    try putOwnedString(&object, "role", role, allocator);
+    try putOwnedString(&object, "content", text, allocator);
+    return .{ .object = object };
+}
+
+pub fn messagesTextBlocksInputItem(
+    role: []const u8,
+    text_parts: []const []const u8,
+    allocator: std.mem.Allocator,
+) !std.json.Value {
+    const text = try std.mem.join(allocator, "", text_parts);
+    defer allocator.free(text);
+    return messagesTextInputItem(role, text, allocator);
+}
+
+pub fn messagesToolUseInputItem(
+    tool_use: Messages.ContentBlockParamToolUse,
+    allocator: std.mem.Allocator,
+) !std.json.Value {
+    var arguments: std.ArrayList(u8) = .empty;
+    defer arguments.deinit(allocator);
+    try arguments.print(allocator, "{f}", .{std.json.fmt(tool_use.input, .{})});
+
+    var object: std.json.ObjectMap = .{};
+    errdefer freeParsedJsonValue(.{ .object = object }, allocator);
+    try putOwnedString(&object, "type", "function_call", allocator);
+    try putOwnedString(&object, "call_id", tool_use.id, allocator);
+    try putOwnedString(&object, "name", tool_use.name, allocator);
+    try putOwnedString(&object, "arguments", arguments.items, allocator);
+    return .{ .object = object };
+}
+
+pub fn messagesToolResultInputItem(
+    tool_result: Messages.ToolResultBlock,
+    allocator: std.mem.Allocator,
+) !std.json.Value {
+    var joined_output: ?[]const u8 = null;
+    defer if (joined_output) |output| allocator.free(output);
+    const output: []const u8 = if (tool_result.content) |result_content| switch (result_content) {
+        .text => |text| text,
+        .blocks => |blocks| blk: {
+            var parts: std.ArrayList([]const u8) = .empty;
+            defer parts.deinit(allocator);
+            for (blocks) |block| try parts.append(allocator, block.text);
+            if (parts.items.len == 0) break :blk "";
+            joined_output = try std.mem.join(allocator, "", parts.items);
+            break :blk joined_output.?;
+        },
+    } else "";
+
+    var object: std.json.ObjectMap = .{};
+    errdefer freeParsedJsonValue(.{ .object = object }, allocator);
+    try putOwnedString(&object, "type", "function_call_output", allocator);
+    try putOwnedString(&object, "call_id", tool_result.tool_use_id, allocator);
+    try putOwnedString(&object, "output", output, allocator);
+    if (tool_result.is_error orelse false) {
+        const owned_key = try allocator.dupe(u8, "error");
+        errdefer allocator.free(owned_key);
+        try object.put(allocator, owned_key, .{ .bool = true });
+    }
+    return .{ .object = object };
+}
+
 // ============================================================================
 // Messages flow support
 // ============================================================================

@@ -1,0 +1,29 @@
+{
+  "model": "gpt-5",
+  "input": [
+    {
+      "role": "user",
+      "content": "Run the check."
+    }
+  ],
+  "stream": true,
+  "tools": [
+    {
+      "type": "function",
+      "name": "do_check",
+      "description": "Run a check",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      }
+    }
+  ],
+  "max_output_tokens": 1024
+}

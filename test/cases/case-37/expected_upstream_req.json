@@ -1,0 +1,42 @@
+{
+  "model": "gpt-5",
+  "input": [
+    {
+      "role": "user",
+      "content": "Run both checks."
+    },
+    {
+      "role": "assistant",
+      "content": "Checking now. Please wait."
+    },
+    {
+      "type": "function_call",
+      "call_id": "call_second",
+      "name": "check_status",
+      "arguments": "{\"target\":\"second\"}"
+    },
+    {
+      "type": "function_call",
+      "call_id": "call_first",
+      "name": "check_status",
+      "arguments": "{\"target\":\"first\"}"
+    },
+    {
+      "type": "function_call_output",
+      "call_id": "call_first",
+      "output": "first:ok",
+      "error": true
+    },
+    {
+      "type": "function_call_output",
+      "call_id": "call_second",
+      "output": "second:ok"
+    },
+    {
+      "role": "user",
+      "content": "Summarize the checks."
+    }
+  ],
+  "stream": false,
+  "max_output_tokens": 1024
+}

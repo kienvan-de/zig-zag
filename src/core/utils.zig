@@ -50,6 +50,21 @@ pub const ModelInfo = struct {
 /// | `OutOfMemory`        | Allocator failed to duplicate the provider or model name |
 pub const ModelParseError = @import("errors.zig").ModelParseError;
 
+/// Generate an owned Anthropic Messages response ID.
+pub fn generateMessagesResponseId(allocator: std.mem.Allocator) ![]u8 {
+    var random_bytes: [12]u8 = undefined;
+    try time.io().randomSecure(&random_bytes);
+
+    const response_id = try allocator.alloc(u8, 28);
+    @memcpy(response_id[0..4], "msg_");
+    const hex = "0123456789abcdef";
+    for (random_bytes, 0..) |byte, i| {
+        response_id[4 + i * 2] = hex[byte >> 4];
+        response_id[5 + i * 2] = hex[byte & 0x0f];
+    }
+    return response_id;
+}
+
 /// Parse a model string in the format `"provider/model-name"` into a `ModelInfo`.
 ///
 /// The input is split on the **first** `/` only, so the model segment may

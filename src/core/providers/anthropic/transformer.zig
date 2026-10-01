@@ -28,6 +28,7 @@ const common = @import("../openai/types.zig"); // shared primitives (ToolFunctio
 const content = @import("content.zig"); // own mapping internals
 const log = @import("../../log.zig");
 const time = @import("../../time.zig");
+const utils = @import("../../utils.zig");
 
 /// One streaming line result. `output` carries formatted SSE bytes (caller frees). `skip` means nothing to emit.
 pub const StreamLineResult = union(enum) {
@@ -502,7 +503,8 @@ pub const MessagesStreamState = struct {
     }
 
     pub fn deinit(self: *MessagesStreamState) void {
-        _ = self;
+        if (self.response_id.len > 0) self.allocator.free(self.response_id);
+        self.response_id = "";
     }
 };
 
@@ -535,15 +537,21 @@ pub fn transformMessagesResponse(
     allocator: std.mem.Allocator,
 ) !Messages.Response {
     var response = upstream_response;
+    response.id = if (upstream_response.id.len > 0)
+        try allocator.dupe(u8, upstream_response.id)
+    else
+        try utils.generateMessagesResponseId(allocator);
+    errdefer allocator.free(response.id);
     response.model = try allocator.dupe(u8, original_req.model);
     return response;
 }
 
-/// Free the model string allocated by transformMessagesResponse.
+/// Free the id and model strings allocated by transformMessagesResponse.
 pub fn cleanupMessagesResponse(
     inbound_response: Messages.Response,
     allocator: std.mem.Allocator,
 ) void {
+    allocator.free(inbound_response.id);
     allocator.free(inbound_response.model);
 }
 
@@ -576,10 +584,16 @@ pub fn transformMessagesStreamLine(
             state.cache_write_tokens = v.message.usage.cache_creation_input_tokens orelse 0;
             state.cache_read_tokens = v.message.usage.cache_read_input_tokens orelse 0;
             state.input_tokens = v.message.usage.input_tokens;
+            if (state.response_id.len == 0) {
+                state.response_id = if (v.message.id.len > 0)
+                    allocator.dupe(u8, v.message.id) catch return .{ .skip = {} }
+                else
+                    utils.generateMessagesResponseId(allocator) catch return .{ .skip = {} };
+            }
             break :blk .{ .message_start = .{
                 .type = allocator.dupe(u8, v.type) catch return .{ .skip = {} },
                 .message = .{
-                    .id = allocator.dupe(u8, v.message.id) catch return .{ .skip = {} },
+                    .id = state.response_id,
                     .type = allocator.dupe(u8, v.message.type) catch return .{ .skip = {} },
                     .role = allocator.dupe(u8, v.message.role) catch return .{ .skip = {} },
                     .model = allocator.dupe(u8, state.original_model) catch return .{ .skip = {} },

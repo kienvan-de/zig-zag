@@ -1,0 +1,22 @@
+{
+  "id": "resp_case40",
+  "type": "message",
+  "role": "assistant",
+  "content": [
+    {
+      "type": "tool_use",
+      "id": "call_40",
+      "name": "search",
+      "input": {
+        "q": "zig"
+      }
+    }
+  ],
+  "model": "openai/gpt-5",
+  "stop_reason": "tool_use",
+  "stop_sequence": null,
+  "usage": {
+    "input_tokens": 6,
+    "output_tokens": 2
+  }
+}

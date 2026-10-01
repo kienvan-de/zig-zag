@@ -1,0 +1,27 @@
+{
+  "id": "resp_case38",
+  "object": "response",
+  "created_at": 1710000038,
+  "model": "gpt-5",
+  "status": "completed",
+  "output": [
+    {
+      "id": "msg_case38",
+      "type": "message",
+      "role": "assistant",
+      "status": "completed",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "Ready.",
+          "annotations": []
+        }
+      ]
+    }
+  ],
+  "usage": {
+    "input_tokens": 12,
+    "output_tokens": 2,
+    "total_tokens": 14
+  }
+}

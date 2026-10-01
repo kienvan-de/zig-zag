@@ -1,0 +1,18 @@
+{
+  "id": "resp_case37",
+  "type": "message",
+  "role": "assistant",
+  "content": [
+    {
+      "type": "text",
+      "text": "Both checks passed."
+    }
+  ],
+  "model": "openai/gpt-5",
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "usage": {
+    "input_tokens": 30,
+    "output_tokens": 4
+  }
+}

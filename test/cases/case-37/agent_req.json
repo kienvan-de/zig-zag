@@ -1,0 +1,70 @@
+{
+  "x_path": "/v1/messages",
+  "model": "openai/gpt-5",
+  "max_tokens": 1024,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Run both checks."
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Checking now."
+        },
+        {
+          "type": "text",
+          "text": " Please wait."
+        },
+        {
+          "type": "tool_use",
+          "id": "call_second",
+          "name": "check_status",
+          "input": {
+            "target": "second"
+          }
+        },
+        {
+          "type": "tool_use",
+          "id": "call_first",
+          "name": "check_status",
+          "input": {
+            "target": "first"
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "call_first",
+          "content": "first:ok",
+          "is_error": true
+        },
+        {
+          "type": "tool_result",
+          "tool_use_id": "call_second",
+          "content": [
+            {
+              "type": "text",
+              "text": "second:"
+            },
+            {
+              "type": "text",
+              "text": "ok"
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "text": "Summarize the checks."
+        }
+      ]
+    }
+  ],
+  "stream": false
+}

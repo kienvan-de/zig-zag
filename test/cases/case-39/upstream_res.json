@@ -1,0 +1,22 @@
+{
+  "id": "resp_case39",
+  "object": "response",
+  "created_at": 1710000039,
+  "model": "gpt-5",
+  "status": "completed",
+  "output": [
+    {
+      "id": "fc_item_39",
+      "type": "function_call",
+      "name": "check_status",
+      "arguments": "{\"target\":\"prod\"}",
+      "call_id": "call_assoc_39",
+      "status": "completed"
+    }
+  ],
+  "usage": {
+    "input_tokens": 8,
+    "output_tokens": 3,
+    "total_tokens": 11
+  }
+}

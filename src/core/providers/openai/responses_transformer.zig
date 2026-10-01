@@ -16,6 +16,7 @@ const common = @import("types.zig");
 const content = @import("responses_content.zig");
 const log = @import("../../log.zig");
 const time = @import("../../time.zig");
+const utils = @import("../../utils.zig");
 
 // ============================================================================
 // Contract
@@ -566,6 +567,7 @@ pub fn transformChatStreamLine(
 pub const MessagesStreamState = struct {
     allocator: std.mem.Allocator,
     original_model: []const u8,
+    response_id: []const u8 = "",
     // finish_reason holds a string literal ("max_tokens" or "end_turn"), never duped.
     finish_reason: ?[]const u8 = null,
     input_tokens: u32 = 0,
@@ -580,6 +582,11 @@ pub const MessagesStreamState = struct {
     thinking_index: u32 = 0,
     text_index: u32 = 0,
     next_index: u32 = 0,
+// Tool-call tracking: call_id → content_block index for open tool_use blocks.
+// Keyed by the call_id string (borrowed from the parse arena — valid within
+// this call's scope); value is the block index emitted in content_block_start.
+    open_tool_calls: std.StringHashMapUnmanaged(u32) = .{},
+    tool_use_index: u32 = 0,
     /// terminal (message_delta + message_stop) emitted yet? Guards the post-loop
     /// finalize against double-emitting when response.completed already fired.
     finished: bool = false,
@@ -589,7 +596,10 @@ pub const MessagesStreamState = struct {
     }
 
     pub fn deinit(self: *MessagesStreamState) void {
-        _ = self; // finish_reason is a literal — no heap strings to free.
+        if (self.response_id.len > 0) self.allocator.free(self.response_id);
+        self.response_id = "";
+        // open_tool_calls keys/values are borrowed from parse arenas — no free needed.
+        self.open_tool_calls.deinit(self.allocator);
     }
 };
 
@@ -597,10 +607,11 @@ pub const MessagesStreamState = struct {
 ///
 /// Messages.Request fields mapped:
 ///   model (pinned), system → instructions (text: duped; blocks: joined+duped),
-///   messages (user/assistant, text content first match) → input[],
-///   stream, temperature, top_p, max_tokens → max_output_tokens, service_tier.
-/// Skipped: stop_sequences (Responses.Request has no stop field), tools,
-///   tool_choice, top_k, thinking, betas, metadata, output_config,
+///   messages (text/tool_use/tool_result blocks in order) → input[],
+///   stream, tools, tool_choice, parallel-tool preference, temperature, top_p,
+///   max_tokens → max_output_tokens, service_tier.
+/// Skipped: stop_sequences (Responses.Request has no stop field), top_k,
+///   thinking, betas, metadata, output_config,
 ///   cache_control, fallbacks, container, inference_geo
 ///   (no Responses.Request equivalent).
 pub fn transformMessagesRequest(
@@ -620,25 +631,64 @@ pub fn transformMessagesRequest(
             .assistant => "assistant",
             .system => continue,
         };
-        const text: []const u8 = switch (msg.content) {
-            .text => |t| t,
-            .blocks => |blocks| blk: {
-                for (blocks) |block| {
-                    switch (block) {
-                        .text => |tb| break :blk tb.text,
-                        else => {},
-                    }
+        switch (msg.content) {
+            .text => |text| {
+                if (text.len > 0) {
+                    const item = try content.messagesTextInputItem(role_str, text, allocator);
+                    input_items.append(allocator, item) catch |err| {
+                        content.freeInputItem(item, allocator);
+                        return err;
+                    };
                 }
-                break :blk "";
             },
-        };
-        if (text.len == 0) continue;
-
-        var obj: std.json.ObjectMap = .{};
-        errdefer obj.deinit(allocator);
-        try obj.put(allocator, try allocator.dupe(u8, "role"), .{ .string = try allocator.dupe(u8, role_str) });
-        try obj.put(allocator, try allocator.dupe(u8, "content"), .{ .string = try allocator.dupe(u8, text) });
-        try input_items.append(allocator, .{ .object = obj });
+            .blocks => |blocks| {
+                var text_parts: std.ArrayList([]const u8) = .empty;
+                defer text_parts.deinit(allocator);
+                for (blocks) |block| switch (block) {
+                    .text => |text_block| {
+                        if (text_block.text.len > 0) try text_parts.append(allocator, text_block.text);
+                    },
+                    .tool_use => |tool_use| {
+                        if (text_parts.items.len > 0) {
+                            const text_item = try content.messagesTextBlocksInputItem(role_str, text_parts.items, allocator);
+                            input_items.append(allocator, text_item) catch |err| {
+                                content.freeInputItem(text_item, allocator);
+                                return err;
+                            };
+                            text_parts.clearRetainingCapacity();
+                        }
+                        const item = try content.messagesToolUseInputItem(tool_use, allocator);
+                        input_items.append(allocator, item) catch |err| {
+                            content.freeInputItem(item, allocator);
+                            return err;
+                        };
+                    },
+                    .tool_result => |tool_result| {
+                        if (text_parts.items.len > 0) {
+                            const text_item = try content.messagesTextBlocksInputItem(role_str, text_parts.items, allocator);
+                            input_items.append(allocator, text_item) catch |err| {
+                                content.freeInputItem(text_item, allocator);
+                                return err;
+                            };
+                            text_parts.clearRetainingCapacity();
+                        }
+                        const item = try content.messagesToolResultInputItem(tool_result, allocator);
+                        input_items.append(allocator, item) catch |err| {
+                            content.freeInputItem(item, allocator);
+                            return err;
+                        };
+                    },
+                    else => {},
+                };
+                if (text_parts.items.len > 0) {
+                    const item = try content.messagesTextBlocksInputItem(role_str, text_parts.items, allocator);
+                    input_items.append(allocator, item) catch |err| {
+                        content.freeInputItem(item, allocator);
+                        return err;
+                    };
+                }
+            },
+        }
     }
 
     const instructions: ?[]const u8 = if (request.system) |sys| switch (sys) {
@@ -652,6 +702,50 @@ pub fn transformMessagesRequest(
     } else null;
     errdefer if (instructions) |s| allocator.free(s);
 
+    const tools: ?[]const Responses.Tool = if (request.tools) |message_tools| blk: {
+        var response_tools: std.ArrayList(Responses.Tool) = .empty;
+        errdefer response_tools.deinit(allocator);
+        for (message_tools) |tool| {
+            if (!std.mem.eql(u8, tool.type, "custom")) continue;
+            const name = tool.name orelse continue;
+            try response_tools.append(allocator, .{ .function = .{ .function = .{
+                .name = name,
+                .description = tool.description,
+                .parameters = tool.input_schema,
+                .strict = tool.strict,
+            } } });
+        }
+        break :blk if (response_tools.items.len > 0)
+            try response_tools.toOwnedSlice(allocator)
+        else
+            null;
+    } else null;
+    errdefer if (tools) |response_tools| allocator.free(response_tools);
+
+    const tool_choice: ?std.json.Value = if (request.tool_choice) |choice| switch (choice) {
+        .auto => .{ .string = "auto" },
+        .any => .{ .string = "required" },
+        .none => .{ .string = "none" },
+        .tool => |named| blk: {
+            var object: std.json.ObjectMap = .{};
+            errdefer object.deinit(allocator);
+            try object.put(allocator, "type", .{ .string = "function" });
+            try object.put(allocator, "name", .{ .string = named.name });
+            break :blk .{ .object = object };
+        },
+    } else null;
+    errdefer if (tool_choice) |choice| if (choice == .object) {
+        var object = choice.object;
+        object.deinit(allocator);
+    };
+
+    const parallel_tool_calls: ?bool = if (request.tool_choice) |choice| switch (choice) {
+        .auto => |value| if (value.disable_parallel_tool_use) |disabled| !disabled else null,
+        .any => |value| if (value.disable_parallel_tool_use) |disabled| !disabled else null,
+        .tool => |value| if (value.disable_parallel_tool_use) |disabled| !disabled else null,
+        .none => null,
+    } else null;
+
     return .{
         .model = model,
         .input = .{ .items = try input_items.toOwnedSlice(allocator) },
@@ -662,9 +756,9 @@ pub fn transformMessagesRequest(
         .max_output_tokens = request.max_tokens,
         .service_tier = request.service_tier,
         .stream_options = null,
-        .tools = null,
-        .tool_choice = null,
-        .parallel_tool_calls = null,
+        .tools = tools,
+        .tool_choice = tool_choice,
+        .parallel_tool_calls = parallel_tool_calls,
         .reasoning = null,
         .reasoning_effort = null,
         .text = null,
@@ -688,8 +782,8 @@ pub fn transformMessagesRequest(
     };
 }
 
-/// Free what transformMessagesRequest allocated: instructions (duped), input
-/// item trees (keys+content duped), and the items slice.
+/// Free what transformMessagesRequest allocated: instructions, input item trees,
+/// tool array, and named tool-choice object.
 pub fn cleanupMessagesRequest(request: Responses.Request, allocator: std.mem.Allocator) void {
     if (request.instructions) |s| allocator.free(s);
     switch (request.input) {
@@ -699,6 +793,16 @@ pub fn cleanupMessagesRequest(request: Responses.Request, allocator: std.mem.All
         },
         .text => {},
     }
+    if (request.tools) |tools| allocator.free(tools);
+    if (request.tool_choice) |choice| if (choice == .object) {
+        // Use freeParsedJsonValue consistent with all other owned ObjectMaps in
+        // this file (preserves key-string cleanup if object ever moves to
+        // putOwnedString construction).
+        var object = choice.object;
+        var it = object.iterator();
+        while (it.next()) |_| {} // keys are currently literals — no strings to free
+        object.deinit(allocator);
+    };
 }
 
 /// Responses wire response → inbound messages response.
@@ -743,7 +847,7 @@ pub fn transformMessagesResponse(
             },
             .function_call => |f| try content_blocks.append(allocator, .{ .tool_use = .{
                 .type = "tool_use",
-                .id = try allocator.dupe(u8, f.id),
+                .id = try allocator.dupe(u8, if (f.call_id) |id| if (id.len > 0) id else f.id else f.id),
                 .name = try allocator.dupe(u8, f.name),
                 .input = try content.parseToolArguments(f.arguments, allocator),
             } }),
@@ -768,14 +872,23 @@ pub fn transformMessagesResponse(
         try content_blocks.append(allocator, .{ .text = .{ .type = "text", .text = try allocator.dupe(u8, "") } });
     }
 
+    const has_function_calls = for (upstream_response.output) |item| {
+        if (item == .function_call) break true;
+    } else false;
+
     const stop_reason: ?[]const u8 = if (std.mem.eql(u8, upstream_response.status, "incomplete"))
         "max_tokens"
     else if (std.mem.eql(u8, upstream_response.status, "failed"))
         "refusal"
+    else if (has_function_calls)
+        "tool_use"
     else
         "end_turn";
 
-    const owned_id = try allocator.dupe(u8, upstream_response.id);
+    const owned_id = if (upstream_response.id.len > 0)
+        try allocator.dupe(u8, upstream_response.id)
+    else
+        try utils.generateMessagesResponseId(allocator);
     errdefer allocator.free(owned_id);
     const owned_content = try content_blocks.toOwnedSlice(allocator);
     errdefer {
@@ -813,6 +926,45 @@ pub fn cleanupMessagesResponse(inbound_response: Messages.Response, allocator: s
     allocator.free(inbound_response.content);
 }
 
+fn captureMessagesResponseId(
+    obj: std.json.ObjectMap,
+    state: *MessagesStreamState,
+    allocator: std.mem.Allocator,
+) void {
+    if (state.response_id.len > 0) return;
+    const response = obj.get("response") orelse return;
+    if (response != .object) return;
+    const id = response.object.get("id") orelse return;
+    if (id != .string or id.string.len == 0) return;
+    state.response_id = allocator.dupe(u8, id.string) catch return;
+}
+
+fn ensureMessagesStarted(
+    state: *MessagesStreamState,
+    events: *std.ArrayList(Messages.SseEvent),
+    allocator: std.mem.Allocator,
+) bool {
+    if (state.sent_open) return true;
+    if (state.response_id.len == 0) {
+        state.response_id = utils.generateMessagesResponseId(allocator) catch return false;
+    }
+    events.append(allocator, .{ .message_start = .{
+        .type = "message_start",
+        .message = .{
+            .id = state.response_id,
+            .type = "message",
+            .role = "assistant",
+            .content = &.{},
+            .model = state.original_model,
+            .stop_reason = null,
+            .stop_sequence = null,
+            .usage = .{ .input_tokens = state.input_tokens, .output_tokens = 0 },
+        },
+    }}) catch return false;
+    state.sent_open = true;
+    return true;
+}
+
 /// One Responses SSE line → Messages.MessagesStreamLineResult (typed SseEvent slice).
 ///
 /// Synthesizes Anthropic SSE protocol from Responses events:
@@ -840,6 +992,8 @@ pub fn transformMessagesStreamLine(
     const obj = parsed.value.object;
 
     const event_type = if (obj.get("type")) |t| (if (t == .string) t.string else return .{ .skip = {} }) else return .{ .skip = {} };
+
+    captureMessagesResponseId(obj, state, allocator);
 
     var events: std.ArrayList(Messages.SseEvent) = .empty;
     defer events.deinit(allocator);
@@ -886,22 +1040,7 @@ pub fn transformMessagesStreamLine(
         const delta_v = obj.get("delta") orelse return .{ .skip = {} };
         if (delta_v != .string or delta_v.string.len == 0) return .{ .skip = {} };
 
-        if (!state.sent_open) {
-            events.append(allocator, .{ .message_start = .{
-                .type = "message_start",
-                .message = .{
-                    .id = "msg_proxy",
-                    .type = "message",
-                    .role = "assistant",
-                    .content = &.{},
-                    .model = state.original_model,
-                    .stop_reason = null,
-                    .stop_sequence = null,
-                    .usage = .{ .input_tokens = state.input_tokens, .output_tokens = 0 },
-                },
-            }}) catch return .{ .skip = {} };
-            state.sent_open = true;
-        }
+        if (!ensureMessagesStarted(state, &events, allocator)) return .{ .skip = {} };
         // Open the thinking block on first reasoning delta (index 0).
         if (state.open_block != .thinking) {
             state.thinking_index = state.next_index;
@@ -930,22 +1069,7 @@ pub fn transformMessagesStreamLine(
         const delta_v = obj.get("delta") orelse return .{ .skip = {} };
         if (delta_v != .string or delta_v.string.len == 0) return .{ .skip = {} };
 
-        if (!state.sent_open) {
-            events.append(allocator, .{ .message_start = .{
-                .type = "message_start",
-                .message = .{
-                    .id = "msg_proxy",
-                    .type = "message",
-                    .role = "assistant",
-                    .content = &.{},
-                    .model = state.original_model,
-                    .stop_reason = null,
-                    .stop_sequence = null,
-                    .usage = .{ .input_tokens = state.input_tokens, .output_tokens = 0 },
-                },
-            }}) catch return .{ .skip = {} };
-            state.sent_open = true;
-        }
+        if (!ensureMessagesStarted(state, &events, allocator)) return .{ .skip = {} };
         // Close a preceding thinking block, then open the text block (once).
         if (state.open_block == .thinking) {
             events.append(allocator, .{ .content_block_stop = .{
@@ -978,6 +1102,24 @@ pub fn transformMessagesStreamLine(
         return .{ .events = events.toOwnedSlice(allocator) catch return .{ .skip = {} } };
     }
 
+    // Function-call streaming events: output_item.added opens a tool_use block;
+    // function_call_arguments.delta streams partial JSON; .done closes the block.
+    if (std.mem.eql(u8, event_type, "response.output_item.added")) {
+        handleFunctionCallAdded(obj, state, &events, allocator);
+        if (events.items.len == 0) return .{ .skip = {} };
+        return .{ .events = events.toOwnedSlice(allocator) catch return .{ .skip = {} } };
+    }
+    if (std.mem.eql(u8, event_type, "response.function_call_arguments.delta")) {
+        handleFunctionCallArgumentsDelta(obj, state, &events, allocator);
+        if (events.items.len == 0) return .{ .skip = {} };
+        return .{ .events = events.toOwnedSlice(allocator) catch return .{ .skip = {} } };
+    }
+    if (std.mem.eql(u8, event_type, "response.function_call_arguments.done")) {
+        handleFunctionCallArgumentsDone(obj, state, &events, allocator);
+        if (events.items.len == 0) return .{ .skip = {} };
+        return .{ .events = events.toOwnedSlice(allocator) catch return .{ .skip = {} } };
+    }
+
     if (std.mem.eql(u8, event_type, "error")) {
         const msg_v = obj.get("message") orelse return .{ .skip = {} };
         if (msg_v != .string) return .{ .skip = {} };
@@ -1007,19 +1149,7 @@ fn finishMessagesStream(
 
     // Lazy open: a stream that produced no deltas still closes correctly.
     if (!state.sent_open) {
-        events.append(allocator, .{ .message_start = .{
-            .type = "message_start",
-            .message = .{
-                .id = "msg_proxy",
-                .type = "message",
-                .role = "assistant",
-                .content = &.{},
-                .model = state.original_model,
-                .stop_reason = null,
-                .stop_sequence = null,
-                .usage = .{ .input_tokens = state.input_tokens, .output_tokens = 0 },
-            },
-        }}) catch return;
+        if (!ensureMessagesStarted(state, events, allocator)) return;
         events.append(allocator, .{ .content_block_start = .{
             .type = "content_block_start",
             .index = 0,
@@ -1031,14 +1161,21 @@ fn finishMessagesStream(
     }
 
     const stop_reason = state.finish_reason orelse "end_turn";
-    const close_index: u32 = switch (state.open_block) {
-        .none, .text => state.text_index,
-        .thinking => state.thinking_index,
-    };
-    events.append(allocator, .{ .content_block_stop = .{
-        .type = "content_block_stop", .index = close_index,
-    }}) catch return;
-    state.open_block = .none;
+
+    // Only emit content_block_stop when a block is genuinely open. Tool-use
+    // blocks are closed individually by handleFunctionCallArgumentsDone, so
+    // open_block will be .none when the stream ends with tool calls.
+    if (state.open_block != .none) {
+        const close_index: u32 = switch (state.open_block) {
+            .none => unreachable,
+            .text => state.text_index,
+            .thinking => state.thinking_index,
+        };
+        events.append(allocator, .{ .content_block_stop = .{
+            .type = "content_block_stop", .index = close_index,
+        }}) catch return;
+        state.open_block = .none;
+    }
     events.append(allocator, .{ .message_delta = .{
         .type = "message_delta",
         .delta = .{ .stop_reason = stop_reason, .stop_sequence = null },
@@ -1049,6 +1186,93 @@ fn finishMessagesStream(
         },
     }}) catch return;
     events.append(allocator, .{ .message_stop = .{ .type = "message_stop" } }) catch return;
+}
+
+fn handleFunctionCallAdded(
+    obj: std.json.ObjectMap,
+    state: *MessagesStreamState,
+    events: *std.ArrayList(Messages.SseEvent),
+    allocator: std.mem.Allocator,
+) void {
+    // response.output_item.added: {item: {type:"function_call", call_id, name, ...}}
+    const item = obj.get("item") orelse return;
+    if (item != .object) return;
+    const type_v = item.object.get("type") orelse return;
+    if (type_v != .string or !std.mem.eql(u8, type_v.string, "function_call")) return;
+
+    const call_id_v = item.object.get("call_id") orelse return;
+    if (call_id_v != .string or call_id_v.string.len == 0) return;
+    const name_v = item.object.get("name") orelse return;
+    if (name_v != .string) return;
+
+    if (!ensureMessagesStarted(state, events, allocator)) return;
+
+    const idx = state.next_index;
+    state.next_index += 1;
+    state.tool_use_index = idx;
+
+    const owned_call_id = allocator.dupe(u8, call_id_v.string) catch return;
+    const owned_name = allocator.dupe(u8, name_v.string) catch {
+        allocator.free(owned_call_id);
+        return;
+    };
+    events.append(allocator, .{ .content_block_start = .{
+        .type = "content_block_start",
+        .index = idx,
+        .content_block = .{ .type = "tool_use", .id = owned_call_id, .name = owned_name },
+    }}) catch {
+        allocator.free(owned_call_id);
+        allocator.free(owned_name);
+        return;
+    };
+
+    // Store call_id → block index; key borrows from parse arena (valid for this event's scope).
+    // We dupe it for storage since the parse arena is freed after the function returns.
+    state.open_tool_calls.put(allocator, owned_call_id, idx) catch {};
+}
+
+fn handleFunctionCallArgumentsDelta(
+    obj: std.json.ObjectMap,
+    state: *MessagesStreamState,
+    events: *std.ArrayList(Messages.SseEvent),
+    allocator: std.mem.Allocator,
+) void {
+    const call_id_v = obj.get("call_id") orelse return;
+    if (call_id_v != .string or call_id_v.string.len == 0) return;
+    const delta_v = obj.get("delta") orelse return;
+    if (delta_v != .string or delta_v.string.len == 0) return;
+
+    const idx = state.open_tool_calls.get(call_id_v.string) orelse state.tool_use_index;
+
+    const owned_delta = allocator.dupe(u8, delta_v.string) catch return;
+    events.append(allocator, .{ .content_block_delta = .{
+        .type = "content_block_delta",
+        .index = idx,
+        .delta = .{ .type = "input_json_delta", .partial_json = owned_delta },
+    }}) catch {
+        allocator.free(owned_delta);
+    };
+}
+
+fn handleFunctionCallArgumentsDone(
+    obj: std.json.ObjectMap,
+    state: *MessagesStreamState,
+    events: *std.ArrayList(Messages.SseEvent),
+    allocator: std.mem.Allocator,
+) void {
+    const call_id_v = obj.get("call_id") orelse return;
+    if (call_id_v != .string or call_id_v.string.len == 0) return;
+
+    const idx = state.open_tool_calls.get(call_id_v.string) orelse state.tool_use_index;
+    _ = state.open_tool_calls.remove(call_id_v.string);
+
+    events.append(allocator, .{ .content_block_stop = .{
+        .type = "content_block_stop",
+        .index = idx,
+    }}) catch {};
+
+    // Mark finish reason as tool_use when at least one call has been received.
+    state.finish_reason = "tool_use";
 }
 
 /// Terminal flush when the stream ends without a response.completed event
