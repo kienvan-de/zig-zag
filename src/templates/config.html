@@ -73,59 +73,68 @@ body{
 }
 .unsaved-banner .save-btn:hover{opacity:.9;box-shadow:0 2px 16px var(--accent-glow)}
 
-/* ── Top bar ────────────────────────────────────────── */
-.topbar{
-  position:sticky;
-  top:0;
-  z-index:100;
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  padding:8px 20px;
-  background:rgba(8,8,16,0.75);
-  backdrop-filter:blur(20px) saturate(1.4);
-  -webkit-backdrop-filter:blur(20px) saturate(1.4);
-  border-bottom:1px solid var(--border);
-}
-.topbar-title{
-  display:flex;
-  align-items:center;
-  gap:10px;
-  font-size:15px;
-  font-weight:600;
-  letter-spacing:.3px;
-  color:var(--text);
-}
-.topbar-title img{
-  width:24px;
-  height:24px;
-  border-radius:5px;
-}
-.topbar-title .name{color:var(--accent)}
-.topbar-title .sep{color:var(--text-muted);font-weight:400;margin:0 1px}
+/* ── Top bar (removed) ──────────────────────────────── */
+.topbar{display:none}
 
 /* ── Layout ─────────────────────────────────────────── */
 .layout{
   display:flex;
-  height:calc(100vh - 41px);
+  align-items:flex-start;
+  height:100vh;
+  padding:10px;
+  gap:10px;
 }
 .unsaved-banner.visible ~ .layout{
-  height:calc(100vh - 41px - 37px);
+  height:calc(100vh - 37px);
 }
 
 /* ── Sidebar ────────────────────────────────────────── */
 .sidebar{
   width:var(--sidebar-w);
   min-width:var(--sidebar-w);
-  background:rgba(255,255,255,0.025);
-  backdrop-filter:blur(16px);
-  -webkit-backdrop-filter:blur(16px);
-  border-right:1px solid var(--border);
+  background:rgba(255,255,255,0.035);
+  backdrop-filter:blur(24px) saturate(1.5);
+  -webkit-backdrop-filter:blur(24px) saturate(1.5);
+  border:1px solid rgba(255,255,255,0.09);
+  border-radius:14px;
   overflow-y:auto;
-  padding:12px 0;
+  overflow-x:hidden;
+  padding:0 0 12px;
   display:flex;
   flex-direction:column;
   gap:4px;
+  box-shadow:0 4px 32px rgba(0,0,0,0.28),inset 0 1px 0 rgba(255,255,255,0.06);
+  flex-shrink:0;
+  align-self:flex-start;
+}
+
+/* ── Sidebar logo / branding ────────────────────────── */
+.sidebar-brand{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  padding:16px 18px 14px;
+  border-bottom:1px solid rgba(255,255,255,0.07);
+  margin-bottom:8px;
+  flex-shrink:0;
+  border-radius:14px 14px 0 0;
+}
+.sidebar-brand img{
+  width:24px;
+  height:24px;
+  border-radius:5px;
+  flex-shrink:0;
+}
+.sidebar-brand-name{
+  font-size:15px;
+  font-weight:600;
+  letter-spacing:.3px;
+  color:var(--accent);
+}
+.sidebar-brand-sub{
+  font-size:11px;
+  color:var(--text-muted);
+  font-weight:400;
 }
 
 .sidebar-section{padding:0 10px;margin-bottom:4px}
@@ -229,22 +238,31 @@ body{
 
 .sidebar-divider{
   height:1px;
-  background:var(--border);
-  margin:8px 18px;
+  margin:8px 14px;
+  background:linear-gradient(
+    to right,
+    transparent 0%,
+    var(--accent) 25%,
+    var(--accent) 75%,
+    transparent 100%
+  );
+  opacity:0.3;
+  border:none;
+  box-shadow:0 0 6px 1px var(--accent-glow);
 }
 
 /* ── Main panel ─────────────────────────────────────── */
 .main-panel{
   flex:1;
+  min-width:0;
   overflow-y:auto;
-  padding:32px 48px;
+  padding:0 0 32px;
   background:transparent;
   display:flex;
-  justify-content:center;
+  align-self:flex-start;
 }
 
 .panel{
-  max-width:720px;
   width:100%;
   background:rgba(255,255,255,0.03);
   border:1px solid var(--border);
@@ -289,6 +307,11 @@ body{
 }
 .cost-chart-wrap{
   overflow-x:auto;
+}
+#cost-chart-yaxis,
+#cost-chart,
+#cost-chart-legend{
+  max-height:140px;
 }
 @media (prefers-color-scheme:light){
   .cost-progress-track{ background:rgba(0,0,0,0.08); }
@@ -348,9 +371,13 @@ body{
   font-size:15px;
 }
 .panel-placeholder::before{
-  content:"⚙";
-  font-size:32px;
+  content:"";
+  display:block;
+  width:32px;height:32px;
+  background:url('https://unpkg.com/lucide-static@latest/icons/settings.svg') no-repeat center/contain;
+  filter:invert(1);
   opacity:.2;
+  margin:0 auto 8px;
 }
 
 /* ── Form primitives ────────────────────────────────── */
@@ -691,17 +718,18 @@ body{
 
 /* ── Responsive: sidebar collapses to top nav ───────── */
 @media(max-width:700px){
-  .layout{flex-direction:column;height:auto;min-height:calc(100vh - 41px)}
+  .layout{flex-direction:column;height:auto;min-height:100vh;padding:8px;gap:8px}
   .sidebar{
     width:100%;
     min-width:100%;
+    border-radius:12px;
+    margin:0;
     flex-direction:row;
     overflow-x:auto;
     overflow-y:hidden;
-    border-right:none;
-    border-bottom:1px solid var(--border);
     padding:8px 12px;
     gap:6px;
+    box-shadow:none;
   }
   .sidebar-section{
     display:flex;
@@ -713,8 +741,10 @@ body{
   .sidebar-divider{
     width:1px;
     height:auto;
-    margin:0 4px;
+    margin:4px 4px;
     min-height:28px;
+    background:linear-gradient(to bottom,transparent 0%,var(--accent) 25%,var(--accent) 75%,transparent 100%);
+    box-shadow:none;
   }
   .nav-item{
     white-space:nowrap;
@@ -754,9 +784,9 @@ body{
       radial-gradient(ellipse 80% 50% at 20% 0%,rgba(92,110,240,0.06) 0%,transparent 60%),
       radial-gradient(ellipse 60% 40% at 80% 100%,rgba(26,158,116,0.04) 0%,transparent 60%);
   }
-  .topbar{background:rgba(240,240,248,0.85)}
-  .topbar-title img{background:#1a1a2e;padding:3px}
-  .sidebar{background:rgba(255,255,255,0.5)}
+  .topbar{display:none}
+  .sidebar-brand img{background:#1a1a2e;padding:3px}
+  .sidebar{background:rgba(255,255,255,0.6);border-color:rgba(0,0,0,0.1);box-shadow:0 4px 32px rgba(0,0,0,0.1)}
   .unsaved-banner{
     background:rgba(184,124,0,0.07);
     border-bottom-color:rgba(184,124,0,0.2);
@@ -777,62 +807,158 @@ body{
     color:var(--text);
   }
 }
+/* ── Provider / group card grid ─────────────────────── */
+.card-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px;padding:0}
+.provider-card{
+  display:flex;align-items:center;gap:12px;
+  padding:14px 16px;
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:var(--radius-lg);
+  cursor:pointer;
+  transition:background var(--transition),border-color var(--transition),box-shadow var(--transition);
+  user-select:none;position:relative;
+}
+.provider-card:hover{background:var(--surface-alt);border-color:var(--border-hover);box-shadow:0 2px 16px rgba(0,0,0,0.18)}
+.provider-card.active{border-color:var(--accent);box-shadow:0 0 0 1px rgba(123,140,255,0.3),0 2px 16px rgba(123,140,255,0.12)}
+.provider-card-logo{
+  width:36px;height:36px;border-radius:8px;flex-shrink:0;
+  background:rgba(255,255,255,0.06);
+  display:flex;align-items:center;justify-content:center;overflow:hidden;
+}
+.provider-card-logo img{width:24px;height:24px;object-fit:contain;opacity:.92}
+.provider-card-logo .card-initial{font-size:15px;font-weight:700;color:var(--accent)}
+.provider-card-info{flex:1;min-width:0}
+.provider-card-name{font-size:13px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.provider-card-status{font-size:11px;margin-top:3px;display:flex;align-items:center;gap:5px}
+.provider-card-status.configured{color:var(--success)}
+.provider-card-status.authenticated{color:var(--success)}
+.provider-card-status.unauthenticated{color:var(--warning)}
+.provider-card-status.not-configured{color:var(--text-muted)}
+.status-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0;background:currentColor}
+.add-card{
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;
+  padding:14px 16px;min-height:72px;
+  border:1.5px dashed rgba(123,140,255,0.35);
+  border-radius:var(--radius-lg);
+  cursor:pointer;color:var(--accent);
+  background:none;width:100%;
+  font-size:13px;font-weight:500;font-family:var(--font);
+  transition:border-color var(--transition),box-shadow var(--transition),background var(--transition);
+}
+.add-card:hover{border-color:var(--accent);box-shadow:0 0 8px rgba(123,140,255,0.15);background:rgba(123,140,255,0.04)}
+.add-card-icon{font-size:22px;line-height:1}
+/* ── Smart routing group card ────────────────────────── */
+.sr-card{
+  display:flex;align-items:center;gap:12px;
+  padding:14px 16px;
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:var(--radius-lg);
+  cursor:pointer;
+  transition:background var(--transition),border-color var(--transition),box-shadow var(--transition);
+  user-select:none;
+}
+.sr-card:hover{background:var(--surface-alt);border-color:var(--border-hover);box-shadow:0 2px 16px rgba(0,0,0,0.18)}
+.sr-card.active{border-color:var(--accent);box-shadow:0 0 0 1px rgba(123,140,255,0.3)}
+.sr-card-info{flex:1;min-width:0}
+.sr-card-name{font-size:13px;font-weight:600;color:var(--text)}
+.sr-card-key{
+  font-size:11px;font-family:var(--mono);color:var(--text-muted);margin-top:3px;
+  cursor:pointer;transition:color var(--transition);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.sr-card-key:hover{color:var(--accent)}
+.sr-card-badge{font-size:10px;font-weight:600;padding:2px 7px;border-radius:4px;flex-shrink:0;}
+.sr-card-badge.enabled{background:rgba(78,204,163,0.12);color:var(--success)}
+.sr-card-badge.disabled{background:rgba(255,255,255,0.06);color:var(--text-muted)}
+/* ── Form nav (Save/Cancel bar inside provider/group form) */
+.form-nav{display:flex;align-items:center;justify-content:center;gap:10px;padding:14px 0 2px;border-top:1px solid var(--border);margin-top:20px;}
+/* ── Nav item icons ─────────────────────────────────── */
+.nav-icon{
+  width:15px;height:15px;flex-shrink:0;
+  filter:invert(1) opacity(0.55);
+  display:inline-block;vertical-align:middle;
+}
+.nav-item.active .nav-icon{filter:invert(1) opacity(0.9) drop-shadow(0 0 3px rgba(123,140,255,0.6))}
+.nav-item:hover .nav-icon{filter:invert(1) opacity(0.8)}
+/* ── Glass modal (unsaved-changes warning) ──────────── */
+.modal-backdrop{
+  position:fixed;inset:0;z-index:1000;
+  background:rgba(0,0,0,0.55);
+  backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);
+  display:flex;align-items:center;justify-content:center;
+}
+.modal-box{
+  background:var(--surface-solid);
+  border:1px solid var(--border);
+  border-radius:var(--radius-lg);
+  padding:28px 28px 22px;
+  max-width:380px;width:100%;
+  box-shadow:0 8px 40px rgba(0,0,0,0.45),inset 0 1px 0 rgba(255,255,255,0.06);
+}
+.modal-title{font-size:16px;font-weight:600;margin-bottom:10px}
+.modal-body{font-size:13px;color:var(--text-muted);margin-bottom:20px;line-height:1.6}
+.modal-actions{display:flex;gap:10px;justify-content:flex-end}
 </style>
 </head>
 <body>
 
 <!-- Unsaved changes banner -->
 <div class="unsaved-banner" id="unsaved-banner">
-  <span>⚠ You have unsaved changes</span>
+  <span style="display:flex;align-items:center;gap:7px;"><img src="https://unpkg.com/lucide-static@latest/icons/triangle-alert.svg" style="width:14px;height:14px;vertical-align:middle;filter:invert(1);opacity:.9" alt=""> You have unsaved changes</span>
   <button class="save-btn" id="save-btn-banner">Save</button>
-</div>
-
-<!-- Top bar -->
-<div class="topbar">
-  <div class="topbar-title"><img src="data:image/png;base64,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" alt="zig-zag"><span class="name">zig-zag</span><span class="sep"> config</span></div>
-  <button class="btn btn-primary" id="save-btn">Save</button>
 </div>
 
 <!-- Two-column layout -->
 <div class="layout">
   <!-- Sidebar -->
   <nav class="sidebar" id="sidebar">
-    <!-- Providers section -->
-    <div class="sidebar-section" id="sidebar-providers">
-      <div class="section-title">Providers</div>
-      <!-- nav-items rendered by JS -->
+    <div class="sidebar-brand">
+      <img src="data:image/png;base64,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" alt="zig-zag">
+      <div><div class="sidebar-brand-name">zig-zag</div></div>
     </div>
     <div class="sidebar-section">
-      <button class="nav-add" id="add-provider-btn">+ Add provider</button>
+      <div class="section-title">LLMs</div>
+      <div class="nav-item" data-type="providers-grid" data-key="providers">
+        <div class="nav-item-content">
+          <img class="nav-icon" src="https://unpkg.com/lucide-static@latest/icons/plug.svg" alt="">
+          <span class="nav-item-label">Providers</span>
+        </div>
+      </div>
+      <div class="nav-item" data-type="smart-routing-grid" data-key="smart-routing">
+        <div class="nav-item-content">
+          <img class="nav-icon" src="https://unpkg.com/lucide-static@latest/icons/git-branch.svg" alt="">
+          <span class="nav-item-label">Routing</span>
+        </div>
+      </div>
     </div>
-
     <div class="sidebar-divider"></div>
-
-    <!-- Smart Routing section -->
-    <div class="sidebar-section" id="sidebar-smart-routing">
-      <div class="section-title">Smart Routing</div>
-      <!-- nav-items rendered by JS -->
-    </div>
-    <div class="sidebar-section">
-      <button class="nav-add" id="add-route-btn">+ Add group</button>
-    </div>
-
-    <div class="sidebar-divider"></div>
-
-    <!-- Settings section -->
     <div class="sidebar-section" id="sidebar-settings">
       <div class="section-title">Settings</div>
       <div class="nav-item" data-type="settings" data-key="server">
-        <div class="nav-item-content"><span class="nav-item-label">Server</span></div>
+        <div class="nav-item-content">
+          <img class="nav-icon" src="https://unpkg.com/lucide-static@latest/icons/server.svg" alt="">
+          <span class="nav-item-label">Server</span>
+        </div>
       </div>
       <div class="nav-item" data-type="settings" data-key="logging">
-        <div class="nav-item-content"><span class="nav-item-label">Logging</span></div>
+        <div class="nav-item-content">
+          <img class="nav-icon" src="https://unpkg.com/lucide-static@latest/icons/scroll-text.svg" alt="">
+          <span class="nav-item-label">Logs</span>
+        </div>
       </div>
       <div class="nav-item" data-type="settings" data-key="statistics">
-        <div class="nav-item-content"><span class="nav-item-label">Statistics</span></div>
+        <div class="nav-item-content">
+          <img class="nav-icon" src="https://unpkg.com/lucide-static@latest/icons/bar-chart-2.svg" alt="">
+          <span class="nav-item-label">Stats</span>
+        </div>
       </div>
       <div class="nav-item" data-type="settings" data-key="cost_controls">
-        <div class="nav-item-content"><span class="nav-item-label">Cost Controls</span></div>
+        <div class="nav-item-content">
+          <img class="nav-icon" src="https://unpkg.com/lucide-static@latest/icons/wallet.svg" alt="">
+          <span class="nav-item-label">Budget</span>
+        </div>
       </div>
     </div>
   </nav>
@@ -854,7 +980,8 @@ const state = {
   hasUnsaved: false, // true when dirty !== config
   activeType: null,  // 'provider' | 'settings' | 'add-provider' | 'smart-routing' | 'add-route'
   activeKey: null,   // provider key, settings section name, or smart_routing group index (number)
-  modelsCache: null, // cached list of model ids from GET /v1/models
+  modelsCache: null,
+  formDraft: null, // cached list of model ids from GET /v1/models
 };
 
 /* ── Deep clone / deep equal helpers ────────────────── */
@@ -874,15 +1001,10 @@ function deepEqual(a, b) {
 /* ── DOM refs ───────────────────────────────────────── */
 const $banner     = document.getElementById('unsaved-banner');
 const $saveBanner = document.getElementById('save-btn-banner');
-const $saveBtn    = document.getElementById('save-btn');
 const $sidebar    = document.getElementById('sidebar');
-const $providers     = document.getElementById('sidebar-providers');
 const $settings      = document.getElementById('sidebar-settings');
-const $smartRouting  = document.getElementById('sidebar-smart-routing');
 const $mainPanel     = document.getElementById('main-panel');
 const $toasts        = document.getElementById('toast-container');
-const $addBtn        = document.getElementById('add-provider-btn');
-const $addRouteBtn   = document.getElementById('add-route-btn');
 
 /* ── Config load / save ─────────────────────────────── */
 async function loadConfig() {
@@ -942,6 +1064,26 @@ function showToast(msg, type) {
   }, 3000);
 }
 
+/* ── Unsaved-nav warning modal ─────────────────────── */
+function confirmDiscard(onConfirm) {
+  var backdrop = document.createElement('div');
+  backdrop.className = 'modal-backdrop';
+  backdrop.innerHTML =
+    '<div class="modal-box">' +
+    '<div class="modal-title" style="display:flex;align-items:center;gap:8px;"><img src="https://unpkg.com/lucide-static@latest/icons/triangle-alert.svg" style="width:16px;height:16px;filter:invert(1)" alt=""> Unsaved changes</div>' +
+    '<div class="modal-body">You have unsaved changes in this form. Discard them and continue?</div>' +
+    '<div class="modal-actions">' +
+    '<button class="btn btn-ghost" id="modal-cancel">Keep editing</button>' +
+    '<button class="btn btn-danger" id="modal-discard">Discard changes</button>' +
+    '</div></div>';
+  document.body.appendChild(backdrop);
+  document.getElementById('modal-cancel').addEventListener('click', function () { backdrop.remove(); });
+  document.getElementById('modal-discard').addEventListener('click', function () { backdrop.remove(); onConfirm(); });
+}
+
+function hasFormDraft() { return !!state.formDraft; }
+function clearFormDraft() { state.formDraft = null; }
+
 /* ── Provider type detection ────────────────────────── */
 function detectProviderType(key, obj) {
   if (!obj || typeof obj !== 'object') return 'unknown';
@@ -962,63 +1104,16 @@ function detectProviderType(key, obj) {
 
 /* ── Sidebar rendering ──────────────────────────────── */
 function renderSidebar() {
-  // Clear existing provider nav items (keep the section title)
-  var existing = $providers.querySelectorAll('.nav-item');
-  existing.forEach(function (el) { el.remove(); });
-
-  // Build provider cards
-  var providers = (state.dirty && state.dirty.providers) || {};
-  Object.keys(providers).forEach(function (key) {
-    var obj = providers[key];
-    var type = detectProviderType(key, obj);
-
-    var item = document.createElement('div');
-    item.className = 'nav-item';
-    item.dataset.type = 'provider';
-    item.dataset.key = key;
-    if (state.activeType === 'provider' && state.activeKey === key) {
-      item.classList.add('active');
-    }
-
-    var content = document.createElement('div');
-    content.className = 'nav-item-content';
-
-    var label = document.createElement('span');
-    label.className = 'nav-item-label';
-    label.textContent = providerLabel(key);
-    content.appendChild(label);
-
-    var typeLabel = type === 'compatible' ? (obj.compatible || 'compat') : type;
-    item.title = typeLabel;
-
-    item.appendChild(content);
-
-    var del = document.createElement('button');
-    del.className = 'nav-delete';
-    del.textContent = '\u2715';
-    del.title = 'Remove ' + key;
-    del.addEventListener('click', function (e) {
-      e.stopPropagation();
-      deleteProvider(key);
-    });
-    item.appendChild(del);
-
-    item.addEventListener('click', function () {
-      selectItem('provider', key);
-    });
-
-    $providers.appendChild(item);
+  document.querySelectorAll('.nav-item').forEach(function(el) {
+    var t = el.dataset.type, k = el.dataset.key;
+    el.classList.toggle('active',
+      (t === state.activeType && k === String(state.activeKey)) ||
+      (state.activeType === 'provider' && t === 'providers-grid') ||
+      (state.activeType === 'add-provider' && t === 'providers-grid') ||
+      (state.activeType === 'smart-routing' && t === 'smart-routing-grid') ||
+      (state.activeType === 'add-route' && t === 'smart-routing-grid')
+    );
   });
-
-  // Re-highlight active if it's a settings item
-  if (state.activeType === 'settings') {
-    $settings.querySelectorAll('.nav-item').forEach(function (el) {
-      el.classList.toggle('active', el.dataset.key === state.activeKey);
-    });
-  }
-
-  // Render smart routing sidebar
-  renderSmartRoutingSidebar();
 }
 
 /* ── Delete provider ────────────────────────────────── */
@@ -1027,22 +1122,30 @@ function deleteProvider(key) {
   delete state.dirty.providers[key];
   markDirty();
   renderSidebar();
-  // If the deleted provider was active, clear the panel
   if (state.activeType === 'provider' && state.activeKey === key) {
-    state.activeType = null;
-    state.activeKey = null;
-    $mainPanel.innerHTML = '<div class="panel-placeholder">Select an item from the sidebar</div>';
+    clearFormDraft();
+    selectItem('providers-grid', 'providers');
   }
 }
 
 /* ── Add provider ───────────────────────────────────── */
-$addBtn.addEventListener('click', function () {
-  selectItem('add-provider', null);
-});
-
-$addRouteBtn.addEventListener('click', function () {
-  selectItem('add-route', null);
-});
+/* ── Pre-configured provider catalog ────────────────── */
+var PRECONFIGURED_PROVIDERS = [
+  { key: 'anthropic',       label: 'Anthropic',         native: true,  logo: 'https://raw.githubusercontent.com/pheralb/svgl/main/static/library/anthropic_white.svg',    schema_type: 'anthropic',       prefill: { api_url: 'https://api.anthropic.com' } },
+  { key: 'openai',          label: 'OpenAI',             native: true,  logo: 'https://raw.githubusercontent.com/pheralb/svgl/main/static/library/openai_dark.svg',       schema_type: 'openai',          prefill: { api_url: 'https://api.openai.com' } },
+  { key: 'copilot',         label: 'GitHub Copilot',     native: true,  logo: 'https://raw.githubusercontent.com/pheralb/svgl/main/static/library/copilot_dark.svg',schema_type: 'copilot',         prefill: {} },
+  { key: 'google_ai_studio',label: 'Google AI Studio',   native: true,  logo: 'https://raw.githubusercontent.com/pheralb/svgl/main/static/library/google.svg',       schema_type: 'google_ai_studio',prefill: {} },
+  { key: 'sap_ai_core',     label: 'SAP AI Core',        native: true,  logo: 'https://www.sap.com/favicon.ico',          schema_type: 'sap_ai_core',     prefill: {} },
+  { key: 'hai',             label: 'SAP Hyperspace AI',  native: true,  logo: 'https://www.sap.com/favicon.ico',          schema_type: 'hai',             prefill: {} },
+  { key: 'groq',            label: 'Groq',               native: false, logo: 'https://raw.githubusercontent.com/pheralb/svgl/main/static/library/groq.svg',         schema_type: 'compatible',      prefill: { compatible: 'openai', api_url: 'https://api.groq.com/openai', api_schema: 'legacy' } },
+  { key: 'cerebras',        label: 'Cerebras',           native: false, logo: 'https://raw.githubusercontent.com/pheralb/svgl/main/static/library/cerebras-dark.svg',   schema_type: 'compatible',      prefill: { compatible: 'openai', api_url: 'https://api.cerebras.ai', api_schema: 'legacy' } },
+  { key: 'mistral',         label: 'Mistral',            native: false, logo: 'https://raw.githubusercontent.com/pheralb/svgl/main/static/library/mistral-ai_logo.svg',      schema_type: 'compatible',      prefill: { compatible: 'openai', api_url: 'https://api.mistral.ai', api_schema: 'legacy' } },
+  { key: 'cohere',          label: 'Cohere',             native: false, logo: 'https://raw.githubusercontent.com/pheralb/svgl/main/static/library/cohere.svg',       schema_type: 'compatible',      prefill: { compatible: 'openai', api_url: 'https://api.cohere.ai/compatibility', api_schema: 'legacy' } },
+  { key: 'openrouter',      label: 'OpenRouter',         native: false, logo: 'https://raw.githubusercontent.com/pheralb/svgl/main/static/library/openrouter_dark.svg',       schema_type: 'compatible',      prefill: { compatible: 'openai', api_url: 'https://openrouter.ai/api', api_schema: 'legacy' } },
+  { key: 'nvidia_nim',      label: 'NVIDIA NIM',         native: false, logo: 'https://raw.githubusercontent.com/pheralb/svgl/main/static/library/nvidia-icon-dark.svg',       schema_type: 'compatible',      prefill: { compatible: 'openai', api_url: 'https://integrate.api.nvidia.com', api_schema: 'legacy' } },
+  { key: 'together_ai',     label: 'Together AI',        native: false, logo: 'https://raw.githubusercontent.com/pheralb/svgl/main/static/library/togetherai_dark.svg',      schema_type: 'compatible',      prefill: { compatible: 'openai', api_url: 'https://api.together.xyz', api_schema: 'legacy' } },
+  { key: 'fireworks_ai',    label: 'Fireworks AI',       native: false, logo: 'https://fireworks.ai/favicon.ico',    schema_type: 'compatible',      prefill: { compatible: 'openai', api_url: 'https://api.fireworks.ai/inference', api_schema: 'legacy' } },
+];
 
 /* ── Provider field schemas ─────────────────────────── */
 var PROVIDER_SCHEMAS = {
@@ -1175,7 +1278,7 @@ function renderHeaderRowHtml(row, idx) {
     '<input type="text" class="headers-value" data-header-part="value" data-header-idx="' + idx +
       '" placeholder="Value" value="' + escHtml(row.value) + '">' +
     '<button type="button" class="headers-remove" data-header-idx="' + idx +
-      '" title="Remove header">✕</button>' +
+      '" title="Remove header"><img src="https://unpkg.com/lucide-static@latest/icons/x.svg" style="width:12px;height:12px;filter:invert(1);opacity:.8" alt=""></button>' +
     '</div>';
 }
 
@@ -1252,7 +1355,7 @@ function renderFieldHtml(providerKey, field, value) {
     html += '<div class="secret-field">';
     html += '<input type="password" id="' + id + '" data-provider="' + escHtml(providerKey) +
       '" data-field="' + escHtml(field.name) + '" value="' + escHtml(val) + '"' + ph + '>';
-    html += '<button type="button" class="secret-toggle" data-target="' + id + '" title="Toggle visibility">\u{1F441}</button>';
+    html += '<button type="button" class="secret-toggle" data-target="' + id + '" title="Toggle visibility"><img src="https://unpkg.com/lucide-static@latest/icons/eye.svg" style="width:13px;height:13px;filter:invert(1);opacity:.8" alt=""></button>';
     html += '</div>';
   } else if (field.type === 'select') {
     html += '<select id="' + id + '" data-provider="' + escHtml(providerKey) +
@@ -1276,6 +1379,7 @@ function renderFieldHtml(providerKey, field, value) {
 
 /* ── Render provider form ───────────────────────────── */
 function renderProviderForm(key) {
+  state.formDraft = key;
   var obj = state.dirty.providers[key] || {};
   var type = detectProviderType(key, obj);
   var schema = PROVIDER_SCHEMAS[type];
@@ -1294,13 +1398,17 @@ function renderProviderForm(key) {
   var html = '<div class="panel"><div class="panel-header"><div>' +
     '<div class="panel-title">' + escHtml(providerLabel(key)) + '</div>' +
     '<div class="panel-subtitle">' + escHtml(subtitle) + '</div>' +
-    '</div></div><div class="panel-body">';
+    '</div>' +
+    '<button class="btn btn-danger" id="provider-delete-btn" style="flex-shrink:0;padding:6px 8px;" title="Delete provider">' +
+    '<img src="https://unpkg.com/lucide-static@latest/icons/x.svg" style="width:14px;height:14px;filter:invert(1);opacity:.9;display:block;" alt="">' +
+    '</button>' +
+    '</div><div class="panel-body">';
 
   // Auth section for providers with OAuth/OIDC flows
   if (type === 'copilot') {
     html += '<div id="copilot-auth-section">' +
       '<div class="status-badge unauthenticated" id="copilot-status-badge">' +
-      '\u26A0\uFE0F Status: loading\u2026</div>' +
+      '<img src="https://unpkg.com/lucide-static@latest/icons/triangle-alert.svg" style="width:13px;height:13px;vertical-align:middle;filter:invert(1) sepia(1) saturate(3) hue-rotate(10deg);opacity:.9" alt=""> Status: loading…</div>' +
       '<div id="copilot-device-flow" style="display:none;margin-top:12px;padding:12px;' +
       'background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg)">' +
       '<p style="margin-bottom:8px;font-size:13px">Visit <a id="copilot-verify-link" href="#" ' +
@@ -1311,9 +1419,9 @@ function renderProviderForm(key) {
       '<span class="spinner"></span> Waiting for authorization\u2026</div></div>' +
       '<div style="display:flex;gap:8px;margin-top:10px">' +
       '<button class="btn" id="copilot-auth-btn" style="display:none">' +
-      '\uD83D\uDD11 Authenticate with GitHub</button>' +
+      '<img src="https://unpkg.com/lucide-static@latest/icons/key-round.svg" style="width:13px;height:13px;vertical-align:middle;filter:invert(1);opacity:.85" alt=""> Authenticate with GitHub</button>' +
       '<button class="btn btn-danger" id="copilot-revoke-btn" style="display:none">' +
-      '\uD83D\uDDD1 Revoke</button></div></div>';
+      '<img src="https://unpkg.com/lucide-static@latest/icons/trash-2.svg" style="width:13px;height:13px;vertical-align:middle;filter:invert(1);opacity:.85" alt=""> Revoke</button></div></div>';
     // Copilot fields go into a collapsible advanced section
     html += '<div class="collapsible-header" id="copilot-advanced-toggle">' +
       '<span class="arrow">\u25B8</span> Advanced (optional)</div>';
@@ -1325,10 +1433,10 @@ function renderProviderForm(key) {
   } else if (type === 'sap_ai_core' || type === 'hai') {
     // Auth section for SAP AI Core and HAI
     var pid = type; // provider id for auth endpoints
-    var authLabel = type === 'sap_ai_core' ? '\uD83D\uDD11 Test Authentication' : '\uD83D\uDD11 Authenticate';
+    var authLabel = type === 'sap_ai_core' ? '<img src="https://unpkg.com/lucide-static@latest/icons/key-round.svg" style="width:13px;height:13px;vertical-align:middle;filter:invert(1);opacity:.85" alt=""> Test Authentication' : '<img src="https://unpkg.com/lucide-static@latest/icons/key-round.svg" style="width:13px;height:13px;vertical-align:middle;filter:invert(1);opacity:.85" alt=""> Authenticate';
     html += '<div id="' + pid + '-auth-section">' +
       '<div class="status-badge unauthenticated" id="' + pid + '-status-badge">' +
-      '\u26A0\uFE0F Status: loading\u2026</div>' +
+      '<img src="https://unpkg.com/lucide-static@latest/icons/triangle-alert.svg" style="width:13px;height:13px;vertical-align:middle;filter:invert(1) sepia(1) saturate(3) hue-rotate(10deg);opacity:.9" alt=""> Status: loading…</div>' +
       '<div id="' + pid + '-auth-progress" style="display:none;margin-top:12px;padding:12px;' +
       'background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg)">' +
       '<div style="display:flex;align-items:center;gap:8px;color:var(--text-muted);font-size:12px">' +
@@ -1338,7 +1446,7 @@ function renderProviderForm(key) {
       '<div style="display:flex;gap:8px;margin-top:10px">' +
       '<button class="btn" id="' + pid + '-auth-btn">' + authLabel + '</button>' +
       '<button class="btn btn-danger" id="' + pid + '-revoke-btn" style="display:none">' +
-      '\uD83D\uDDD1 Revoke</button></div></div>';
+      '<img src="https://unpkg.com/lucide-static@latest/icons/trash-2.svg" style="width:13px;height:13px;vertical-align:middle;filter:invert(1);opacity:.85" alt=""> Revoke</button></div></div>';
     // Render config fields below auth section
     for (var i = 0; i < schema.length; i++) {
       html += renderFieldHtml(key, schema[i], obj[schema[i].name]);
@@ -1357,6 +1465,11 @@ function renderProviderForm(key) {
 
   // Custom headers — common to every provider type, always last.
   html += renderHeadersEditorHtml(obj);
+
+  html += '<div class="form-nav">' +
+    '<button class="btn btn-primary" id="provider-form-save">Save</button>' +
+    '<button class="btn btn-ghost" id="provider-form-cancel">Cancel</button>' +
+    '</div>';
 
   html += '</div></div>';
   $mainPanel.innerHTML = html;
@@ -1389,7 +1502,9 @@ function renderProviderForm(key) {
       if (target) {
         var isPassword = target.type === 'password';
         target.type = isPassword ? 'text' : 'password';
-        btn.textContent = isPassword ? '\uD83D\uDE48' : '\uD83D\uDC41';
+        btn.innerHTML = isPassword
+          ? '<img src="https://unpkg.com/lucide-static@latest/icons/eye-off.svg" style="width:13px;height:13px;filter:invert(1);opacity:.8" alt="">'
+          : '<img src="https://unpkg.com/lucide-static@latest/icons/eye.svg" style="width:13px;height:13px;filter:invert(1);opacity:.8" alt="">';
       }
     });
   });
@@ -1431,6 +1546,34 @@ function renderProviderForm(key) {
       loadProviderAuthStatus(pid);
     })(type);
   }
+
+  // Per-form Save / Cancel / Delete
+  var $formSave = document.getElementById('provider-form-save');
+  var $formCancel = document.getElementById('provider-form-cancel');
+  var $formDelete = document.getElementById('provider-delete-btn');
+  if ($formSave) {
+    $formSave.addEventListener('click', function() {
+      saveConfig().then(function() { clearFormDraft(); selectItem('providers-grid', 'providers'); });
+    });
+  }
+  if ($formCancel) {
+    $formCancel.addEventListener('click', function() {
+      var saved = state.config.providers && state.config.providers[key];
+      if (saved) {
+        state.dirty.providers[key] = deepClone(saved);
+      } else {
+        delete state.dirty.providers[key];
+      }
+      markDirty();
+      clearFormDraft();
+      selectItem('providers-grid', 'providers');
+    });
+  }
+  if ($formDelete) {
+    $formDelete.addEventListener('click', function() {
+      deleteProvider(key);
+    });
+  }
 }
 
 /* ── Copilot auth ───────────────────────────────────── */
@@ -1439,11 +1582,11 @@ var copilotPollTimer = null;
 function updateCopilotBadge(status) {
   var badge = document.getElementById('copilot-status-badge');
   if (!badge) return;
-  var icon = status === 'unauthenticated' ? '\u26A0\uFE0F' : '\u2705';
+  var icon = status === 'unauthenticated' ? '<img src="https://unpkg.com/lucide-static@latest/icons/triangle-alert.svg" style="width:13px;height:13px;vertical-align:middle;filter:invert(1) sepia(1) saturate(3) hue-rotate(10deg);opacity:.9" alt="">' : '<img src="https://unpkg.com/lucide-static@latest/icons/circle-check.svg" style="width:13px;height:13px;vertical-align:middle;filter:invert(1);opacity:.9" alt="">';
   var label = status === 'authenticated' ? 'Authenticated' :
               status === 'configured' ? 'Configured (token on disk)' : 'Not authenticated';
   badge.className = 'status-badge ' + status;
-  badge.textContent = icon + ' ' + label;
+  badge.innerHTML = icon + ' ' + label;
 
   var authBtn = document.getElementById('copilot-auth-btn');
   var revokeBtn = document.getElementById('copilot-revoke-btn');
@@ -1501,7 +1644,7 @@ function startCopilotAuth() {
     }, 3000);
   }).catch(function (e) {
     showToast('Failed to start device flow: ' + e.message, 'error');
-    if (authBtn) { authBtn.disabled = false; authBtn.textContent = '\uD83D\uDD11 Authenticate with GitHub'; }
+    if (authBtn) { authBtn.disabled = false; authBtn.innerHTML = '<img src="https://unpkg.com/lucide-static@latest/icons/key-round.svg" style="width:13px;height:13px;vertical-align:middle;filter:invert(1);opacity:.85" alt=""> Authenticate with GitHub'; }
   });
 }
 
@@ -1525,10 +1668,10 @@ function revokeCopilotAuth() {
 function updateProviderBadge(pid, status) {
   var badge = document.getElementById(pid + '-status-badge');
   if (!badge) return;
-  var icon = status === 'unauthenticated' ? '\u26A0\uFE0F' : '\u2705';
+  var icon = status === 'unauthenticated' ? '<img src="https://unpkg.com/lucide-static@latest/icons/triangle-alert.svg" style="width:13px;height:13px;vertical-align:middle;filter:invert(1) sepia(1) saturate(3) hue-rotate(10deg);opacity:.9" alt="">' : '<img src="https://unpkg.com/lucide-static@latest/icons/circle-check.svg" style="width:13px;height:13px;vertical-align:middle;filter:invert(1);opacity:.9" alt="">';
   var label = status === 'authenticated' ? 'Authenticated' : 'Not authenticated';
   badge.className = 'status-badge ' + status;
-  badge.textContent = icon + ' ' + label;
+  badge.innerHTML = icon + ' ' + label;
 
   var authBtn = document.getElementById(pid + '-auth-btn');
   var revokeBtn = document.getElementById(pid + '-revoke-btn');
@@ -1537,9 +1680,9 @@ function updateProviderBadge(pid, status) {
   if (authBtn) {
     authBtn.disabled = false;
     if (pid === 'hai') {
-      authBtn.textContent = (status === 'authenticated') ? '\uD83D\uDD11 Re-authenticate' : '\uD83D\uDD11 Authenticate';
+      authBtn.innerHTML = (status === 'authenticated') ? '<img src="https://unpkg.com/lucide-static@latest/icons/key-round.svg" style="width:13px;height:13px;vertical-align:middle;filter:invert(1);opacity:.85" alt=""> Re-authenticate' : '<img src="https://unpkg.com/lucide-static@latest/icons/key-round.svg" style="width:13px;height:13px;vertical-align:middle;filter:invert(1);opacity:.85" alt=""> Authenticate';
     } else {
-      authBtn.textContent = '\uD83D\uDD11 Test Authentication';
+      authBtn.innerHTML = '<img src="https://unpkg.com/lucide-static@latest/icons/key-round.svg" style="width:13px;height:13px;vertical-align:middle;filter:invert(1);opacity:.85" alt=""> Test Authentication';
     }
   }
   // Hide progress
@@ -1595,28 +1738,33 @@ function revokeProviderAuth(pid) {
   });
 }
 
+/* ── Provider card status ───────────────────────────── */
+var _providerStatusCache = {};
+
+function fetchProviderCardStatus(key, type) {
+  var obj = (state.dirty && state.dirty.providers && state.dirty.providers[key]) || null;
+  if (!obj) return Promise.resolve('not-configured');
+  if (type === 'sap_ai_core' || type === 'hai' || type === 'copilot') {
+    var endpoint = '/v1/config/' + (type === 'copilot' ? 'copilot' : type) + '/auth';
+    return fetch(endpoint).then(function(r) { return r.ok ? r.json() : {status:'unauthenticated'}; })
+      .then(function(d) { return d.status || 'unauthenticated'; })
+      .catch(function() { return 'unauthenticated'; });
+  }
+  var schema = PROVIDER_SCHEMAS[type] || PROVIDER_SCHEMAS['compatible'];
+  var required = schema.filter(function(f) { return f.required; });
+  var allFilled = required.every(function(f) { return obj[f.name] && String(obj[f.name]).trim() !== ''; });
+  return Promise.resolve(allFilled ? 'configured' : 'unauthenticated');
+}
+
 /* ── Panel rendering ────────────────────────────────── */
 function renderPanel(type, key) {
-  if (type === 'add-provider') {
-    renderAddProviderPanel();
-    return;
-  }
-  if (type === 'provider') {
-    renderProviderForm(key);
-    return;
-  }
-  if (type === 'settings') {
-    renderSettingsPanel(key);
-    return;
-  }
-  if (type === 'smart-routing') {
-    renderSmartRoutingPanel(key);
-    return;
-  }
-  if (type === 'add-route') {
-    renderAddGroupPanel();
-    return;
-  }
+  if (type === 'providers-grid')     { renderProvidersGrid(); return; }
+  if (type === 'add-provider')       { renderAddProviderPanel(); return; }
+  if (type === 'provider')           { renderProviderForm(key); return; }
+  if (type === 'settings')           { renderSettingsPanel(key); return; }
+  if (type === 'smart-routing-grid') { renderSmartRoutingGrid(); return; }
+  if (type === 'smart-routing')      { renderSmartRoutingPanel(key); return; }
+  if (type === 'add-route')          { renderAddGroupPanel(); return; }
   $mainPanel.innerHTML = '<div class="panel-placeholder">Select an item from the sidebar</div>';
 }
 
@@ -1637,7 +1785,7 @@ var SETTINGS_SCHEMAS = {
     ],
   },
   logging: {
-    title: 'Logging',
+    title: 'Logs',
     subtitle: 'Log output and rotation settings',
     section: 'logging',
     fields: [
@@ -1651,7 +1799,7 @@ var SETTINGS_SCHEMAS = {
     ],
   },
   statistics: {
-    title: 'Statistics',
+    title: 'Stats',
     subtitle: 'Toggle stat rows in macOS menu bar',
     section: 'statistics',
     fields: [
@@ -1661,7 +1809,7 @@ var SETTINGS_SCHEMAS = {
     ],
   },
   cost_controls: {
-    title: 'Cost Controls',
+    title: 'Budget',
     subtitle: 'Budget limits and reset period',
     section: 'cost_controls',
     fields: [
@@ -1834,73 +1982,113 @@ function renderSettingsPanel(key) {
   }
 }
 
+/* ── Providers card grid ─────────────────────────────── */
+function renderProvidersGrid() {
+  var providers = (state.dirty && state.dirty.providers) || {};
+  var html = '<div class="panel"><div class="panel-header"><div>' +
+    '<div class="panel-title">Providers</div>' +
+    '<div class="panel-subtitle">Configure your AI provider connections</div>' +
+    '</div></div><div class="panel-body"><div class="card-grid" id="provider-card-grid">';
+  PRECONFIGURED_PROVIDERS.forEach(function(p) {
+    var active = state.activeType === 'provider' && state.activeKey === p.key;
+    var isConfigured = !!providers[p.key];
+    html += '<div class="provider-card' + (active ? ' active' : '') + '" data-provider-key="' + escHtml(p.key) + '">' +
+      '<div class="provider-card-logo"><img src="' + escHtml(p.logo) + '" alt="' + escHtml(p.label) + '" ' +
+      'onerror="this.parentNode.innerHTML=\'<span class=card-initial>' + escHtml(p.label[0]) + '</span>\'"></div>' +
+      '<div class="provider-card-info">' +
+      '<div class="provider-card-name">' + escHtml(p.label) + '</div>' +
+      '<div class="provider-card-status not-configured" id="card-status-' + escHtml(p.key) + '">' +
+      '<span class="status-dot"></span><span>' + (isConfigured ? 'Checking…' : 'Not configured') + '</span>' +
+      '</div></div></div>';
+  });
+  Object.keys(providers).forEach(function(key) {
+    var isPre = PRECONFIGURED_PROVIDERS.some(function(p) { return p.key === key; });
+    if (isPre) return;
+    var active = state.activeType === 'provider' && state.activeKey === key;
+    html += '<div class="provider-card' + (active ? ' active' : '') + '" data-provider-key="' + escHtml(key) + '">' +
+      '<div class="provider-card-logo"><span class="card-initial">' + escHtml(key[0].toUpperCase()) + '</span></div>' +
+      '<div class="provider-card-info">' +
+      '<div class="provider-card-name">' + escHtml(providerLabel(key)) + '</div>' +
+      '<div class="provider-card-status not-configured" id="card-status-' + escHtml(key) + '">' +
+      '<span class="status-dot"></span><span>Checking…</span>' +
+      '</div></div></div>';
+  });
+  html += '<button class="add-card" id="add-provider-card-btn"><span class="add-card-icon">+</span><span>Add provider</span></button>';
+  html += '</div></div></div>';
+  $mainPanel.innerHTML = html;
+  document.querySelectorAll('#provider-card-grid .provider-card').forEach(function(card) {
+    card.addEventListener('click', function() {
+      var key = card.dataset.providerKey;
+      var pre = PRECONFIGURED_PROVIDERS.find(function(p) { return p.key === key; });
+      if (!state.dirty.providers) state.dirty.providers = {};
+      if (!state.dirty.providers[key]) {
+        state.dirty.providers[key] = pre ? Object.assign({}, pre.prefill) : {};
+        markDirty();
+      }
+      selectItem('provider', key);
+    });
+  });
+  var addCard = document.getElementById('add-provider-card-btn');
+  if (addCard) addCard.addEventListener('click', function() { selectItem('add-provider', null); });
+  // Fetch live status for configured providers
+  var allKeys = PRECONFIGURED_PROVIDERS.map(function(p) { return p.key; });
+  Object.keys(providers).forEach(function(k) { if (allKeys.indexOf(k) === -1) allKeys.push(k); });
+  allKeys.forEach(function(key) {
+    if (!providers[key]) return;
+    var type = detectProviderType(key, providers[key]);
+    fetchProviderCardStatus(key, type).then(function(status) {
+      var el = document.getElementById('card-status-' + key);
+      if (!el) return;
+      var label = status === 'authenticated' ? 'Authenticated' :
+                  status === 'configured' ? 'Connected' :
+                  status === 'unauthenticated' ? 'Disconnected' : 'Not configured';
+      el.className = 'provider-card-status ' + status;
+      el.innerHTML = '<span class="status-dot"></span><span>' + label + '</span>';
+    });
+  });
+}
+
 /* ── Add-provider panel ─────────────────────────────── */
 function renderAddProviderPanel() {
-  var providers = (state.dirty && state.dirty.providers) || {};
-  var nativeTypes = [
-    { value: 'openai',            label: 'OpenAI' },
-    { value: 'anthropic',         label: 'Anthropic' },
-    { value: 'google_ai_studio',  label: 'Google AI Studio' },
-    { value: 'sap_ai_core',       label: 'SAP AI Core' },
-    { value: 'hai',               label: 'HAI' },
-    { value: 'copilot',           label: 'Copilot' },
-  ];
   var options = '<option value="">Select\u2026</option>';
-  for (var i = 0; i < nativeTypes.length; i++) {
-    if (!providers[nativeTypes[i].value]) {
-      options += '<option value="' + nativeTypes[i].value + '">' + nativeTypes[i].label + '</option>';
-    }
-  }
   options += '<option value="compatible-openai">Compatible (OpenAI)</option>';
   options += '<option value="compatible-anthropic">Compatible (Anthropic)</option>';
 
   var html = '<div class="panel"><div class="panel-header"><div>' +
     '<div class="panel-title">Add Provider</div>' +
-    '<div class="panel-subtitle">Choose a provider type to configure</div>' +
+    '<div class="panel-subtitle">Add a custom compatible provider</div>' +
     '</div></div><div class="panel-body">' +
-    '<div class="form-group"><label>Provider type</label>' +
+    '<div class="form-group"><label>Compatible type</label>' +
     '<select id="new-provider-type">' + options + '</select></div>' +
-    '<div class="form-group" id="new-provider-name-group" style="display:none">' +
+    '<div class="form-group">' +
     '<label class="required">Provider name (config key)</label>' +
     '<input type="text" id="new-provider-name" placeholder="e.g. my-local-llm">' +
     '</div>' +
-    '<button class="btn btn-primary" id="new-provider-create" style="display:none">Create</button>' +
-    '</div></div>';
+    '<div style="display:flex;gap:10px;margin-top:4px;">' +
+    '<button class="btn btn-primary" id="new-provider-create">Create</button>' +
+    '<button class="btn btn-ghost" id="add-provider-cancel">Cancel</button>' +
+    '</div></div></div>';
   $mainPanel.innerHTML = html;
 
   var $type = document.getElementById('new-provider-type');
-  var $nameGroup = document.getElementById('new-provider-name-group');
   var $name = document.getElementById('new-provider-name');
   var $create = document.getElementById('new-provider-create');
+  var $cancel = document.getElementById('add-provider-cancel');
 
-  $type.addEventListener('change', function () {
-    var v = $type.value;
-    if (!v) {
-      $nameGroup.style.display = 'none';
-      $create.style.display = 'none';
-      return;
-    }
-    // Native providers have fixed keys; compatible needs a custom name
-    var isNative = ['openai','anthropic','google_ai_studio','sap_ai_core','hai','copilot'].indexOf(v) !== -1;
-    if (isNative) {
-      $nameGroup.style.display = 'none';
-      $name.value = v;
-    } else {
-      $nameGroup.style.display = '';
-      $name.value = '';
-      $name.focus();
-    }
-    $create.style.display = '';
-  });
+  if ($cancel) $cancel.addEventListener('click', function() { selectItem('providers-grid', 'providers'); });
 
   $create.addEventListener('click', function () {
     var v = $type.value;
-    if (!v) return;
-    var isNative = ['openai','anthropic','google_ai_studio','sap_ai_core','hai','copilot'].indexOf(v) !== -1;
-    var key = isNative ? v : $name.value.trim();
+    if (!v) { showToast('Please select a compatible type', 'error'); return; }
+    var key = $name.value.trim();
     if (!key) {
       $name.classList.add('invalid');
       showToast('Provider name is required', 'error');
+      return;
+    }
+    var reserved = PRECONFIGURED_PROVIDERS.map(function(p) { return p.key; });
+    if (reserved.indexOf(key) !== -1) {
+      showToast('Use the pre-configured "' + key + '" card instead', 'error');
       return;
     }
     if (!state.dirty.providers) state.dirty.providers = {};
@@ -1908,7 +2096,6 @@ function renderAddProviderPanel() {
       showToast('Provider "' + key + '" already exists', 'error');
       return;
     }
-    // Create empty provider config
     var obj = {};
     if (v === 'compatible-openai') obj.compatible = 'openai';
     else if (v === 'compatible-anthropic') obj.compatible = 'anthropic';
@@ -1921,27 +2108,31 @@ function renderAddProviderPanel() {
 
 /* ── Item selection ─────────────────────────────────── */
 function selectItem(type, key) {
-  state.activeType = type;
-  state.activeKey = key;
-  // highlight active nav item — coerce key to string for dataset comparison
-  var keyStr = key === null ? null : String(key);
-  document.querySelectorAll('.nav-item').forEach(function (el) {
-    el.classList.toggle('active',
-      el.dataset.type === type && el.dataset.key === keyStr);
-  });
-  renderPanel(type, key);
+  function doSelect() {
+    clearFormDraft();
+    state.activeType = type;
+    state.activeKey = key;
+    document.querySelectorAll('.nav-item').forEach(function(el) {
+      var t = el.dataset.type, k = el.dataset.key;
+      el.classList.toggle('active',
+        (t === type && String(k) === String(key)) ||
+        (type === 'provider' && t === 'providers-grid') ||
+        (type === 'add-provider' && t === 'providers-grid') ||
+        (type === 'smart-routing' && t === 'smart-routing-grid') ||
+        (type === 'add-route' && t === 'smart-routing-grid')
+      );
+    });
+    renderPanel(type, key);
+  }
+  if (hasFormDraft()) {
+    confirmDiscard(doSelect);
+  } else {
+    doSelect();
+  }
 }
 
 /* ── Event listeners ────────────────────────────────── */
-$saveBtn.addEventListener('click', saveConfig);
 $saveBanner.addEventListener('click', saveConfig);
-
-// Settings nav items (static)
-$settings.querySelectorAll('.nav-item').forEach(function (el) {
-  el.addEventListener('click', function () {
-    selectItem(el.dataset.type, el.dataset.key);
-  });
-});
 
 /* ── Smart Routing sidebar ──────────────────────────── */
 function deriveApiKey(name) {
@@ -1950,52 +2141,7 @@ function deriveApiKey(name) {
     .replace(/^-+|-+$/g, '');
 }
 function renderSmartRoutingSidebar() {
-  var existing = $smartRouting.querySelectorAll('.nav-item');
-  existing.forEach(function (el) { el.remove(); });
-
-  var groups = (state.dirty && state.dirty.smart_routing) || [];
-  groups.forEach(function (g, idx) {
-    var item = document.createElement('div');
-    item.className = 'nav-item';
-    item.dataset.type = 'smart-routing';
-    item.dataset.key = String(idx);
-    if (state.activeType === 'smart-routing' && state.activeKey === idx) {
-      item.classList.add('active');
-    }
-
-    var content = document.createElement('div');
-    content.className = 'nav-item-content';
-
-    var label = document.createElement('span');
-    label.className = 'nav-item-label';
-    label.textContent = g.name || ('Group ' + (idx + 1));
-    content.appendChild(label);
-
-    if (!g.enabled) {
-      var chip = document.createElement('span');
-      chip.style.cssText = 'font-size:10px;color:var(--text-muted);margin-left:6px;';
-      chip.textContent = 'off';
-      content.appendChild(chip);
-    }
-
-    item.appendChild(content);
-
-    var del = document.createElement('button');
-    del.className = 'nav-delete';
-    del.textContent = '✕';
-    del.title = 'Delete group';
-    del.addEventListener('click', function (e) {
-      e.stopPropagation();
-      deleteRouteGroup(idx);
-    });
-    item.appendChild(del);
-
-    item.addEventListener('click', function () {
-      selectItem('smart-routing', idx);
-    });
-
-    $smartRouting.appendChild(item);
-  });
+  /* sidebar is now flat — routing groups shown as cards in main panel */
 }
 
 function deleteRouteGroup(idx) {
@@ -2005,13 +2151,9 @@ function deleteRouteGroup(idx) {
   renderSidebar();
   if (state.activeType === 'smart-routing' && state.activeKey !== null) {
     if (state.activeKey === idx) {
-      // The active group was deleted — clear the panel.
-      state.activeType = null;
-      state.activeKey = null;
-      $mainPanel.innerHTML = '<div class="panel-placeholder">Select an item from the sidebar</div>';
+      clearFormDraft();
+      selectItem('smart-routing-grid', 'smart-routing');
     } else if (state.activeKey > idx) {
-      // Groups above the deleted index shifted down by one; keep the panel open
-      // but update the key so subsequent edits target the correct group.
       state.activeKey -= 1;
     }
   }
@@ -2116,6 +2258,7 @@ function wireModelPicker(id, models, onSelect) {
 }
 
 function renderSmartRoutingPanel(idx) {
+  state.formDraft = 'sr-' + idx;
   var groups = (state.dirty && state.dirty.smart_routing) || [];
   var g = groups[idx];
   if (!g) {
@@ -2124,11 +2267,16 @@ function renderSmartRoutingPanel(idx) {
   }
 
   var html = '<div class="panel"><div class="panel-header">';
-  html += '<div><div class="panel-title">' + escHtml(g.name || 'Smart Routing Group') + '</div></div>';
-  html += '<label class="toggle" style="display:flex;align-items:center;gap:6px;cursor:pointer;margin:0;">';
+  html += '<div style="display:flex;align-items:center;gap:10px;min-width:0;">';
+  html += '<label class="toggle" style="display:flex;align-items:center;gap:6px;cursor:pointer;margin:0;flex-shrink:0;">';
   html += '<input type="checkbox" id="sr-enabled"' + (g.enabled !== false ? ' checked' : '') + '>';
   html += '<span class="toggle-slider"></span>';
   html += '</label>';
+  html += '<div class="panel-title" style="margin:0;">' + escHtml(g.name || 'Smart Routing Group') + '</div>';
+  html += '</div>';
+  html += '<button class="btn btn-danger" id="sr-delete-btn" style="padding:5px 7px;flex-shrink:0;" title="Delete group">' +
+    '<img src="https://unpkg.com/lucide-static@latest/icons/x.svg" style="width:14px;height:14px;filter:invert(1);opacity:.9;display:block;" alt="">' +
+    '</button>';
   html += '</div><div class="panel-body">';
 
   // Name
@@ -2178,6 +2326,11 @@ function renderSmartRoutingPanel(idx) {
   html += '<button class="btn" id="sr-add-alt-btn" style="width:96px;padding:4px 0;flex-shrink:0;">+ Add</button>';
   html += '</div>';
   html += '</div>';
+
+  html += '<div class="form-nav">' +
+    '<button class="btn btn-primary" id="sr-form-save">Save</button>' +
+    '<button class="btn btn-ghost" id="sr-form-cancel">Cancel</button>' +
+    '</div>';
 
   html += '</div></div>';
   $mainPanel.innerHTML = html;
@@ -2284,6 +2437,35 @@ function renderSmartRoutingPanel(idx) {
     alts.forEach(function (a, i) { newHtml += renderAltRow(a, i, alts.length); });
     list.innerHTML = newHtml;
   });
+
+  // SR form Save / Cancel
+  var $srSave = document.getElementById('sr-form-save');
+  var $srCancel = document.getElementById('sr-form-cancel');
+  var $srDelete = document.getElementById('sr-delete-btn');
+  if ($srSave) {
+    $srSave.addEventListener('click', function() {
+      saveConfig().then(function() { clearFormDraft(); selectItem('smart-routing-grid', 'smart-routing'); });
+    });
+  }
+  if ($srCancel) {
+    $srCancel.addEventListener('click', function() {
+      var saved = state.config.smart_routing && state.config.smart_routing[idx];
+      if (saved) {
+        state.dirty.smart_routing[idx] = deepClone(saved);
+      } else if (state.dirty.smart_routing) {
+        state.dirty.smart_routing.splice(idx, 1);
+      }
+      markDirty();
+      clearFormDraft();
+      selectItem('smart-routing-grid', 'smart-routing');
+    });
+  }
+  if ($srDelete) {
+    $srDelete.addEventListener('click', function() {
+      clearFormDraft();
+      deleteRouteGroup(idx);
+    });
+  }
 }
 
 function renderAltRow(alt, ai, total) {
@@ -2291,7 +2473,7 @@ function renderAltRow(alt, ai, total) {
   html += '<span style="flex:1;font-size:13px;padding:6px 8px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);">' + escHtml(alt) + '</span>';
   html += '<button class="btn btn-ghost" data-alt-action="up" data-alt-idx="' + ai + '"' + (ai === 0 ? ' disabled' : '') + ' style="padding:4px 8px;" title="Move up">↑</button>';
   html += '<button class="btn btn-ghost" data-alt-action="down" data-alt-idx="' + ai + '"' + (ai === total - 1 ? ' disabled' : '') + ' style="padding:4px 8px;" title="Move down">↓</button>';
-  html += '<button class="btn btn-danger" data-alt-action="remove" data-alt-idx="' + ai + '" style="padding:4px 8px;" title="Remove">✕</button>';
+  html += '<button class="btn btn-danger" data-alt-action="remove" data-alt-idx="' + ai + '" style="padding:4px 8px;" title="Remove"><img src="https://unpkg.com/lucide-static@latest/icons/x.svg" style="width:12px;height:12px;filter:invert(1);opacity:.8" alt=""></button>';
   html += '</div>';
   return html;
 }
@@ -2370,10 +2552,10 @@ function renderCostStatus(data) {
 
   // ── Shared geometry ───────────────────────────────────
   var dpr = window.devicePixelRatio || 1;
-  var BAR_W = 32, BAR_GAP = 10, PROVIDER_GAP = 20;
-  var PAD_T = 28, PAD_B = 52;
-  var YAXIS_W = 52, LEGEND_W = 100;
-  var cssH = 200;
+  var BAR_W = 24, BAR_GAP = 8, PROVIDER_GAP = 16;
+  var PAD_T = 20, PAD_B = 40;
+  var YAXIS_W = 44, LEGEND_W = 90;
+  var cssH = 140;
   var chartH = cssH - PAD_T - PAD_B;
 
   var providerGaps = 0;
@@ -2577,7 +2759,7 @@ function ratesRowHtml(key, rate, dis, gridStyle) {
     '<div style="font-size:13px;">' + escHtml(String(rate.cache_write || 0)) + '</div>' +
     '<div style="font-size:13px;">' + escHtml(String(rate.cache_read || 0)) + '</div>' +
     '<div style="font-size:13px;">' + escHtml(String(rate.output || 0)) + '</div>' +
-    '<div><button class="btn btn-danger rates-delete-btn" data-key="' + escHtml(key) + '"' + d + ' style="padding:4px 8px;" title="Remove">✕</button></div>' +
+    '<div><button class="btn btn-danger rates-delete-btn" data-key="' + escHtml(key) + '"' + d + ' style="padding:4px 8px;" title="Remove"><img src="https://unpkg.com/lucide-static@latest/icons/x.svg" style="width:12px;height:12px;filter:invert(1);opacity:.8" alt=""></button></div>' +
     '</div>';
 }
 
@@ -2590,6 +2772,48 @@ function wireRatesDeleteButtons() {
       renderSettingsPanel('cost_controls');
     });
   });
+}
+
+/* ── Smart Routing card grid ─────────────────────────── */
+function renderSmartRoutingGrid() {
+  var groups = (state.dirty && state.dirty.smart_routing) || [];
+  var html = '<div class="panel"><div class="panel-header"><div>' +
+    '<div class="panel-title">Routing</div>' +
+    '<div class="panel-subtitle">Route model aliases to fallback chains</div>' +
+    '</div></div><div class="panel-body"><div class="card-grid" id="sr-card-grid">';
+  groups.forEach(function(g, idx) {
+    var active = state.activeType === 'smart-routing' && state.activeKey === idx;
+    var enabledLabel = g.enabled !== false ? 'Enabled' : 'Disabled';
+    var enabledClass = g.enabled !== false ? 'enabled' : 'disabled';
+    html += '<div class="sr-card' + (active ? ' active' : '') + '" data-sr-idx="' + idx + '">' +
+      '<div class="sr-card-info">' +
+      '<div class="sr-card-name">' + escHtml(g.name || ('Group ' + (idx + 1))) + '</div>' +
+      '<div class="sr-card-key" data-copy-key="' + escHtml(g.api_key || '') + '" title="Click to copy">' +
+      (g.api_key ? escHtml(g.api_key) : '<em>no key</em>') + '</div>' +
+      '</div><span class="sr-card-badge ' + enabledClass + '">' + enabledLabel + '</span></div>';
+  });
+  html += '<button class="add-card" id="add-route-card-btn"><span class="add-card-icon">+</span><span>Add group</span></button>';
+  html += '</div></div></div>';
+  $mainPanel.innerHTML = html;
+  document.querySelectorAll('#sr-card-grid .sr-card').forEach(function(card) {
+    card.addEventListener('click', function(e) {
+      if (e.target.closest('[data-copy-key]')) return;
+      selectItem('smart-routing', parseInt(card.dataset.srIdx, 10));
+    });
+    var copyEl = card.querySelector('[data-copy-key]');
+    if (copyEl) {
+      copyEl.addEventListener('click', function(e) {
+        e.stopPropagation();
+        var key = copyEl.dataset.copyKey;
+        if (key) {
+          navigator.clipboard.writeText(key).then(function() { showToast('Copied: ' + key, 'info'); })
+            .catch(function() { showToast(key, 'info'); });
+        }
+      });
+    }
+  });
+  var addBtn = document.getElementById('add-route-card-btn');
+  if (addBtn) addBtn.addEventListener('click', function() { selectItem('add-route', null); });
 }
 
 /* ── Add Smart Routing group panel ──────────────────── */
@@ -2611,7 +2835,8 @@ function renderAddGroupPanel() {
   html += '<label>Main model</label>';
   html += modelPickerHtml('new-route-main', 'Search models…', '');
   html += '</div>';
-  html += '<button class="btn btn-primary" id="new-route-create-btn" style="margin-top:4px;">Create group</button>';
+  html += '<button class="btn btn-primary" id="new-route-create-btn" style="margin-top:4px;">Create group</button>' +
+    '<button class="btn btn-ghost" id="add-route-cancel-btn" style="margin-top:4px;">Cancel</button>';
   html += '</div></div>';
   $mainPanel.innerHTML = html;
 
@@ -2664,11 +2889,25 @@ function renderAddGroupPanel() {
     renderSidebar();
     selectItem('smart-routing', state.dirty.smart_routing.length - 1);
   });
+
+  var $cancelRoute = document.getElementById('add-route-cancel-btn');
+  if ($cancelRoute) $cancelRoute.addEventListener('click', function() { selectItem('smart-routing-grid', 'smart-routing'); });
 }
 
 /* ── Init ───────────────────────────────────────────── */
 document.addEventListener('DOMContentLoaded', function () {
-  loadConfig();
+  loadConfig().then(function() {
+    selectItem('providers-grid', 'providers');
+  });
+  document.querySelectorAll('#sidebar-settings .nav-item').forEach(function(el) {
+    el.addEventListener('click', function() { selectItem('settings', el.dataset.key); });
+  });
+  document.querySelectorAll('.nav-item[data-type="providers-grid"]').forEach(function(el) {
+    el.addEventListener('click', function() { selectItem('providers-grid', 'providers'); });
+  });
+  document.querySelectorAll('.nav-item[data-type="smart-routing-grid"]').forEach(function(el) {
+    el.addEventListener('click', function() { selectItem('smart-routing-grid', 'smart-routing'); });
+  });
 });
 </script>
 </body>
