@@ -32,9 +32,13 @@ run:
 run-config config:
     ZIG_ZAG_CONFIG={{config}} zig build run
 
-# Run with dev config and dev metrics file
+# Run with dev config, metrics, and agent-tool config dirs (all under .dev/)
 run-dev:
-    ZIG_ZAG_CONFIG=.dev_config.json ZIG_ZAG_METRICS=.dev_metrics.json zig build run
+    ZIG_ZAG_CONFIG=.dev/config.json \
+    ZIG_ZAG_METRICS=.dev/metrics.json \
+    CLAUDE_CONFIG_DIR=.dev/claude \
+    PI_CONFIG_DIR=.dev/pi \
+    zig build run
 
 # === Test ===
 

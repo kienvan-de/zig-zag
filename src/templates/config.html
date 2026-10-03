@@ -872,6 +872,43 @@ body{
 .sr-card-badge{font-size:10px;font-weight:600;padding:2px 7px;border-radius:4px;flex-shrink:0;}
 .sr-card-badge.enabled{background:rgba(78,204,163,0.12);color:var(--success)}
 .sr-card-badge.disabled{background:rgba(255,255,255,0.06);color:var(--text-muted)}
+/* ── Pi model card (rich model entry) ───────────────── */
+.pi-model-card{
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:var(--radius-lg);
+  padding:12px 14px;
+  margin-bottom:10px;
+}
+.pi-model-head{
+  display:flex;align-items:center;gap:8px;margin-bottom:10px;
+}
+.pi-model-id{
+  flex:1;min-width:0;
+  font-family:var(--mono);font-size:13px;font-weight:600;color:var(--text);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.pi-model-grid{
+  display:grid;grid-template-columns:1fr 1fr;gap:10px 14px;align-items:start;
+}
+.pi-field label{
+  display:block;font-size:11px;color:var(--text-muted);margin-bottom:4px;letter-spacing:.2px;
+}
+.pi-field input[type=number]{
+  width:100%;padding:6px 8px;font-size:13px;font-family:var(--mono);color:var(--text);
+  background:rgba(255,255,255,0.05);border:1px solid var(--border);border-radius:var(--radius);outline:none;
+}
+.pi-field input[type=number]:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-glow)}
+.pi-chips{display:flex;flex-wrap:wrap;gap:6px}
+.pi-chip{
+  font-size:11px;font-weight:500;padding:4px 9px;border-radius:12px;cursor:pointer;user-select:none;
+  border:1px solid var(--border);color:var(--text-muted);background:none;
+  transition:background var(--transition),border-color var(--transition),color var(--transition);
+}
+.pi-chip:hover{border-color:var(--border-hover);color:var(--text)}
+.pi-chip.active{
+  background:rgba(123,140,255,0.14);border-color:var(--accent);color:var(--accent);
+}
 /* ── Form nav (Save/Cancel bar inside provider/group form) */
 .form-nav{display:flex;align-items:center;justify-content:center;gap:10px;padding:14px 0 2px;border-top:1px solid var(--border);margin-top:20px;}
 /* ── Nav item icons ─────────────────────────────────── */
@@ -930,6 +967,12 @@ body{
         <div class="nav-item-content">
           <img class="nav-icon" src="https://unpkg.com/lucide-static@latest/icons/git-branch.svg" alt="">
           <span class="nav-item-label">Routing</span>
+        </div>
+      </div>
+      <div class="nav-item" data-type="tools-grid" data-key="tools">
+        <div class="nav-item-content">
+          <img class="nav-icon" src="https://unpkg.com/lucide-static@latest/icons/bot.svg" alt="">
+          <span class="nav-item-label">Agents</span>
         </div>
       </div>
     </div>
@@ -1111,7 +1154,8 @@ function renderSidebar() {
       (state.activeType === 'provider' && t === 'providers-grid') ||
       (state.activeType === 'add-provider' && t === 'providers-grid') ||
       (state.activeType === 'smart-routing' && t === 'smart-routing-grid') ||
-      (state.activeType === 'add-route' && t === 'smart-routing-grid')
+      (state.activeType === 'add-route' && t === 'smart-routing-grid') ||
+      (state.activeType === 'tool' && t === 'tools-grid')
     );
   });
 }
@@ -1395,10 +1439,20 @@ function renderProviderForm(key) {
     subtitle = 'compatible (' + (obj.compatible || 'openai') + ')';
   }
 
-  var html = '<div class="panel"><div class="panel-header"><div>' +
+  // Logo: use the pre-configured catalog entry if any, else a letter initial.
+  var pre = PRECONFIGURED_PROVIDERS.find(function(p) { return p.key === key; });
+  var logoHtml = pre
+    ? '<div class="provider-card-logo"><img src="' + escHtml(pre.logo) + '" alt="' + escHtml(pre.label) + '" ' +
+      'onerror="this.parentNode.innerHTML=\'<span class=card-initial>' + escHtml(pre.label[0]) + '</span>\'"></div>'
+    : '<div class="provider-card-logo"><span class="card-initial">' + escHtml(key[0].toUpperCase()) + '</span></div>';
+
+  var html = '<div class="panel"><div class="panel-header">' +
+    '<div style="display:flex;align-items:center;gap:12px;min-width:0;">' +
+    logoHtml +
+    '<div style="min-width:0;">' +
     '<div class="panel-title">' + escHtml(providerLabel(key)) + '</div>' +
     '<div class="panel-subtitle">' + escHtml(subtitle) + '</div>' +
-    '</div>' +
+    '</div></div>' +
     '<button class="btn btn-danger" id="provider-delete-btn" style="flex-shrink:0;padding:6px 8px;" title="Delete provider">' +
     '<img src="https://unpkg.com/lucide-static@latest/icons/x.svg" style="width:14px;height:14px;filter:invert(1);opacity:.9;display:block;" alt="">' +
     '</button>' +
@@ -1765,6 +1819,8 @@ function renderPanel(type, key) {
   if (type === 'smart-routing-grid') { renderSmartRoutingGrid(); return; }
   if (type === 'smart-routing')      { renderSmartRoutingPanel(key); return; }
   if (type === 'add-route')          { renderAddGroupPanel(); return; }
+  if (type === 'tools-grid')         { renderToolsGrid(); return; }
+  if (type === 'tool')               { renderToolForm(key); return; }
   $mainPanel.innerHTML = '<div class="panel-placeholder">Select an item from the sidebar</div>';
 }
 
@@ -2119,7 +2175,8 @@ function selectItem(type, key) {
         (type === 'provider' && t === 'providers-grid') ||
         (type === 'add-provider' && t === 'providers-grid') ||
         (type === 'smart-routing' && t === 'smart-routing-grid') ||
-        (type === 'add-route' && t === 'smart-routing-grid')
+        (type === 'add-route' && t === 'smart-routing-grid') ||
+        (type === 'tool' && t === 'tools-grid')
       );
     });
     renderPanel(type, key);
@@ -2209,11 +2266,12 @@ function wireModelPicker(id, models, onSelect) {
   function open() {
     render(input.value);
     var rect = input.getBoundingClientRect();
-    var fg = wrap.closest('.form-group') || wrap.parentElement;
-    var fgRect = fg.getBoundingClientRect();
+    // Anchor the dropdown to the input itself so it lines up under its own
+    // component, not the surrounding row (which may also hold an "+ Add"
+    // button, e.g. the Pi models / routing alternatives pickers).
     var dropH = 220;
-    drop.style.width = fgRect.width + 'px';
-    drop.style.left = (fgRect.left + window.scrollX) + 'px';
+    drop.style.width = rect.width + 'px';
+    drop.style.left = (rect.left + window.scrollX) + 'px';
     if ((window.innerHeight - rect.bottom) < dropH && rect.top > dropH) {
       drop.style.top = '';
       drop.style.bottom = (window.innerHeight - rect.top + window.scrollY + 2) + 'px';
@@ -2894,6 +2952,311 @@ function renderAddGroupPanel() {
   if ($cancelRoute) $cancelRoute.addEventListener('click', function() { selectItem('smart-routing-grid', 'smart-routing'); });
 }
 
+/* ── Agent tools catalog ────────────────────────────── */
+var TOOLS = [
+  { key: 'claude-code', label: 'Claude Code', logo: 'https://raw.githubusercontent.com/pheralb/svgl/main/static/library/claude-ai-icon.svg', file: '~/.claude/settings.json' },
+  { key: 'pi-agent',    label: 'Pi Agent',    logo: 'https://unpkg.com/lucide-static@latest/icons/bot.svg',                            file: '~/.pi/agent/models.json' },
+];
+
+var _toolStatusCache = {};
+
+/* ── Agents card grid ───────────────────────────────── */
+function renderToolsGrid() {
+  var html = '<div class="panel"><div class="panel-header"><div>' +
+    '<div class="panel-title">Agents</div>' +
+    '<div class="panel-subtitle">Point agent tools at your zig-zag proxy</div>' +
+    '</div></div><div class="panel-body"><div class="card-grid" id="tool-card-grid">';
+  TOOLS.forEach(function(t) {
+    var active = state.activeType === 'tool' && state.activeKey === t.key;
+    html += '<div class="provider-card' + (active ? ' active' : '') + '" data-tool-key="' + escHtml(t.key) + '">' +
+      '<div class="provider-card-logo"><img src="' + escHtml(t.logo) + '" alt="' + escHtml(t.label) + '" ' +
+      'onerror="this.parentNode.innerHTML=\'<span class=card-initial>' + escHtml(t.label[0]) + '</span>\'"></div>' +
+      '<div class="provider-card-info">' +
+      '<div class="provider-card-name">' + escHtml(t.label) + '</div>' +
+      '<div class="provider-card-status not-configured" id="tool-status-' + escHtml(t.key) + '">' +
+      '<span class="status-dot"></span><span>Checking\u2026</span>' +
+      '</div></div></div>';
+  });
+  html += '</div></div></div>';
+  $mainPanel.innerHTML = html;
+  document.querySelectorAll('#tool-card-grid .provider-card').forEach(function(card) {
+    card.addEventListener('click', function() { selectItem('tool', card.dataset.toolKey); });
+  });
+  // Fetch live status for each tool
+  TOOLS.forEach(function(t) {
+    fetch('/v1/config/tools/' + t.key).then(function(r){ return r.ok ? r.json() : null; })
+      .then(function(d) {
+        var el = document.getElementById('tool-status-' + t.key);
+        if (!el) return;
+        var configured = d && d.configured;
+        var cls = configured ? 'configured' : 'not-configured';
+        var label = configured ? 'Configured' : 'Not configured';
+        el.className = 'provider-card-status ' + cls;
+        el.innerHTML = '<span class="status-dot"></span><span>' + label + '</span>';
+      }).catch(function(){});
+  });
+}
+
+/* ── Read-only field helper ─────────────────────────── */
+function readOnlyFieldHtml(label, value, mono) {
+  return '<div class="form-group"><label>' + escHtml(label) +
+    ' <span style="font-size:11px;color:var(--text-muted)">(read-only)</span></label>' +
+    '<input type="text" value="' + escHtml(value || '') + '" readonly ' +
+    'style="opacity:0.7;cursor:not-allowed;' + (mono ? 'font-family:var(--mono);' : '') + '"></div>';
+}
+
+/* ── Agent tool form ────────────────────────────────── */
+function renderToolForm(key) {
+  var tool = TOOLS.find(function(t){ return t.key === key; });
+  if (!tool) { $mainPanel.innerHTML = '<div class="panel-placeholder">Unknown tool</div>'; return; }
+
+  $mainPanel.innerHTML = '<div class="panel"><div class="panel-body">' +
+    '<div style="display:flex;align-items:center;gap:8px;color:var(--text-muted);font-size:13px;">' +
+    '<span class="spinner"></span> Loading ' + escHtml(tool.label) + ' settings\u2026</div></div></div>';
+
+  fetch('/v1/config/tools/' + key).then(function(r){
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json();
+  }).then(function(data){
+    if (key === 'claude-code') renderClaudeCodeForm(tool, data);
+    else if (key === 'pi-agent') renderPiAgentForm(tool, data);
+  }).catch(function(e){
+    $mainPanel.innerHTML = '<div class="panel-placeholder">Failed to load: ' + escHtml(e.message) + '</div>';
+  });
+}
+
+function toolFormHeader(tool) {
+  return '<div class="panel"><div class="panel-header">' +
+    '<div style="display:flex;align-items:center;gap:12px;min-width:0;">' +
+    '<div class="provider-card-logo"><img src="' + escHtml(tool.logo) + '" alt="' + escHtml(tool.label) + '" ' +
+    'onerror="this.parentNode.innerHTML=\'<span class=card-initial>' + escHtml(tool.label[0]) + '</span>\'"></div>' +
+    '<div style="min-width:0;">' +
+    '<div class="panel-title">' + escHtml(tool.label) + '</div>' +
+    '<div class="panel-subtitle" style="font-family:var(--mono)">' + escHtml(tool.file) + '</div>' +
+    '</div></div></div><div class="panel-body">';
+}
+
+/* ── Claude Code form ───────────────────────────────── */
+// Claude model values may carry a "[1M]" suffix selecting the 1M-context
+// variant (e.g. "sap-working[1M]"). We split it off for the picker and expose
+// it as a per-field toggle, re-appending "[1M]" on save when the toggle is on.
+var CC_1M_SUFFIX = '[1M]';
+var CC_1M_RE = /\[1m\]\s*$/i;
+
+function splitClaudeModel(value) {
+  var v = (value || '').trim();
+  if (CC_1M_RE.test(v)) {
+    return { id: v.replace(CC_1M_RE, '').trim(), oneM: true };
+  }
+  return { id: v, oneM: false };
+}
+
+function renderClaudeCodeForm(tool, data) {
+  var html = toolFormHeader(tool);
+  html += readOnlyFieldHtml('ANTHROPIC_AUTH_TOKEN', data.auth_token, true);
+  html += readOnlyFieldHtml('ANTHROPIC_BASE_URL', data.base_url, true);
+  html += '<hr class="sr-divider">';
+
+  var modelFields = [
+    { id: 'cc-haiku',  label: 'ANTHROPIC_DEFAULT_HAIKU_MODEL',  value: data.haiku_model },
+    { id: 'cc-opus',   label: 'ANTHROPIC_DEFAULT_OPUS_MODEL',   value: data.opus_model },
+    { id: 'cc-sonnet', label: 'ANTHROPIC_DEFAULT_SONNET_MODEL', value: data.sonnet_model },
+    { id: 'cc-model',  label: 'ANTHROPIC_MODEL',                value: data.model },
+  ];
+  modelFields.forEach(function(f){
+    var parts = splitClaudeModel(f.value);
+    f.split = parts; // keep for wiring
+    html += '<div class="form-group"><label>' + escHtml(f.label) + '</label>' +
+      modelPickerHtml(f.id, 'Search models\u2026', parts.id) +
+      '<div class="toggle-group" style="padding:4px 0 0;">' +
+      '<label style="font-size:12px;color:var(--text-muted);">1M context <span style="font-family:var(--mono)">[1M]</span></label>' +
+      '<label class="toggle" style="margin:0;"><input type="checkbox" id="' + f.id + '-1m"' + (parts.oneM ? ' checked' : '') + '>' +
+      '<span class="toggle-slider"></span></label></div>' +
+      '</div>';
+  });
+
+  html += '<div class="form-nav">' +
+    '<button class="btn btn-primary" id="tool-save">Save</button>' +
+    '<button class="btn btn-ghost" id="tool-cancel">Cancel</button>' +
+    '</div></div></div>';
+  $mainPanel.innerHTML = html;
+
+  fetchModels().then(function(models){
+    modelFields.forEach(function(f){ wireModelPicker(f.id, models, function(){}); });
+  });
+
+  // Compose a field value: picker id + "[1M]" when its toggle is on.
+  function composeField(id) {
+    var model = (document.getElementById(id).value || '').trim();
+    if (!model) return '';
+    var oneM = document.getElementById(id + '-1m').checked;
+    return oneM ? (model + CC_1M_SUFFIX) : model;
+  }
+
+  document.getElementById('tool-cancel').addEventListener('click', function(){ selectItem('tools-grid', 'tools'); });
+  document.getElementById('tool-save').addEventListener('click', function(){
+    var btn = this; btn.disabled = true;
+    var payload = {
+      haiku_model:  composeField('cc-haiku'),
+      opus_model:   composeField('cc-opus'),
+      sonnet_model: composeField('cc-sonnet'),
+      model:        composeField('cc-model'),
+    };
+    saveToolSettings('claude-code', payload).then(function(ok){
+      btn.disabled = false;
+      if (ok) { showToast('Claude Code settings saved', 'success'); selectItem('tools-grid', 'tools'); }
+    });
+  });
+}
+
+/* ── Pi Agent form ──────────────────────────────────── */
+// Available input modality options for a pi model.
+var PI_INPUT_CAPS = ['text', 'image', 'audio', 'video', 'pdf'];
+
+// Normalize a raw model entry (from backend or newly added) to the full shape.
+function normalizePiModel(m) {
+  return {
+    id: m.id || '',
+    reasoning: !!m.reasoning,
+    input: Array.isArray(m.input) && m.input.length ? m.input.slice() : ['text'],
+    contextWindow: (m.contextWindow == null ? '' : m.contextWindow),
+    maxTokens: (m.maxTokens == null ? '' : m.maxTokens),
+  };
+}
+
+function renderPiAgentForm(tool, data) {
+  // Local working copy of rich model objects.
+  var models = (data.models || []).map(normalizePiModel);
+
+  function piModelCardHtml(m, i) {
+    var chips = PI_INPUT_CAPS.map(function(cap){
+      var on = m.input.indexOf(cap) !== -1;
+      return '<button type="button" class="pi-chip' + (on ? ' active' : '') + '" ' +
+        'data-pi-cap="' + cap + '" data-pi-idx="' + i + '">' + escHtml(cap) + '</button>';
+    }).join('');
+
+    return '<div class="pi-model-card" data-pi-card="' + i + '">' +
+      '<div class="pi-model-head">' +
+      '<span class="pi-model-id" title="' + escHtml(m.id) + '">' + escHtml(m.id) + '</span>' +
+      '<button class="btn btn-danger" data-pi-remove="' + i + '" style="padding:4px 8px;flex-shrink:0;" title="Remove model">' +
+      '<img src="https://unpkg.com/lucide-static@latest/icons/x.svg" style="width:12px;height:12px;filter:invert(1);opacity:.8" alt=""></button>' +
+      '</div>' +
+      '<div class="pi-model-grid">' +
+      '<div class="pi-field"><label>Reasoning</label>' +
+      '<label class="toggle" style="margin:0;"><input type="checkbox" data-pi-reasoning="' + i + '"' + (m.reasoning ? ' checked' : '') + '>' +
+      '<span class="toggle-slider"></span></label></div>' +
+      '<div class="pi-field"><label>Input modalities</label><div class="pi-chips">' + chips + '</div></div>' +
+      '<div class="pi-field"><label>Context window</label>' +
+      '<input type="number" min="0" step="1" placeholder="e.g. 262144" data-pi-ctx="' + i + '" value="' + escHtml(String(m.contextWindow)) + '"></div>' +
+      '<div class="pi-field"><label>Max tokens</label>' +
+      '<input type="number" min="0" step="1" placeholder="e.g. 8192" data-pi-max="' + i + '" value="' + escHtml(String(m.maxTokens)) + '"></div>' +
+      '</div></div>';
+  }
+
+  function render() {
+    var html = toolFormHeader(tool);
+    html += readOnlyFieldHtml('baseUrl', data.base_url, true);
+    html += readOnlyFieldHtml('apiKey', data.api_key, true);
+    html += readOnlyFieldHtml('api', data.api, true);
+    html += '<hr class="sr-divider">';
+
+    html += '<div class="form-group"><label>Models <span style="font-size:11px;color:var(--text-muted)">(exposed to Pi Agent)</span></label>';
+    html += '<div id="pi-models-list">';
+    models.forEach(function(m, i){ html += piModelCardHtml(m, i); });
+    if (models.length === 0) {
+      html += '<div style="color:var(--text-muted);font-size:13px;padding:4px 0;">No models configured. Add one below.</div>';
+    }
+    html += '</div>';
+    html += '<div style="display:flex;gap:6px;align-items:center;margin-top:4px;">';
+    html += '<div class="model-picker" id="pi-new-model-wrap" style="flex:1;">';
+    html += '<input type="text" class="model-picker-input" id="pi-new-model" autocomplete="off" placeholder="Search models to add\u2026" style="font-size:13px;padding:6px 8px;">';
+    html += '</div>';
+    html += '<button class="btn" id="pi-add-model" style="width:96px;padding:4px 0;flex-shrink:0;">+ Add</button>';
+    html += '</div></div>';
+
+    html += '<div class="form-nav">' +
+      '<button class="btn btn-primary" id="tool-save">Save</button>' +
+      '<button class="btn btn-ghost" id="tool-cancel">Cancel</button>' +
+      '</div></div></div>';
+    $mainPanel.innerHTML = html;
+
+    fetchModels().then(function(all){
+      wireModelPicker('pi-new-model', all, function(){});
+      var inp = document.getElementById('pi-new-model');
+      if (inp) inp.addEventListener('focus', function(){ this.value = ''; }, true);
+    });
+
+    var list = document.getElementById('pi-models-list');
+    // Remove + input-chip toggles (delegated, trigger re-render for chips/remove)
+    list.addEventListener('click', function(e){
+      var rm = e.target.closest('button[data-pi-remove]');
+      if (rm) { models.splice(parseInt(rm.dataset.piRemove, 10), 1); render(); return; }
+      var chip = e.target.closest('.pi-chip');
+      if (chip) {
+        var ci = parseInt(chip.dataset.piIdx, 10), cap = chip.dataset.piCap;
+        var caps = models[ci].input;
+        var at = caps.indexOf(cap);
+        if (at === -1) caps.push(cap); else caps.splice(at, 1);
+        chip.classList.toggle('active');
+        return;
+      }
+    });
+    // Reasoning toggle + number inputs (no re-render, just update model)
+    list.addEventListener('change', function(e){
+      var t = e.target;
+      if (t.dataset.piReasoning != null) models[parseInt(t.dataset.piReasoning,10)].reasoning = t.checked;
+    });
+    list.addEventListener('input', function(e){
+      var t = e.target;
+      if (t.dataset.piCtx != null) models[parseInt(t.dataset.piCtx,10)].contextWindow = t.value;
+      else if (t.dataset.piMax != null) models[parseInt(t.dataset.piMax,10)].maxTokens = t.value;
+    });
+
+    document.getElementById('pi-add-model').addEventListener('click', function(){
+      var inp = document.getElementById('pi-new-model');
+      var val = inp ? inp.value.trim() : '';
+      if (!val) return;
+      if (models.some(function(m){ return m.id === val; })) {
+        showToast('Model "' + val + '" already added', 'error');
+        return;
+      }
+      models.push(normalizePiModel({ id: val }));
+      render();
+    });
+    document.getElementById('tool-cancel').addEventListener('click', function(){ selectItem('tools-grid', 'tools'); });
+    document.getElementById('tool-save').addEventListener('click', function(){
+      var btn = this; btn.disabled = true;
+      // Serialize working copy: numbers back to int or omit when blank.
+      var payload = { models: models.map(function(m){
+        var out = { id: m.id, reasoning: !!m.reasoning, input: m.input.slice() };
+        if (m.contextWindow !== '' && m.contextWindow != null) out.contextWindow = parseInt(m.contextWindow, 10);
+        if (m.maxTokens !== '' && m.maxTokens != null) out.maxTokens = parseInt(m.maxTokens, 10);
+        return out;
+      }) };
+      saveToolSettings('pi-agent', payload).then(function(ok){
+        btn.disabled = false;
+        if (ok) { showToast('Pi Agent settings saved', 'success'); selectItem('tools-grid', 'tools'); }
+      });
+    });
+  }
+  render();
+}
+
+/* ── Save tool settings via backend ─────────────────── */
+function saveToolSettings(key, payload) {
+  return fetch('/v1/config/tools/' + key, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  }).then(function(res){
+    if (!res.ok) return res.text().then(function(t){ throw new Error(t || ('HTTP ' + res.status)); });
+    return true;
+  }).catch(function(e){
+    showToast('Failed to save: ' + e.message, 'error');
+    return false;
+  });
+}
+
 /* ── Init ───────────────────────────────────────────── */
 document.addEventListener('DOMContentLoaded', function () {
   loadConfig().then(function() {
@@ -2907,6 +3270,9 @@ document.addEventListener('DOMContentLoaded', function () {
   });
   document.querySelectorAll('.nav-item[data-type="smart-routing-grid"]').forEach(function(el) {
     el.addEventListener('click', function() { selectItem('smart-routing-grid', 'smart-routing'); });
+  });
+  document.querySelectorAll('.nav-item[data-type="tools-grid"]').forEach(function(el) {
+    el.addEventListener('click', function() { selectItem('tools-grid', 'tools'); });
   });
 });
 </script>

@@ -35,6 +35,7 @@ const log = core.log;
 
 const http = @import("../http.zig");
 const templates = @import("../templates/mod.zig");
+const tools = @import("tools.zig");
 
 // ============================================================================
 // Top-level dispatcher
@@ -52,6 +53,13 @@ pub fn handle(
     if (eql(u8, path, "/v1/config/data")) {
         if (eql(u8, method, "GET")) return handleGet(allocator, connection);
         if (eql(u8, method, "POST")) return handlePost(allocator, connection, body);
+    }
+
+    // Match /v1/config/tools/{tool} — agent tool settings (Claude Code, Pi Agent)
+    if (eql(u8, method, "POST")) {
+        if (try tools.handlePost(allocator, connection, path, body)) return;
+    } else {
+        if (try tools.handle(allocator, connection, method, path)) return;
     }
 
     // Match POST /v1/config/smart_routing/{idx}/reset
