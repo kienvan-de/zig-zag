@@ -2269,14 +2269,19 @@ function wireModelPicker(id, models, onSelect) {
     // Anchor the dropdown to the input itself so it lines up under its own
     // component, not the surrounding row (which may also hold an "+ Add"
     // button, e.g. the Pi models / routing alternatives pickers).
+    // Note: .model-picker-dropdown is `position:fixed`, so its coordinates
+    // are viewport-relative just like getBoundingClientRect() — do NOT add
+    // window.scrollX/scrollY here, or the dropdown drifts off-screen on any
+    // page that's tall enough to scroll (e.g. the Pi Agent form with many
+    // model cards).
     var dropH = 220;
     drop.style.width = rect.width + 'px';
-    drop.style.left = (rect.left + window.scrollX) + 'px';
+    drop.style.left = rect.left + 'px';
     if ((window.innerHeight - rect.bottom) < dropH && rect.top > dropH) {
       drop.style.top = '';
-      drop.style.bottom = (window.innerHeight - rect.top + window.scrollY + 2) + 'px';
+      drop.style.bottom = (window.innerHeight - rect.top + 2) + 'px';
     } else {
-      drop.style.top = (rect.bottom + window.scrollY + 2) + 'px';
+      drop.style.top = (rect.bottom + 2) + 'px';
       drop.style.bottom = '';
     }
     drop.style.display = 'block';
