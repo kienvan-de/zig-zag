@@ -861,12 +861,20 @@ body{
 }
 .sr-card:hover{background:var(--surface-alt);border-color:var(--border-hover);box-shadow:0 2px 16px rgba(0,0,0,0.18)}
 .sr-card.active{border-color:var(--accent);box-shadow:0 0 0 1px rgba(123,140,255,0.3)}
-.sr-card-info{flex:1;min-width:0}
-.sr-card-name{font-size:13px;font-weight:600;color:var(--text)}
+.sr-card-info{flex:1;min-width:0;display:flex;flex-direction:column;gap:6px}
+.sr-card-toprow{display:flex;align-items:baseline;gap:10px;min-width:0}
+.sr-card-botrow{display:flex;align-items:center;gap:10px;min-width:0}
+.sr-card-name{font-size:13px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0}
+.sr-card-model{
+  font-size:11px;color:var(--text);flex:1;min-width:0;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.sr-card-model em{color:var(--text-muted);font-style:italic;}
 .sr-card-key{
-  font-size:11px;font-family:var(--mono);color:var(--text-muted);margin-top:3px;
+  font-size:11px;font-family:var(--mono);color:var(--text-muted);
   cursor:pointer;transition:color var(--transition);
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  max-width:50%;flex-shrink:0;
 }
 .sr-card-key:hover{color:var(--accent)}
 .sr-card-badge{font-size:10px;font-weight:600;padding:2px 7px;border-radius:4px;flex-shrink:0;}
@@ -2470,6 +2478,7 @@ function renderSmartRoutingPanel(idx) {
       var res = await fetch('/v1/config/smart_routing/' + idx + '/reset', { method: 'POST' });
       if (!res.ok) throw new Error('HTTP ' + res.status);
       await loadConfig();
+      clearFormDraft();
       selectItem('smart-routing', idx);
       showToast('Reset to main model', 'success');
     } catch (e) {
@@ -2848,12 +2857,20 @@ function renderSmartRoutingGrid() {
     var active = state.activeType === 'smart-routing' && state.activeKey === idx;
     var enabledLabel = g.enabled !== false ? 'Enabled' : 'Disabled';
     var enabledClass = g.enabled !== false ? 'enabled' : 'disabled';
+    var curModel = g.current_model || g.main_model || '';
     html += '<div class="sr-card' + (active ? ' active' : '') + '" data-sr-idx="' + idx + '">' +
       '<div class="sr-card-info">' +
+      '<div class="sr-card-toprow">' +
       '<div class="sr-card-name">' + escHtml(g.name || ('Group ' + (idx + 1))) + '</div>' +
       '<div class="sr-card-key" data-copy-key="' + escHtml(g.api_key || '') + '" title="Click to copy">' +
       (g.api_key ? escHtml(g.api_key) : '<em>no key</em>') + '</div>' +
-      '</div><span class="sr-card-badge ' + enabledClass + '">' + enabledLabel + '</span></div>';
+      '</div>' +
+      '<div class="sr-card-botrow">' +
+      '<div class="sr-card-model" title="Current active model">' +
+      (curModel ? escHtml(curModel) : '<em>no model</em>') + '</div>' +
+      '<span class="sr-card-badge ' + enabledClass + '">' + enabledLabel + '</span>' +
+      '</div>' +
+      '</div></div>';
   });
   html += '<button class="add-card" id="add-route-card-btn"><span class="add-card-icon">+</span><span>Add group</span></button>';
   html += '</div></div></div>';
