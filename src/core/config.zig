@@ -662,9 +662,9 @@ const DeviceFlowState = struct {
 
 var device_flow_state: DeviceFlowState = .{
     .status = std.atomic.Value(DeviceFlowStatus).init(.idle),
-    .user_code = [_]u8{0} ** 32,
+    .user_code = @splat(0),
     .user_code_len = 0,
-    .verification_uri = [_]u8{0} ** 256,
+    .verification_uri = @splat(0),
     .verification_uri_len = 0,
 };
 

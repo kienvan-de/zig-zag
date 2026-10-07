@@ -53,10 +53,10 @@ pub fn main(init: std.process.Init.Minimal) !void {
     // DebugAllocator retains freed pages in free-lists (never shrinks RSS), so a
     // single large request would pin the process at its peak footprint.
     var gpa: std.heap.DebugAllocator(.{}) = .init;
-    defer if (builtin.mode == .Debug) {
+    defer if (builtin.mode == .debug) {
         _ = gpa.deinit();
     };
-    const allocator = if (builtin.mode == .Debug)
+    const allocator = if (builtin.mode == .debug)
         gpa.allocator()
     else
         std.heap.smp_allocator;

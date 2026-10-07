@@ -253,18 +253,18 @@ fn buildFormBody(allocator: Allocator, params: anytype) ![]u8 {
     var result: std.ArrayList(u8) = .empty;
     errdefer result.deinit(allocator);
 
-    const fields = @typeInfo(@TypeOf(params)).@"struct".fields;
+    const field_names = @typeInfo(@TypeOf(params)).@"struct".field_names;
     var first = true;
 
-    inline for (fields) |field| {
-        const value = @field(params, field.name);
+    inline for (field_names) |field_name| {
+        const value = @field(params, field_name);
         if (value.len > 0) {
             if (!first) {
                 try result.append(allocator, '&');
             }
             first = false;
 
-            try result.appendSlice(allocator, field.name);
+            try result.appendSlice(allocator, field_name);
             try result.append(allocator, '=');
             try appendUrlEncoded(&result, allocator, value);
         }
