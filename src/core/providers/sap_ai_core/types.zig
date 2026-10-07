@@ -17,6 +17,46 @@ const std = @import("std");
 const OpenAIChat = @import("../openai/chat_types.zig");
 const openai_common = @import("../openai/types.zig");
 
+// ----------------------------------------------------------------------------
+// Cache Control
+// ----------------------------------------------------------------------------
+
+/// Anthropic-style prompt caching directive, supported by SAP AI Core's
+/// orchestration schema on tool definitions and message content blocks.
+pub const CacheControl = struct {
+    type: []const u8 = "ephemeral",
+    ttl: ?[]const u8 = null,
+
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        if (self.ttl) |t| { try jw.objectField("ttl"); try jw.write(t); }
+        try jw.endObject();
+    }
+};
+
+// ----------------------------------------------------------------------------
+// Tool
+// ----------------------------------------------------------------------------
+
+/// SAP AI Core tool definition — extends the OpenAI function tool shape with
+/// `cache_control` (SAP orchestration schema `ChatCompletionTool`, line 890).
+/// OpenAI's own `Chat.Tool` intentionally omits `cache_control` to avoid
+/// sending it to the OpenAI API, so this is a SAP-local type.
+pub const Tool = struct {
+    type: []const u8 = "function",
+    function: openai_common.ToolFunction,
+    cache_control: ?CacheControl = null,
+
+    pub fn jsonStringify(self: @This(), jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type"); try jw.write(self.type);
+        try jw.objectField("function"); try self.function.jsonStringify(jw);
+        if (self.cache_control) |cc| { try jw.objectField("cache_control"); try cc.jsonStringify(jw); }
+        try jw.endObject();
+    }
+};
+
 // ============================================================================
 // SAP AI Core Orchestration API Data Structures
 // ============================================================================
@@ -54,8 +94,7 @@ pub const ModelConfig = struct {
 /// Inline prompt template configuration
 pub const PromptConfig = struct {
     template: []const OpenAIChat.Message,
-    tools: ?[]const OpenAIChat.Tool = null,
-    tool_choice: ?std.json.Value = null,
+    tools: ?[]const Tool = null,
     /// Default values for template {{placeholders}}
     defaults: ?std.json.Value = null,
     /// Output format constraint (text, json_object, json_schema)
@@ -65,7 +104,6 @@ pub const PromptConfig = struct {
         try jw.beginObject();
         try jw.objectField("template"); try jw.write(self.template);
         if (self.tools) |t| { try jw.objectField("tools"); try jw.write(t); }
-        if (self.tool_choice) |tc| { try jw.objectField("tool_choice"); try jw.write(tc); }
         if (self.defaults) |d| { try jw.objectField("defaults"); try jw.write(d); }
         if (self.response_format) |rf| { try jw.objectField("response_format"); try jw.write(rf); }
         try jw.endObject();

@@ -135,14 +135,23 @@ pub fn transformChatRequest(
     }, allocator);
     errdefer if (params) |pv| content.freeParams(pv, allocator);
 
+    // Convert Chat.Tool → Sap.Tool (no cache_control source in the chat wire).
+    const sap_tools: ?[]const Sap.Tool = if (pinned.tools) |chat_tools| blk: {
+        const tools = try allocator.alloc(Sap.Tool, chat_tools.len);
+        for (chat_tools, 0..) |ct, i| {
+            tools[i] = .{ .type = ct.type, .function = ct.function, .cache_control = null };
+        }
+        break :blk tools;
+    } else null;
+    errdefer if (sap_tools) |ts| allocator.free(ts);
+
     return .{
         .config = .{
             .modules = .{
                 .prompt_templating = .{
                     .prompt = .{
                         .template = template,
-                        .tools = pinned.tools,
-                        .tool_choice = pinned.tool_choice,
+                        .tools = sap_tools,
                         .response_format = pinned.response_format,
                     },
                     .model = .{
@@ -167,6 +176,7 @@ pub fn cleanupChatRequest(request: Sap.Request, allocator: std.mem.Allocator) vo
     if (request.config.modules.prompt_templating) |pt| {
         for (pt.prompt.template) |msg| content.freeNormalizedContent(msg, allocator);
         allocator.free(pt.prompt.template);
+        if (pt.prompt.tools) |ts| allocator.free(ts);
         if (pt.model.params) |p| content.freeParams(p, allocator);
     }
 }
@@ -253,11 +263,18 @@ pub const MessagesStreamState = chat_transformer.MessagesStreamState;
 /// Delegates the whole Messages↔Chat mapping to `chat_transformer`, then wraps
 /// the resulting `Chat.Request` in the SAP orchestration envelope:
 ///   messages → prompt.template, tools → prompt.tools,
-///   tool_choice → prompt.tool_choice, stream → stream.enabled,
+///   stream → stream.enabled,
 ///   temperature / max_tokens / top_p → model.params.
 ///
+/// Tools are re-mapped directly from `request.tools` (Anthropic wire) rather
+/// than borrowing from `chat_request.tools` (Chat wire), so that
+/// `cache_control` — which chat_transformer drops — is preserved in the SAP
+/// envelope (SAP orchestration schema `ChatCompletionTool` supports it).
+/// The resulting `Sap.Tool` slice is owned by this function and freed in
+/// `cleanupMessagesRequest`.
+///
 /// The Messages→Chat mapping itself (system block joining, tool_result/image/
-/// tool_use block handling, tool_choice, metadata.user_id) is owned and
+/// tool_use block handling, metadata.user_id) is owned and
 /// maintained by `chat_transformer` — SAP does not re-implement it. Because
 /// `chat_transformer` produces nullable `content` while the SAP envelope
 /// rejects null, messages are normalized via `content.normalizeNonNullContent`.
@@ -289,14 +306,39 @@ pub fn transformMessagesRequest(
     }, allocator);
     errdefer if (params) |pv| content.freeParams(pv, allocator);
 
+    // Re-map tools from the original Anthropic request to preserve cache_control.
+    // chat_transformer drops cache_control when converting Anthropic→Chat tools,
+    // but SAP's orchestration schema supports it on ChatCompletionTool.
+    // The resulting slice is owned here; names/cache_control are borrowed from
+    // the parsed request and freed with it.
+    const sap_tools: ?[]const Sap.Tool = if (request.tools) |anthro_tools| blk: {
+        const tools = try allocator.alloc(Sap.Tool, anthro_tools.len);
+        for (anthro_tools, 0..) |at, i| {
+            tools[i] = .{
+                .type = "function",
+                .function = .{
+                    .name = at.name orelse "",
+                    .description = at.description,
+                    .parameters = at.input_schema,
+                    .strict = null,
+                },
+                .cache_control = if (at.cache_control) |cc| .{
+                    .type = cc.type,
+                    .ttl = cc.ttl,
+                } else null,
+            };
+        }
+        break :blk tools;
+    } else null;
+    errdefer if (sap_tools) |ts| allocator.free(ts);
+
     return .{
         .config = .{
             .modules = .{
                 .prompt_templating = .{
                     .prompt = .{
                         .template = chat_request.messages,
-                        .tools = chat_request.tools,
-                        .tool_choice = chat_request.tool_choice,
+                        .tools = sap_tools,
                         .response_format = null,
                     },
                     .model = .{
@@ -315,25 +357,26 @@ pub fn transformMessagesRequest(
 }
 
 /// Free what transformMessagesRequest allocated: the delegated `Chat.Request`
-/// (template messages, tools, tool_choice, plus the null-content replacements)
-/// and the params object.
+/// messages (with null-content replacements), the SAP-local `Sap.Tool` slice
+/// (names/cache_control borrow from the parsed request, so only the slice
+/// itself is freed), and the params object.
 ///
-/// `chat_transformer.cleanupMessagesRequest` owns the Messages<->Chat allocations,
-/// so the envelope is unpacked back into a `Chat.Request` and handed to it — the
-/// same code that frees a native OpenAI request frees the SAP one.
+/// Tools are no longer passed back to `chat_transformer.cleanupMessagesRequest`
+/// because they are now `Sap.Tool[]` owned by this transformer, not `Chat.Tool[]`.
 pub fn cleanupMessagesRequest(request: Sap.Request, allocator: std.mem.Allocator) void {
     const pt = request.config.modules.prompt_templating.?;
     const prompt = pt.prompt;
 
-    // Hand the original messages/tools/tool_choice back to the delegated cleanup,
-    // which owns every allocation — including the empty-string content
-    // replacements made by `normalizeNonNullContent`.
+    // Delegate message cleanup (owns empty-string content replacements from
+    // normalizeNonNullContent and the message slice itself).
     chat_transformer.cleanupMessagesRequest(.{
         .model = pt.model.name,
         .messages = prompt.template,
-        .tools = prompt.tools,
-        .tool_choice = prompt.tool_choice,
+        .tools = null, // Sap.Tool[] — freed below, not Chat.Tool[]
     }, allocator);
+
+    // Free the SAP-local tool slice (names/cache_control are borrowed).
+    if (prompt.tools) |ts| allocator.free(ts);
 
     if (pt.model.params) |p| content.freeParams(p, allocator);
 }
@@ -481,14 +524,23 @@ pub fn transformResponsesRequest(
     }, allocator);
     errdefer if (params) |pv| content.freeParams(pv, allocator);
 
+    // Convert Chat.Tool → Sap.Tool (no cache_control source in the Responses wire).
+    const sap_tools: ?[]const Sap.Tool = if (chat_request.tools) |chat_tools| blk: {
+        const tools = try allocator.alloc(Sap.Tool, chat_tools.len);
+        for (chat_tools, 0..) |ct, i| {
+            tools[i] = .{ .type = ct.type, .function = ct.function, .cache_control = null };
+        }
+        break :blk tools;
+    } else null;
+    errdefer if (sap_tools) |ts| allocator.free(ts);
+
     return .{
         .config = .{
             .modules = .{
                 .prompt_templating = .{
                     .prompt = .{
                         .template = chat_request.messages,
-                        .tools = chat_request.tools,
-                        .tool_choice = chat_request.tool_choice,
+                        .tools = sap_tools,
                         .response_format = chat_request.response_format,
                     },
                     .model = .{
@@ -507,12 +559,9 @@ pub fn transformResponsesRequest(
 }
 
 /// Free what transformResponsesRequest allocated: the delegated `Chat.Request`
-/// (template messages, tools, tool_choice, plus the null-content replacements)
+/// messages (with null-content replacements), the SAP-local `Sap.Tool` slice
+/// (names borrow from the parsed request, so only the slice itself is freed),
 /// and the params object.
-///
-/// `chat_transformer.cleanupResponsesRequest` owns the Responses\u2194Chat allocations,
-/// so the envelope is unpacked back into a `Chat.Request` and handed to it \u2014 the
-/// same code that frees a native OpenAI request frees the SAP one.
 pub fn cleanupResponsesRequest(request: Sap.Request, allocator: std.mem.Allocator) void {
     const pt = request.config.modules.prompt_templating.?;
     const prompt = pt.prompt;
@@ -520,9 +569,11 @@ pub fn cleanupResponsesRequest(request: Sap.Request, allocator: std.mem.Allocato
     chat_transformer.cleanupResponsesRequest(.{
         .model = pt.model.name,
         .messages = prompt.template,
-        .tools = prompt.tools,
-        .tool_choice = prompt.tool_choice,
+        .tools = null, // Sap.Tool[] \u2014 freed below, not Chat.Tool[]
     }, allocator);
+
+    // Free the SAP-local tool slice (names are borrowed).
+    if (prompt.tools) |ts| allocator.free(ts);
 
     if (pt.model.params) |p| content.freeParams(p, allocator);
 }
