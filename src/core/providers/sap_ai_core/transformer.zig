@@ -19,6 +19,7 @@ const Sap = @import("types.zig");
 const content = @import("content.zig");
 const log = @import("../../log.zig");
 const chat_transformer = @import("../openai/chat_transformer.zig");
+const constraints = @import("../constraints.zig");
 
 // ============================================================================
 // Contract
@@ -309,15 +310,21 @@ pub fn transformMessagesRequest(
     // Re-map tools from the original Anthropic request to preserve cache_control.
     // chat_transformer drops cache_control when converting Anthropic→Chat tools,
     // but SAP's orchestration schema supports it on ChatCompletionTool.
-    // The resulting slice is owned here; names/cache_control are borrowed from
-    // the parsed request and freed with it.
+    // Names are normalized to the Chat cap (64 chars, [a-zA-Z0-9_-]) because SAP
+    // enforces the same limit. The normalized name strings are owned here and freed
+    // in cleanupMessagesRequest; cache_control is still borrowed from the request.
     const sap_tools: ?[]const Sap.Tool = if (request.tools) |anthro_tools| blk: {
         const tools = try allocator.alloc(Sap.Tool, anthro_tools.len);
+        var built: usize = 0;
+        errdefer {
+            for (tools[0..built]) |t| allocator.free(t.function.name);
+            allocator.free(tools);
+        }
         for (anthro_tools, 0..) |at, i| {
             tools[i] = .{
                 .type = "function",
                 .function = .{
-                    .name = at.name orelse "",
+                    .name = try constraints.normalizeToolName(allocator, at.name orelse "", constraints.CHAT_MAX_LEN),
                     .description = at.description,
                     .parameters = at.input_schema,
                     .strict = null,
@@ -327,6 +334,7 @@ pub fn transformMessagesRequest(
                     .ttl = cc.ttl,
                 } else null,
             };
+            built += 1;
         }
         break :blk tools;
     } else null;
@@ -358,8 +366,7 @@ pub fn transformMessagesRequest(
 
 /// Free what transformMessagesRequest allocated: the delegated `Chat.Request`
 /// messages (with null-content replacements), the SAP-local `Sap.Tool` slice
-/// (names/cache_control borrow from the parsed request, so only the slice
-/// itself is freed), and the params object.
+/// with its owned normalized name strings, and the params object.
 ///
 /// Tools are no longer passed back to `chat_transformer.cleanupMessagesRequest`
 /// because they are now `Sap.Tool[]` owned by this transformer, not `Chat.Tool[]`.
@@ -375,8 +382,12 @@ pub fn cleanupMessagesRequest(request: Sap.Request, allocator: std.mem.Allocator
         .tools = null, // Sap.Tool[] — freed below, not Chat.Tool[]
     }, allocator);
 
-    // Free the SAP-local tool slice (names/cache_control are borrowed).
-    if (prompt.tools) |ts| allocator.free(ts);
+    // Free the SAP-local tool slice. Names are owned (normalized copies);
+    // cache_control fields are borrowed from the parsed request.
+    if (prompt.tools) |ts| {
+        for (ts) |t| allocator.free(t.function.name);
+        allocator.free(ts);
+    }
 
     if (pt.model.params) |p| content.freeParams(p, allocator);
 }
