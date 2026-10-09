@@ -272,7 +272,26 @@ pub fn openFileAbsolute(path: []const u8, options: OpenFileOptions) !File {
 // Platform-aware path construction
 // ============================================================================
 
-/// Write the platform-specific path for a file inside an application's data
+/// Write the platform-specific path for a zig-zag config/data file into `buf`.
+/// Uses the XDG-style `~/.config/zig-zag/` on all POSIX platforms (macOS and
+/// Linux) for back-compatibility with existing installations. Windows uses
+/// `%LOCALAPPDATA%\zig-zag\`.
+///
+/// This is distinct from `appDataPath` which uses platform-native conventions
+/// (e.g. `~/Library/Application Support/` on macOS). zig-zag's documented
+/// config location is `~/.config/zig-zag/` — use this function for any file
+/// that lives alongside `config.json`.
+pub fn zigZagDataPath(buf: []u8, filename: []const u8) ?[]const u8 {
+    const env = @import("env.zig");
+    const builtin = @import("builtin");
+    if (builtin.os.tag == .windows) {
+        const base = env.get("LOCALAPPDATA") orelse return null;
+        return std.fmt.bufPrint(buf, "{s}\\zig-zag\\{s}", .{ base, filename }) catch null;
+    }
+    const home = env.get("HOME") orelse return null;
+    return std.fmt.bufPrint(buf, "{s}/.config/zig-zag/{s}", .{ home, filename }) catch null;
+}
+
 /// directory into `buf`. Returns the written slice, or null on failure.
 ///
 /// | Platform | Base dir env var | Path format |

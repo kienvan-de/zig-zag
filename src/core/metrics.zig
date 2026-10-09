@@ -484,7 +484,7 @@ const METRICS_FILENAME = "metrics.json";
 
 fn getMetricsPath(buf: []u8) ?[]const u8 {
     if (env.get("ZIG_ZAG_METRICS")) |p| return p;
-    return fs.appDataPath(buf, "zig-zag", METRICS_FILENAME);
+    return fs.zigZagDataPath(buf, METRICS_FILENAME);
 }
 
 /// Load persisted metrics from `~/.config/zig-zag/metrics.json`.

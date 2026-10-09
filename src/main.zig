@@ -134,5 +134,5 @@ var resolved_path_buf: [core.fs.max_path_bytes]u8 = undefined;
 /// Resolve config file path: $ZIG_ZAG_CONFIG env var, or OS-specific default.
 fn resolveConfigPath() []const u8 {
     if (env.get("ZIG_ZAG_CONFIG")) |env_path| return env_path;
-    return core.fs.appDataPath(&resolved_path_buf, "zig-zag", "config.json") orelse "config.json";
+    return core.fs.zigZagDataPath(&resolved_path_buf, "config.json") orelse "config.json";
 }
