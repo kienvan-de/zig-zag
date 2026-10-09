@@ -524,6 +524,10 @@ const METRICS_FILENAME = "metrics.json";
 
 fn getMetricsPath(buf: []u8) ?[]const u8 {
     if (env.get("ZIG_ZAG_METRICS")) |p| return p;
+    if (builtin.os.tag == .windows) {
+        const app_data = env.get("LOCALAPPDATA") orelse return null;
+        return std.fmt.bufPrint(buf, "{s}\\zig-zag\\{s}", .{ app_data, METRICS_FILENAME }) catch null;
+    }
     const home = env.get("HOME") orelse return null;
     return std.fmt.bufPrint(buf, "{s}/.config/zig-zag/{s}", .{ home, METRICS_FILENAME }) catch null;
 }

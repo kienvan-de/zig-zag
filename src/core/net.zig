@@ -1,55 +1,60 @@
 // SPDX-License-Identifier: Apache-2.0
 //! TCP networking primitives for zig-zag.
 //!
-//! Provides `Connection` (an inbound client socket) and `TcpServer` (retained
-//! for curl.zig and the mock upstream in tests). Inbound HTTP connections are
-//! now accepted via `std.Io.net` in server.zig; the `Connection` type wraps
-//! the accepted socket handle so all handlers remain unchanged.
+//! Provides `Connection` (an inbound client socket) and `TcpServer` (used by
+//! the OAuth callback server and integration test mock upstream). Inbound HTTP
+//! connections for the main proxy are accepted via `std.Io.net` in server.zig;
+//! `Connection` wraps the accepted socket handle so all handlers stay unchanged.
+//!
+//! All networking goes through `std.Io.net` — cross-platform (macOS, Linux,
+//! Windows). The previous raw libc socket/bind/listen/accept/read/write/close
+//! implementation was POSIX-only.
 
 const std = @import("std");
 const builtin = @import("builtin");
+const time = @import("time.zig");
 
-/// A TCP connection — wraps a socket fd with read/write/close helpers.
-/// Drop-in replacement for the old `std.net.Server.Connection` + `std.net.Stream`.
+/// A TCP connection — wraps an Io Stream with read/write/close/timeout helpers.
+/// The handle field is exposed so server.zig can construct a Connection from
+/// an already-accepted std.Io.net.Stream (same handle type, posix.fd_t / HANDLE).
 pub const Connection = struct {
-    handle: std.posix.fd_t,
+    handle: std.Io.net.Socket.Handle,
+
+    fn stream(self: Connection) std.Io.net.Stream {
+        return .{ .socket = .{ .handle = self.handle, .address = undefined } };
+    }
 
     /// Read bytes from the connection into `buf`.
     /// Returns the number of bytes read, or 0 on EOF.
     pub fn read(self: Connection, buf: []u8) !usize {
-        return std.posix.read(self.handle, buf);
+        var bufs = [1][]u8{buf};
+        const op_result = try time.io().operate(.{ .net_read = .{
+            .socket_handle = self.handle,
+            .data = &bufs,
+        } });
+        const read_result = try op_result.net_read;
+        return read_result.data_len;
     }
 
-    /// Write all bytes to the connection. Loops until all data is sent.
-    /// Retries on EINTR; maps EAGAIN/EWOULDBLOCK to WriteFailed.
+    /// Write all bytes to the connection.
     pub fn writeAll(self: Connection, data: []const u8) !void {
-        var remaining = data;
-        while (remaining.len > 0) {
-            const n = std.c.write(self.handle, remaining.ptr, remaining.len);
-            if (n < 0) {
-                const err = std.posix.errno(n);
-                if (err == .INTR) continue;
-                return error.WriteFailed;
-            }
-            if (n == 0) return error.WriteFailed;
-            remaining = remaining[@intCast(n)..];
-        }
+        var io_writer = self.stream().writer(time.io(), &[_]u8{});
+        try io_writer.interface.writeAll(data);
+        try io_writer.interface.flush();
     }
 
     /// Set the receive timeout (SO_RCVTIMEO) in milliseconds. Best-effort:
     /// returns false on any failure instead of panicking.
-    ///
-    /// Uses the raw libc setsockopt rather than std.posix.setsockopt, which
-    /// treats EBADF/ENOTSOCK/EINVAL/EFAULT as `unreachable` and panics. Those
-    /// errnos are a real race here: a client can close the connection between
-    /// accept() and this call, invalidating the fd. We must not crash the whole
-    /// proxy for a single dropped connection, so we handle every errno.
+    /// No-op on Windows (std.Io.net handles timeouts at the operation level).
     pub fn setReadTimeout(self: Connection, timeout_ms: i64) bool {
+        if (builtin.os.tag == .windows) return true;
         if (timeout_ms <= 0) return true;
         const tv = std.posix.timeval{
             .sec = @intCast(@divTrunc(timeout_ms, 1000)),
             .usec = @intCast(@rem(timeout_ms, 1000) * 1000),
         };
+        // Use raw libc setsockopt: std.posix.setsockopt panics on EBADF/ENOTSOCK
+        // which can race when a client closes the connection after accept().
         const rc = std.c.setsockopt(
             self.handle,
             std.posix.SOL.SOCKET,
@@ -62,14 +67,15 @@ pub const Connection = struct {
 
     /// Close the connection socket.
     pub fn close(self: Connection) void {
-        _ = std.c.close(self.handle);
+        const socket: std.Io.net.Socket = .{ .handle = self.handle, .address = undefined };
+        socket.close(time.io());
     }
 };
 
-/// A TCP listener — wraps a listening socket fd.
-/// Drop-in replacement for the old `std.net.Server`.
+/// A TCP listener — accepts incoming connections.
+/// Used by the OAuth callback server and integration test mock upstream.
 pub const TcpServer = struct {
-    fd: std.posix.fd_t,
+    server: std.Io.net.Server,
 
     pub const ListenOptions = struct {
         reuse_address: bool = false,
@@ -77,90 +83,36 @@ pub const TcpServer = struct {
 
     /// Create a TCP server listening on host:port.
     pub fn listen(host: []const u8, port: u16, options: ListenOptions) !TcpServer {
-        // Create socket
-        const fd = std.c.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0);
-        if (fd < 0) return error.SocketCreateFailed;
-        errdefer _ = std.c.close(fd);
-
-        // Set SO_REUSEADDR
-        if (options.reuse_address) {
-            const enable: i32 = 1;
-            const rc = std.c.setsockopt(
-                fd,
-                std.posix.SOL.SOCKET,
-                std.posix.SO.REUSEADDR,
-                @ptrCast(&enable),
-                @sizeOf(i32),
-            );
-            if (rc < 0) return error.SetSockOptFailed;
-        }
-
-        // Parse IP address and bind
-        var addr: std.posix.sockaddr.in = .{
-            .port = @byteSwap(port),
-            .addr = parseIpv4(host) orelse return error.InvalidAddress,
-        };
-
-        const bind_rc = std.c.bind(fd, @ptrCast(&addr), @sizeOf(std.posix.sockaddr.in));
-        if (bind_rc < 0) return error.BindFailed;
-
-        // Listen
-        const listen_rc = std.c.listen(fd, 128);
-        if (listen_rc < 0) return error.ListenFailed;
-
-        return .{ .fd = fd };
+        _ = options; // reuse_address is always set by std.Io.net
+        var addr_buf: [64]u8 = undefined;
+        const addr_str = std.fmt.bufPrint(&addr_buf, "{s}:{d}", .{ host, port }) catch
+            return error.InvalidAddress;
+        const address = std.Io.net.IpAddress.parseLiteral(addr_str) catch
+            return error.InvalidAddress;
+        const server = try std.Io.net.IpAddress.listen(&address, time.io(), .{
+            .reuse_address = true,
+        });
+        return .{ .server = server };
     }
 
     /// Accept a new connection. Blocks until a client connects.
     pub fn accept(self: *TcpServer) !Connection {
-        const client_fd = std.c.accept(self.fd, null, null);
-        if (client_fd < 0) return error.AcceptFailed;
-        return .{ .handle = client_fd };
+        const stream = try self.server.accept(time.io());
+        return .{ .handle = stream.socket.handle };
     }
 
     /// Close the listening socket.
     pub fn deinit(self: *TcpServer) void {
-        if (self.fd >= 0) {
-            _ = std.c.close(self.fd);
-            self.fd = -1;
-        }
-    }
-
-    /// Parse a dotted-quad IPv4 address string to a u32 in network byte order.
-    fn parseIpv4(host: []const u8) ?u32 {
-        var parts: [4]u8 = undefined;
-        var part_idx: usize = 0;
-        var current: u16 = 0;
-        var has_digit = false;
-
-        for (host) |ch| {
-            if (ch == '.') {
-                if (!has_digit or part_idx >= 3) return null;
-                parts[part_idx] = @intCast(current);
-                part_idx += 1;
-                current = 0;
-                has_digit = false;
-            } else if (ch >= '0' and ch <= '9') {
-                current = current * 10 + (ch - '0');
-                if (current > 255) return null;
-                has_digit = true;
-            } else {
-                return null;
-            }
-        }
-        if (!has_digit or part_idx != 3) return null;
-        parts[3] = @intCast(current);
-
-        return @bitCast(parts);
+        self.server.deinit(time.io());
     }
 };
 
 /// Ignore SIGPIPE so writes to sockets closed by the peer return EPIPE
 /// (error.BrokenPipe) instead of terminating the process.
 ///
-/// Zig ≤0.15 installed this automatically from std.start; in 0.16 the handler
-/// install moved into Io backend init(), which we bypass (see core/time.zig),
-/// so we must install it ourselves.
+/// std.Io.Threaded.init installs its own SIGPIPE handler on POSIX platforms,
+/// so this is only needed when running without an Io backend (e.g. early init).
+/// Safe to call multiple times; a no-op on Windows.
 pub fn ignoreSigpipe() void {
     const posix = std.posix;
     if (builtin.os.tag == .windows) return;

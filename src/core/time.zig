@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Time utilities and I/O instance for zig-zag.
 //!
-//! Replaces the removed `std.time.timestamp`, `std.time.milliTimestamp`,
-//! and `std.time.nanoTimestamp` from Zig 0.16 using libc clock_gettime.
-//! Also provides a global `std.Io` instance for operations that require one
-//! (process spawning, HTTP client, etc.).
+//! All time and sleep operations go through the global `std.Io` instance so
+//! they work cross-platform (macOS, Linux, Windows). The previous libc
+//! clock_gettime / nanosleep implementation was POSIX-only.
 
 const std = @import("std");
 
@@ -62,35 +61,33 @@ pub fn io() std.Io {
     return global_io_instance.io();
 }
 
-/// Returns the current time as seconds since the Unix epoch.
-/// Equivalent to the old std.time.timestamp().
+// ============================================================================
+// Cross-platform time — all via std.Io (works on macOS, Linux, Windows)
+// ============================================================================
+
+/// Returns the current wall-clock time as seconds since the Unix epoch.
 pub fn timestamp() i64 {
-    var ts: std.posix.timespec = undefined;
-    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
-    return @intCast(ts.sec);
+    const ts = std.Io.Timestamp.now(io(), .real);
+    return ts.toSeconds();
 }
 
-/// Returns the current time as milliseconds since the Unix epoch.
-/// Equivalent to the old std.time.milliTimestamp().
+/// Returns the current wall-clock time as milliseconds since the Unix epoch.
 pub fn milliTimestamp() i64 {
-    var ts: std.posix.timespec = undefined;
-    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
-    return @as(i64, @intCast(ts.sec)) * 1000 + @divTrunc(@as(i64, ts.nsec), 1_000_000);
+    const ts = std.Io.Timestamp.now(io(), .real);
+    return ts.toMilliseconds();
 }
 
-/// Returns the current time as nanoseconds since the Unix epoch.
-/// Equivalent to the old std.time.nanoTimestamp().
+/// Returns the current wall-clock time as nanoseconds since the Unix epoch.
 pub fn nanoTimestamp() i128 {
-    var ts: std.posix.timespec = undefined;
-    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
-    return @as(i128, ts.sec) * 1_000_000_000 + @as(i128, ts.nsec);
+    const ts = std.Io.Timestamp.now(io(), .real);
+    return @intCast(ts.nanoseconds);
 }
 
 /// Sleep for the given number of nanoseconds.
-/// Equivalent to the old std.Thread.sleep().
 pub fn sleep(nanoseconds: u64) void {
-    const sec: isize = @intCast(nanoseconds / 1_000_000_000);
-    const nsec: isize = @intCast(nanoseconds % 1_000_000_000);
-    const req = std.posix.timespec{ .sec = sec, .nsec = nsec };
-    _ = std.c.nanosleep(&req, null);
+    const duration = std.Io.Clock.Duration{
+        .raw = .{ .nanoseconds = @intCast(nanoseconds) },
+        .clock = .awake,
+    };
+    duration.sleep(io()) catch {};
 }
