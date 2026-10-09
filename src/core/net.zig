@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 //! TCP networking primitives for zig-zag.
 //!
-//! Replaces the removed `std.net.Server`, `std.net.Server.Connection`, and
-//! `std.net.Stream` from Zig 0.15 with direct POSIX/libc socket APIs that
-//! work in Zig 0.16's synchronous blocking model.
+//! Provides `Connection` (an inbound client socket) and `TcpServer` (retained
+//! for curl.zig and the mock upstream in tests). Inbound HTTP connections are
+//! now accepted via `std.Io.net` in server.zig; the `Connection` type wraps
+//! the accepted socket handle so all handlers remain unchanged.
 
 const std = @import("std");
 const builtin = @import("builtin");

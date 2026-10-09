@@ -20,7 +20,6 @@ const core_config = core.config;
 const log = core.log;
 const token_cache = core.cache;
 const app_cache = core.app_cache;
-const worker_pool = @import("worker_pool.zig");
 const log_impl = @import("log.zig");
 const metrics = core.metrics;
 const utils = core.utils;
@@ -62,7 +61,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
         std.heap.smp_allocator;
 
     // Initialize Threaded I/O backend first (uses page_allocator internally)
-    core.time.init(allocator, init.environ);
+    core.time.init(allocator, @as(?std.process.Environ, init.environ), 0);
     // No defer for deinit() - it's a no-op
 
     // Initialize caches before config loading
@@ -79,11 +78,12 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var cfg = try app_config.AppConfig.loadFromFile(allocator, config_path);
     defer cfg.deinit();
 
-    // Initialize IO worker pool (before logging so async writes work)
-    try worker_pool.init(allocator, @intCast(cfg.server.io_pool_size));
-    defer worker_pool.deinit();
+    // Apply configured concurrency limit to the Io runtime.
+    // http_pool_size drives connection concurrency; io_pool_size was the old
+    // background-task pool (kept for config back-compat, now a no-op).
+    core.time.setAsyncLimit(@intCast(cfg.server.http_pool_size));
 
-    // Initialize logging (after worker pool for async writes)
+    // Initialize logging (after Io backend for async writes)
     try log_impl.init(cfg.log, allocator);
     defer log_impl.deinit();
 

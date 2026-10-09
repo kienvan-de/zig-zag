@@ -30,7 +30,6 @@ const config_mod = @import("config.zig");
 const log = @import("log.zig");
 const utils = @import("utils.zig");
 const smart_routing = @import("smart_routing.zig");
-const worker_pool = @import("worker_pool.zig");
 const provider_mod = @import("provider.zig");
 const openai_common = @import("providers/openai/types.zig");
 const errors_mod = @import("errors.zig");
@@ -204,15 +203,12 @@ const FetchContext = struct {
     provider_name: []const u8,
     provider_config: *const config_mod.ProviderConfig,
     result: *FetchResult,
-    wg: *worker_pool.WaitGroup,
 };
 
-/// Fetch the model catalogue from all configured providers.
-///
-/// When a worker pool is available, providers are queried **in parallel**;
-/// otherwise the function falls back to sequential fetching. Individual
-/// provider failures are logged and skipped — the returned slice contains
-/// models from all providers that responded successfully, sorted
+/// Fetch the model catalogue from all configured providers in parallel using
+/// `std.Io.Group`. Falls back to sequential if concurrency is unavailable.
+/// Individual provider failures are logged and skipped — the returned slice
+/// contains models from all providers that responded successfully, sorted
 /// alphabetically by model `id`.
 ///
 /// The returned slice is **caller-owned**. Free it with `freeModels()`.
@@ -224,11 +220,6 @@ pub fn listModels(allocator: std.mem.Allocator) ![]openai_common.Model {
 
     if (provider_count == 0) {
         return try allocator.alloc(openai_common.Model, 0);
-    }
-
-    if (!worker_pool.isAvailable()) {
-        log.warn("Worker pool not initialized, falling back to sequential fetch", .{});
-        return try listModelsSequential(allocator, cfg);
     }
 
     var ts_alloc = ThreadSafeAllocator{ .backing_allocator = allocator };
@@ -244,31 +235,40 @@ pub fn listModels(allocator: std.mem.Allocator) ![]openai_common.Model {
         result.* = .{ .provider_name = "", .models = null, .err = null, .elapsed_ms = 0 };
     }
 
-    var wg = worker_pool.WaitGroup.init();
-
     var i: usize = 0;
     var provider_iter = cfg.providers.iterator();
     while (provider_iter.next()) |entry| {
-        const pname = entry.key_ptr.*;
-        const pconfig = entry.value_ptr;
         contexts[i] = .{
             .allocator = safe_allocator,
-            .provider_name = pname,
-            .provider_config = pconfig,
+            .provider_name = entry.key_ptr.*,
+            .provider_config = entry.value_ptr,
             .result = &results[i],
-            .wg = &wg,
-        };
-        wg.add(1);
-        worker_pool.submit(&fetchTask, @ptrCast(&contexts[i])) catch |err| {
-            log.warn("Failed to submit task for provider '{s}': {}", .{ pname, err });
-            results[i].err = err;
-            results[i].provider_name = pname;
-            wg.done();
         };
         i += 1;
     }
 
-    wg.wait();
+    // Dispatch all fetches concurrently via Io.Group; fall back to sequential
+    // if the runtime reports ConcurrencyUnavailable.
+    const io = time.io();
+    var group: std.Io.Group = .init;
+    var concurrent_ok = true;
+    for (contexts[0..provider_count]) |*ctx| {
+        group.concurrent(io, fetchTask, .{ctx}) catch |err| switch (err) {
+            error.ConcurrencyUnavailable => {
+                concurrent_ok = false;
+                break;
+            },
+        };
+    }
+
+    if (!concurrent_ok) {
+        // Cancel whatever was dispatched and fall back to sequential.
+        group.cancel(io);
+        log.warn("Io concurrency unavailable, falling back to sequential fetch", .{});
+        return try listModelsSequential(allocator, cfg);
+    }
+
+    group.@"await"(io) catch {}; // error.Canceled is harmless here
 
     var all_models = std.ArrayList(openai_common.Model).empty;
     defer all_models.deinit(safe_allocator);
@@ -312,9 +312,7 @@ pub fn freeModels(allocator: std.mem.Allocator, models: []openai_common.Model) v
     allocator.free(models);
 }
 
-fn fetchTask(ctx_ptr: *anyopaque) void {
-    const ctx: *FetchContext = @ptrCast(@alignCast(ctx_ptr));
-    defer ctx.wg.done();
+fn fetchTask(ctx: *FetchContext) std.Io.Cancelable!void {
     const start_time = time.milliTimestamp();
     ctx.result.provider_name = ctx.provider_name;
     ctx.result.models = fetchModelsForProvider(ctx.allocator, ctx.provider_name, ctx.provider_config) catch |err| {

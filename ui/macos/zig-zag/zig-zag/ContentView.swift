@@ -101,8 +101,6 @@ struct ServerStats {
             return "Config load failed"
         case ServerErrorPortInUse:
             return "Port in use"
-        case ServerErrorWorkerPoolInitFailed:
-            return "Worker pool init failed"
         case ServerErrorLogInitFailed:
             return "Log init failed"
         case ServerErrorThreadSpawnFailed:

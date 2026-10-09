@@ -36,7 +36,6 @@ typedef enum {
     ServerErrorNone = 0,              // No error
     ServerErrorConfigLoadFailed = 1,  // Failed to load/parse config.json
     ServerErrorPortInUse = 2,         // Server port already in use
-    ServerErrorWorkerPoolInitFailed = 3, // Failed to initialize worker pool
     ServerErrorLogInitFailed = 4,     // Failed to initialize logging
     ServerErrorThreadSpawnFailed = 5, // Failed to spawn server thread
 } ServerErrorCode;

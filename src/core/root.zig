@@ -2,7 +2,7 @@
 //!
 //! Public API surface for embedding zig-zag in any application.
 //! The wrapper (HTTP server, CLI tool, etc.) injects dependencies
-//! via `config.set()`, `worker_pool.setSubmitFn()`, and `log.setSink()`.
+//! via `config.set()` and `log.setSink()`.
 //!
 //! ## Quick Start (Minimal Embedder)
 //!
@@ -71,9 +71,6 @@ pub const client = @import("client.zig");
 
 /// System curl wrapper for TLS-constrained servers (SAP IAS).
 pub const curl = @import("curl.zig");
-
-/// Worker pool facade — pluggable task submission.
-pub const worker_pool = @import("worker_pool.zig");
 
 /// Authentication modules (OIDC, OAuth, PKCE, callback server).
 pub const auth = @import("auth/mod.zig");

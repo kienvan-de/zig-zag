@@ -26,7 +26,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const core = @import("zag-core");
 const env = core.env;
-const worker_pool = core.worker_pool;
+const time = core.time;
 
 /// Log output destination.
 pub const LogOutput = enum {
@@ -73,6 +73,11 @@ var flush_thread: ?std.Thread = null;
 var flush_interval_ns: u64 = 1000 * std.time.ns_per_ms;
 var shutdown_flush: bool = false;
 
+/// Background group for async log writes.
+/// Tasks are dispatched via Group.async and the group is awaited at deinit,
+/// ensuring all in-flight writes complete before the logging backend shuts down.
+var log_group: std.Io.Group = .init;
+
 /// Buffer state (only accessed by worker threads)
 var buffer_mutex: core.sync.Mutex = .{};
 var log_buffer: std.ArrayList(u8) = .empty;
@@ -83,12 +88,6 @@ var max_files: usize = 5;
 var buffer_threshold: usize = 8192;
 var log_path_buf: [core.fs.max_path_bytes]u8 = undefined;
 var log_path: []const u8 = "";
-
-/// Context for log task submitted to worker pool.
-const LogTaskContext = struct {
-    message: []u8,
-    allocator: std.mem.Allocator,
-};
 
 // ============================================================================
 // Public API
@@ -169,6 +168,11 @@ pub fn deinit() void {
         flush_thread = null;
     }
 
+    // Wait for all in-flight async log writes to complete before closing the file.
+    const io = time.io();
+    log_group.@"await"(io) catch {};
+    log_group = .init;
+
     buffer_mutex.lock();
     defer buffer_mutex.unlock();
 
@@ -199,12 +203,12 @@ pub fn flush() void {
 // Sink — registered with core facade
 // ============================================================================
 
-/// Buffered sink: either submits to worker pool or writes directly.
+/// Buffered sink: submits log writes as async Io tasks so HTTP threads
+/// are never blocked by file I/O.
 ///
 /// Matches `core.log.SinkFn` signature.
 fn bufferedSink(msg: []const u8) void {
     const allocator = log_allocator orelse {
-        // Fallback: direct stderr if allocator not available
         _ = std.c.write(std.posix.STDERR_FILENO, msg.ptr, msg.len);
         return;
     };
@@ -217,50 +221,28 @@ fn bufferedSink(msg: []const u8) void {
     };
     @memcpy(owned_msg, msg);
 
-    // Try to submit to worker pool for async write
-    if (worker_pool.isAvailable()) {
-        const task_ctx = allocator.create(LogTaskContext) catch {
-            // Fallback: write directly
-            writeDirectMsg(owned_msg);
-            allocator.free(owned_msg);
-            return;
-        };
-        task_ctx.* = .{
-            .message = owned_msg,
-            .allocator = allocator,
-        };
-
-        worker_pool.submit(&logWorkerTask, @ptrCast(task_ctx)) catch {
-            writeDirectMsg(owned_msg);
-            allocator.free(owned_msg);
-            allocator.destroy(task_ctx);
-            return;
-        };
-    } else {
-        // No worker pool — write directly
-        writeDirectMsg(owned_msg);
-        allocator.free(owned_msg);
-    }
+    // Dispatch as a background Group.async task — true fire-and-forget.
+    // Group.async never blocks the caller: on the Threaded backend it either
+    // schedules on a worker thread or runs inline when at capacity. The group
+    // is awaited in deinit() so all writes complete before shutdown.
+    const io = time.io();
+    log_group.@"async"(io, logWriteTask, .{ owned_msg, allocator });
 }
 
 // ============================================================================
 // Internals
 // ============================================================================
 
-/// Worker task: append message to buffer and flush if needed.
-fn logWorkerTask(ctx: *anyopaque) void {
-    const task_ctx: *LogTaskContext = @ptrCast(@alignCast(ctx));
-    defer {
-        task_ctx.allocator.free(task_ctx.message);
-        task_ctx.allocator.destroy(task_ctx);
-    }
+/// Async task: append message to buffer and flush if needed. Frees the
+/// message slice when done.
+fn logWriteTask(msg: []u8, allocator: std.mem.Allocator) void {
+    defer allocator.free(msg);
 
     buffer_mutex.lock();
     defer buffer_mutex.unlock();
 
-    const allocator = log_allocator orelse return;
-
-    log_buffer.appendSlice(allocator, task_ctx.message) catch return;
+    const alloc = log_allocator orelse return;
+    log_buffer.appendSlice(alloc, msg) catch return;
 
     if (log_buffer.items.len >= buffer_threshold) {
         flushBufferLocked();

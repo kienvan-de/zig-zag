@@ -18,7 +18,6 @@ const time = @import("time.zig");
 const Allocator = std.mem.Allocator;
 const provider_mod = @import("provider.zig");
 const log_mod = @import("log.zig");
-const worker_pool = @import("worker_pool.zig");
 
 // Provider clients — used by auth functions
 const CopilotClient = @import("providers/copilot/client.zig").CopilotClient;
@@ -679,8 +678,7 @@ const DeviceFlowThreadArgs = struct {
     expires_in: i64,
 };
 
-fn deviceFlowPollTask(ctx: *anyopaque) void {
-    const args_ptr: *DeviceFlowThreadArgs = @ptrCast(@alignCast(ctx));
+fn deviceFlowPollTask(args_ptr: *DeviceFlowThreadArgs) std.Io.Cancelable!void {
     const args = args_ptr.*;
     defer std.heap.page_allocator.destroy(args_ptr);
 
@@ -757,11 +755,16 @@ fn initiateCopilotAuth(allocator: Allocator, cfg: *const Config, provider_name: 
         .expires_in = result.expires_in,
     };
 
-    worker_pool.submit(&deviceFlowPollTask, @ptrCast(thread_args)) catch {
-        std.heap.page_allocator.destroy(thread_args);
-        device_flow_state.status.store(.failed, .release);
-        return .{ .err = .{ .message = "Failed to submit poll task" } };
-    };
+    // Spawn background poll task via Io.Group.async — true fire-and-forget.
+    // Group.async (unlike io.async + await) dispatches the task without
+    // blocking the caller. The group is never awaited here; the task runs
+    // to completion independently. On dispatch failure the Io backend runs
+    // the task inline before returning, so the function always executes.
+    const io = time.io();
+    var poll_group: std.Io.Group = .init;
+    poll_group.@"async"(io, deviceFlowPollTask, .{thread_args});
+    // Note: poll_group is intentionally not awaited — the task is detached.
+    // Group.async on Threaded always schedules or runs inline, never drops.
 
     return .{ .device_flow = .{
         .user_code = device_flow_state.user_code[0..device_flow_state.user_code_len],

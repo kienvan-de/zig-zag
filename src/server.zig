@@ -32,33 +32,25 @@ const NOT_FOUND_RESPONSE =
     \\{"error": "Not Found"}
 ;
 
-/// Thread pool worker context
-const WorkerContext = struct {
-    allocator: std.mem.Allocator,
-    server_cfg: app_config.ServerConfig,
-    listener: *net.TcpServer,
-    shutdown: *std.atomic.Value(bool),
-};
-
 // ============================================================================
 // Shutdown support
 // ============================================================================
 
-/// Global listener pointer and mutex for shutdown support.
-/// Protected by listener_mutex - set while server is running, null otherwise.
-var global_listener: ?*net.TcpServer = null;
-var listener_mutex: core.sync.Mutex = .{};
+/// Global server pointer and mutex for shutdown support.
+/// Protected by server_mutex — set while server is running, null otherwise.
+var global_server: ?*std.Io.net.Server = null;
+var server_mutex: core.sync.Mutex = .{};
 
 /// Signal the running server to stop.
-/// Closes the listener socket which causes all accept() calls to return an
-/// error, allowing worker threads to exit cleanly.
+/// Deinits the Io net Server which causes the blocking accept() call to return
+/// `error.SocketNotListening`, allowing the accept loop to exit cleanly.
 pub fn shutdown() void {
-    listener_mutex.lock();
-    defer listener_mutex.unlock();
+    server_mutex.lock();
+    defer server_mutex.unlock();
 
-    if (global_listener) |l| {
-        l.deinit();
-        global_listener = null;
+    if (global_server) |s| {
+        s.deinit(core.time.io());
+        global_server = null;
     }
 }
 
@@ -70,24 +62,30 @@ pub fn start(allocator: std.mem.Allocator, cfg: *const app_config.AppConfig) !vo
     const host = cfg.server.host;
     const port = cfg.server.port;
 
-    const pool_size: usize = @intCast(cfg.server.http_pool_size);
-
     log.info("Starting zig-zag proxy server on {s}:{d}...", .{ host, port });
     log.info("Loaded providers: {d}", .{cfg.core.providers.count()});
-    log.info("HTTP pool size: {d}", .{pool_size});
 
-    var listener = try net.TcpServer.listen(host, port, .{
+    const io = core.time.io();
+
+    // Parse the listen address using a stack buffer — no allocation needed.
+    var addr_buf: [64]u8 = undefined;
+    const addr_str = std.fmt.bufPrint(&addr_buf, "{s}:{d}", .{ host, port }) catch
+        return error.InvalidAddress;
+    const address = std.Io.net.IpAddress.parseLiteral(addr_str) catch
+        return error.InvalidAddress;
+
+    var server = try std.Io.net.IpAddress.listen(&address, io, .{
         .reuse_address = true,
     });
-    // NOTE: We do NOT defer listener.deinit() here.
+    // NOTE: We do NOT defer server.deinit() here.
     // shutdown() owns deinit when called externally.
-    // If we exit normally (no shutdown), we deinit below after joining threads.
+    // If we exit normally (no shutdown), we deinit below after the loop.
 
     // Register in global state so shutdown() can close the socket.
     {
-        listener_mutex.lock();
-        global_listener = &listener;
-        listener_mutex.unlock();
+        server_mutex.lock();
+        global_server = &server;
+        server_mutex.unlock();
     }
 
     log.info("Listening on http://{s}:{d}", .{ host, port });
@@ -96,85 +94,58 @@ pub fn start(allocator: std.mem.Allocator, cfg: *const app_config.AppConfig) !vo
     log.info("  POST /v1/responses", .{});
     log.info("  POST /v1/messages", .{});
     log.info("  GET  /v1/models", .{});
+    log.info("Server started on {s}:{d}", .{ host, port });
 
-    log.info("Server started on {s}:{d} with {d} HTTP workers", .{ host, port, pool_size });
+    // Accept loop: dispatch each connection concurrently via the Io runtime.
+    // The loop exits when accept() returns SocketNotListening (shutdown) or
+    // Canceled. All in-flight connections run to completion before we return.
+    var group: std.Io.Group = .init;
+    while (true) {
+        const stream = server.accept(io) catch |err| switch (err) {
+            error.SocketNotListening, error.Canceled => break,
+            else => {
+                log.warn("Failed to accept connection: {}", .{err});
+                continue;
+            },
+        };
 
-    var shutdown_flag = std.atomic.Value(bool).init(false);
+        // Wrap the Io stream into our Connection type (same handle type) so
+        // all existing handlers are untouched.
+        const connection = net.Connection{ .handle = stream.socket.handle };
 
-    var worker_ctx = WorkerContext{
-        .allocator = allocator,
-        .server_cfg = cfg.server,
-        .listener = &listener,
-        .shutdown = &shutdown_flag,
-    };
-
-    var threads = try allocator.alloc(std.Thread, pool_size);
-    defer allocator.free(threads);
-
-    for (0..pool_size) |i| {
-        threads[i] = try std.Thread.spawn(.{}, workerThread, .{&worker_ctx});
-        log.debug("Started worker thread {d}", .{i});
+        group.@"async"(io, handleConnectionTask, .{ allocator, connection, cfg.server });
     }
 
-    // Wait for all threads to exit (they exit when accept() fails after shutdown).
-    for (threads) |thread| {
-        thread.join();
-    }
+    // Wait for all in-flight connections to finish before returning.
+    group.@"await"(io) catch {};
 
-    // Clear global listener reference.
-    // If shutdown() already called deinit(), global_listener is already null
-    // and listener.deinit() would double-free, so only deinit if we still own it.
+    // Clear global server reference.
+    // If shutdown() already called deinit(), global_server is already null.
     {
-        listener_mutex.lock();
-        defer listener_mutex.unlock();
-        if (global_listener != null) {
-            global_listener = null;
-            listener.deinit();
+        server_mutex.lock();
+        defer server_mutex.unlock();
+        if (global_server != null) {
+            global_server = null;
+            server.deinit(io);
         }
-        // else: shutdown() already called deinit(), nothing to do.
     }
 
     log.info("Server stopped", .{});
 }
 
 // ============================================================================
-// Worker threads
-// ============================================================================
-
-fn workerThread(ctx: *WorkerContext) void {
-    log.debug("Worker thread started", .{});
-
-    var fail_streak: u32 = 0;
-    while (!ctx.shutdown.load(.acquire)) {
-        const connection = ctx.listener.accept() catch |err| {
-            // Any error after shutdown is expected (socket closed).
-            if (ctx.shutdown.load(.acquire)) break;
-            // Check if the listener was closed externally via shutdown().
-            {
-                listener_mutex.lock();
-                const still_valid = global_listener != null;
-                listener_mutex.unlock();
-                if (!still_valid) break;
-            }
-            fail_streak += 1;
-            const backoff_ms: u64 = @min(50 * (@as(u64, 1) << @min(fail_streak, 3)), 200);
-            log.warn("Failed to accept connection: {} (backoff {}ms)", .{ err, backoff_ms });
-            core.time.sleep(backoff_ms * std.time.ns_per_ms);
-            continue;
-        };
-        fail_streak = 0;
-
-        handleConnection(ctx.allocator, connection, ctx.server_cfg) catch |err| {
-            log.warn("Error handling connection: {}", .{err});
-        };
-    }
-
-    log.debug("Worker thread exiting", .{});
-}
-
-// ============================================================================
 // Connection handling
 // ============================================================================
+
+fn handleConnectionTask(
+    allocator: std.mem.Allocator,
+    connection: net.Connection,
+    server_cfg: app_config.ServerConfig,
+) void {
+    handleConnection(allocator, connection, server_cfg) catch |err| {
+        log.warn("Error handling connection: {}", .{err});
+    };
+}
 
 fn handleConnection(allocator: std.mem.Allocator, connection: net.Connection, server_cfg: app_config.ServerConfig) !void {
     defer connection.close();

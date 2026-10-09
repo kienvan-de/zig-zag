@@ -12,22 +12,32 @@ const std = @import("std");
 // Global I/O instance
 // ============================================================================
 
-/// A properly initialized Threaded I/O instance with a real allocator.
-/// Unlike `std.Io.Threaded.global_single_threaded` (which uses `.failing`
-/// allocator), this instance supports process spawning and other operations
-/// that need memory allocation.
+/// A fully concurrent Threaded I/O instance.
+/// Constructed via `std.Io.Threaded.init(allocator, .{})` which sets
+/// `async_limit` to `cpu_count - 1` and spawns worker threads on demand.
+/// This enables real concurrency through `io.async` / `io.concurrent` /
+/// `Io.Group`, replacing the hand-rolled worker pool.
 var global_io_instance: std.Io.Threaded = std.Io.Threaded.init_single_threaded;
 var global_io_initialized: bool = false;
 
 /// Initialize the global I/O backend with the given allocator.
-/// The `environ` parameter is accepted for API compatibility but unused at
-/// this level — the init_single_threaded backend does not support it.
+/// `async_limit` caps the thread pool size (0 = default: cpu_count-1).
 /// Safe to call multiple times; subsequent calls are no-ops.
-pub fn init(allocator: std.mem.Allocator, environ: anytype) void {
-    _ = environ;
+pub fn init(allocator: std.mem.Allocator, environ: ?std.process.Environ, async_limit: usize) void {
     if (global_io_initialized) return;
-    global_io_instance.allocator = allocator;
+    global_io_instance = std.Io.Threaded.init(allocator, .{
+        .environ = environ orelse .empty,
+        .async_limit = if (async_limit == 0) null else std.Io.Limit.limited(async_limit),
+    });
     global_io_initialized = true;
+}
+
+/// Update the async thread limit after init. Takes effect immediately —
+/// call after loading config so the configured pool size is applied.
+/// Passing 0 leaves the limit unchanged.
+pub fn setAsyncLimit(limit: usize) void {
+    if (!global_io_initialized or limit == 0) return;
+    global_io_instance.setAsyncLimit(std.Io.Limit.limited(limit));
 }
 
 /// Tear down the global I/O backend and reset it to a clean state.
@@ -43,10 +53,10 @@ pub fn deinit() void {
 }
 
 /// Get a usable `std.Io` instance for operations that require one.
-/// If init() was not called, falls back to page_allocator.
+/// If init() was not called, falls back to page_allocator (concurrent backend).
 pub fn io() std.Io {
     if (!global_io_initialized) {
-        global_io_instance.allocator = std.heap.page_allocator;
+        global_io_instance = std.Io.Threaded.init(std.heap.page_allocator, .{});
         global_io_initialized = true;
     }
     return global_io_instance.io();

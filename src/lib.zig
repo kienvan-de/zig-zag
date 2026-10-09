@@ -20,7 +20,6 @@ const core_config = core.config;
 const log = core.log;
 const token_cache = core.cache;
 const app_cache = core.app_cache;
-const worker_pool = @import("worker_pool.zig");
 const log_impl = @import("log.zig");
 const metrics = core.metrics;
 const provider = core.provider;
@@ -79,7 +78,6 @@ pub const ServerErrorCode = enum(c_int) {
     none = 0, // No error
     config_load_failed = 1, // Failed to load/parse config.json
     port_in_use = 2, // Server port already in use
-    worker_pool_init_failed = 3, // Failed to initialize worker pool
     log_init_failed = 4, // Failed to initialize logging
     thread_spawn_failed = 5, // Failed to spawn server thread
 };
@@ -120,7 +118,7 @@ fn serverThreadFn(s: *State) void {
     // All initialization happens in this thread to avoid blocking UI.
 
     // Initialize Threaded I/O backend first (uses page_allocator internally)
-    core.time.init(allocator, null);
+    core.time.init(allocator, null, 0);
     // No defer for deinit() - it's a no-op
 
     // 1. Initialize caches (before config so loadFromFile can cache values)
@@ -144,6 +142,9 @@ fn serverThreadFn(s: *State) void {
     s.port = cfg.server.port;
     state_mutex.unlock();
 
+    // Apply configured concurrency limit to the Io runtime.
+    core.time.setAsyncLimit(@intCast(cfg.server.http_pool_size));
+
     // Ensure config is cleaned up on any exit path
     defer {
         state_mutex.lock();
@@ -153,16 +154,7 @@ fn serverThreadFn(s: *State) void {
     }
 
     // Initialize pricing engine (load cost CSVs for configured providers)
-    // 3. Initialize worker pool
-    worker_pool.init(allocator, @intCast(cfg.server.io_pool_size)) catch |err| {
-        log.err("Failed to init worker pool: {}", .{err});
-        server_status.store(.err, .release);
-        server_error_code.store(.worker_pool_init_failed, .release);
-        return;
-    };
-    defer worker_pool.deinit();
-
-    // 4. Initialize logging
+    // 3. Initialize logging (after Io backend for async writes)
     var lib_log_config = cfg.log;
     lib_log_config.output = .file; // lib mode always writes to file
     log_impl.init(lib_log_config, allocator) catch |err| {
