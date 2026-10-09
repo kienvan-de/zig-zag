@@ -238,17 +238,11 @@ pub const CopilotClient = struct {
     /// Looks for key "github.com:<client_id>" -> oauth_token
     /// Returns duplicated token string (caller must free)
     fn readGitHubToken(self: *CopilotClient) ![]const u8 {
-        const home = env.get("HOME") orelse {
-            log.err("[Copilot] HOME environment variable not set", .{});
+        var path_buf: [fs.max_path_bytes]u8 = undefined;
+        const apps_path = fs.vendorConfigPath(&path_buf, "github-copilot", "apps.json") orelse {
+            log.err("[Copilot] Could not resolve apps.json path (HOME/APPDATA not set)", .{});
             return error.HomeNotFound;
         };
-
-        var path_buf: [fs.max_path_bytes]u8 = undefined;
-        const apps_path = std.fmt.bufPrint(
-            &path_buf,
-            "{s}/.config/github-copilot/apps.json",
-            .{home},
-        ) catch return error.PathTooLong;
 
         // Read file
         const file = fs.cwd().openFile(apps_path, .{}) catch |err| {
@@ -392,21 +386,11 @@ pub const CopilotClient = struct {
     /// Read-modify-write: preserves other entries in the file.
     /// Uses an arena allocator internally so all temporary JSON work is freed in one shot.
     fn saveTokenToAppsJson(self: *CopilotClient, access_token: []const u8) !void {
-        const home = env.get("HOME") orelse return error.HomeNotFound;
-
         var dir_buf: [fs.max_path_bytes]u8 = undefined;
-        const dir_path = std.fmt.bufPrint(
-            &dir_buf,
-            "{s}/.config/github-copilot",
-            .{home},
-        ) catch return error.PathTooLong;
+        const dir_path = fs.vendorConfigDir(&dir_buf, "github-copilot") orelse return error.HomeNotFound;
 
         var path_buf: [fs.max_path_bytes]u8 = undefined;
-        const apps_path = std.fmt.bufPrint(
-            &path_buf,
-            "{s}/apps.json",
-            .{dir_path},
-        ) catch return error.PathTooLong;
+        const apps_path = fs.vendorConfigPath(&path_buf, "github-copilot", "apps.json") orelse return error.HomeNotFound;
 
         // Ensure directory exists
         fs.cwd().makePath(dir_path) catch |err| {
@@ -838,14 +822,8 @@ pub const CopilotClient = struct {
 
     /// Check if apps.json contains an entry for this client_id.
     fn appsJsonHasEntry(self: *CopilotClient) bool {
-        const home = env.get("HOME") orelse return false;
-
         var path_buf: [fs.max_path_bytes]u8 = undefined;
-        const apps_path = std.fmt.bufPrint(
-            &path_buf,
-            "{s}/.config/github-copilot/apps.json",
-            .{home},
-        ) catch return false;
+        const apps_path = fs.vendorConfigPath(&path_buf, "github-copilot", "apps.json") orelse return false;
 
         const file = fs.cwd().openFile(apps_path, .{}) catch return false;
         defer file.close();
@@ -868,14 +846,8 @@ pub const CopilotClient = struct {
 
     /// Remove this client's entry from apps.json.
     fn removeAppsJsonEntry(self: *CopilotClient) !void {
-        const home = env.get("HOME") orelse return error.HomeNotFound;
-
         var path_buf: [fs.max_path_bytes]u8 = undefined;
-        const apps_path = std.fmt.bufPrint(
-            &path_buf,
-            "{s}/.config/github-copilot/apps.json",
-            .{home},
-        ) catch return error.PathTooLong;
+        const apps_path = fs.vendorConfigPath(&path_buf, "github-copilot", "apps.json") orelse return error.HomeNotFound;
 
         const file = fs.cwd().openFile(apps_path, .{}) catch return; // not an error if missing
         const content = file.readToEndAlloc(self.allocator, 1024 * 1024) catch {

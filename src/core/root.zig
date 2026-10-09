@@ -96,7 +96,7 @@ pub const time = @import("time.zig");
 /// Filesystem utilities (replaces std.fs.cwd() operations).
 pub const fs = @import("fs.zig");
 
-/// Platform utilities: resolve absolute paths for external tools (curl, tar).
+/// Platform utilities: resolve absolute paths for external tools (curl).
 pub const platform = @import("platform.zig");
 
 // =========================================================================

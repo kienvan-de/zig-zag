@@ -13,7 +13,6 @@
 // limitations under the License.
 
 const std = @import("std");
-const builtin = @import("builtin");
 const time = @import("time.zig");
 const log = @import("log.zig");
 
@@ -27,50 +26,6 @@ fn decompressBuffer(allocator: std.mem.Allocator, encoding: std.http.ContentEnco
         .zstd => try allocator.alloc(u8, std.compress.zstd.default_window_len),
         .compress => error.UnsupportedCompressionMethod,
     };
-}
-
-/// Configure an outbound provider socket for dead-connection detection.
-///
-/// We deliberately do NOT use `SO_RCVTIMEO`/`SO_SNDTIMEO`: the app's Io backend
-/// is `std.Io.Threaded` (blocking, single-threaded), whose `netReadPosix` treats
-/// `EAGAIN` — which a socket read timeout produces — as an impossible errno and
-/// PANICS (`errnoBug` → abort). See the Sep-2026 SIGABRT crash.
-///
-/// Instead we enable TCP keepalive with an idle interval derived from
-/// `timeout_ms`, so a genuinely-dead peer (vanished with no FIN/RST) is detected
-/// and the read fails with `ETIMEDOUT`/`ECONNRESET` — both of which std handles
-/// gracefully (no panic). Trade-off: keepalive bounds DEAD connections, not a
-/// slow-but-alive upstream that stalls without disconnecting; that case relies on
-/// the provider's server-side duration cap.
-pub fn configureSocket(handle: std.posix.socket_t, timeout_ms: u64) void {
-    if (timeout_ms == 0) return;
-
-    // Enable keepalive probes on the connection. Use raw libc setsockopt: the
-    // std wrapper panics (`unreachable`) on EBADF/ENOTSOCK/EINVAL/EFAULT, which
-    // are possible if the fd raced closed. Best-effort, non-fatal on failure.
-    const on: c_int = 1;
-    if (std.c.setsockopt(handle, std.posix.SOL.SOCKET, std.posix.SO.KEEPALIVE, @ptrCast(&on), @sizeOf(c_int)) != 0) {
-        log.debug("Failed to enable SO_KEEPALIVE", .{});
-        return;
-    }
-
-    // Idle seconds before the first keepalive probe, tuned by timeout_ms
-    // (default provider timeout 300_000ms → 300s). Without this the OS default
-    // idle (~2h on macOS) makes keepalive useless for timely detection.
-    const idle_secs: c_int = @intCast(@max(1, timeout_ms / 1000));
-    // macOS exposes the idle interval as TCP_KEEPALIVE (not in std); Linux uses
-    // TCP_KEEPIDLE. Both live at the IPPROTO_TCP level.
-    const idle_opt: u32 = switch (builtin.os.tag) {
-        .macos, .ios, .tvos, .watchos, .visionos => 0x10, // TCP_KEEPALIVE (macOS)
-        .linux => std.posix.TCP.KEEPIDLE,
-        else => {
-            log.debug("Keepalive idle interval not configured: unsupported OS {s}", .{@tagName(builtin.os.tag)});
-            return;
-        },
-    };
-    if (std.c.setsockopt(handle, std.posix.IPPROTO.TCP, idle_opt, @ptrCast(&idle_secs), @sizeOf(c_int)) != 0) {
-        log.debug("Failed to set keepalive idle interval", .{});
-    }
 }
 
 /// Iterator for SSE streaming responses - reads from socket on-demand
@@ -241,11 +196,9 @@ pub const HttpResponse = struct {
 pub const HttpClient = struct {
     allocator: std.mem.Allocator,
     client: std.http.Client,
-    timeout_ms: u64,
     max_response_size: usize,
     delimiter: u8,
 
-    const DEFAULT_TIMEOUT_MS: u64 = 60000;
     const DEFAULT_MAX_RESPONSE_SIZE: usize = 10 * 1024 * 1024; // 10MB
     const DEFAULT_DELIMITER: u8 = '\n';
 
@@ -253,7 +206,6 @@ pub const HttpClient = struct {
         return .{
             .allocator = allocator,
             .client = std.http.Client{ .allocator = allocator, .io = time.io() },
-            .timeout_ms = DEFAULT_TIMEOUT_MS,
             .max_response_size = DEFAULT_MAX_RESPONSE_SIZE,
             .delimiter = DEFAULT_DELIMITER,
         };
@@ -265,10 +217,10 @@ pub const HttpClient = struct {
         max_response_size: usize,
         delimiter: ?u8,
     ) HttpClient {
+        _ = timeout_ms; // timeout removed — no cross-platform socket timeout API in std.Io
         return .{
             .allocator = allocator,
             .client = std.http.Client{ .allocator = allocator, .io = time.io() },
-            .timeout_ms = timeout_ms,
             .max_response_size = max_response_size,
             .delimiter = delimiter orelse DEFAULT_DELIMITER,
         };
@@ -312,10 +264,6 @@ pub const HttpClient = struct {
         };
         defer req.deinit();
         log.debug("HTTP GET: request created successfully", .{});
-
-        if (req.connection) |conn| {
-            configureSocket(conn.stream_reader.stream.socket.handle, self.timeout_ms);
-        }
 
         log.debug("HTTP GET: sending request...", .{});
         req.sendBodiless() catch |err| {
@@ -400,11 +348,6 @@ pub const HttpClient = struct {
         };
         defer req.deinit();
         log.debug("HTTP POST: request created successfully", .{});
-
-        // Apply socket timeout
-        if (req.connection) |conn| {
-            configureSocket(conn.stream_reader.stream.socket.handle, self.timeout_ms);
-        }
 
         // Set content length and send
         req.transfer_encoding = .{ .content_length = request_body.len };
@@ -497,11 +440,6 @@ pub const HttpClient = struct {
         });
         defer req.deinit();
 
-        // Apply socket timeout
-        if (req.connection) |conn| {
-            configureSocket(conn.stream_reader.stream.socket.handle, self.timeout_ms);
-        }
-
         // Set content length and send
         req.transfer_encoding = .{ .content_length = request_body.items.len };
         var buf: [4096]u8 = undefined;
@@ -570,10 +508,6 @@ pub const HttpClient = struct {
             .extra_headers = extra_headers,
         });
         defer req.deinit();
-
-        if (req.connection) |conn| {
-            configureSocket(conn.stream_reader.stream.socket.handle, self.timeout_ms);
-        }
 
         req.transfer_encoding = .{ .content_length = request_body.items.len };
         var buf: [4096]u8 = undefined;
@@ -651,11 +585,6 @@ pub const HttpClient = struct {
         // `result` (and its errdefer) owns teardown, so this defer is disarmed.
         var req_moved = false;
         defer if (!req_moved) req.deinit();
-
-        // Apply socket timeout
-        if (req.connection) |conn| {
-            configureSocket(conn.stream_reader.stream.socket.handle, self.timeout_ms);
-        }
 
         // Set content length and send
         req.transfer_encoding = .{ .content_length = request_body.items.len };

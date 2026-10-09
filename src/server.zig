@@ -157,17 +157,6 @@ fn handleConnection(allocator: std.mem.Allocator, connection: net.Connection, se
     // Size limits from config
     const max_header_size: usize = @intCast(server_cfg.max_header_size);
     const max_body_size: usize = @intCast(server_cfg.max_body_size);
-    const read_timeout_ms: i64 = server_cfg.read_timeout_ms;
-
-    // Set read timeout on the socket (SO_RCVTIMEO). Best-effort: a client may
-    // have closed the connection between accept() and here, invalidating the
-    // fd. Connection.setReadTimeout handles every errno (no panic) so a single
-    // dropped connection can never abort the whole proxy.
-    if (read_timeout_ms > 0) {
-        if (!connection.setReadTimeout(read_timeout_ms)) {
-            log.debug("Failed to set read timeout (connection likely already closed)", .{});
-        }
-    }
 
     // Read the full request into a dynamically grown buffer so large bodies
     // are not silently truncated.

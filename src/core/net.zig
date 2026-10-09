@@ -43,28 +43,6 @@ pub const Connection = struct {
         try io_writer.interface.flush();
     }
 
-    /// Set the receive timeout (SO_RCVTIMEO) in milliseconds. Best-effort:
-    /// returns false on any failure instead of panicking.
-    /// No-op on Windows (std.Io.net handles timeouts at the operation level).
-    pub fn setReadTimeout(self: Connection, timeout_ms: i64) bool {
-        if (builtin.os.tag == .windows) return true;
-        if (timeout_ms <= 0) return true;
-        const tv = std.posix.timeval{
-            .sec = @intCast(@divTrunc(timeout_ms, 1000)),
-            .usec = @intCast(@rem(timeout_ms, 1000) * 1000),
-        };
-        // Use raw libc setsockopt: std.posix.setsockopt panics on EBADF/ENOTSOCK
-        // which can race when a client closes the connection after accept().
-        const rc = std.c.setsockopt(
-            self.handle,
-            std.posix.SOL.SOCKET,
-            std.posix.SO.RCVTIMEO,
-            @ptrCast(&tv),
-            @sizeOf(std.posix.timeval),
-        );
-        return rc == 0;
-    }
-
     /// Close the connection socket.
     pub fn close(self: Connection) void {
         const socket: std.Io.net.Socket = .{ .handle = self.handle, .address = undefined };

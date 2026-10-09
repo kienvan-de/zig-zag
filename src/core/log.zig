@@ -131,7 +131,8 @@ fn logImpl(
 
 /// Default sink — write to stderr.
 fn stderrSink(msg: []const u8) void {
-    _ = std.c.write(std.posix.STDERR_FILENO, msg.ptr, msg.len);
+    const t = @import("time.zig");
+    std.Io.File.stderr().writeStreamingAll(t.io(), msg) catch {};
 }
 
 /// Get current timestamp as formatted string.

@@ -75,9 +75,14 @@ pub const File = struct {
         return .{ .size = s.size };
     }
 
-    /// Seek to a position relative to the end of the file.
+    /// Seek to the end of the file (for appending). Cross-platform via std.Io.
     pub fn seekFromEnd(self: File, offset: i64) !void {
-        _ = std.c.lseek(self.fd, @intCast(offset), std.c.SEEK.END);
+        _ = offset; // only offset=0 (seek to end) is used in this codebase
+        const t = @import("time.zig");
+        const io = t.io();
+        const io_file = std.Io.File{ .handle = self.fd, .flags = .{ .nonblocking = false } };
+        const len = try io_file.length(io);
+        try io.vtable.fileSeekTo(io.userdata, io_file, len);
     }
 
     /// Read into a fixed buffer (non-allocating). Returns bytes read.
@@ -261,6 +266,78 @@ pub fn cwd() Dir {
 /// Open a file by absolute path (matches old std.fs.openFileAbsolute).
 pub fn openFileAbsolute(path: []const u8, options: OpenFileOptions) !File {
     return openFileImpl(path, options.mode == .write_only, false);
+}
+
+// ============================================================================
+// Platform-aware path construction
+// ============================================================================
+
+/// Write the platform-specific path for a file inside an application's data
+/// directory into `buf`. Returns the written slice, or null on failure.
+///
+/// | Platform | Base dir env var | Path format |
+/// |----------|------------------|-------------|
+/// | Windows  | LOCALAPPDATA     | %LOCALAPPDATA%\<app>\<filename> |
+/// | macOS    | HOME             | $HOME/Library/Application Support/<app>/<filename> |
+/// | Linux    | XDG_DATA_HOME or HOME | $XDG_DATA_HOME/<app>/<filename> or $HOME/.local/share/<app>/<filename> |
+/// | other    | HOME             | $HOME/.config/<app>/<filename> |
+///
+/// Callers typically pass the application name (e.g. "zig-zag") and a
+/// filename (e.g. "config.json"). The returned slice is a sub-slice of `buf`.
+pub fn appDataPath(buf: []u8, app: []const u8, filename: []const u8) ?[]const u8 {
+    const env = @import("env.zig");
+    const builtin = @import("builtin");
+    return switch (builtin.os.tag) {
+        .windows => blk: {
+            const base = env.get("LOCALAPPDATA") orelse break :blk null;
+            break :blk std.fmt.bufPrint(buf, "{s}\\{s}\\{s}", .{ base, app, filename }) catch null;
+        },
+        .macos, .ios, .tvos, .watchos, .visionos => blk: {
+            const home = env.get("HOME") orelse break :blk null;
+            break :blk std.fmt.bufPrint(buf, "{s}/Library/Application Support/{s}/{s}", .{ home, app, filename }) catch null;
+        },
+        .linux => blk: {
+            if (env.get("XDG_DATA_HOME")) |xdg|
+                break :blk std.fmt.bufPrint(buf, "{s}/{s}/{s}", .{ xdg, app, filename }) catch null;
+            const home = env.get("HOME") orelse break :blk null;
+            break :blk std.fmt.bufPrint(buf, "{s}/.local/share/{s}/{s}", .{ home, app, filename }) catch null;
+        },
+        else => blk: {
+            const home = env.get("HOME") orelse break :blk null;
+            break :blk std.fmt.bufPrint(buf, "{s}/.config/{s}/{s}", .{ home, app, filename }) catch null;
+        },
+    };
+}
+
+/// Write the platform-specific path for a file inside a vendor application's
+/// config directory into `buf`. Intended for third-party app config files
+/// (e.g. GitHub Copilot's token store) rather than zig-zag's own data.
+///
+/// | Platform | Base dir env var | Path format |
+/// |----------|------------------|-------------|
+/// | Windows  | APPDATA          | %APPDATA%\<vendor>\<filename> |
+/// | other    | HOME             | $HOME/.config/<vendor>/<filename> |
+pub fn vendorConfigPath(buf: []u8, vendor: []const u8, filename: []const u8) ?[]const u8 {
+    const env = @import("env.zig");
+    const builtin = @import("builtin");
+    if (builtin.os.tag == .windows) {
+        const base = env.get("APPDATA") orelse return null;
+        return std.fmt.bufPrint(buf, "{s}\\{s}\\{s}", .{ base, vendor, filename }) catch null;
+    }
+    const home = env.get("HOME") orelse return null;
+    return std.fmt.bufPrint(buf, "{s}/.config/{s}/{s}", .{ home, vendor, filename }) catch null;
+}
+
+/// Same as vendorConfigPath but returns the directory (no filename appended).
+pub fn vendorConfigDir(buf: []u8, vendor: []const u8) ?[]const u8 {
+    const env = @import("env.zig");
+    const builtin = @import("builtin");
+    if (builtin.os.tag == .windows) {
+        const base = env.get("APPDATA") orelse return null;
+        return std.fmt.bufPrint(buf, "{s}\\{s}", .{ base, vendor }) catch null;
+    }
+    const home = env.get("HOME") orelse return null;
+    return std.fmt.bufPrint(buf, "{s}/.config/{s}", .{ home, vendor }) catch null;
 }
 
 // ============================================================================

@@ -216,14 +216,14 @@ pub fn flush() void {
 /// Matches `core.log.SinkFn` signature.
 fn bufferedSink(msg: []const u8) void {
     const allocator = log_allocator orelse {
-        _ = std.c.write(std.posix.STDERR_FILENO, msg.ptr, msg.len);
+        std.Io.File.stderr().writeStreamingAll(time.io(), msg) catch {};
         return;
     };
 
     // Duplicate message — the facade formats into a stack buffer that
     // will be invalidated after the call returns.
     const owned_msg = allocator.alloc(u8, msg.len) catch {
-        _ = std.c.write(std.posix.STDERR_FILENO, msg.ptr, msg.len);
+        std.Io.File.stderr().writeStreamingAll(time.io(), msg) catch {};
         return;
     };
     @memcpy(owned_msg, msg);
@@ -271,7 +271,7 @@ fn flushTimerLoop() void {
 /// Write a message directly to file or stderr (no buffering).
 fn writeDirectMsg(msg: []const u8) void {
     if (log_output == .stderr) {
-        _ = std.c.write(std.posix.STDERR_FILENO, msg.ptr, msg.len);
+        std.Io.File.stderr().writeStreamingAll(time.io(), msg) catch {};
     } else if (log_file) |f| {
         f.writeAll(msg) catch {};
     }
@@ -293,7 +293,7 @@ fn flushBufferLocked() void {
     if (log_buffer.items.len == 0) return;
 
     if (log_output == .stderr) {
-        _ = std.c.write(std.posix.STDERR_FILENO, log_buffer.items.ptr, log_buffer.items.len);
+        std.Io.File.stderr().writeStreamingAll(time.io(), log_buffer.items) catch {};
     } else if (log_file) |f| {
         if (log_file_bytes + log_buffer.items.len > max_file_size) {
             rotateLogsLocked();

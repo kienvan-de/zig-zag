@@ -311,7 +311,6 @@ fn getProcessStats() struct { memory_bytes: u64, cpu_time_us: u64 } {
     if (builtin.os.tag == .macos) {
         const c = std.c;
         var memory_bytes: u64 = 0;
-        var cpu_time_us: u64 = 0;
 
         // Memory: phys_footprint via TASK_VM_INFO (matches `top` MEM column)
         var vm_info: TaskVmInfo = std.mem.zeroes(TaskVmInfo);
@@ -326,18 +325,9 @@ fn getProcessStats() struct { memory_bytes: u64, cpu_time_us: u64 } {
             memory_bytes = vm_info.phys_footprint;
         }
 
-        // CPU time via getrusage(RUSAGE_SELF) — same source as the Linux path.
-        // NOTE: do NOT use MACH_TASK_BASIC_INFO here: since macOS 26 the kernel
-        // reports 0 user/system time through that flavor (verified empirically),
-        // which made the menu-bar CPU read-out permanently 0%. getrusage returns
-        // the correct aggregate on every macOS version.
-        var usage: std.posix.rusage = undefined;
-        const ru_result = std.posix.system.getrusage(std.posix.system.rusage.SELF, &usage);
-        if (ru_result == 0) {
-            const user_us: u64 = @intCast(usage.utime.sec * 1_000_000 + usage.utime.usec);
-            const system_us: u64 = @intCast(usage.stime.sec * 1_000_000 + usage.stime.usec);
-            cpu_time_us = user_us + system_us;
-        }
+        // CPU time via std.Io Clock.cpu_process — cross-platform, no getrusage needed.
+        const cpu_ts = std.Io.Clock.cpu_process.now(time.io());
+        const cpu_time_us: u64 = @intCast(@max(0, @divTrunc(cpu_ts.nanoseconds, 1000)));
 
         return .{ .memory_bytes = memory_bytes, .cpu_time_us = cpu_time_us };
     } else if (builtin.os.tag == .linux) {
@@ -358,21 +348,14 @@ fn getProcessStats() struct { memory_bytes: u64, cpu_time_us: u64 } {
             } else |_| {}
         } else |_| {}
 
-        // Use rusage for CPU time
-        var usage: std.posix.rusage = undefined;
-        const result = std.posix.system.getrusage(std.posix.system.rusage.SELF, &usage);
-        var cpu_time_us: u64 = 0;
-        if (result == 0) {
-            const user_us: u64 = @intCast(usage.utime.sec * 1_000_000 + usage.utime.usec);
-            const system_us: u64 = @intCast(usage.stime.sec * 1_000_000 + usage.stime.usec);
-            cpu_time_us = user_us + system_us;
-        }
+        // CPU time via std.Io Clock.cpu_process — cross-platform, no getrusage needed.
+        const cpu_ts = std.Io.Clock.cpu_process.now(time.io());
+        const cpu_time_us: u64 = @intCast(@max(0, @divTrunc(cpu_ts.nanoseconds, 1000)));
 
         return .{ .memory_bytes = memory_bytes, .cpu_time_us = cpu_time_us };
     } else if (builtin.os.tag == .windows) {
-        // Windows: GetProcessTimes for CPU time, K32GetProcessMemoryInfo for the
-        // working set (closest user-mode equivalent of RSS/footprint). Both are
-        // declared locally to avoid depending on std internals.
+        // Windows: K32GetProcessMemoryInfo for working set (memory).
+        // CPU time via std.Io Clock.cpu_process — replaces GetProcessTimes.
         const win = struct {
             const ProcessMemoryCounters = extern struct {
                 cb: u32,
@@ -387,13 +370,6 @@ fn getProcessStats() struct { memory_bytes: u64, cpu_time_us: u64 } {
                 peak_pagefile_usage: usize,
             };
             extern "kernel32" fn GetCurrentProcess() callconv(.c) std.os.windows.HANDLE;
-            extern "kernel32" fn GetProcessTimes(
-                process: std.os.windows.HANDLE,
-                creation: *std.os.windows.FILETIME,
-                exit: *std.os.windows.FILETIME,
-                kernel: *std.os.windows.FILETIME,
-                user: *std.os.windows.FILETIME,
-            ) callconv(.c) c_int; // BOOL
             extern "kernel32" fn K32GetProcessMemoryInfo(
                 process: std.os.windows.HANDLE,
                 counters: *ProcessMemoryCounters,
@@ -402,23 +378,7 @@ fn getProcessStats() struct { memory_bytes: u64, cpu_time_us: u64 } {
         };
 
         var memory_bytes: u64 = 0;
-        var cpu_time_us: u64 = 0;
         const handle = win.GetCurrentProcess();
-
-        // CPU time: user + system, both FILETIME (100 ns units)
-        var creation: std.os.windows.FILETIME = undefined;
-        var exit_time: std.os.windows.FILETIME = undefined;
-        var kernel_time: std.os.windows.FILETIME = undefined;
-        var user_time: std.os.windows.FILETIME = undefined;
-        if (win.GetProcessTimes(handle, &creation, &exit_time, &kernel_time, &user_time) != 0) {
-            const filetime_us = struct {
-                fn f(t: std.os.windows.FILETIME) u64 {
-                    const raw = (@as(u64, t.dwHighDateTime) << 32) | @as(u64, t.dwLowDateTime);
-                    return raw / 10; // 100 ns -> µs
-                }
-            }.f;
-            cpu_time_us = filetime_us(kernel_time) + filetime_us(user_time);
-        }
 
         var pmc: win.ProcessMemoryCounters = std.mem.zeroes(win.ProcessMemoryCounters);
         pmc.cb = @sizeOf(win.ProcessMemoryCounters);
@@ -426,23 +386,23 @@ fn getProcessStats() struct { memory_bytes: u64, cpu_time_us: u64 } {
             memory_bytes = pmc.working_set_size;
         }
 
+        // CPU time via std.Io Clock.cpu_process — cross-platform, replaces GetProcessTimes.
+        const cpu_ts = std.Io.Clock.cpu_process.now(time.io());
+        const cpu_time_us: u64 = @intCast(@max(0, @divTrunc(cpu_ts.nanoseconds, 1000)));
+
         return .{ .memory_bytes = memory_bytes, .cpu_time_us = cpu_time_us };
     } else {
-        // Other POSIX (FreeBSD, ...): rusage. Note maxrss units vary by platform
-        // (bytes on FreeBSD, KiB on NetBSD/OpenBSD) — Linux and macOS are handled above.
+        // Other POSIX (FreeBSD, ...): rusage for memory (maxrss). Note maxrss units
+        // vary by platform (bytes on FreeBSD, KiB on NetBSD/OpenBSD).
+        // CPU time via std.Io Clock.cpu_process — no getrusage needed for CPU.
         var usage: std.posix.rusage = undefined;
         const result = std.posix.system.getrusage(std.posix.system.rusage.SELF, &usage);
-        if (result != 0) {
-            return .{ .memory_bytes = 0, .cpu_time_us = 0 };
-        }
+        const memory_bytes: u64 = if (result == 0) @intCast(@max(0, usage.maxrss)) else 0;
 
-        const user_us: u64 = @intCast(usage.utime.sec * 1_000_000 + usage.utime.usec);
-        const system_us: u64 = @intCast(usage.stime.sec * 1_000_000 + usage.stime.usec);
+        const cpu_ts = std.Io.Clock.cpu_process.now(time.io());
+        const cpu_time_us: u64 = @intCast(@max(0, @divTrunc(cpu_ts.nanoseconds, 1000)));
 
-        return .{
-            .memory_bytes = @intCast(@max(0, usage.maxrss)),
-            .cpu_time_us = user_us + system_us,
-        };
+        return .{ .memory_bytes = memory_bytes, .cpu_time_us = cpu_time_us };
     }
 }
 
@@ -524,12 +484,7 @@ const METRICS_FILENAME = "metrics.json";
 
 fn getMetricsPath(buf: []u8) ?[]const u8 {
     if (env.get("ZIG_ZAG_METRICS")) |p| return p;
-    if (builtin.os.tag == .windows) {
-        const app_data = env.get("LOCALAPPDATA") orelse return null;
-        return std.fmt.bufPrint(buf, "{s}\\zig-zag\\{s}", .{ app_data, METRICS_FILENAME }) catch null;
-    }
-    const home = env.get("HOME") orelse return null;
-    return std.fmt.bufPrint(buf, "{s}/.config/zig-zag/{s}", .{ home, METRICS_FILENAME }) catch null;
+    return fs.appDataPath(buf, "zig-zag", METRICS_FILENAME);
 }
 
 /// Load persisted metrics from `~/.config/zig-zag/metrics.json`.

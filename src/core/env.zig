@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Process environment variable access.
 //! Drop-in replacement for the removed std.posix.getenv in Zig 0.16.
-//! Uses libc getenv which is available on all target platforms (macOS, Linux).
+//! Uses std.c.getenv which links against the C runtime and is available on
+//! all target platforms (macOS, Linux, Windows via MSVC/ucrt runtime).
 
 const std = @import("std");
 
