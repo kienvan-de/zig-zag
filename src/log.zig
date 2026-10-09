@@ -89,6 +89,11 @@ var buffer_threshold: usize = 8192;
 var log_path_buf: [core.fs.max_path_bytes]u8 = undefined;
 var log_path: []const u8 = "";
 
+/// Running count of bytes written to the current log file.
+/// Updated in flushBufferLocked (buffer_mutex held) so no separate lock needed.
+/// Reset to 0 on rotation and seeded from the file size at init.
+var log_file_bytes: usize = 0;
+
 // ============================================================================
 // Public API
 // ============================================================================
@@ -123,9 +128,11 @@ pub fn init(config: LogConfig, allocator: std.mem.Allocator) !void {
             return e;
         };
 
-        // Seek to end for append mode
+        // Seek to end for append mode; seed the byte counter from the
+        // existing file size so rotation triggers correctly after restart.
         if (log_file) |f| {
             f.seekFromEnd(0) catch {};
+            log_file_bytes = if (f.stat()) |s| s.size else |_| 0;
         }
 
         // Initialize buffer
@@ -288,15 +295,31 @@ fn flushBufferLocked() void {
     if (log_output == .stderr) {
         _ = std.c.write(std.posix.STDERR_FILENO, log_buffer.items.ptr, log_buffer.items.len);
     } else if (log_file) |f| {
-        const stat = f.stat() catch return;
-        if (stat.size + log_buffer.items.len > max_file_size) {
+        if (log_file_bytes + log_buffer.items.len > max_file_size) {
             rotateLogsLocked();
         }
 
-        f.writeAll(log_buffer.items) catch {};
+        // Write; if it fails (e.g. file was deleted externally), recreate and retry once.
+        f.writeAll(log_buffer.items) catch {
+            reopenLogFileLocked();
+            if (log_file) |nf| nf.writeAll(log_buffer.items) catch {};
+        };
+        log_file_bytes += log_buffer.items.len;
     }
 
     log_buffer.clearRetainingCapacity();
+}
+
+/// Reopen the log file after an external deletion or write failure.
+/// Closes the stale fd and creates a new file at the same path.
+/// Must be called with buffer_mutex held.
+fn reopenLogFileLocked() void {
+    if (log_file) |f| {
+        f.close();
+        log_file = null;
+    }
+    log_file_bytes = 0;
+    log_file = core.fs.cwd().createFile(log_path, .{ .truncate = false }) catch null;
 }
 
 /// Rotate log files (must be called with buffer_mutex held).
@@ -305,6 +328,7 @@ fn rotateLogsLocked() void {
         f.close();
         log_file = null;
     }
+    log_file_bytes = 0;
 
     var i: usize = max_files;
     while (i > 0) : (i -= 1) {
