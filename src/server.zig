@@ -41,10 +41,20 @@ const NOT_FOUND_RESPONSE =
 var global_server: ?*std.Io.net.Server = null;
 var server_mutex: core.sync.Mutex = .{};
 
+/// Explicit shutdown flag. Set by shutdown(), checked by the accept loop.
+/// This is the authoritative stop signal: we do NOT rely on accept() returning
+/// a specific error after deinit(), because the error is platform-dependent
+/// (e.g. macOS returns error.Unexpected rather than SocketNotListening, which
+/// would otherwise fall into the `else` branch and busy-loop forever).
+var shutdown_requested: std.atomic.Value(bool) = .init(false);
+
 /// Signal the running server to stop.
-/// Deinits the Io net Server which causes the blocking accept() call to return
-/// `error.SocketNotListening`, allowing the accept loop to exit cleanly.
+/// Sets the shutdown flag and deinits the Io net Server, which together cause
+/// the blocking accept() call to return (with any error) and the accept loop to
+/// exit cleanly.
 pub fn shutdown() void {
+    shutdown_requested.store(true, .release);
+
     server_mutex.lock();
     defer server_mutex.unlock();
 
@@ -61,6 +71,9 @@ pub fn shutdown() void {
 pub fn start(allocator: std.mem.Allocator, cfg: *const app_config.AppConfig) !void {
     const host = cfg.server.host;
     const port = cfg.server.port;
+
+    // Reset shutdown flag in case the server is restarted within the same process.
+    shutdown_requested.store(false, .release);
 
     log.info("Starting zig-zag proxy server on {s}:{d}...", .{ host, port });
     log.info("Loaded providers: {d}", .{cfg.core.providers.count()});
@@ -97,16 +110,30 @@ pub fn start(allocator: std.mem.Allocator, cfg: *const app_config.AppConfig) !vo
     log.info("Server started on {s}:{d}", .{ host, port });
 
     // Accept loop: dispatch each connection concurrently via the Io runtime.
-    // The loop exits when accept() returns SocketNotListening (shutdown) or
-    // Canceled. All in-flight connections run to completion before we return.
+    // The loop exits when shutdown() sets shutdown_requested and tears down the
+    // listener (any resulting accept() error breaks the loop), or when accept()
+    // returns SocketNotListening/Canceled. All in-flight connections run to
+    // completion before we return.
     var group: std.Io.Group = .init;
     while (true) {
-        const stream = server.accept(io) catch |err| switch (err) {
-            error.SocketNotListening, error.Canceled => break,
-            else => {
-                log.warn("Failed to accept connection: {}", .{err});
-                continue;
-            },
+        const stream = server.accept(io) catch |err| {
+            // If shutdown was requested, any accept() error means the listener
+            // was torn down — exit cleanly regardless of the specific error.
+            // (The error is platform-dependent: SocketNotListening/Canceled on
+            // some platforms, error.Unexpected on macOS.)
+            if (shutdown_requested.load(.acquire)) break;
+
+            switch (err) {
+                error.SocketNotListening, error.Canceled => break,
+                else => {
+                    // Not shutting down but accept() failed. Log and back off
+                    // briefly so a persistent error cannot busy-loop and flood
+                    // the log with thousands of identical warnings.
+                    log.warn("Failed to accept connection: {}", .{err});
+                    core.time.sleep(10 * std.time.ns_per_ms);
+                    continue;
+                },
+            }
         };
 
         // Wrap the Io stream into our Connection type (same handle type) so
